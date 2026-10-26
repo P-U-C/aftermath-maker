@@ -50,6 +50,19 @@ export type StoredSession = {
   chainCheckedAt: string | null;
 };
 
+export type ExecutionStats = {
+  confirmedLiveQuotes: number;
+  averageGasMist: number | null;
+  lastExecutionAt: string | null;
+};
+
+export type TrackedMakerOrder = {
+  orderId: string;
+  marketId: string;
+  quoteDigest: string;
+  postedAt: string;
+};
+
 export class Store {
   private readonly db: Database.Database;
 
@@ -148,7 +161,17 @@ export class Store {
         ask_price REAL NOT NULL,
         size_usd REAL NOT NULL,
         outcome TEXT NOT NULL,
-        error TEXT
+        error TEXT,
+        gas_used_mist INTEGER
+      );
+
+      CREATE TABLE IF NOT EXISTS tenant_maker_orders (
+        owner_address TEXT NOT NULL,
+        order_id TEXT NOT NULL,
+        market_id TEXT NOT NULL,
+        quote_digest TEXT NOT NULL,
+        posted_at TEXT NOT NULL,
+        PRIMARY KEY (owner_address, order_id)
       );
 
       CREATE TABLE IF NOT EXISTS auth_challenges (
@@ -172,6 +195,8 @@ export class Store {
         ON tenant_audit_events(owner_address, occurred_at DESC);
       CREATE INDEX IF NOT EXISTS tenant_executions_owner_time
         ON tenant_executions(owner_address, occurred_at DESC);
+      CREATE INDEX IF NOT EXISTS tenant_maker_orders_owner_time
+        ON tenant_maker_orders(owner_address, posted_at DESC);
       CREATE INDEX IF NOT EXISTS auth_sessions_owner
         ON auth_sessions(owner_address);
       CREATE INDEX IF NOT EXISTS auth_sessions_expiry
@@ -179,6 +204,15 @@ export class Store {
       CREATE INDEX IF NOT EXISTS auth_challenges_expiry
         ON auth_challenges(expires_at);
     `);
+
+    const executionColumns = this.db
+      .prepare("PRAGMA table_info(tenant_executions)")
+      .all() as Array<{ name: string }>;
+    if (!executionColumns.some((column) => column.name === "gas_used_mist")) {
+      this.db.exec(
+        "ALTER TABLE tenant_executions ADD COLUMN gas_used_mist INTEGER",
+      );
+    }
   }
 
   private getSystemSetting<T>(key: string): T | null {
@@ -521,17 +555,27 @@ export class TenantStore {
     }
     delete normalized.maxDailyLossUsd;
 
+    const marketCount = Array.isArray(normalized.markets)
+      ? normalized.markets.length
+      : 1;
     if (normalized.maxGrossExposureUsd === undefined) {
       const perMarket =
         typeof normalized.maxInventoryUsd === "number"
           ? normalized.maxInventoryUsd
           : 50;
-      const marketCount = Array.isArray(normalized.markets)
-        ? normalized.markets.length
-        : 1;
       normalized.maxGrossExposureUsd = Math.max(
         perMarket,
         perMarket * Math.min(3, marketCount),
+      );
+      migrated = true;
+    }
+
+    if (normalized.maxQuoteAgeMs === undefined) {
+      const refreshMs =
+        typeof normalized.refreshMs === "number" ? normalized.refreshMs : 8_000;
+      normalized.maxQuoteAgeMs = Math.max(
+        120_000,
+        refreshMs * marketCount + Math.min(10_000, refreshMs),
       );
       migrated = true;
     }
@@ -682,13 +726,14 @@ export class TenantStore {
     sizeUsd: number;
     outcome: string;
     error?: string;
+    gasUsedMist?: number;
   }): void {
     this.db
       .prepare(
         `INSERT INTO tenant_executions
           (owner_address, occurred_at, mode, market_id, digest, endpoint,
-           bid_price, ask_price, size_usd, outcome, error)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           bid_price, ask_price, size_usd, outcome, error, gas_used_mist)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         this.ownerAddress,
@@ -702,6 +747,77 @@ export class TenantStore {
         inputs.sizeUsd,
         inputs.outcome,
         inputs.error ?? null,
+        inputs.gasUsedMist ?? null,
       );
+  }
+
+  trackMakerOrders(inputs: {
+    marketId: string;
+    quoteDigest: string;
+    orderIds: string[];
+  }): void {
+    const insert = this.db.prepare(
+      `INSERT OR IGNORE INTO tenant_maker_orders
+        (owner_address, order_id, market_id, quote_digest, posted_at)
+       VALUES (?, ?, ?, ?, ?)`,
+    );
+    const postedAt = new Date().toISOString();
+    this.db.transaction(() => {
+      for (const orderId of inputs.orderIds) {
+        insert.run(
+          this.ownerAddress,
+          orderId,
+          inputs.marketId,
+          inputs.quoteDigest,
+          postedAt,
+        );
+      }
+    })();
+  }
+
+  listTrackedMakerOrders(limit = 2_000): TrackedMakerOrder[] {
+    const rows = this.db
+      .prepare(
+        `SELECT order_id, market_id, quote_digest, posted_at
+         FROM tenant_maker_orders
+         WHERE owner_address = ?
+         ORDER BY posted_at DESC
+         LIMIT ?`,
+      )
+      .all(this.ownerAddress, limit) as Array<{
+      order_id: string;
+      market_id: string;
+      quote_digest: string;
+      posted_at: string;
+    }>;
+    return rows.map((row) => ({
+      orderId: row.order_id,
+      marketId: row.market_id,
+      quoteDigest: row.quote_digest,
+      postedAt: row.posted_at,
+    }));
+  }
+
+  getExecutionStats(): ExecutionStats {
+    const row = this.db
+      .prepare(
+        `SELECT COUNT(*) AS confirmed_live_quotes,
+                AVG(gas_used_mist) AS average_gas_mist,
+                MAX(occurred_at) AS last_execution_at
+         FROM tenant_executions
+         WHERE owner_address = ?
+           AND mode = 'live'
+           AND outcome = 'confirmed'`,
+      )
+      .get(this.ownerAddress) as {
+      confirmed_live_quotes: number;
+      average_gas_mist: number | null;
+      last_execution_at: string | null;
+    };
+    return {
+      confirmedLiveQuotes: row.confirmed_live_quotes,
+      averageGasMist: row.average_gas_mist,
+      lastExecutionAt: row.last_execution_at,
+    };
   }
 }

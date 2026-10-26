@@ -6,6 +6,7 @@ import {
   evaluateQuoteSafety,
   makerConfigSchema,
   MutationLock,
+  resolveMarketConfig,
 } from "../src/index.js";
 
 const config = makerConfigSchema.parse({
@@ -132,6 +133,73 @@ describe("portfolio configuration", () => {
         maxGrossExposureUsd: 50,
       }),
     ).toThrow("Gross exposure");
+  });
+
+  it("requires the quote watchdog to cover a full market rotation", () => {
+    expect(() =>
+      makerConfigSchema.parse({
+        markets: [
+          { marketId: "0x1234", symbol: "SUI" },
+          { marketId: "0x5678", symbol: "BTC" },
+        ],
+        refreshMs: 10_000,
+        maxQuoteAgeMs: 15_000,
+      }),
+    ).toThrow("full rotation");
+  });
+
+  it("applies market policy overrides without changing global defaults", () => {
+    const configured = makerConfigSchema.parse({
+      markets: [
+        {
+          marketId: "0x1234",
+          symbol: "SUI",
+          overrides: {
+            quoteSizeUsd: 7,
+            spreadBps: 45,
+            inventoryTargetUsd: 10,
+          },
+        },
+      ],
+      quoteSizeUsd: 20,
+      spreadBps: 25,
+      inventoryTargetUsd: 0,
+    });
+    const effective = resolveMarketConfig(configured, configured.markets[0]!);
+
+    expect(effective.quoteSizeUsd).toBe(7);
+    expect(effective.spreadBps).toBe(45);
+    expect(effective.inventoryTargetUsd).toBe(10);
+    expect(configured.quoteSizeUsd).toBe(20);
+  });
+
+  it("treats inventory at its configured target as neutral", () => {
+    const targeted = makerConfigSchema.parse({
+      markets: [{ marketId: "0x1234", symbol: "SUI" }],
+      inventoryTargetUsd: 10,
+    });
+    const observation = {
+      marketId: "0x1234",
+      bestBid: 9.99,
+      bestAsk: 10.01,
+      observedAt: new Date("2026-10-26T12:00:00Z"),
+    };
+
+    const atTarget = buildQuoteIntent({
+      config: targeted,
+      observation,
+      inventoryUsd: 10,
+      unrealizedPnlUsd: 0,
+    });
+    const neutral = buildQuoteIntent({
+      config: { ...targeted, inventoryTargetUsd: 0 },
+      observation,
+      inventoryUsd: 0,
+      unrealizedPnlUsd: 0,
+    });
+
+    expect(atTarget.bidPrice).toBe(neutral.bidPrice);
+    expect(atTarget.askPrice).toBe(neutral.askPrice);
   });
 });
 

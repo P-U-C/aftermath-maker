@@ -1,4 +1,23 @@
-import type { MakerConfig, QuoteIntent } from "./schema.js";
+import type { MakerConfig, MakerMarket, QuoteIntent } from "./schema.js";
+
+export function resolveMarketConfig(
+  config: MakerConfig,
+  market: MakerMarket,
+): MakerConfig {
+  return {
+    ...config,
+    markets: config.markets,
+    quoteSizeUsd: market.overrides?.quoteSizeUsd ?? config.quoteSizeUsd,
+    spreadBps: market.overrides?.spreadBps ?? config.spreadBps,
+    maxInventoryUsd:
+      market.overrides?.maxInventoryUsd ?? config.maxInventoryUsd,
+    inventoryTargetUsd:
+      market.overrides?.inventoryTargetUsd ?? config.inventoryTargetUsd,
+    inventorySkewBps:
+      market.overrides?.inventorySkewBps ?? config.inventorySkewBps,
+    maxLeverage: market.overrides?.maxLeverage ?? config.maxLeverage,
+  };
+}
 
 export type MarketObservation = {
   marketId: string;
@@ -26,9 +45,10 @@ export function buildQuoteIntent(inputs: {
 
   const mid = (observation.bestBid + observation.bestAsk) / 2;
   const halfSpread = config.spreadBps / 20_000;
+  const inventoryDeltaUsd = inventoryUsd - config.inventoryTargetUsd;
   const inventoryRatio = Math.max(
     -1,
-    Math.min(1, inventoryUsd / config.maxInventoryUsd),
+    Math.min(1, inventoryDeltaUsd / config.maxInventoryUsd),
   );
   const skew = inventoryRatio * (config.inventorySkewBps / 10_000);
 

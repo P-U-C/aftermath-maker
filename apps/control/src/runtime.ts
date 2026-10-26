@@ -10,6 +10,7 @@ import {
   buildQuoteIntent,
   evaluateQuoteSafety,
   makerConfigSchema,
+  resolveMarketConfig,
   type BuilderFeePolicy,
   type MakerConfig,
   type MakerMarket,
@@ -25,31 +26,83 @@ export type RuntimeOptions = {
   builderCode: () => BuilderFeePolicy | null;
 };
 
-const emptyRuntimeMarket = (market: MakerMarket): RuntimeMarketSnapshot => ({
-  id: market.marketId,
-  symbol: market.symbol,
-  status: "queued",
-  indexPrice: null,
-  bestBid: null,
-  bestAsk: null,
-  openInterestBase: null,
-  openInterestUsd: null,
-  openInterestUtilizationPct: null,
-  volume24hUsd: null,
-  fundingRate: null,
-  inventoryUsd: 0,
-  unrealizedPnlUsd: 0,
-  bidPrice: null,
-  askPrice: null,
-  updatedAt: null,
-  error: null,
-});
+export type MakerFill = {
+  occurredAt: string;
+  txDigest: string;
+  marketId: string;
+  symbol: string;
+  side: "bid" | "ask";
+  price: number;
+  size: number;
+  notionalUsd: number;
+  realizedPnlUsd: number;
+  protocolFeesUsd: number;
+  estimatedBuilderFeeUsd: number;
+  orderId: string;
+};
+
+export type PerformanceSnapshot = {
+  asOf: string;
+  period: "1D";
+  account: {
+    realizedPnlUsd: number;
+    fundingPnlUsd: number;
+    makerVolumeUsd: number;
+    takerVolumeUsd: number;
+    makerFeesUsd: number;
+    takerFeesUsd: number;
+  } | null;
+  attributed: {
+    fills: number;
+    notionalUsd: number;
+    realizedPnlUsd: number;
+    protocolFeesUsd: number;
+    estimatedBuilderFeesUsd: number;
+    netAfterKnownCostsUsd: number;
+    makerVolumeCoveragePct: number | null;
+  };
+  fills: MakerFill[];
+  note: string;
+};
+
+const emptyRuntimeMarket = (
+  market: MakerMarket,
+  config: MakerConfig,
+): RuntimeMarketSnapshot => {
+  const effective = resolveMarketConfig(config, market);
+  return {
+    id: market.marketId,
+    symbol: market.symbol,
+    status: "queued",
+    indexPrice: null,
+    bestBid: null,
+    bestAsk: null,
+    openInterestBase: null,
+    openInterestUsd: null,
+    openInterestUtilizationPct: null,
+    volume24hUsd: null,
+    fundingRate: null,
+    inventoryUsd: 0,
+    unrealizedPnlUsd: 0,
+    bidPrice: null,
+    askPrice: null,
+    effectiveSpreadBps: effective.spreadBps,
+    effectiveQuoteSizeUsd: effective.quoteSizeUsd,
+    effectiveMaxInventoryUsd: effective.maxInventoryUsd,
+    inventoryTargetUsd: effective.inventoryTargetUsd,
+    lastTransactionDigest: null,
+    updatedAt: null,
+    error: null,
+  };
+};
 
 const initialSnapshot = (): RuntimeSnapshot => ({
   mode: "observe",
   running: false,
   cycle: 0,
+  startedAt: null,
   lastCycleAt: null,
+  lastSuccessfulCycleAt: null,
   lastError: null,
   setupComplete: false,
   agentAddress: null,
@@ -67,6 +120,10 @@ const initialSnapshot = (): RuntimeSnapshot => ({
     selectedMarkets: 0,
     grossExposureUsd: 0,
     unrealizedPnlUsd: 0,
+    availableCollateralUsd: null,
+    allocatedCollateralUsd: null,
+    freeMarginUsd: null,
+    withdrawableCollateralUsd: null,
   },
   balances: {
     equityUsd: null,
@@ -74,14 +131,30 @@ const initialSnapshot = (): RuntimeSnapshot => ({
     unrealizedPnlUsd: 0,
     gasSui: null,
   },
+  watchdog: {
+    state: "idle",
+    checkedAt: null,
+    maxQuoteAgeMs: null,
+  },
+  execution: {
+    confirmedLiveQuotes: 0,
+    averageGasMist: null,
+    gasRunwayTransactions: null,
+    lastExecutionAt: null,
+  },
   quote: null,
   safety: [],
 });
 
 const emptyPortfolio = (): PortfolioSnapshot => ({
   equityUsd: 0,
+  availableCollateralUsd: 0,
+  allocatedCollateralUsd: 0,
+  freeMarginUsd: 0,
+  withdrawableCollateralUsd: 0,
   grossExposureUsd: 0,
   unrealizedPnlUsd: 0,
+  gasSui: 0,
   positions: [],
 });
 
@@ -91,6 +164,8 @@ const message = (error: unknown) =>
 export class MakerRuntime {
   private snapshotValue = initialSnapshot();
   private timer: NodeJS.Timeout | null = null;
+  private watchdogTimer: NodeJS.Timeout | null = null;
+  private watchdogTripping = false;
   private generation = 0;
   private cyclePromise: Promise<void> | null = null;
   private markets: MarketSummary[] = [];
@@ -105,7 +180,9 @@ export class MakerRuntime {
     this.snapshotValue = {
       ...this.snapshotValue,
       mode: config?.mode ?? "observe",
-      markets: config?.markets.map(emptyRuntimeMarket) ?? [],
+      markets: config
+        ? config.markets.map((market) => emptyRuntimeMarket(market, config))
+        : [],
       portfolio: {
         ...this.snapshotValue.portfolio,
         selectedMarkets: config?.markets.length ?? 0,
@@ -125,7 +202,19 @@ export class MakerRuntime {
   }
 
   get snapshot(): RuntimeSnapshot {
-    return structuredClone(this.snapshotValue);
+    const snapshot = structuredClone(this.snapshotValue);
+    const execution = this.store.getExecutionStats();
+    snapshot.execution = {
+      ...execution,
+      gasRunwayTransactions:
+        execution.averageGasMist && snapshot.balances.gasSui !== null
+          ? Math.floor(
+              (snapshot.balances.gasSui * 1_000_000_000) /
+                execution.averageGasMist,
+            )
+          : null,
+    };
+    return snapshot;
   }
 
   get endpointHealth(): EndpointHealth[] {
@@ -156,9 +245,14 @@ export class MakerRuntime {
       const summary = this.markets.find(
         (candidate) => candidate.id === market.marketId,
       );
+      const effective = resolveMarketConfig(config, market);
       return {
-        ...(current ?? emptyRuntimeMarket(market)),
+        ...(current ?? emptyRuntimeMarket(market, config)),
         symbol: market.symbol,
+        effectiveSpreadBps: effective.spreadBps,
+        effectiveQuoteSizeUsd: effective.quoteSizeUsd,
+        effectiveMaxInventoryUsd: effective.maxInventoryUsd,
+        inventoryTargetUsd: effective.inventoryTargetUsd,
         ...(summary
           ? {
               indexPrice: summary.indexPrice,
@@ -183,8 +277,19 @@ export class MakerRuntime {
 
     this.generation += 1;
     const generation = this.generation;
+    const startedAt = new Date().toISOString();
     this.snapshotValue.running = true;
     this.snapshotValue.mode = config.mode;
+    this.snapshotValue.startedAt = startedAt;
+    this.snapshotValue.lastError = null;
+    this.snapshotValue.markets = config.markets.map((market) =>
+      emptyRuntimeMarket(market, config),
+    );
+    this.snapshotValue.watchdog = {
+      state: config.mode === "live" ? "armed" : "idle",
+      checkedAt: startedAt,
+      maxQuoteAgeMs: config.mode === "live" ? config.maxQuoteAgeMs : null,
+    };
     this.syncMarketRows(config);
     void this.cycle({ executeLive: true, generation });
     this.timer = setInterval(
@@ -192,6 +297,17 @@ export class MakerRuntime {
       config.refreshMs,
     );
     this.timer.unref();
+    if (config.mode === "live") {
+      const watchdogIntervalMs = Math.max(
+        1_000,
+        Math.min(5_000, Math.floor(config.maxQuoteAgeMs / 4)),
+      );
+      this.watchdogTimer = setInterval(
+        () => void this.checkQuoteAges(config),
+        watchdogIntervalMs,
+      );
+      this.watchdogTimer.unref();
+    }
     this.store.logEvent({
       category: "runtime",
       action: "start",
@@ -200,20 +316,82 @@ export class MakerRuntime {
         mode: config.mode,
         marketIds: config.markets.map((market) => market.marketId),
         effectiveMarketRefreshMs: config.refreshMs * config.markets.length,
+        maxQuoteAgeMs: config.maxQuoteAgeMs,
       },
     });
   }
 
-  private stopScheduling(): boolean {
+  private async checkQuoteAges(config: MakerConfig): Promise<void> {
+    if (
+      !this.snapshotValue.running ||
+      this.snapshotValue.mode !== "live" ||
+      this.watchdogTripping
+    ) {
+      return;
+    }
+    const now = Date.now();
+    this.snapshotValue.watchdog.checkedAt = new Date(now).toISOString();
+    const startedAt = Date.parse(this.snapshotValue.startedAt ?? "");
+    const stale = this.snapshotValue.markets.find((market) => {
+      const observedAt = market.updatedAt
+        ? Date.parse(market.updatedAt)
+        : startedAt;
+      return (
+        Number.isFinite(observedAt) && now - observedAt > config.maxQuoteAgeMs
+      );
+    });
+    if (!stale) return;
+
+    this.watchdogTripping = true;
+    this.snapshotValue.watchdog.state = "tripped";
+    this.snapshotValue.lastError = `Stale-quote watchdog tripped on ${stale.symbol}`;
+    this.store.logEvent({
+      category: "risk",
+      action: "stale-quote-watchdog",
+      outcome: "tripped",
+      detail: {
+        marketId: stale.id,
+        updatedAt: stale.updatedAt,
+        maxQuoteAgeMs: config.maxQuoteAgeMs,
+      },
+    });
+    const activeCycle = this.cyclePromise;
+    const wasRunning = this.stopScheduling("watchdog");
+    if (wasRunning) await this.cancelOpenOrders(config);
+
+    // Do not let a stalled RPC prevent immediate cancellation. If a transaction
+    // was already broadcast, cancel again after its result becomes known.
+    if (activeCycle) {
+      void activeCycle.finally(async () => {
+        if (this.snapshotValue.watchdog.state === "tripped") {
+          await this.cancelOpenOrders(config);
+        }
+      });
+    }
+    this.watchdogTripping = false;
+  }
+
+  private stopScheduling(
+    reason: "operator" | "watchdog" = "operator",
+  ): boolean {
     const wasRunning = this.snapshotValue.running || Boolean(this.timer);
     this.generation += 1;
     if (this.timer) clearInterval(this.timer);
+    if (this.watchdogTimer) clearInterval(this.watchdogTimer);
     this.timer = null;
+    this.watchdogTimer = null;
     this.snapshotValue.running = false;
+    if (reason === "operator") {
+      this.snapshotValue.watchdog = {
+        state: "idle",
+        checkedAt: new Date().toISOString(),
+        maxQuoteAgeMs: null,
+      };
+    }
     if (wasRunning) {
       this.store.logEvent({
         category: "runtime",
-        action: "stop",
+        action: reason === "watchdog" ? "watchdog-stop" : "stop",
         outcome: "success",
       });
     }
@@ -270,6 +448,178 @@ export class MakerRuntime {
     if (wasRunning && config) await this.cancelOpenOrders(config);
   }
 
+  async flatten(maxSlippage: number): Promise<{
+    digest: string | null;
+    flattenedMarketIds: string[];
+  }> {
+    const config = makerConfigSchema.parse(this.store.getConfig());
+    if (
+      config.mode !== "live" ||
+      !this.options.liveEnabled ||
+      !this.options.mainnetAllowed
+    ) {
+      throw new Error("Flattening requires live mode and both mainnet gates");
+    }
+    const setup = this.store.getSetup();
+    const agent = this.store.getAgent();
+    if (!setup || !agent?.agentCapId || !this.options.masterKey) {
+      throw new Error("A confirmed agent signer is required");
+    }
+
+    const activeCycle = this.cyclePromise;
+    this.stopScheduling();
+    if (activeCycle) await activeCycle;
+    await this.cancelOpenOrders(config);
+    const signer = loadAgentKeypair({
+      masterKey: this.options.masterKey,
+      context: `account:${setup.accountId}`,
+      encryptedSecret: agent.encryptedSecret,
+    });
+    const receipt = await this.gateway.flattenPositions({
+      setup,
+      config,
+      signer,
+      marketIds: config.markets.map((market) => market.marketId),
+      maxSlippage,
+    });
+    this.store.logEvent({
+      category: "risk",
+      action: "reduce-only-flatten",
+      outcome: receipt ? "confirmed" : "clear",
+      detail: receipt ?? { reason: "No positions in selected markets" },
+    });
+    if (receipt) {
+      this.store.logExecution({
+        mode: "live",
+        marketId: "portfolio",
+        digest: receipt.digest,
+        endpoint: receipt.endpoint,
+        bidPrice: 0,
+        askPrice: 0,
+        sizeUsd: 0,
+        outcome: "flattened",
+        gasUsedMist: receipt.gasUsedMist,
+      });
+    }
+    await this.cycle();
+    return {
+      digest: receipt?.digest ?? null,
+      flattenedMarketIds: receipt?.flattenedMarketIds ?? [],
+    };
+  }
+
+  async performance(): Promise<PerformanceSnapshot> {
+    const setup = this.store.getSetup();
+    const agent = this.store.getAgent();
+    if (!setup || !agent?.agentCapId) {
+      return {
+        asOf: new Date().toISOString(),
+        period: "1D",
+        account: null,
+        attributed: {
+          fills: 0,
+          notionalUsd: 0,
+          realizedPnlUsd: 0,
+          protocolFeesUsd: 0,
+          estimatedBuilderFeesUsd: 0,
+          netAfterKnownCostsUsd: 0,
+          makerVolumeCoveragePct: null,
+        },
+        fills: [],
+        note: "Authorize an agent to begin account and fill reconciliation.",
+      };
+    }
+
+    const history = await this.gateway.getAccountPerformanceHistory({
+      setup,
+      agentAddress: agent.address,
+      limit: 200,
+    });
+    const trackedIds = new Set(
+      this.store.listTrackedMakerOrders().map((order) => order.orderId),
+    );
+    const config = this.store.getConfig();
+    const symbols = new Map(
+      config?.markets.map((market) => [market.marketId, market.symbol]) ?? [],
+    );
+    const builderFeeRate = this.options.builderCode()?.integratorFee ?? 0;
+    const fills = history.orders
+      .filter(
+        (order) =>
+          order.maker && order.orderId && trackedIds.has(order.orderId),
+      )
+      .map<MakerFill>((order) => {
+        const notionalUsd = Math.abs(order.size * order.price);
+        return {
+          occurredAt: new Date(order.timestampMs).toISOString(),
+          txDigest: order.txDigest,
+          marketId: order.marketId,
+          symbol: symbols.get(order.marketId) ?? order.marketId.slice(0, 10),
+          side: order.side,
+          price: order.price,
+          size: order.size,
+          notionalUsd,
+          realizedPnlUsd: order.realizedPnlUsd,
+          protocolFeesUsd: order.feesUsd,
+          estimatedBuilderFeeUsd: notionalUsd * builderFeeRate,
+          orderId: order.orderId!,
+        };
+      })
+      .sort((left, right) => right.occurredAt.localeCompare(left.occurredAt));
+
+    const sum = (selector: (fill: MakerFill) => number) =>
+      fills.reduce((total, fill) => total + selector(fill), 0);
+    const notionalUsd = sum((fill) => fill.notionalUsd);
+    const realizedPnlUsd = sum((fill) => fill.realizedPnlUsd);
+    const protocolFeesUsd = sum((fill) => fill.protocolFeesUsd);
+    const estimatedBuilderFeesUsd = sum((fill) => fill.estimatedBuilderFeeUsd);
+
+    const marginHistory = [...history.marginHistory].sort(
+      (left, right) => Number(left.timestamp) - Number(right.timestamp),
+    );
+    const first = marginHistory[0];
+    const last = marginHistory.at(-1);
+    const change = (key: keyof NonNullable<typeof first>) =>
+      first &&
+      last &&
+      typeof first[key] === "number" &&
+      typeof last[key] === "number"
+        ? Number(last[key]) - Number(first[key])
+        : 0;
+    const account =
+      first && last
+        ? {
+            realizedPnlUsd: change("realizedPnlUsd"),
+            fundingPnlUsd: change("realizedFundingsUsd"),
+            makerVolumeUsd: change("makerVolumeUsd"),
+            takerVolumeUsd: change("takerVolumeUsd"),
+            makerFeesUsd: change("makerFeesUsd"),
+            takerFeesUsd: change("takerFeesUsd"),
+          }
+        : null;
+
+    return {
+      asOf: new Date().toISOString(),
+      period: "1D",
+      account,
+      attributed: {
+        fills: fills.length,
+        notionalUsd,
+        realizedPnlUsd,
+        protocolFeesUsd,
+        estimatedBuilderFeesUsd,
+        netAfterKnownCostsUsd:
+          realizedPnlUsd - protocolFeesUsd - estimatedBuilderFeesUsd,
+        makerVolumeCoveragePct:
+          account && account.makerVolumeUsd > 0
+            ? Math.min(100, (notionalUsd / account.makerVolumeUsd) * 100)
+            : null,
+      },
+      fills,
+      note: "Maker attribution includes only fills whose order IDs were recorded after this release. Builder fees are deterministic estimates from filled notional; account metrics come from Aftermath's 1D history.",
+    };
+  }
+
   async cycle(
     inputs: { executeLive?: boolean; generation?: number } = {},
   ): Promise<void> {
@@ -298,6 +648,7 @@ export class MakerRuntime {
       config = makerConfigSchema.parse(this.store.getConfig());
       this.syncMarketRows(config);
       selected = config.markets[this.marketIndex % config.markets.length]!;
+      const marketConfig = resolveMarketConfig(config, selected);
       const setup = this.store.getSetup();
       const agent = this.store.getAgent();
       const { market, orderbook } = await this.gateway.getOrderbook(
@@ -324,7 +675,7 @@ export class MakerRuntime {
       const marketPnlUsd = position?.unrealizedPnlUsd ?? 0;
       const observedAt = new Date();
       const quote = buildQuoteIntent({
-        config,
+        config: marketConfig,
         observation: {
           marketId: selected.marketId,
           bestBid,
@@ -335,7 +686,7 @@ export class MakerRuntime {
         unrealizedPnlUsd: portfolio.unrealizedPnlUsd,
       });
       const safety = evaluateQuoteSafety({
-        config,
+        config: marketConfig,
         quote,
         now: new Date(),
         setupComplete: Boolean(setup && agent?.agentCapId),
@@ -407,18 +758,32 @@ export class MakerRuntime {
           selectedMarkets: config.markets.length,
           grossExposureUsd: portfolio.grossExposureUsd,
           unrealizedPnlUsd: portfolio.unrealizedPnlUsd,
+          availableCollateralUsd: setup
+            ? portfolio.availableCollateralUsd
+            : null,
+          allocatedCollateralUsd: setup
+            ? portfolio.allocatedCollateralUsd
+            : null,
+          freeMarginUsd: setup ? portfolio.freeMarginUsd : null,
+          withdrawableCollateralUsd: setup
+            ? portfolio.withdrawableCollateralUsd
+            : null,
         },
         balances: {
           ...this.snapshotValue.balances,
           equityUsd: setup ? portfolio.equityUsd : null,
           inventoryUsd,
           unrealizedPnlUsd: portfolio.unrealizedPnlUsd,
+          gasSui: setup ? portfolio.gasSui : null,
         },
         quote,
         safety,
       };
 
-      if (config.mode === "observe") return;
+      if (config.mode === "observe") {
+        this.snapshotValue.lastSuccessfulCycleAt = updatedAt;
+        return;
+      }
 
       if (config.mode === "paper") {
         this.store.logExecution({
@@ -429,10 +794,14 @@ export class MakerRuntime {
           sizeUsd: quote.sizeUsd,
           outcome: "simulated",
         });
+        this.snapshotValue.lastSuccessfulCycleAt = updatedAt;
         return;
       }
 
-      if (!inputs.executeLive) return;
+      if (!inputs.executeLive) {
+        this.snapshotValue.lastSuccessfulCycleAt = updatedAt;
+        return;
+      }
 
       const executionIsCurrent = () =>
         this.snapshotValue.running && this.generation === inputs.generation;
@@ -449,7 +818,7 @@ export class MakerRuntime {
       });
       const receipt = await this.gateway.executeQuote({
         setup,
-        config,
+        config: marketConfig,
         quote,
         signer,
         builderCode: this.options.builderCode(),
@@ -464,7 +833,19 @@ export class MakerRuntime {
         askPrice: quote.askPrice,
         sizeUsd: quote.sizeUsd,
         outcome: "confirmed",
+        gasUsedMist: receipt.gasUsedMist,
       });
+      this.store.trackMakerOrders({
+        marketId: selected.marketId,
+        quoteDigest: receipt.digest,
+        orderIds: receipt.postedOrderIds ?? [],
+      });
+      this.snapshotValue.lastSuccessfulCycleAt = new Date().toISOString();
+      this.snapshotValue.markets = this.snapshotValue.markets.map((row) =>
+        row.id === selected!.marketId
+          ? { ...row, lastTransactionDigest: receipt.digest }
+          : row,
+      );
     } catch (error) {
       const errorText = message(error);
       const cancelled = inputs.generation !== this.generation;

@@ -13,8 +13,10 @@ import {
   ArrowDownRight,
   ArrowUpRight,
   CircleStop,
+  Clock3,
   ExternalLink,
   Coins,
+  Fuel,
   Gauge,
   KeyRound,
   LockKeyhole,
@@ -25,6 +27,7 @@ import {
   Server,
   Settings2,
   ShieldCheck,
+  SlidersHorizontal,
   UserPlus,
   WalletCards,
 } from "lucide-react";
@@ -56,6 +59,11 @@ type RuntimeMarket = {
   unrealizedPnlUsd: number;
   bidPrice: number | null;
   askPrice: number | null;
+  effectiveSpreadBps: number;
+  effectiveQuoteSizeUsd: number;
+  effectiveMaxInventoryUsd: number;
+  inventoryTargetUsd: number;
+  lastTransactionDigest: string | null;
   updatedAt: string | null;
   error: string | null;
 };
@@ -64,7 +72,9 @@ type Snapshot = {
   mode: Mode;
   running: boolean;
   cycle: number;
+  startedAt: string | null;
   lastCycleAt: string | null;
+  lastSuccessfulCycleAt: string | null;
   lastError: string | null;
   setupComplete: boolean;
   agentAddress: string | null;
@@ -82,12 +92,27 @@ type Snapshot = {
     selectedMarkets: number;
     grossExposureUsd: number;
     unrealizedPnlUsd: number;
+    availableCollateralUsd: number | null;
+    allocatedCollateralUsd: number | null;
+    freeMarginUsd: number | null;
+    withdrawableCollateralUsd: number | null;
   };
   balances: {
     equityUsd: number | null;
     inventoryUsd: number;
     unrealizedPnlUsd: number;
     gasSui: number | null;
+  };
+  watchdog: {
+    state: "idle" | "armed" | "tripped";
+    checkedAt: string | null;
+    maxQuoteAgeMs: number | null;
+  };
+  execution: {
+    confirmedLiveQuotes: number;
+    averageGasMist: number | null;
+    gasRunwayTransactions: number | null;
+    lastExecutionAt: string | null;
   };
   quote: {
     bidPrice: number;
@@ -114,14 +139,30 @@ type Market = {
   priceChange24hPct: number | null;
 };
 
+type MarketOverrides = {
+  quoteSizeUsd?: number;
+  spreadBps?: number;
+  maxInventoryUsd?: number;
+  inventoryTargetUsd?: number;
+  inventorySkewBps?: number;
+  maxLeverage?: number;
+};
+
 type MakerConfig = {
-  markets: Array<{ marketId: string; symbol: string }>;
+  markets: Array<{
+    marketId: string;
+    symbol: string;
+    overrides?: MarketOverrides;
+  }>;
   collateralCoinType: string;
   mode: Mode;
+  strategyProfile: "cautious" | "balanced" | "active";
   quoteSizeUsd: number;
   spreadBps: number;
   refreshMs: number;
+  maxQuoteAgeMs: number;
   maxInventoryUsd: number;
+  inventoryTargetUsd: number;
   maxGrossExposureUsd: number;
   maxUnrealizedLossUsd: number;
   maxLeverage: number;
@@ -134,7 +175,11 @@ type AccountCap = {
   accountId: string;
   accountCapId: string;
   collateralCoinType: string;
-  collateral: number;
+  equityUsd: number;
+  availableCollateralUsd: number;
+  allocatedCollateralUsd: number;
+  freeMarginUsd: number;
+  positionCount: number;
 };
 
 type SetupState = {
@@ -150,6 +195,45 @@ type SetupState = {
     grantDigest: string | null;
     agentCapId: string | null;
   } | null;
+};
+
+type MakerFill = {
+  occurredAt: string;
+  txDigest: string;
+  marketId: string;
+  symbol: string;
+  side: "bid" | "ask";
+  price: number;
+  size: number;
+  notionalUsd: number;
+  realizedPnlUsd: number;
+  protocolFeesUsd: number;
+  estimatedBuilderFeeUsd: number;
+  orderId: string;
+};
+
+type Performance = {
+  asOf: string;
+  period: "1D";
+  account: {
+    realizedPnlUsd: number;
+    fundingPnlUsd: number;
+    makerVolumeUsd: number;
+    takerVolumeUsd: number;
+    makerFeesUsd: number;
+    takerFeesUsd: number;
+  } | null;
+  attributed: {
+    fills: number;
+    notionalUsd: number;
+    realizedPnlUsd: number;
+    protocolFeesUsd: number;
+    estimatedBuilderFeesUsd: number;
+    netAfterKnownCostsUsd: number;
+    makerVolumeCoveragePct: number | null;
+  };
+  fills: MakerFill[];
+  note: string;
 };
 
 type AuditEvent = {
@@ -189,10 +273,13 @@ const defaultConfig: MakerConfig = {
   markets: [],
   collateralCoinType: USDC,
   mode: "observe",
+  strategyProfile: "balanced",
   quoteSizeUsd: 10,
   spreadBps: 30,
   refreshMs: 8_000,
+  maxQuoteAgeMs: 120_000,
   maxInventoryUsd: 50,
+  inventoryTargetUsd: 0,
   maxGrossExposureUsd: 150,
   maxUnrealizedLossUsd: 20,
   maxLeverage: 1,
@@ -252,6 +339,14 @@ const compactUsd = (value: number | null) =>
         maximumFractionDigits: 1,
       }).format(value);
 
+const compactNumber = (value: number | null) =>
+  value === null
+    ? "-"
+    : new Intl.NumberFormat("en-US", {
+        notation: "compact",
+        maximumFractionDigits: 2,
+      }).format(value);
+
 const percent = (value: number | null, digits = 2) =>
   value === null ? "-" : `${value.toFixed(digits)}%`;
 
@@ -272,8 +367,10 @@ function DashboardBody() {
   const [setup, setSetup] = useState<SetupState>({ setup: null, agent: null });
   const [accounts, setAccounts] = useState<AccountCap[]>([]);
   const [events, setEvents] = useState<AuditEvent[]>([]);
+  const [performance, setPerformance] = useState<Performance | null>(null);
   const [selectedAccount, setSelectedAccount] = useState("");
   const [busy, setBusy] = useState("");
+  const [flattenArmed, setFlattenArmed] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [integratorId, setIntegratorId] = useState("");
   const [inspection, setInspection] = useState<{
@@ -297,6 +394,13 @@ function DashboardBody() {
     setSetup(setupResult);
     setEvents(eventResult.events);
     if (configResult.config) setConfig(configResult.config);
+  }, []);
+
+  const loadPerformance = useCallback(async () => {
+    const result = await request<{ performance: Performance }>(
+      "api/performance",
+    );
+    setPerformance(result.performance);
   }, []);
 
   const loadMarkets = useCallback(async () => {
@@ -344,6 +448,7 @@ function DashboardBody() {
     if (!identity) return;
     void refresh().catch((error) => setNotice(String(error)));
     void loadMarkets().catch((error) => setNotice(String(error)));
+    void loadPerformance().catch(() => undefined);
     if (identity.operator) {
       void request<OperatorStatus>("api/operator/status")
         .then(setOperatorStatus)
@@ -352,8 +457,14 @@ function DashboardBody() {
     const timer = setInterval(() => {
       void refresh().catch(() => undefined);
     }, 5_000);
-    return () => clearInterval(timer);
-  }, [identity, refresh, loadMarkets]);
+    const performanceTimer = setInterval(() => {
+      void loadPerformance().catch(() => undefined);
+    }, 30_000);
+    return () => {
+      clearInterval(timer);
+      clearInterval(performanceTimer);
+    };
+  }, [identity, refresh, loadMarkets, loadPerformance]);
 
   useEffect(() => {
     if (
@@ -635,24 +746,109 @@ function DashboardBody() {
       const selected = current.markets.some(
         (item) => item.marketId === market.id,
       );
+      let nextMarkets = current.markets;
       if (selected) {
         if (current.markets.length === 1) return current;
-        return {
-          ...current,
-          markets: current.markets.filter(
-            (item) => item.marketId !== market.id,
-          ),
-        };
-      }
-      if (current.markets.length >= 12) return current;
-      return {
-        ...current,
-        markets: [
+        nextMarkets = current.markets.filter(
+          (item) => item.marketId !== market.id,
+        );
+      } else {
+        if (current.markets.length >= 12) return current;
+        nextMarkets = [
           ...current.markets,
           { marketId: market.id, symbol: market.symbol },
-        ],
+        ];
+      }
+      const minimumQuoteAge =
+        current.refreshMs * nextMarkets.length +
+        Math.min(10_000, current.refreshMs);
+      return {
+        ...current,
+        markets: nextMarkets,
+        maxQuoteAgeMs: Math.max(current.maxQuoteAgeMs, minimumQuoteAge),
       };
     });
+  }
+
+  function applyProfile(profile: MakerConfig["strategyProfile"]) {
+    const values = {
+      cautious: {
+        quoteSizeUsd: 5,
+        spreadBps: 50,
+        refreshMs: 15_000,
+        maxInventoryUsd: 30,
+        inventorySkewBps: 35,
+      },
+      balanced: {
+        quoteSizeUsd: 10,
+        spreadBps: 30,
+        refreshMs: 8_000,
+        maxInventoryUsd: 50,
+        inventorySkewBps: 20,
+      },
+      active: {
+        quoteSizeUsd: 10,
+        spreadBps: 18,
+        refreshMs: 4_000,
+        maxInventoryUsd: 50,
+        inventorySkewBps: 30,
+      },
+    }[profile];
+    setConfig((current) => ({
+      ...current,
+      ...values,
+      strategyProfile: profile,
+      maxQuoteAgeMs: Math.max(
+        current.maxQuoteAgeMs,
+        values.refreshMs * Math.max(1, current.markets.length) +
+          Math.min(10_000, values.refreshMs),
+      ),
+    }));
+  }
+
+  function toggleMarketOverrides(marketId: string) {
+    setConfig((current) => ({
+      ...current,
+      markets: current.markets.map((market) => {
+        if (market.marketId !== marketId) return market;
+        if (market.overrides) {
+          const { overrides: _overrides, ...withoutOverrides } = market;
+          return withoutOverrides;
+        }
+        return {
+          ...market,
+          overrides: {
+            quoteSizeUsd: current.quoteSizeUsd,
+            spreadBps: current.spreadBps,
+            maxInventoryUsd: current.maxInventoryUsd,
+            inventoryTargetUsd: current.inventoryTargetUsd,
+            inventorySkewBps: current.inventorySkewBps,
+            maxLeverage: current.maxLeverage,
+          },
+        };
+      }),
+    }));
+  }
+
+  function updateMarketOverride(
+    marketId: string,
+    key: keyof MarketOverrides,
+    value: number,
+  ) {
+    setConfig((current) => ({
+      ...current,
+      markets: current.markets.map((market) =>
+        market.marketId === marketId
+          ? {
+              ...market,
+              overrides: {
+                ...market.overrides,
+                [key]: value,
+              },
+            }
+          : market,
+      ),
+    }));
   }
 
   async function saveConfig(event: FormEvent) {
@@ -662,7 +858,11 @@ function DashboardBody() {
         method: "POST",
         body: JSON.stringify(config),
       });
-      setNotice("Configuration saved.");
+      setNotice(
+        snapshot?.running
+          ? "Strategy saved. The next market cycle will use it."
+          : "Strategy saved. It will apply when the engine starts.",
+      );
     });
   }
 
@@ -673,6 +873,34 @@ function DashboardBody() {
         method: "POST",
         body: "{}",
       });
+    });
+  }
+
+  async function flattenPositions() {
+    if (!flattenArmed) {
+      setFlattenArmed(true);
+      setNotice(
+        "Flatten uses reduce-only market orders across selected markets with up to 1% slippage. Review, then confirm.",
+      );
+      return;
+    }
+    await mutate("flatten", async () => {
+      const response = await request<{
+        result: { digest: string | null; flattenedMarketIds: string[] };
+      }>("api/runtime/flatten", {
+        method: "POST",
+        body: JSON.stringify({
+          confirmation: "FLATTEN",
+          maxSlippageBps: 100,
+        }),
+      });
+      setFlattenArmed(false);
+      await loadPerformance().catch(() => undefined);
+      setNotice(
+        response.result.digest
+          ? `Flatten confirmed for ${response.result.flattenedMarketIds.length} market(s): ${compact(response.result.digest)}`
+          : "No open positions remained in the selected markets.",
+      );
     });
   }
 
@@ -764,6 +992,19 @@ function DashboardBody() {
   const onboardingComplete = Boolean(setup.agent?.agentCapId);
   const effectiveRefreshSeconds =
     (config.refreshMs * Math.max(1, config.markets.length)) / 1_000;
+  const activeRuntimeMarket = snapshot?.markets.find(
+    (market) => market.id === snapshot.market.id,
+  );
+  const runMinutes = snapshot?.startedAt
+    ? Math.max(
+        0,
+        Math.floor((Date.now() - Date.parse(snapshot.startedAt)) / 60_000),
+      )
+    : 0;
+  const marginCeilingUsd =
+    config.maxGrossExposureUsd / Math.max(1, config.maxLeverage);
+  const builderFeePerFillUsd =
+    config.quoteSizeUsd * (builderCode?.integratorFee ?? 0);
   const visibleMarkets = markets.filter((market) => {
     const query = marketQuery.trim().toLowerCase();
     return (
@@ -782,6 +1023,8 @@ function DashboardBody() {
       symbol: selected.symbol,
       status: runtimeMarket?.status ?? "queued",
       indexPrice: runtimeMarket?.indexPrice ?? listed?.indexPrice ?? null,
+      openInterestBase:
+        runtimeMarket?.openInterestBase ?? listed?.openInterestBase ?? null,
       openInterestUsd:
         runtimeMarket?.openInterestUsd ?? listed?.openInterestUsd ?? null,
       openInterestUtilizationPct:
@@ -796,6 +1039,15 @@ function DashboardBody() {
           : runtimeMarket.fundingRate,
       inventoryUsd: runtimeMarket?.inventoryUsd ?? 0,
       unrealizedPnlUsd: runtimeMarket?.unrealizedPnlUsd ?? 0,
+      effectiveSpreadBps:
+        runtimeMarket?.effectiveSpreadBps ??
+        selected.overrides?.spreadBps ??
+        config.spreadBps,
+      effectiveQuoteSizeUsd:
+        runtimeMarket?.effectiveQuoteSizeUsd ??
+        selected.overrides?.quoteSizeUsd ??
+        config.quoteSizeUsd,
+      lastTransactionDigest: runtimeMarket?.lastTransactionDigest ?? null,
       updatedAt: runtimeMarket?.updatedAt ?? null,
       error: runtimeMarket?.error ?? null,
     };
@@ -923,7 +1175,8 @@ function DashboardBody() {
                         {accounts.map((item) => (
                           <option key={item.accountId} value={item.accountId}>
                             Account {item.accountId} /{" "}
-                            {item.collateral.toFixed(2)} USDC
+                            {item.equityUsd.toFixed(2)} equity /{" "}
+                            {item.availableCollateralUsd.toFixed(2)} available
                           </option>
                         ))}
                       </select>
@@ -986,6 +1239,63 @@ function DashboardBody() {
         </section>
       )}
 
+      {onboardingComplete && (
+        <section className="account-band" aria-label="Account readiness">
+          <div className="account-band-title">
+            <span className="eyebrow">Account readiness</span>
+            <strong>Account {setup.setup?.accountId}</strong>
+            <span
+              className={
+                (snapshot?.balances.equityUsd ?? 0) > 0 &&
+                (snapshot?.balances.gasSui ?? 0) > 0
+                  ? "readiness ready"
+                  : "readiness"
+              }
+            >
+              {(snapshot?.balances.equityUsd ?? 0) > 0 &&
+              (snapshot?.balances.gasSui ?? 0) > 0
+                ? "Ready"
+                : "Needs funding"}
+            </span>
+          </div>
+          <div>
+            <span>Equity</span>
+            <strong>{money(snapshot?.balances.equityUsd ?? null)}</strong>
+          </div>
+          <div>
+            <span>Available</span>
+            <strong>
+              {money(snapshot?.portfolio.availableCollateralUsd ?? null)}
+            </strong>
+          </div>
+          <div>
+            <span>Allocated</span>
+            <strong>
+              {money(snapshot?.portfolio.allocatedCollateralUsd ?? null)}
+            </strong>
+          </div>
+          <div>
+            <span>Withdrawable by owner</span>
+            <strong>
+              {money(snapshot?.portfolio.withdrawableCollateralUsd ?? null)}
+            </strong>
+          </div>
+          <div>
+            <span>Agent gas</span>
+            <strong>
+              {snapshot?.balances.gasSui === null ||
+              snapshot?.balances.gasSui === undefined
+                ? "-"
+                : `${snapshot.balances.gasSui.toFixed(4)} SUI`}
+            </strong>
+          </div>
+          <div>
+            <span>Agent authority</span>
+            <strong>Trade / no withdrawals</strong>
+          </div>
+        </section>
+      )}
+
       <section className="workspace">
         <div className="market-console">
           <div className="section-heading compact">
@@ -1039,7 +1349,10 @@ function DashboardBody() {
             </div>
             <div className="book-mid">
               <span>spread</span>
-              <strong>{config.spreadBps} bps</strong>
+              <strong>
+                {activeRuntimeMarket?.effectiveSpreadBps ?? config.spreadBps}{" "}
+                bps
+              </strong>
               <i aria-hidden="true" />
             </div>
             <div className="book-side ask">
@@ -1084,26 +1397,84 @@ function DashboardBody() {
             </div>
           </div>
 
+          <div className="run-timeline" aria-label="Run timeline">
+            <div>
+              <Clock3 size={15} />
+              <span>Runtime</span>
+              <strong>
+                {snapshot?.running ? `${runMinutes} min` : "Stopped"}
+              </strong>
+            </div>
+            <div>
+              <Activity size={15} />
+              <span>Last cycle</span>
+              <strong>
+                {snapshot?.lastSuccessfulCycleAt
+                  ? new Date(
+                      snapshot.lastSuccessfulCycleAt,
+                    ).toLocaleTimeString()
+                  : "Waiting"}
+              </strong>
+            </div>
+            <div>
+              <ShieldCheck size={15} />
+              <span>Watchdog</span>
+              <strong>{snapshot?.watchdog.state ?? "idle"}</strong>
+            </div>
+          </div>
+
           <div className="engine-action">
             <div>
               <span>Cycle {snapshot?.cycle ?? 0}</span>
               <strong>
                 {snapshot?.lastError ??
-                  (snapshot?.running ? "Engine is active" : "Engine is idle")}
+                  (snapshot?.running
+                    ? "Quoting selected markets"
+                    : "No live orders scheduled")}
               </strong>
             </div>
-            <button
-              className={snapshot?.running ? "button danger" : "button start"}
-              onClick={() => void toggleRuntime()}
-              disabled={!config.markets.length || Boolean(busy)}
-            >
-              {snapshot?.running ? (
-                <CircleStop size={17} />
-              ) : (
-                <Play size={17} />
+            <div className="engine-buttons">
+              <button
+                className={snapshot?.running ? "button danger" : "button start"}
+                onClick={() => void toggleRuntime()}
+                disabled={!config.markets.length || Boolean(busy)}
+              >
+                {snapshot?.running ? (
+                  <CircleStop size={17} />
+                ) : (
+                  <Play size={17} />
+                )}
+                {snapshot?.running ? "Stop quoting" : "Start engine"}
+              </button>
+              <button
+                className={flattenArmed ? "button danger" : "button secondary"}
+                onClick={() => void flattenPositions()}
+                disabled={
+                  config.mode !== "live" ||
+                  !onboardingComplete ||
+                  (snapshot?.portfolio.grossExposureUsd ?? 0) <= 0 ||
+                  Boolean(busy)
+                }
+                type="button"
+              >
+                <ArrowDownRight size={17} />
+                {busy === "flatten"
+                  ? "Flattening..."
+                  : flattenArmed
+                    ? "Confirm flatten"
+                    : "Flatten at market"}
+              </button>
+              {flattenArmed && (
+                <button
+                  className="button secondary"
+                  onClick={() => setFlattenArmed(false)}
+                  disabled={Boolean(busy)}
+                  type="button"
+                >
+                  Cancel
+                </button>
               )}
-              {snapshot?.running ? "Stop engine" : "Start engine"}
-            </button>
+            </div>
           </div>
         </div>
 
@@ -1115,6 +1486,24 @@ function DashboardBody() {
             </div>
             <Settings2 size={18} />
           </div>
+
+          <fieldset>
+            <legend>Profile</legend>
+            <div className="segments">
+              {(["cautious", "balanced", "active"] as const).map((profile) => (
+                <button
+                  key={profile}
+                  type="button"
+                  className={
+                    config.strategyProfile === profile ? "selected" : ""
+                  }
+                  onClick={() => applyProfile(profile)}
+                >
+                  {profile}
+                </button>
+              ))}
+            </div>
+          </fieldset>
 
           <fieldset className="pair-picker">
             <legend>Market rotation</legend>
@@ -1160,6 +1549,144 @@ function DashboardBody() {
               })}
             </div>
           </fieldset>
+
+          <details className="market-overrides">
+            <summary>
+              <SlidersHorizontal size={15} />
+              <span>Per-market overrides</span>
+              <strong>
+                {config.markets.filter((market) => market.overrides).length}
+              </strong>
+            </summary>
+            <div className="override-list">
+              {config.markets.map((market) => (
+                <div className="override-row" key={market.marketId}>
+                  <label className="override-toggle">
+                    <input
+                      type="checkbox"
+                      checked={Boolean(market.overrides)}
+                      onChange={() => toggleMarketOverrides(market.marketId)}
+                    />
+                    <strong>{market.symbol}</strong>
+                  </label>
+                  {market.overrides ? (
+                    <div className="override-fields">
+                      <label>
+                        <span>Size $</span>
+                        <input
+                          type="number"
+                          min="1"
+                          max="1000"
+                          value={
+                            market.overrides.quoteSizeUsd ?? config.quoteSizeUsd
+                          }
+                          onChange={(event) =>
+                            updateMarketOverride(
+                              market.marketId,
+                              "quoteSizeUsd",
+                              Number(event.target.value),
+                            )
+                          }
+                        />
+                      </label>
+                      <label>
+                        <span>Spread bp</span>
+                        <input
+                          type="number"
+                          min="8"
+                          max="500"
+                          value={market.overrides.spreadBps ?? config.spreadBps}
+                          onChange={(event) =>
+                            updateMarketOverride(
+                              market.marketId,
+                              "spreadBps",
+                              Number(event.target.value),
+                            )
+                          }
+                        />
+                      </label>
+                      <label>
+                        <span>Inventory cap $</span>
+                        <input
+                          type="number"
+                          min="1"
+                          max={config.maxGrossExposureUsd}
+                          value={
+                            market.overrides.maxInventoryUsd ??
+                            config.maxInventoryUsd
+                          }
+                          onChange={(event) =>
+                            updateMarketOverride(
+                              market.marketId,
+                              "maxInventoryUsd",
+                              Number(event.target.value),
+                            )
+                          }
+                        />
+                      </label>
+                      <label>
+                        <span>Target $</span>
+                        <input
+                          type="number"
+                          value={
+                            market.overrides.inventoryTargetUsd ??
+                            config.inventoryTargetUsd
+                          }
+                          onChange={(event) =>
+                            updateMarketOverride(
+                              market.marketId,
+                              "inventoryTargetUsd",
+                              Number(event.target.value),
+                            )
+                          }
+                        />
+                      </label>
+                      <label>
+                        <span>Skew bp</span>
+                        <input
+                          type="number"
+                          min="0"
+                          max="250"
+                          value={
+                            market.overrides.inventorySkewBps ??
+                            config.inventorySkewBps
+                          }
+                          onChange={(event) =>
+                            updateMarketOverride(
+                              market.marketId,
+                              "inventorySkewBps",
+                              Number(event.target.value),
+                            )
+                          }
+                        />
+                      </label>
+                      <label>
+                        <span>Leverage</span>
+                        <input
+                          type="number"
+                          min="1"
+                          max="3"
+                          step="0.1"
+                          value={
+                            market.overrides.maxLeverage ?? config.maxLeverage
+                          }
+                          onChange={(event) =>
+                            updateMarketOverride(
+                              market.marketId,
+                              "maxLeverage",
+                              Number(event.target.value),
+                            )
+                          }
+                        />
+                      </label>
+                    </div>
+                  ) : (
+                    <span className="override-inherited">Global defaults</span>
+                  )}
+                </div>
+              ))}
+            </div>
+          </details>
 
           <fieldset>
             <legend>Mode</legend>
@@ -1236,6 +1763,22 @@ function DashboardBody() {
               </div>
             </label>
             <label>
+              <span>Inventory target</span>
+              <div className="input-unit">
+                <b>$</b>
+                <input
+                  type="number"
+                  value={config.inventoryTargetUsd}
+                  onChange={(event) =>
+                    setConfig((current) => ({
+                      ...current,
+                      inventoryTargetUsd: Number(event.target.value),
+                    }))
+                  }
+                />
+              </div>
+            </label>
+            <label>
               <span>Gross exposure</span>
               <div className="input-unit">
                 <b>$</b>
@@ -1269,28 +1812,98 @@ function DashboardBody() {
                 />
               </div>
             </label>
+            <label>
+              <span>Inventory skew</span>
+              <div className="input-unit suffix">
+                <input
+                  type="number"
+                  min="0"
+                  max="250"
+                  value={config.inventorySkewBps}
+                  onChange={(event) =>
+                    setConfig((current) => ({
+                      ...current,
+                      inventorySkewBps: Number(event.target.value),
+                    }))
+                  }
+                />
+                <b>bps</b>
+              </div>
+            </label>
+            <label>
+              <span>Max leverage</span>
+              <div className="input-unit suffix">
+                <input
+                  type="number"
+                  min="1"
+                  max="3"
+                  step="0.1"
+                  value={config.maxLeverage}
+                  onChange={(event) =>
+                    setConfig((current) => ({
+                      ...current,
+                      maxLeverage: Number(event.target.value),
+                    }))
+                  }
+                />
+                <b>x</b>
+              </div>
+            </label>
           </div>
 
-          <label>
-            <span>Refresh interval</span>
-            <input
-              type="range"
-              min="2000"
-              max="30000"
-              step="1000"
-              value={config.refreshMs}
-              onChange={(event) =>
-                setConfig((current) => ({
-                  ...current,
-                  refreshMs: Number(event.target.value),
-                }))
-              }
-            />
-            <small>
-              {config.refreshMs / 1000}s cycle / {effectiveRefreshSeconds}s per
-              pair
-            </small>
-          </label>
+          <div className="timing-controls">
+            <label>
+              <span>Refresh interval</span>
+              <input
+                type="range"
+                min="2000"
+                max="30000"
+                step="1000"
+                value={config.refreshMs}
+                onChange={(event) => {
+                  const refreshMs = Number(event.target.value);
+                  const minimumQuoteAge =
+                    refreshMs * Math.max(1, config.markets.length) +
+                    Math.min(10_000, refreshMs);
+                  setConfig((current) => ({
+                    ...current,
+                    refreshMs,
+                    maxQuoteAgeMs: Math.max(
+                      current.maxQuoteAgeMs,
+                      minimumQuoteAge,
+                    ),
+                  }));
+                }}
+              />
+              <small>
+                {config.refreshMs / 1000}s turn / {effectiveRefreshSeconds}s
+                full lap
+              </small>
+            </label>
+            <label>
+              <span>Stale-quote cutoff</span>
+              <div className="input-unit suffix">
+                <input
+                  type="number"
+                  min={Math.ceil(
+                    (config.refreshMs * Math.max(1, config.markets.length) +
+                      Math.min(10_000, config.refreshMs)) /
+                      1_000,
+                  )}
+                  max="3900"
+                  value={config.maxQuoteAgeMs / 1_000}
+                  onChange={(event) =>
+                    setConfig((current) => ({
+                      ...current,
+                      maxQuoteAgeMs: Number(event.target.value) * 1_000,
+                    }))
+                  }
+                />
+                <b>sec</b>
+              </div>
+              <small>Independent watchdog cancels every Maker order.</small>
+            </label>
+          </div>
 
           <button
             type="submit"
@@ -1299,6 +1912,9 @@ function DashboardBody() {
           >
             {busy === "save" ? "Saving..." : "Save strategy"}
           </button>
+          <p className="apply-note">
+            Saved changes apply on the next market cycle.
+          </p>
         </form>
       </section>
 
@@ -1318,6 +1934,7 @@ function DashboardBody() {
               <tr>
                 <th>Pair</th>
                 <th>State</th>
+                <th>Policy</th>
                 <th>Index</th>
                 <th>Open interest</th>
                 <th>OI capacity</th>
@@ -1344,9 +1961,28 @@ function DashboardBody() {
                     <span className={`desk-state state-${row.status}`}>
                       {row.status}
                     </span>
+                    {row.lastTransactionDigest && (
+                      <a
+                        className="tx-link"
+                        href={`https://suiscan.xyz/mainnet/tx/${row.lastTransactionDigest}`}
+                        target="_blank"
+                        rel="noreferrer"
+                        title="Open last transaction"
+                      >
+                        {compact(row.lastTransactionDigest)}
+                        <ExternalLink size={10} />
+                      </a>
+                    )}
+                  </td>
+                  <td className="dual-value">
+                    <strong>{money(row.effectiveQuoteSizeUsd, 0)}</strong>
+                    <span>{row.effectiveSpreadBps} bp</span>
                   </td>
                   <td>{money(row.indexPrice, 4)}</td>
-                  <td>{compactUsd(row.openInterestUsd)}</td>
+                  <td className="dual-value">
+                    <strong>{compactNumber(row.openInterestBase)}</strong>
+                    <span>{compactUsd(row.openInterestUsd)}</span>
+                  </td>
                   <td>{percent(row.openInterestUtilizationPct, 1)}</td>
                   <td>{compactUsd(row.volume24hUsd)}</td>
                   <td>
@@ -1379,9 +2015,140 @@ function DashboardBody() {
           </table>
         </div>
         <p className="board-footnote">
-          OI is current one-sided open interest. USD and capacity are estimated
-          from the live index price and protocol limit.
+          OI is one-sided and shown first in traded-asset units, then as a USD
+          estimate using the displayed index price. Capacity is measured against
+          the protocol limit at the data timestamp.
         </p>
+      </section>
+
+      <section className="performance-board">
+        <div className="section-heading compact performance-heading">
+          <div>
+            <span className="eyebrow">Last 24 hours</span>
+            <h2>Attributed Maker performance</h2>
+          </div>
+          <span className="coverage-badge">
+            {performance?.attributed.makerVolumeCoveragePct === null ||
+            performance?.attributed.makerVolumeCoveragePct === undefined
+              ? "Awaiting fills"
+              : `${performance.attributed.makerVolumeCoveragePct.toFixed(1)}% of maker volume traced`}
+          </span>
+        </div>
+        <div className="performance-metrics">
+          <div>
+            <span>Maker fills</span>
+            <strong>{performance?.attributed.fills ?? 0}</strong>
+          </div>
+          <div>
+            <span>Attributed notional</span>
+            <strong>{money(performance?.attributed.notionalUsd ?? 0)}</strong>
+          </div>
+          <div>
+            <span>Realized PnL</span>
+            <strong
+              className={
+                (performance?.attributed.realizedPnlUsd ?? 0) < 0
+                  ? "negative-number"
+                  : ""
+              }
+            >
+              {money(performance?.attributed.realizedPnlUsd ?? 0)}
+            </strong>
+          </div>
+          <div>
+            <span>Protocol fees</span>
+            <strong>
+              {money(performance?.attributed.protocolFeesUsd ?? 0)}
+            </strong>
+          </div>
+          <div>
+            <span>Est. builder fees</span>
+            <strong>
+              {money(performance?.attributed.estimatedBuilderFeesUsd ?? 0)}
+            </strong>
+          </div>
+          <div>
+            <span>Net known result</span>
+            <strong
+              className={
+                (performance?.attributed.netAfterKnownCostsUsd ?? 0) < 0
+                  ? "negative-number"
+                  : ""
+              }
+            >
+              {money(performance?.attributed.netAfterKnownCostsUsd ?? 0)}
+            </strong>
+          </div>
+        </div>
+        <div className="fill-table-wrap">
+          <table className="fill-table">
+            <thead>
+              <tr>
+                <th>Time</th>
+                <th>Pair</th>
+                <th>Side</th>
+                <th>Price</th>
+                <th>Notional</th>
+                <th>Realized</th>
+                <th>Known fees</th>
+                <th>Transaction</th>
+              </tr>
+            </thead>
+            <tbody>
+              {performance?.fills.length ? (
+                performance.fills.slice(0, 20).map((fill) => (
+                  <tr key={`${fill.txDigest}:${fill.orderId}`}>
+                    <td>{new Date(fill.occurredAt).toLocaleTimeString()}</td>
+                    <td>{fill.symbol}</td>
+                    <td>{fill.side}</td>
+                    <td>{money(fill.price, 4)}</td>
+                    <td>{money(fill.notionalUsd)}</td>
+                    <td
+                      className={
+                        fill.realizedPnlUsd < 0 ? "negative-number" : ""
+                      }
+                    >
+                      {money(fill.realizedPnlUsd)}
+                    </td>
+                    <td>
+                      {money(
+                        fill.protocolFeesUsd + fill.estimatedBuilderFeeUsd,
+                      )}
+                    </td>
+                    <td>
+                      <a
+                        className="tx-link"
+                        href={`https://suiscan.xyz/mainnet/tx/${fill.txDigest}`}
+                        target="_blank"
+                        rel="noreferrer"
+                      >
+                        {compact(fill.txDigest)}
+                        <ExternalLink size={10} />
+                      </a>
+                    </td>
+                  </tr>
+                ))
+              ) : (
+                <tr>
+                  <td className="empty-fill" colSpan={8}>
+                    Confirmed fills from Maker-tagged orders will appear here.
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+        <div className="performance-note">
+          <span>
+            Account-wide:{" "}
+            {compactUsd(performance?.account?.makerVolumeUsd ?? 0)} maker volume
+            / {money(performance?.account?.fundingPnlUsd ?? 0)} funding
+          </span>
+          <span>
+            {performance?.note ??
+              "Attribution starts when this release records its first order IDs."}
+          </span>
+        </div>
       </section>
 
       <section className="lower-grid">
@@ -1392,6 +2159,36 @@ function DashboardBody() {
               <h2>Safety gates</h2>
             </div>
             <Gauge size={18} />
+          </div>
+          <div className="preflight-metrics">
+            <div>
+              <span>Margin ceiling</span>
+              <strong>{money(marginCeilingUsd)}</strong>
+            </div>
+            <div>
+              <span>Builder fee / fill</span>
+              <strong>{money(builderFeePerFillUsd, 4)}</strong>
+            </div>
+            <div>
+              <span>Measured gas / quote</span>
+              <strong>
+                {snapshot?.execution.averageGasMist === null ||
+                snapshot?.execution.averageGasMist === undefined
+                  ? "Learning"
+                  : `${(
+                      snapshot.execution.averageGasMist / 1_000_000_000
+                    ).toFixed(5)} SUI`}
+              </strong>
+            </div>
+            <div>
+              <span>Gas runway</span>
+              <strong>
+                {snapshot?.execution.gasRunwayTransactions === null ||
+                snapshot?.execution.gasRunwayTransactions === undefined
+                  ? "Learning"
+                  : `~${Math.floor(snapshot.execution.gasRunwayTransactions)} quotes`}
+              </strong>
+            </div>
           </div>
           <div className="check-list">
             {(snapshot?.safety.length
@@ -1455,6 +2252,13 @@ function DashboardBody() {
               ? `Maker code #${builderCode.integratorId} charges ${(builderCode.integratorFee * 10_000).toFixed(1)} bp on filled notional. Your one-time approval caps it at that exact rate and remains revocable.`
               : "Builder incentives are not active. Orders carry no builder code until the operator completes on-chain registration."}
           </p>
+          {builderCode && (
+            <p className="fee-caveat">
+              At 1 bp this exceeds the base 0.5 bp maker rebate before any
+              market-share rebate, spread capture, or adverse selection. Maker
+              reports it separately from strategy PnL.
+            </p>
+          )}
           <form className="fee-form" onSubmit={inspectFee}>
             <input
               aria-label="Integrator ID"

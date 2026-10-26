@@ -64,13 +64,21 @@ A live strategy requires all of the following:
 - quote, inventory, loss, spread, and leverage checks; and
 - successful Sui transaction simulation.
 
-Any failed live cycle stops that wallet's engine.
+Any failed live cycle stops that wallet's engine. A separate watchdog monitors the age of every selected market. It invalidates a stalled cycle and cancels Maker-tagged orders without waiting for the blocked market RPC. If a transaction may already have been broadcast, it cancels again after that cycle resolves.
 
 ## Transaction policy
 
 Orders are post-only and replaced atomically with cancel-and-place. Stable client order IDs restrict cancellation to Maker's own bid and ask. Manual refresh is read-only in live mode. Stop and reconfigure invalidate an in-flight cycle before signing. Gas has an explicit maximum.
 
-Transactions are built by the official Aftermath SDK/API. That is an external trust dependency. Simulation detects execution failures but is not a semantic proof of every Move call. Pin and review SDK upgrades, especially changes to agent permissions, order builders, or builder-code fields.
+Stopping and flattening are separate. Stop only cancels Maker-tagged orders. Flatten additionally uses reduce-only market orders for selected-market positions, requires an explicit second confirmation, and forbids a builder fee. A market flatten can incur slippage and does not guarantee a particular execution price.
+
+Transactions are built by the official Aftermath SDK/API. That is an external trust dependency. Simulation detects execution failures but is not a semantic proof of every Move call. Pin and review SDK upgrades, especially changes to agent permissions, order builders, order event shapes, or builder-code fields.
+
+## Performance evidence
+
+Maker records order IDs emitted by confirmed quote transactions and attributes fills only when Aftermath history returns a matching maker order for that wallet. The ledger is intentionally incomplete for activity before order tracking was deployed.
+
+“Net known result” is not total account profit. It excludes markouts, attributed funding, gas converted to USD, hedging, and inventory carry. Builder fees are estimated from filled notional and must be confirmed against representative mainnet transaction effects.
 
 ## Network exposure
 

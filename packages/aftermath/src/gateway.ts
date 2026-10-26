@@ -3,6 +3,7 @@ import {
   PerpetualsOrderSide,
   PerpetualsOrderType,
   type PerpetualsAccountCap,
+  type PerpetualsAccountMarginHistoryData,
   type PerpetualsMarket,
   type SdkPerpetualsCancelAndPlaceOrdersInputs,
 } from "aftermath-ts-sdk";
@@ -11,6 +12,7 @@ import type { Ed25519Keypair } from "@mysten/sui/keypairs/ed25519";
 import { Transaction } from "@mysten/sui/transactions";
 import {
   assertBuilderFeePolicy,
+  assertNoBuilderFee,
   type BuilderFeePolicy,
   type MakerConfig,
   type QuoteIntent,
@@ -38,17 +40,55 @@ export type MarketSummary = {
 
 export type PositionSnapshot = {
   marketId: string;
+  baseAssetAmount: number;
   inventoryUsd: number;
   unrealizedPnlUsd: number;
+  collateralUsd: number;
+  freeMarginUsd: number;
   makerOrderIds: bigint[];
   hasPosition: boolean;
 };
 
 export type PortfolioSnapshot = {
   equityUsd: number;
+  availableCollateralUsd: number;
+  allocatedCollateralUsd: number;
+  freeMarginUsd: number;
+  withdrawableCollateralUsd: number;
   grossExposureUsd: number;
   unrealizedPnlUsd: number;
+  gasSui: number;
   positions: PositionSnapshot[];
+};
+
+export type OwnerAccountSummary = {
+  accountId: string;
+  accountCapId: string;
+  collateralCoinType: string;
+  equityUsd: number;
+  availableCollateralUsd: number;
+  allocatedCollateralUsd: number;
+  freeMarginUsd: number;
+  positionCount: number;
+};
+
+export type PerformanceOrder = {
+  timestampMs: number;
+  txDigest: string;
+  marketId: string;
+  eventType: string;
+  side: "bid" | "ask";
+  price: number;
+  size: number;
+  orderId: string | null;
+  realizedPnlUsd: number;
+  feesUsd: number;
+  maker: boolean;
+};
+
+export type AccountPerformanceHistory = {
+  orders: PerformanceOrder[];
+  marginHistory: PerpetualsAccountMarginHistoryData[];
 };
 
 export type AccountSnapshot = PositionSnapshot & {
@@ -68,6 +108,12 @@ export type EndpointHealth = {
 export type ExecutionReceipt = {
   digest: string;
   endpoint: string;
+  gasUsedMist: number;
+  postedOrderIds: string[];
+};
+
+export type FlattenReceipt = ExecutionReceipt & {
+  flattenedMarketIds: string[];
 };
 
 const PUBLIC_MAINNET_GRPC = "https://fullnode.mainnet.sui.io:443";
@@ -118,6 +164,11 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+function timestampMs(value: number | bigint): number {
+  const numeric = Number(value);
+  return numeric < 1_000_000_000_000 ? numeric * 1_000 : numeric;
+}
+
 export function decodeIntegratorId(bytes: Uint8Array): number {
   if (bytes.byteLength !== 4) {
     throw new Error("Integrator ID must be a four-byte u32");
@@ -129,7 +180,7 @@ export function decodeIntegratorId(bytes: Uint8Array): number {
   ).getUint32(0, true);
 }
 
-function transactionDigest(result: unknown): string {
+function successfulTransaction(result: unknown): Record<string, unknown> {
   if (!result || typeof result !== "object") {
     throw new Error("Sui returned an invalid execution result");
   }
@@ -141,9 +192,57 @@ function transactionDigest(result: unknown): string {
       failed?.status?.error?.message ?? "Sui transaction execution failed",
     );
   }
-  const tx = record.Transaction as { digest?: string } | undefined;
-  if (!tx?.digest) throw new Error("Sui result did not include a digest");
-  return tx.digest;
+  const tx = record.Transaction as Record<string, unknown> | undefined;
+  if (!tx || typeof tx.digest !== "string") {
+    throw new Error("Sui result did not include a digest");
+  }
+  return tx;
+}
+
+function transactionDigest(result: unknown): string {
+  return successfulTransaction(result).digest as string;
+}
+
+export function executionGasUsedMist(result: unknown): number {
+  const tx = successfulTransaction(result);
+  const effects = tx.effects as
+    | {
+        gasUsed?: {
+          computationCost?: string;
+          storageCost?: string;
+          storageRebate?: string;
+          nonRefundableStorageFee?: string;
+        };
+      }
+    | undefined;
+  const gas = effects?.gasUsed;
+  if (!gas) return 0;
+  const used =
+    BigInt(gas.computationCost ?? "0") +
+    BigInt(gas.storageCost ?? "0") +
+    BigInt(gas.nonRefundableStorageFee ?? "0") -
+    BigInt(gas.storageRebate ?? "0");
+  return Number(used > 0n ? used : 0n);
+}
+
+export function postedOrderIds(result: unknown): string[] {
+  const tx = successfulTransaction(result);
+  const events = Array.isArray(tx.events) ? tx.events : [];
+  return events.flatMap((value) => {
+    if (!value || typeof value !== "object") return [];
+    const event = value as {
+      eventType?: unknown;
+      json?: Record<string, unknown> | null;
+    };
+    if (
+      typeof event.eventType !== "string" ||
+      !event.eventType.includes("::PostedOrder")
+    ) {
+      return [];
+    }
+    const id = event.json?.order_id ?? event.json?.orderId;
+    return typeof id === "string" || typeof id === "number" ? [String(id)] : [];
+  });
 }
 
 export class AftermathGateway {
@@ -287,6 +386,41 @@ export class AftermathGateway {
     return result.accountCaps;
   }
 
+  async listOwnerAccounts(inputs: {
+    walletAddress: string;
+    collateralCoinType?: string;
+  }): Promise<OwnerAccountSummary[]> {
+    const caps = await this.getOwnedAccountCaps(inputs);
+    const adminCaps = caps.filter((cap) => !cap.isAgent);
+    return Promise.all(
+      adminCaps.map(async (cap) => {
+        const { account } = await this.sdk.Perpetuals().getAccount({
+          accountCap: cap,
+        });
+        const allocatedCollateralUsd = account.account.positions.reduce(
+          (sum, position) => sum + position.collateralUsd,
+          0,
+        );
+        const freeMarginUsd = account.account.positions.reduce(
+          (sum, position) => sum + position.freeMarginUsd,
+          0,
+        );
+        return {
+          accountId: cap.accountId.toString(),
+          accountCapId: cap.objectId,
+          collateralCoinType: cap.collateralCoinType,
+          equityUsd: account.account.totalEquityUsd,
+          availableCollateralUsd: account.account.availableCollateralUsd,
+          allocatedCollateralUsd,
+          freeMarginUsd,
+          positionCount: account.account.positions.filter(
+            (position) => position.baseAssetAmount !== 0,
+          ).length,
+        };
+      }),
+    );
+  }
+
   async buildCreateAccountTransaction(inputs: {
     ownerAddress: string;
     collateralCoinType: string;
@@ -352,17 +486,31 @@ export class AftermathGateway {
           .map((order) => order.orderId) ?? [];
       return {
         marketId,
+        baseAssetAmount: position?.baseAssetAmount ?? 0,
         inventoryUsd: position?.quoteAssetNotionalAmount ?? 0,
         unrealizedPnlUsd:
           (position?.unrealizedPnlUsd ?? 0) +
           (position?.unrealizedFundingsUsd ?? 0),
+        collateralUsd: position?.collateralUsd ?? 0,
+        freeMarginUsd: position?.freeMarginUsd ?? 0,
         makerOrderIds,
         hasPosition: Boolean(position && position.baseAssetAmount !== 0),
       };
     });
+    const gas = await this.client.getBalance({ owner: inputs.agentAddress });
 
     return {
       equityUsd: account.account.totalEquityUsd,
+      availableCollateralUsd: account.account.availableCollateralUsd,
+      allocatedCollateralUsd: positions.reduce(
+        (sum, position) => sum + position.collateralUsd,
+        0,
+      ),
+      freeMarginUsd: positions.reduce(
+        (sum, position) => sum + position.freeMarginUsd,
+        0,
+      ),
+      withdrawableCollateralUsd: account.account.availableCollateralUsd,
       grossExposureUsd: positions.reduce(
         (sum, position) => sum + Math.abs(position.inventoryUsd),
         0,
@@ -371,6 +519,7 @@ export class AftermathGateway {
         (sum, position) => sum + position.unrealizedPnlUsd,
         0,
       ),
+      gasSui: Number(BigInt(gas.balance.coinBalance)) / 1_000_000_000,
       positions,
     };
   }
@@ -390,6 +539,48 @@ export class AftermathGateway {
       ...position,
       equityUsd: portfolio.equityUsd,
       openOrderIds: position.makerOrderIds,
+    };
+  }
+
+  async getAccountPerformanceHistory(inputs: {
+    setup: Setup;
+    agentAddress: string;
+    limit?: number;
+  }): Promise<AccountPerformanceHistory> {
+    const cap = await this.findAccountCap({
+      walletAddress: inputs.agentAddress,
+      accountId: inputs.setup.accountId,
+      collateralCoinType: inputs.setup.collateralCoinType,
+      requireAgent: true,
+    });
+    const { account } = await this.sdk.Perpetuals().getAccount({
+      accountCap: cap,
+    });
+    const [orders, margin] = await Promise.all([
+      account.getOrderHistory({
+        limit: inputs.limit ?? 200,
+        eventTypes: ["FilledMakerOrder", "FilledTakerOrder"],
+      }),
+      account.getMarginHistory({ timeframe: "1D" }),
+    ]);
+    return {
+      orders: orders.orders.map((order) => ({
+        timestampMs: timestampMs(order.timestamp),
+        txDigest: order.txDigest,
+        marketId: order.marketId,
+        eventType: order.eventType,
+        side:
+          order.side === PerpetualsOrderSide.Bid
+            ? ("bid" as const)
+            : ("ask" as const),
+        price: order.price,
+        size: order.size,
+        orderId: order.orderId ?? null,
+        realizedPnlUsd: order.pnl ?? 0,
+        feesUsd: order.fees ?? 0,
+        maker: order.eventType.includes("FilledMakerOrder"),
+      })),
+      marginHistory: margin.marginHistoryDatas,
     };
   }
 
@@ -643,6 +834,8 @@ export class AftermathGateway {
     return {
       digest: transactionDigest(result),
       endpoint: this.endpoint,
+      gasUsedMist: executionGasUsedMist(result),
+      postedOrderIds: [],
     };
   }
 
@@ -665,6 +858,79 @@ export class AftermathGateway {
           "Transaction simulation failed",
       );
     }
+  }
+
+  async flattenPositions(inputs: {
+    setup: Setup;
+    config: MakerConfig;
+    signer: Ed25519Keypair;
+    marketIds: string[];
+    maxSlippage: number;
+  }): Promise<FlattenReceipt | null> {
+    const signerAddress = inputs.signer.toSuiAddress();
+    const cap = await this.findAccountCap({
+      walletAddress: signerAddress,
+      accountId: inputs.setup.accountId,
+      collateralCoinType: inputs.setup.collateralCoinType,
+      requireAgent: true,
+    });
+    const { account } = await this.sdk.Perpetuals().getAccount({
+      accountCap: cap,
+      marketIds: inputs.marketIds,
+    });
+    const positions = account.account.positions.filter(
+      (position) =>
+        inputs.marketIds.includes(position.marketId) &&
+        position.baseAssetAmount !== 0,
+    );
+    if (!positions.length) return null;
+
+    let tx: Transaction | undefined;
+    const flattenedMarketIds: string[] = [];
+    for (const position of positions) {
+      const market = await this.getMarket(position.marketId);
+      const size = market.roundToValidSizeBigInt({
+        size: Math.abs(position.baseAssetAmount),
+        floor: true,
+      });
+      if (size <= 0n) continue;
+      const order = {
+        marketId: position.marketId,
+        side:
+          position.baseAssetAmount > 0
+            ? PerpetualsOrderSide.Ask
+            : PerpetualsOrderSide.Bid,
+        size,
+        collateralChange: 0,
+        hasPosition: true,
+        cancelSlTp: true,
+        reduceOnly: true,
+        slippage: inputs.maxSlippage,
+        leverage: position.leverage,
+      };
+      assertNoBuilderFee(order);
+      ({ tx } = await account.getPlaceMarketOrderTx({
+        ...order,
+        ...(tx ? { tx } : {}),
+      }));
+      flattenedMarketIds.push(position.marketId);
+    }
+    if (!tx || !flattenedMarketIds.length) return null;
+
+    tx.setSender(signerAddress);
+    await this.inspectTransaction({ tx, config: inputs.config });
+    const result = await this.client.signAndExecuteTransaction({
+      transaction: tx,
+      signer: inputs.signer,
+      include: { effects: true, events: true, balanceChanges: true },
+    });
+    return {
+      digest: transactionDigest(result),
+      endpoint: this.endpoint,
+      gasUsedMist: executionGasUsedMist(result),
+      postedOrderIds: [],
+      flattenedMarketIds,
+    };
   }
 
   async executeQuote(inputs: {
@@ -740,6 +1006,8 @@ export class AftermathGateway {
     return {
       digest: transactionDigest(result),
       endpoint: this.endpoint,
+      gasUsedMist: executionGasUsedMist(result),
+      postedOrderIds: postedOrderIds(result),
     };
   }
 }

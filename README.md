@@ -1,113 +1,80 @@
 # Maker
 
-Wallet-gated autonomous market making for Aftermath perpetuals on Sui.
+A wallet-gated control plane for running bounded, non-custodial market-making strategies on Aftermath perpetuals.
 
-Each approved wallet receives an isolated strategy, encrypted agent signer, execution loop, and audit log. Access membership lives in a shared Sui object; the server checks that object during login and throughout the session.
+Maker is built for inspectability: users can see account readiness, collateral, gas runway, effective policy per market, quote freshness, fills, known costs, and the exact transaction behind each live action. It does not present volume as profit.
 
-## Run
+Hosted service: [maker.permanentupperclass.com](https://maker.permanentupperclass.com)
+
+## Run locally
 
 ```bash
 ./scripts/init-local.sh
 docker compose up -d --build
 ```
 
-Open `http://127.0.0.1:8788`. The hosted service is
-[https://maker.permanentupperclass.com](https://maker.permanentupperclass.com).
+Open `http://127.0.0.1:8788`.
 
-The default data endpoint is Sui's public mainnet gRPC service. A private validator endpoint is optional:
+Sui's public mainnet gRPC endpoint is the default. A private validator endpoint is optional:
 
 ```dotenv
 SUI_VALIDATOR_GRPC_URL=https://your-sui-grpc-endpoint
 SUI_FALLBACK_GRPC_URL=https://fullnode.mainnet.sui.io:443
 ```
 
-## User setup
+## User flow
 
-1. Connect a Sui wallet and sign the readable login message.
-2. Choose an existing Aftermath USDC perpetuals account, or create one in Maker.
-3. Create the encrypted agent and approve its trading capability once.
-4. Select up to 12 markets, set portfolio limits, and begin in Observe.
+1. Connect a Sui wallet and sign a readable login message.
+2. Select an existing Aftermath USDC account or create one in Maker.
+3. Create an encrypted trading agent and approve it once.
+4. Check collateral and gas readiness.
+5. Select markets, choose a profile, then tune global or per-market limits.
+6. Run Observe, then Paper, then deliberately small Live limits.
 
-The owner transaction grants a dedicated trading-only agent, sends it 0.1 SUI for gas, and approves the disclosed builder fee. The agent cannot withdraw collateral or grant another agent. No further wallet prompts are required for normal quoting.
+The agent can trade but cannot withdraw collateral or grant another agent. Creating an account does not deposit collateral.
 
-Creating an account does not deposit or allocate collateral. Fund the account before moving from Observe to Paper or Live.
+## What the desk shows
 
-## Public access
+- Equity, available and allocated collateral, owner-withdrawable collateral, agent gas, and authority state
+- One-sided OI in base units and estimated USD, protocol capacity, volume, funding, inventory, and unrealized PnL
+- Global defaults plus per-market spread, size, inventory target, inventory cap, skew, and leverage overrides
+- Runtime, last successful cycle, quote freshness, transaction links, measured gas, and estimated gas runway
+- A fill ledger limited to order IDs that Maker recorded when posting
+- Realized PnL, protocol fees, estimated builder fees, and net result after those known costs
+- Separate **Stop quoting** and **Flatten at market** actions
 
-The Move package is in [`move/maker_access`](move/maker_access). Deployment creates:
+Strategy changes reconfigure the running engine and apply on its next cycle.
 
-- a shared `Registry` containing approved wallet addresses;
-- an `AdminCap` owned by the operator wallet; and
-- an initial membership for the deployer.
+## Execution and safety
 
-The operator console deploys the package and signs wallet additions or removals. Sessions are opaque, HTTP-only, expire after 12 hours, and re-check on-chain membership every 30 seconds. A removed wallet loses access without a server-side allowlist edit.
+Maker visits selected markets round-robin. Each live visit atomically cancels and replaces two stable, Maker-tagged, post-only orders. Manual orders are outside that cancellation set.
 
-First deployment is deliberately staged:
+Live mode fails closed on setup, signer, mainnet, freshness, spread, quote size, inventory, gross exposure, loss, transaction simulation, and gas limits. An independent watchdog cancels Maker orders if any selected market exceeds its maximum quote age, even when the market RPC is stalled.
 
-1. Keep Nginx Basic Auth enabled.
-2. Set `WALLET_AUTH_BOOTSTRAP=true`.
-3. Sign in with the intended operator wallet.
-4. Deploy the registry from the operator console.
-5. Set `WALLET_AUTH_BOOTSTRAP=false`.
-6. Replace the Nginx site with `deploy/nginx-public.conf`.
+Flattening is separate from stopping. It first stops scheduling and cancels Maker-tagged orders, then submits reduce-only market orders for positions in the selected markets. The UI requires a second confirmation and states the slippage ceiling.
 
-This order prevents an unguarded first-wallet race.
-
-## Builder incentive
-
-The operator console uses Aftermath's permissionless `create-integrator-registration` transaction and stores the returned numeric integrator ID. The default fee is **1 bp (0.01%) of filled notional**.
-
-The fee is not hidden:
-
-- onboarding displays the exact rate;
-- the owner approves that exact maximum on-chain;
-- each order is checked against the configured ID and rate before building; and
-- the owner can revoke the approval through Aftermath.
-
-Set `AFTERMATH_INTEGRATOR_FEE_BPS` to a value from `0` to `5`. An active integrator ID is required before a fee is attached.
-
-## Desk model
-
-Maker runs one bounded portfolio per approved wallet:
-
-- Markets are visited round-robin. The configured cycle interval multiplied by the number of selected markets is each market's effective refresh interval.
-- Every visit refreshes the book, current one-sided open interest, funding, account inventory, portfolio exposure, and unrealized PnL.
-- OI in USD is the current base OI multiplied by the live index price. OI capacity is measured against the protocol's market limit.
-- Quote prices skew with inventory. Per-market inventory, portfolio gross exposure, loss, leverage, book freshness, and gas limits remain hard gates.
-- A manual stop or live safety failure cancels only Maker's tagged orders across the selected markets. Manual orders are untouched.
-
-The operating rationale and remaining institutional gaps are documented in [docs/OPERATING_MODEL.md](docs/OPERATING_MODEL.md).
-
-## Modes
-
-- **Observe:** read every selected market and compute quotes without submitting orders.
-- **Paper:** rotate through the portfolio and record simulated quote cycles.
-- **Live:** atomically replace a post-only bid and ask on the current market.
-
-Live mode is fail-closed and requires both environment gates:
+Live mode requires both deployment gates:
 
 ```dotenv
 LIVE_TRADING_ENABLED=true
 ALLOW_MAINNET=true
 ```
 
-Start in Observe, move to Paper, and use small limits for the first live run.
+## Performance boundary
 
-## Safety
+"Net known result" means attributed realized trading PnL minus reported order fees and the deterministic builder-fee estimate. It is not a complete profitability figure. It currently excludes gas converted to USD, position-level funding attribution, markouts, hedging costs, and inventory carry.
 
-- Per-wallet tenant isolation in SQLite and memory.
-- AES-256-GCM encryption for each agent key.
-- Trading-only Aftermath capability; no withdrawals.
-- Exact builder ID and fee policy.
-- Serialized quote cycles and stale-cycle cancellation.
-- Pre-sign transaction simulation and explicit gas ceiling.
-- Stable client order IDs that leave manual orders untouched.
-- Per-market inventory, portfolio gross exposure, quote size, loss, leverage, spread, and stale-book limits.
-- Manual stop and live safety failures cancel Maker-tagged quotes across the portfolio.
-- Any live-cycle error stops that wallet's engine.
-- Control API stays on the internal Docker network.
+Attribution starts when this release records posted order IDs. Older account activity and other clients' orders remain account-wide and are not claimed as Maker performance.
 
-Read [SECURITY.md](SECURITY.md) before enabling live mode.
+The default builder fee is **1 bp (0.01%) of filled notional**. That exceeds Aftermath's base 0.5 bp maker rebate before market-share rebates, spread capture, and adverse selection. The dashboard discloses and reports it separately.
+
+Read [the operating model](docs/OPERATING_MODEL.md), [review guide](docs/REVIEW_GUIDE.md), and [security model](SECURITY.md) before using Live.
+
+## Public access
+
+Access membership is stored in the Sui Move package under [`move/maker_access`](move/maker_access). Each approved wallet gets isolated configuration, encrypted signer material, execution records, order attribution, and audit events.
+
+The operator console can deploy the registry and add or remove wallets through signed Sui transactions. Sessions are HTTP-only, expire after 12 hours, and re-check membership on-chain every 30 seconds.
 
 ## Operations
 
@@ -119,7 +86,7 @@ docker compose logs -f web
 docker compose down
 ```
 
-`docker compose down` preserves the named volume. Do not use `down -v` unless the encrypted signers and audit history are backed up.
+`docker compose down` preserves the named volume. Never use `down -v` without a verified backup of the database and master key.
 
 ## Development
 
@@ -130,3 +97,5 @@ sudo docker run --rm \
   -v "$PWD/move/maker_access:/workspace" \
   -w /workspace mysten/sui-tools:mainnet sui move test
 ```
+
+The application uses the official Aftermath TypeScript SDK and is MIT licensed.

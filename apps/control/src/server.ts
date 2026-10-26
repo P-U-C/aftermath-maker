@@ -301,6 +301,10 @@ app.get("/api/events", async (request) => {
   return { events: tenant(request).listEvents(query.limit) };
 });
 
+app.get("/api/performance", async (request) => ({
+  performance: await runtime(request).performance(),
+}));
+
 app.get("/api/markets", async (request) => {
   const query = z
     .object({ collateralCoinType: z.string().default(USDC_COIN_TYPE) })
@@ -332,19 +336,11 @@ app.get("/api/accounts", async (request) => {
   const query = z
     .object({ collateralCoinType: z.string().default(USDC_COIN_TYPE) })
     .parse(request.query);
-  const caps = await runtime(request).requireGateway().getOwnedAccountCaps({
-    walletAddress: identity.ownerAddress,
-    collateralCoinType: query.collateralCoinType,
-  });
   return {
-    accounts: caps
-      .filter((cap) => !cap.isAgent)
-      .map((cap) => ({
-        accountId: cap.accountId.toString(),
-        accountCapId: cap.objectId,
-        collateralCoinType: cap.collateralCoinType,
-        collateral: cap.collateral,
-      })),
+    accounts: await runtime(request).requireGateway().listOwnerAccounts({
+      walletAddress: identity.ownerAddress,
+      collateralCoinType: query.collateralCoinType,
+    }),
   };
 });
 
@@ -542,6 +538,20 @@ app.post("/api/runtime/start", async (request) => {
 app.post("/api/runtime/stop", async (request) => {
   await runtime(request).stop();
   return { snapshot: runtime(request).snapshot };
+});
+
+app.post("/api/runtime/flatten", async (request) => {
+  const body = z
+    .object({
+      confirmation: z.literal("FLATTEN"),
+      maxSlippageBps: z.number().int().min(5).max(500).default(100),
+    })
+    .strict()
+    .parse(request.body);
+  return {
+    result: await runtime(request).flatten(body.maxSlippageBps / 10_000),
+    snapshot: runtime(request).snapshot,
+  };
 });
 
 app.post("/api/runtime/cycle", async (request) => {

@@ -6,10 +6,24 @@ export const USDC_COIN_TYPE =
 export const runtimeModeSchema = z.enum(["observe", "paper", "live"]);
 export type RuntimeMode = z.infer<typeof runtimeModeSchema>;
 
+export const makerMarketOverridesSchema = z
+  .object({
+    quoteSizeUsd: z.number().positive().max(1_000).optional(),
+    spreadBps: z.number().min(8).max(500).optional(),
+    maxInventoryUsd: z.number().positive().max(10_000).optional(),
+    inventoryTargetUsd: z.number().min(-10_000).max(10_000).optional(),
+    inventorySkewBps: z.number().min(0).max(250).optional(),
+    maxLeverage: z.number().min(1).max(3).optional(),
+  })
+  .strict();
+
+export type MakerMarketOverrides = z.infer<typeof makerMarketOverridesSchema>;
+
 export const makerMarketSchema = z
   .object({
     marketId: z.string().regex(/^0x[0-9a-fA-F]+$/, "Expected a Sui object ID"),
     symbol: z.string().min(1).max(24),
+    overrides: makerMarketOverridesSchema.optional(),
   })
   .strict();
 
@@ -20,10 +34,15 @@ export const makerConfigSchema = z
     markets: z.array(makerMarketSchema).min(1).max(12),
     collateralCoinType: z.string().min(8).default(USDC_COIN_TYPE),
     mode: runtimeModeSchema.default("observe"),
+    strategyProfile: z
+      .enum(["cautious", "balanced", "active"])
+      .default("balanced"),
     quoteSizeUsd: z.number().positive().max(1_000).default(10),
     spreadBps: z.number().min(8).max(500).default(30),
     refreshMs: z.number().int().min(2_000).max(300_000).default(8_000),
+    maxQuoteAgeMs: z.number().int().min(10_000).max(3_900_000).default(120_000),
     maxInventoryUsd: z.number().positive().max(10_000).default(50),
+    inventoryTargetUsd: z.number().min(-10_000).max(10_000).default(0),
     maxGrossExposureUsd: z.number().positive().max(100_000).default(150),
     maxUnrealizedLossUsd: z.number().positive().max(10_000).default(20),
     maxLeverage: z.number().min(1).max(3).default(1),
@@ -46,12 +65,44 @@ export const makerConfigSchema = z
         message: "Each selected market must be unique",
       });
     }
-    if (config.maxGrossExposureUsd < config.maxInventoryUsd) {
+    const maximumMarketInventory = Math.max(
+      config.maxInventoryUsd,
+      ...config.markets.map(
+        (market) => market.overrides?.maxInventoryUsd ?? config.maxInventoryUsd,
+      ),
+    );
+    if (config.maxGrossExposureUsd < maximumMarketInventory) {
       context.addIssue({
         code: "custom",
         path: ["maxGrossExposureUsd"],
-        message: "Gross exposure limit cannot be below the per-market limit",
+        message: "Gross exposure limit cannot be below a per-market limit",
       });
+    }
+
+    const minimumQuoteAgeMs =
+      config.refreshMs * config.markets.length +
+      Math.min(10_000, config.refreshMs);
+    if (config.maxQuoteAgeMs < minimumQuoteAgeMs) {
+      context.addIssue({
+        code: "custom",
+        path: ["maxQuoteAgeMs"],
+        message: `Quote age limit must cover one full rotation (${minimumQuoteAgeMs} ms)`,
+      });
+    }
+
+    for (const [index, market] of config.markets.entries()) {
+      const inventoryLimit =
+        market.overrides?.maxInventoryUsd ?? config.maxInventoryUsd;
+      const inventoryTarget =
+        market.overrides?.inventoryTargetUsd ?? config.inventoryTargetUsd;
+      if (Math.abs(inventoryTarget) > inventoryLimit) {
+        context.addIssue({
+          code: "custom",
+          path: ["markets", index, "overrides", "inventoryTargetUsd"],
+          message:
+            "Inventory target must fit inside the market inventory limit",
+        });
+      }
     }
   });
 
@@ -108,6 +159,11 @@ export type RuntimeMarketSnapshot = {
   unrealizedPnlUsd: number;
   bidPrice: number | null;
   askPrice: number | null;
+  effectiveSpreadBps: number;
+  effectiveQuoteSizeUsd: number;
+  effectiveMaxInventoryUsd: number;
+  inventoryTargetUsd: number;
+  lastTransactionDigest: string | null;
   updatedAt: string | null;
   error: string | null;
 };
@@ -116,7 +172,9 @@ export type RuntimeSnapshot = {
   mode: RuntimeMode;
   running: boolean;
   cycle: number;
+  startedAt: string | null;
   lastCycleAt: string | null;
+  lastSuccessfulCycleAt: string | null;
   lastError: string | null;
   setupComplete: boolean;
   agentAddress: string | null;
@@ -134,12 +192,27 @@ export type RuntimeSnapshot = {
     selectedMarkets: number;
     grossExposureUsd: number;
     unrealizedPnlUsd: number;
+    availableCollateralUsd: number | null;
+    allocatedCollateralUsd: number | null;
+    freeMarginUsd: number | null;
+    withdrawableCollateralUsd: number | null;
   };
   balances: {
     equityUsd: number | null;
     inventoryUsd: number;
     unrealizedPnlUsd: number;
     gasSui: number | null;
+  };
+  watchdog: {
+    state: "idle" | "armed" | "tripped";
+    checkedAt: string | null;
+    maxQuoteAgeMs: number | null;
+  };
+  execution: {
+    confirmedLiveQuotes: number;
+    averageGasMist: number | null;
+    gasRunwayTransactions: number | null;
+    lastExecutionAt: string | null;
   };
   quote: QuoteIntent | null;
   safety: SafetyCheck[];

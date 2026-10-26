@@ -60,6 +60,103 @@ describe("persistent control store", () => {
     databaseStore.close();
   });
 
+  it("keeps tracked orders and gas statistics isolated by wallet", () => {
+    const directory = join(
+      process.env.TMPDIR ?? "/tmp",
+      `aftermath-maker-${randomBytes(8).toString("hex")}`,
+    );
+    mkdirSync(directory, { recursive: true });
+    const databaseStore = new Store(join(directory, "maker.db"));
+    const first = databaseStore.forTenant(`0x${"4".repeat(64)}`);
+    const second = databaseStore.forTenant(`0x${"5".repeat(64)}`);
+
+    first.trackMakerOrders({
+      marketId: "0xmarket",
+      quoteDigest: "digest",
+      orderIds: ["101", "102"],
+    });
+    first.logExecution({
+      mode: "live",
+      marketId: "0xmarket",
+      digest: "digest",
+      endpoint: "test",
+      bidPrice: 9,
+      askPrice: 11,
+      sizeUsd: 10,
+      outcome: "confirmed",
+      gasUsedMist: 100,
+    });
+    first.logExecution({
+      mode: "live",
+      marketId: "0xmarket",
+      digest: "digest-2",
+      endpoint: "test",
+      bidPrice: 9,
+      askPrice: 11,
+      sizeUsd: 10,
+      outcome: "confirmed",
+      gasUsedMist: 300,
+    });
+
+    expect(
+      first
+        .listTrackedMakerOrders()
+        .map((order) => order.orderId)
+        .sort(),
+    ).toEqual(["101", "102"]);
+    expect(first.getExecutionStats()).toMatchObject({
+      confirmedLiveQuotes: 2,
+      averageGasMist: 200,
+    });
+    expect(second.listTrackedMakerOrders()).toEqual([]);
+    expect(second.getExecutionStats().confirmedLiveQuotes).toBe(0);
+    databaseStore.close();
+  });
+
+  it("derives a safe watchdog age for saved slow rotations", () => {
+    const directory = join(
+      process.env.TMPDIR ?? "/tmp",
+      `aftermath-maker-${randomBytes(8).toString("hex")}`,
+    );
+    mkdirSync(directory, { recursive: true });
+    const path = join(directory, "maker.db");
+    const initial = new Store(path);
+    initial.close();
+
+    const ownerAddress = `0x${"6".repeat(64)}`;
+    const saved = makerConfigSchema.parse({
+      markets: [
+        { marketId: "0x1001", symbol: "ONE" },
+        { marketId: "0x1002", symbol: "TWO" },
+        { marketId: "0x1003", symbol: "THREE" },
+        { marketId: "0x1004", symbol: "FOUR" },
+      ],
+      refreshMs: 300_000,
+      maxQuoteAgeMs: 1_210_000,
+    }) as Record<string, unknown>;
+    delete saved.maxQuoteAgeMs;
+
+    const database = new Database(path);
+    database
+      .prepare(
+        `INSERT INTO tenant_settings
+          (owner_address, key, value, updated_at) VALUES (?, ?, ?, ?)`,
+      )
+      .run(
+        ownerAddress,
+        "maker_config",
+        JSON.stringify(saved),
+        new Date().toISOString(),
+      );
+    database.close();
+
+    const reopened = new Store(path);
+    expect(reopened.forTenant(ownerAddress).getConfig()?.maxQuoteAgeMs).toBe(
+      1_210_000,
+    );
+    reopened.close();
+  });
+
   it("migrates the legacy daily-loss field without losing the limit", () => {
     const directory = join(
       process.env.TMPDIR ?? "/tmp",

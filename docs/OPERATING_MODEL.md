@@ -1,57 +1,110 @@
 # Operating model
 
-Maker is an operator console, not a promise that a fixed spread is profitable. The design borrows the parts of professional market making that can be applied honestly at this stage.
+Maker is an execution and measurement system, not a promise that one spread setting is profitable. Professional market making is a loop: estimate fair value, quote, manage inventory, measure fills and adverse selection, then update the policy.
 
-## Principles applied
+## What is implemented
 
-### Quote two ways from a reference price
+### Account readiness
 
-Market makers continuously publish a bid and ask around a reference price. Maker uses the live Aftermath order book as its initial reference, keeps both orders post-only, and atomically replaces its own tagged quote pair.
+The desk reads the selected Aftermath account and shows equity, available collateral, collateral allocated to positions, free margin, owner-withdrawable collateral, agent SUI, and agent authority. Account creation and agent authorization are separate owner-signed transactions.
 
-### Manage a portfolio, not isolated bots
+Do not withdraw collateral while an engine is running. Stop quoting first, reconcile open orders and positions, then withdraw through the owner account.
 
-Established firms trade many instruments but manage exposure centrally. Maker rotates through a selected market set while enforcing both a per-market inventory limit and a portfolio gross-exposure limit. The market board keeps OI, volume, funding, inventory, and PnL visible in one place.
+### Portfolio policy
 
-### Let inventory change the quote
+A profile supplies conservative global defaults. Every selected market can override:
 
-A fill creates inventory risk. Maker shifts both quote prices away from acquiring more of an oversized position. The skew is bounded by the configured per-market inventory limit.
+- quote size;
+- spread;
+- inventory target;
+- inventory cap;
+- inventory skew; and
+- leverage.
 
-### Pull quotes when controls fail
+The engine resolves the effective policy for the current market before quote calculation, risk checks, and transaction construction. Saving while running stops, cancels tagged orders, and restarts with the new configuration.
 
-Market-maker protection systems remove quotes when execution or risk limits are breached. Maker stops on any live-cycle error and cancels only orders carrying its two client order IDs. Manual orders are never included in that cancellation set.
+### Quote lifecycle
 
-### Separate execution activity from performance
+Maker currently uses the live Aftermath best bid and ask as its reference. It creates a post-only bid and ask, skews both around the configured inventory target, and uses Aftermath's atomic cancel-and-place transaction to replace its prior quote pair.
 
-A submitted quote transaction is not a fill and must not be presented as revenue. The current evidence log records configuration, quote cycles, and confirmed transactions. Realized spread, fill ratio, adverse selection, fee revenue, and inventory carry require fill-level history and are intentionally not claimed yet.
+Every market has stable Maker client order IDs. Portfolio cancellation looks up pending orders and selects only those IDs. It does not cancel manual orders or orders created by another client.
 
-## Current desk
+### Independent freshness protection
 
-- Wallet-signed creation or selection of an Aftermath USDC account
-- Isolated encrypted agent signer per approved wallet
-- Up to 12 selected markets in round-robin rotation
-- Current one-sided OI, estimated OI USD, protocol-capacity utilization, 24h volume, and funding
-- Account equity, per-market inventory/PnL, portfolio gross exposure/PnL
-- Observe, Paper, and separately gated Live modes
-- Inventory skew, global loss stop, stale-book checks, gas ceiling, and emergency quote cancellation
-- On-chain access registry and disclosed builder fee
+The rotation interval grows with the number of selected markets. Configuration is rejected unless the stale-quote cutoff can cover one complete rotation plus a buffer.
 
-## Before material capital
+Live mode also runs an independent watchdog. If any selected market exceeds the cutoff, the watchdog invalidates the current cycle, stops scheduling, and immediately cancels Maker-tagged orders. It does not wait for a stalled market RPC. If a transaction was already broadcast, it performs another cancellation after that cycle resolves.
 
-The next operating layer should be driven by verified fills:
+### Stop and flatten
 
-1. Reconcile maker fills and fees from Aftermath account history.
-2. Attribute realized spread, markout, funding, fees, and inventory PnL separately.
-3. Adapt spread and size to measured volatility, book depth, and adverse selection.
-4. Allocate capital by expected return on risk rather than OI alone.
-5. Add alerting, restart policy, and independent reconciliation against on-chain state.
-6. Run long Paper sessions, then use deliberately small Live limits.
+**Stop quoting** stops scheduling and cancels Maker-tagged open orders. It does not change an existing position.
 
-## Public references
+**Flatten at market** is a separate, confirmed action. It stops the engine, cancels Maker orders, and submits reduce-only market orders for positions in selected markets. It does not attach a builder fee. The user sees the slippage ceiling before confirmation.
 
-- [Aftermath Perpetuals SDK](https://docs.aftermath.finance/for-developers/typescript-sdk/products/perpetuals/perpetuals)
+### Fill attribution
+
+A confirmed quote transaction is activity, not performance. Maker records order IDs from each confirmed post transaction. Its 24-hour fill ledger includes only maker fills whose order IDs match that tenant's recorded IDs.
+
+The desk separates:
+
+- account-wide maker and taker volume;
+- attributed Maker fill count and notional;
+- realized trading PnL before fees;
+- reported order fees;
+- deterministic builder-fee estimate; and
+- net result after those known costs.
+
+Historical orders created before order tracking, manual orders, and other clients' orders are not claimed. Coverage reports attributed notional as a percentage of account-wide maker volume.
+
+“Net known result” still excludes gas converted to USD, position-level funding attribution, markouts, hedge costs, and inventory carry. Those are the next accounting fields required before calling a strategy profitable.
+
+## Fee economics
+
+Maker's default builder fee is 1 bp of filled notional and applies to maker and taker fills carrying its code. Aftermath's documented base maker fee is a 0.5 bp rebate. Before any market-share rebate or spread capture, the builder fee therefore creates a 0.5 bp user cost.
+
+The fee is displayed before authorization, approved on-chain at an exact maximum, checked before every quote transaction, and reported separately in the fill ledger. Platform revenue must not be combined with trader strategy PnL.
+
+## What professional operations suggest
+
+There is no single Wintermute setting to copy. The transferable operating ideas are:
+
+1. **Use stronger fair value.** Combine index, local book, and eventually independent venue inputs instead of trusting one midpoint.
+2. **Keep inventory duration short.** Skew or pull quotes as exposure grows; hedge only when fees, funding, basis, and slippage justify it.
+3. **Adapt to regime changes.** Widen spread, reduce size, or pause when volatility or source divergence rises.
+4. **Measure realized outcomes.** Compare spread capture, markouts, funding, incentives, builder fees, protocol fees, gas, hedge cost, and capital at risk.
+5. **Prefer reliability over nominal activity.** Stale-order controls, atomic replacement, reconciliation, and collateral visibility matter more than gross volume.
+
+Maker now supplies the measurement and control foundation for those experiments. It does not yet implement external fair-value feeds or automated cross-venue hedging.
+
+## Strategy families to test
+
+These are hypotheses to compare in Observe, Paper, and small Live runs:
+
+- **Inventory-aware quoting:** the current baseline, with market-specific targets and limits.
+- **Volatility-adaptive quoting:** widen, reduce size, or pause when realized volatility and source divergence cross thresholds.
+- **Hedged market making:** quote on Aftermath and hedge externally when expected spread exceeds hedge, funding, fee, gas, and basis costs.
+- **Funding and basis:** pair spot and perps, or two perp venues, while measuring funding reversal, margin, liquidation, and basis risk.
+- **Incentive-aware liquidity:** allocate by verified net return per unit of collateral, not low OI or gross volume alone.
+
+A market score should eventually use organic fills, depth, spread, volatility, funding, realized rewards, adverse selection, gas, and collateral usage. Low OI can mean less competition; it can also mean little flow and higher thin-book risk.
+
+## Next measurement layer
+
+The next implementation sequence is:
+
+1. Calculate post-fill markouts at fixed horizons.
+2. Attribute actual funding and gas in USD to each position and run.
+3. Add realized spread and inventory-carry decomposition.
+4. Add volatility and oracle-versus-book divergence signals.
+5. Run profiles long enough to compare net return on collateral at risk.
+6. Add external fair-value inputs and optional hedging only after reconciliation is reliable.
+
+## References
+
+- [Aftermath account SDK](https://docs.aftermath.finance/for-developers/typescript-sdk/products/perpetuals/account)
 - [Aftermath account architecture](https://docs.aftermath.finance/perpetuals/architecture/account)
-- [Optiver: Market making](https://www.optiver.com/insights/explainers/market-making/)
-- [Optiver: Market-maker protections](https://optiver.com/wp-content/uploads/2023/07/Insights_market_maker_protections.pdf)
-- [Jane Street overview](https://www.janestreet.com/what-we-do/overview/)
+- [Aftermath market SDK](https://docs.aftermath.finance/for-developers/typescript-sdk/products/perpetuals/market)
+- [Aftermath perpetual fees](https://docs.aftermath.finance/perpetuals/architecture/fees)
+- [Aftermath builder codes](https://docs.aftermath.finance/perpetuals/architecture/builder-codes-front-end-fee)
+- [Optiver: market making](https://www.optiver.com/insights/explainers/market-making/)
 - [Hummingbot market-making paper](https://hummingbot.org/hummingbot.pdf)
-- [Hummingbot kill switch](https://hummingbot.org/client/global-configs/kill-switch/)
