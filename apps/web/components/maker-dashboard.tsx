@@ -40,6 +40,26 @@ type SafetyCheck = {
   detail: string;
 };
 
+type RuntimeMarket = {
+  id: string;
+  symbol: string;
+  status: "queued" | "healthy" | "error";
+  indexPrice: number | null;
+  bestBid: number | null;
+  bestAsk: number | null;
+  openInterestBase: number | null;
+  openInterestUsd: number | null;
+  openInterestUtilizationPct: number | null;
+  volume24hUsd: number | null;
+  fundingRate: number | null;
+  inventoryUsd: number;
+  unrealizedPnlUsd: number;
+  bidPrice: number | null;
+  askPrice: number | null;
+  updatedAt: string | null;
+  error: string | null;
+};
+
 type Snapshot = {
   mode: Mode;
   running: boolean;
@@ -56,6 +76,12 @@ type Snapshot = {
     bestBid: number | null;
     bestAsk: number | null;
     updatedAt: string | null;
+  };
+  markets: RuntimeMarket[];
+  portfolio: {
+    selectedMarkets: number;
+    grossExposureUsd: number;
+    unrealizedPnlUsd: number;
   };
   balances: {
     equityUsd: number | null;
@@ -78,17 +104,25 @@ type Market = {
   indexPrice: number;
   tickSize: number;
   lotSize: number;
+  openInterestBase: number;
+  openInterestUsd: number;
+  openInterestUtilizationPct: number | null;
+  maxOpenInterestBase: number;
+  fundingRate: number;
+  makerFee: number;
+  volume24hUsd: number | null;
+  priceChange24hPct: number | null;
 };
 
 type MakerConfig = {
-  marketId: string;
-  symbol: string;
+  markets: Array<{ marketId: string; symbol: string }>;
   collateralCoinType: string;
   mode: Mode;
   quoteSizeUsd: number;
   spreadBps: number;
   refreshMs: number;
   maxInventoryUsd: number;
+  maxGrossExposureUsd: number;
   maxUnrealizedLossUsd: number;
   maxLeverage: number;
   maxGasMist: number;
@@ -152,14 +186,14 @@ const USDC =
   "0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC";
 
 const defaultConfig: MakerConfig = {
-  marketId: "",
-  symbol: "",
+  markets: [],
   collateralCoinType: USDC,
   mode: "observe",
   quoteSizeUsd: 10,
   spreadBps: 30,
   refreshMs: 8_000,
   maxInventoryUsd: 50,
+  maxGrossExposureUsd: 150,
   maxUnrealizedLossUsd: 20,
   maxLeverage: 1,
   maxGasMist: 50_000_000,
@@ -208,6 +242,19 @@ const money = (value: number | null, digits = 2) =>
         maximumFractionDigits: digits,
       }).format(value);
 
+const compactUsd = (value: number | null) =>
+  value === null
+    ? "-"
+    : new Intl.NumberFormat("en-US", {
+        style: "currency",
+        currency: "USD",
+        notation: "compact",
+        maximumFractionDigits: 1,
+      }).format(value);
+
+const percent = (value: number | null, digits = 2) =>
+  value === null ? "-" : `${value.toFixed(digits)}%`;
+
 function DashboardBody() {
   const account = useCurrentAccount();
   const wallet = useDAppKit();
@@ -220,6 +267,7 @@ function DashboardBody() {
   const [memberAddress, setMemberAddress] = useState("");
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
   const [markets, setMarkets] = useState<Market[]>([]);
+  const [marketQuery, setMarketQuery] = useState("");
   const [config, setConfig] = useState<MakerConfig>(defaultConfig);
   const [setup, setSetup] = useState<SetupState>({ setup: null, agent: null });
   const [accounts, setAccounts] = useState<AccountCap[]>([]);
@@ -255,15 +303,20 @@ function DashboardBody() {
     const result = await request<{ markets: Market[] }>(
       `api/markets?collateralCoinType=${encodeURIComponent(USDC)}`,
     );
-    setMarkets(result.markets);
-    if (!config.marketId && result.markets[0]) {
-      setConfig((current) => ({
-        ...current,
-        marketId: result.markets[0]!.id,
-        symbol: result.markets[0]!.symbol,
-      }));
-    }
-  }, [config.marketId]);
+    const ranked = [...result.markets].sort(
+      (left, right) =>
+        (right.openInterestUsd ?? 0) - (left.openInterestUsd ?? 0),
+    );
+    setMarkets(ranked);
+    setConfig((current) =>
+      current.markets.length || !ranked[0]
+        ? current
+        : {
+            ...current,
+            markets: [{ marketId: ranked[0].id, symbol: ranked[0].symbol }],
+          },
+    );
+  }, []);
 
   useEffect(() => {
     let active = true;
@@ -494,6 +547,45 @@ function DashboardBody() {
     }
   }
 
+  async function createAftermathAccount() {
+    if (!account?.address) return;
+    await mutate("create-account", async () => {
+      const built = await request<{ transaction: string }>(
+        "api/accounts/create-transaction",
+        {
+          method: "POST",
+          body: JSON.stringify({ collateralCoinType: USDC }),
+        },
+      );
+      const result = await wallet.signAndExecuteTransaction({
+        transaction: Transaction.from(built.transaction),
+      });
+      if (result.$kind === "FailedTransaction") {
+        throw new Error(
+          result.FailedTransaction.status.error?.message ??
+            "Aftermath account creation failed",
+        );
+      }
+
+      let discovered: AccountCap[] = [];
+      for (let attempt = 0; attempt < 6; attempt += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 1_000));
+        const response = await request<{ accounts: AccountCap[] }>(
+          `api/accounts?collateralCoinType=${encodeURIComponent(USDC)}`,
+        );
+        discovered = response.accounts;
+        if (discovered.length > accounts.length) break;
+      }
+      setAccounts(discovered);
+      setSelectedAccount(discovered.at(-1)?.accountId ?? "");
+      setNotice(
+        discovered.length
+          ? "Aftermath account created. Select it and create the agent."
+          : "Account transaction confirmed; refresh account discovery shortly.",
+      );
+    });
+  }
+
   async function provision() {
     if (!account?.address || !selectedCap) return;
     await mutate("provision", async () => {
@@ -535,6 +627,31 @@ function DashboardBody() {
       setNotice(
         "Agent authorized and funded. No further wallet prompts are needed.",
       );
+    });
+  }
+
+  function toggleMarket(market: Market) {
+    setConfig((current) => {
+      const selected = current.markets.some(
+        (item) => item.marketId === market.id,
+      );
+      if (selected) {
+        if (current.markets.length === 1) return current;
+        return {
+          ...current,
+          markets: current.markets.filter(
+            (item) => item.marketId !== market.id,
+          ),
+        };
+      }
+      if (current.markets.length >= 12) return current;
+      return {
+        ...current,
+        markets: [
+          ...current.markets,
+          { marketId: market.id, symbol: market.symbol },
+        ],
+      };
     });
   }
 
@@ -637,9 +754,52 @@ function DashboardBody() {
     );
   }
 
-  const market = markets.find((item) => item.id === config.marketId);
+  const selectedMarketIds = new Set(
+    config.markets.map((market) => market.marketId),
+  );
+  const activeMarket = markets.find(
+    (market) => market.id === snapshot?.market.id,
+  );
   const failedChecks = snapshot?.safety.filter((check) => !check.ok) ?? [];
   const onboardingComplete = Boolean(setup.agent?.agentCapId);
+  const effectiveRefreshSeconds =
+    (config.refreshMs * Math.max(1, config.markets.length)) / 1_000;
+  const visibleMarkets = markets.filter((market) => {
+    const query = marketQuery.trim().toLowerCase();
+    return (
+      !query ||
+      market.symbol.toLowerCase().includes(query) ||
+      market.displayName.toLowerCase().includes(query)
+    );
+  });
+  const rotationRows = config.markets.map((selected) => {
+    const runtimeMarket = snapshot?.markets.find(
+      (market) => market.id === selected.marketId,
+    );
+    const listed = markets.find((market) => market.id === selected.marketId);
+    return {
+      id: selected.marketId,
+      symbol: selected.symbol,
+      status: runtimeMarket?.status ?? "queued",
+      indexPrice: runtimeMarket?.indexPrice ?? listed?.indexPrice ?? null,
+      openInterestUsd:
+        runtimeMarket?.openInterestUsd ?? listed?.openInterestUsd ?? null,
+      openInterestUtilizationPct:
+        runtimeMarket?.openInterestUtilizationPct ??
+        listed?.openInterestUtilizationPct ??
+        null,
+      volume24hUsd: runtimeMarket?.volume24hUsd ?? listed?.volume24hUsd ?? null,
+      fundingRate:
+        runtimeMarket?.fundingRate === null ||
+        runtimeMarket?.fundingRate === undefined
+          ? (listed?.fundingRate ?? null)
+          : runtimeMarket.fundingRate,
+      inventoryUsd: runtimeMarket?.inventoryUsd ?? 0,
+      unrealizedPnlUsd: runtimeMarket?.unrealizedPnlUsd ?? 0,
+      updatedAt: runtimeMarket?.updatedAt ?? null,
+      error: runtimeMarket?.error ?? null,
+    };
+  });
 
   return (
     <main className="shell">
@@ -744,15 +904,22 @@ function DashboardBody() {
                   <p>Connect the owner wallet to continue.</p>
                 ) : !setup.agent ? (
                   <>
-                    <p>Select the Aftermath account this maker will operate.</p>
-                    <div className="inline-controls">
+                    <p>
+                      Use an existing USDC account or create one here without
+                      leaving Maker.
+                    </p>
+                    <div className="inline-controls account-controls">
                       <select
                         value={selectedAccount}
                         onChange={(event) =>
                           setSelectedAccount(event.target.value)
                         }
                         disabled={!accounts.length}
+                        aria-label="Aftermath account"
                       >
+                        {!accounts.length && (
+                          <option value="">No USDC accounts found</option>
+                        )}
                         {accounts.map((item) => (
                           <option key={item.accountId} value={item.accountId}>
                             Account {item.accountId} /{" "}
@@ -761,9 +928,20 @@ function DashboardBody() {
                         ))}
                       </select>
                       <button
+                        className="button secondary inverse"
+                        onClick={() => void createAftermathAccount()}
+                        disabled={Boolean(busy)}
+                        type="button"
+                      >
+                        {busy === "create-account"
+                          ? "Check wallet..."
+                          : "New account"}
+                      </button>
+                      <button
                         className="button primary"
                         onClick={() => void provision()}
                         disabled={!selectedCap || Boolean(busy)}
+                        type="button"
                       >
                         Create agent
                       </button>
@@ -812,9 +990,11 @@ function DashboardBody() {
         <div className="market-console">
           <div className="section-heading compact">
             <div>
-              <span className="eyebrow">Live instrument</span>
+              <span className="eyebrow">Rotation now quoting</span>
               <h2>
-                {snapshot?.market.symbol ?? market?.symbol ?? "Choose a market"}
+                {snapshot?.market.symbol ??
+                  activeMarket?.symbol ??
+                  "Choose markets"}
               </h2>
             </div>
             <button
@@ -876,23 +1056,30 @@ function DashboardBody() {
 
           <div className="metric-grid">
             <div>
-              <span>Equity</span>
+              <span>Account equity</span>
               <strong>{money(snapshot?.balances.equityUsd ?? null)}</strong>
             </div>
             <div>
-              <span>Inventory</span>
-              <strong>{money(snapshot?.balances.inventoryUsd ?? null)}</strong>
-            </div>
-            <div>
-              <span>Unrealized PnL</span>
+              <span>Gross exposure</span>
               <strong>
-                {money(snapshot?.balances.unrealizedPnlUsd ?? null)}
+                {money(snapshot?.portfolio.grossExposureUsd ?? null)}
               </strong>
             </div>
             <div>
-              <span>Quote size</span>
+              <span>Portfolio PnL</span>
               <strong>
-                {money(snapshot?.quote?.sizeUsd ?? config.quoteSizeUsd)}
+                {money(snapshot?.portfolio.unrealizedPnlUsd ?? null)}
+              </strong>
+            </div>
+            <div>
+              <span>Market OI</span>
+              <strong>
+                {money(
+                  snapshot?.markets.find(
+                    (item) => item.id === snapshot.market.id,
+                  )?.openInterestUsd ?? null,
+                  0,
+                )}
               </strong>
             </div>
           </div>
@@ -908,7 +1095,7 @@ function DashboardBody() {
             <button
               className={snapshot?.running ? "button danger" : "button start"}
               onClick={() => void toggleRuntime()}
-              disabled={!config.marketId || Boolean(busy)}
+              disabled={!config.markets.length || Boolean(busy)}
             >
               {snapshot?.running ? (
                 <CircleStop size={17} />
@@ -929,29 +1116,50 @@ function DashboardBody() {
             <Settings2 size={18} />
           </div>
 
-          <label>
-            <span>Market</span>
-            <select
-              value={config.marketId}
-              onChange={(event) => {
-                const next = markets.find(
-                  (item) => item.id === event.target.value,
+          <fieldset className="pair-picker">
+            <legend>Market rotation</legend>
+            <div className="pair-picker-head">
+              <strong>{config.markets.length} selected</strong>
+              <span>each pair every {effectiveRefreshSeconds}s</span>
+            </div>
+            <label className="pair-search">
+              <Search size={14} aria-hidden="true" />
+              <input
+                type="search"
+                value={marketQuery}
+                onChange={(event) => setMarketQuery(event.target.value)}
+                placeholder="Find a pair"
+                aria-label="Find a market pair"
+              />
+            </label>
+            <div className="pair-options">
+              {!visibleMarkets.length && (
+                <p className="pair-empty">No matching markets</p>
+              )}
+              {visibleMarkets.map((item) => {
+                const selected = selectedMarketIds.has(item.id);
+                return (
+                  <label
+                    className={
+                      selected ? "pair-option selected" : "pair-option"
+                    }
+                    key={item.id}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={selected}
+                      onChange={() => toggleMarket(item)}
+                      disabled={selected && config.markets.length === 1}
+                    />
+                    <span>
+                      <strong>{item.symbol}</strong>
+                      <small>{money(item.openInterestUsd, 0)} OI</small>
+                    </span>
+                  </label>
                 );
-                setConfig((current) => ({
-                  ...current,
-                  marketId: event.target.value,
-                  symbol: next?.symbol ?? current.symbol,
-                }));
-              }}
-            >
-              <option value="">Select market</option>
-              {markets.map((item) => (
-                <option key={item.id} value={item.id}>
-                  {item.symbol} / {money(item.indexPrice, 3)}
-                </option>
-              ))}
-            </select>
-          </label>
+              })}
+            </div>
+          </fieldset>
 
           <fieldset>
             <legend>Mode</legend>
@@ -1009,9 +1217,9 @@ function DashboardBody() {
             </label>
           </div>
 
-          <div className="field-pair">
+          <div className="risk-field-grid">
             <label>
-              <span>Inventory limit</span>
+              <span>Per-pair inventory</span>
               <div className="input-unit">
                 <b>$</b>
                 <input
@@ -1028,7 +1236,24 @@ function DashboardBody() {
               </div>
             </label>
             <label>
-              <span>Unrealized loss stop</span>
+              <span>Gross exposure</span>
+              <div className="input-unit">
+                <b>$</b>
+                <input
+                  type="number"
+                  min={config.maxInventoryUsd}
+                  value={config.maxGrossExposureUsd}
+                  onChange={(event) =>
+                    setConfig((current) => ({
+                      ...current,
+                      maxGrossExposureUsd: Number(event.target.value),
+                    }))
+                  }
+                />
+              </div>
+            </label>
+            <label>
+              <span>Loss kill switch</span>
               <div className="input-unit">
                 <b>$</b>
                 <input
@@ -1061,17 +1286,102 @@ function DashboardBody() {
                 }))
               }
             />
-            <small>{config.refreshMs / 1000}s</small>
+            <small>
+              {config.refreshMs / 1000}s cycle / {effectiveRefreshSeconds}s per
+              pair
+            </small>
           </label>
 
           <button
             type="submit"
             className="button primary full"
-            disabled={!config.marketId || Boolean(busy)}
+            disabled={!config.markets.length || Boolean(busy)}
           >
             {busy === "save" ? "Saving..." : "Save strategy"}
           </button>
         </form>
+      </section>
+
+      <section className="rotation-board">
+        <div className="section-heading compact rotation-heading">
+          <div>
+            <span className="eyebrow">Market book</span>
+            <h2>Rotation and exposure</h2>
+          </div>
+          <span className="rotation-cadence">
+            {config.markets.length} pairs / {effectiveRefreshSeconds}s full lap
+          </span>
+        </div>
+        <div className="market-table-wrap">
+          <table className="market-table">
+            <thead>
+              <tr>
+                <th>Pair</th>
+                <th>State</th>
+                <th>Index</th>
+                <th>Open interest</th>
+                <th>OI capacity</th>
+                <th>24h volume</th>
+                <th>Funding</th>
+                <th>Inventory</th>
+                <th>Unrealized PnL</th>
+                <th>Freshness</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rotationRows.map((row) => (
+                <tr
+                  key={row.id}
+                  className={
+                    snapshot?.market.id === row.id ? "active-market-row" : ""
+                  }
+                >
+                  <td>
+                    <strong>{row.symbol}</strong>
+                    <span>{compact(row.id)}</span>
+                  </td>
+                  <td>
+                    <span className={`desk-state state-${row.status}`}>
+                      {row.status}
+                    </span>
+                  </td>
+                  <td>{money(row.indexPrice, 4)}</td>
+                  <td>{compactUsd(row.openInterestUsd)}</td>
+                  <td>{percent(row.openInterestUtilizationPct, 1)}</td>
+                  <td>{compactUsd(row.volume24hUsd)}</td>
+                  <td>
+                    {percent(
+                      row.fundingRate === null ? null : row.fundingRate * 100,
+                      4,
+                    )}
+                  </td>
+                  <td>{money(row.inventoryUsd)}</td>
+                  <td
+                    className={
+                      row.unrealizedPnlUsd < 0 ? "negative-number" : ""
+                    }
+                  >
+                    {money(row.unrealizedPnlUsd)}
+                  </td>
+                  <td title={row.error ?? undefined}>
+                    {row.updatedAt
+                      ? `${Math.max(
+                          0,
+                          Math.round(
+                            (Date.now() - Date.parse(row.updatedAt)) / 1_000,
+                          ),
+                        )}s`
+                      : "waiting"}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <p className="board-footnote">
+          OI is current one-sided open interest. USD and capacity are estimated
+          from the live index price and protocol limit.
+        </p>
       </section>
 
       <section className="lower-grid">

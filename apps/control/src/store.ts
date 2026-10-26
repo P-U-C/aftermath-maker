@@ -491,22 +491,54 @@ export class TenantStore {
   }
 
   getConfig(): MakerConfig | null {
-    const stored = this.getSetting<MakerConfig & { maxDailyLossUsd?: number }>(
-      "maker_config",
-    );
+    const stored = this.getSetting<
+      Partial<MakerConfig> & {
+        marketId?: string;
+        symbol?: string;
+        maxDailyLossUsd?: number;
+      }
+    >("maker_config");
     if (!stored) return null;
 
-    const legacyLossLimit = stored.maxDailyLossUsd;
     const normalized = { ...stored } as Record<string, unknown>;
-    delete normalized.maxDailyLossUsd;
+    let migrated = false;
+
+    if (!normalized.markets && stored.marketId && stored.symbol) {
+      normalized.markets = [
+        { marketId: stored.marketId, symbol: stored.symbol },
+      ];
+      delete normalized.marketId;
+      delete normalized.symbol;
+      migrated = true;
+    }
+
     if (
       normalized.maxUnrealizedLossUsd === undefined &&
-      legacyLossLimit !== undefined
+      stored.maxDailyLossUsd !== undefined
     ) {
-      normalized.maxUnrealizedLossUsd = legacyLossLimit;
-      this.setSetting("maker_config", normalized);
+      normalized.maxUnrealizedLossUsd = stored.maxDailyLossUsd;
+      migrated = true;
     }
-    return makerConfigSchema.parse(normalized);
+    delete normalized.maxDailyLossUsd;
+
+    if (normalized.maxGrossExposureUsd === undefined) {
+      const perMarket =
+        typeof normalized.maxInventoryUsd === "number"
+          ? normalized.maxInventoryUsd
+          : 50;
+      const marketCount = Array.isArray(normalized.markets)
+        ? normalized.markets.length
+        : 1;
+      normalized.maxGrossExposureUsd = Math.max(
+        perMarket,
+        perMarket * Math.min(3, marketCount),
+      );
+      migrated = true;
+    }
+
+    const config = makerConfigSchema.parse(normalized);
+    if (migrated) this.setSetting("maker_config", config);
+    return config;
   }
 
   setConfig(config: MakerConfig): void {

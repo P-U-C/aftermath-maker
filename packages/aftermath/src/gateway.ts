@@ -26,14 +26,34 @@ export type MarketSummary = {
   collateralCoinType: string;
   tickSize: number;
   lotSize: number;
+  openInterestBase: number;
+  openInterestUsd: number;
+  openInterestUtilizationPct: number | null;
+  maxOpenInterestBase: number;
+  fundingRate: number;
+  makerFee: number;
+  volume24hUsd: number | null;
+  priceChange24hPct: number | null;
 };
 
-export type AccountSnapshot = {
-  equityUsd: number;
+export type PositionSnapshot = {
+  marketId: string;
   inventoryUsd: number;
   unrealizedPnlUsd: number;
-  openOrderIds: bigint[];
+  makerOrderIds: bigint[];
   hasPosition: boolean;
+};
+
+export type PortfolioSnapshot = {
+  equityUsd: number;
+  grossExposureUsd: number;
+  unrealizedPnlUsd: number;
+  positions: PositionSnapshot[];
+};
+
+export type AccountSnapshot = PositionSnapshot & {
+  equityUsd: number;
+  openOrderIds: bigint[];
 };
 
 export type EndpointHealth = {
@@ -203,22 +223,43 @@ export class AftermathGateway {
     const { markets: rawMarkets } = await perps.getAllMarkets({
       collateralCoinType,
     });
-    const { markets } = await perps.getMarkets({
-      marketIds: rawMarkets.map((market) => market.marketId),
+    const marketIds = rawMarkets.map((market) => market.marketId);
+    const [{ markets }, statsResult] = await Promise.all([
+      perps.getMarkets({ marketIds }),
+      perps
+        .getMarkets24hrStats({ marketIds })
+        .catch(() => ({ marketsStats: [] })),
+    ]);
+
+    return markets.map((market, index) => {
+      const openInterestBase = Math.abs(market.marketState.openInterest);
+      const maxOpenInterestBase = market.marketParams.maxOpenInterest;
+      const stats = statsResult.marketsStats[index];
+      return {
+        id: market.marketId,
+        symbol: market.metadata?.symbol ?? market.marketId.slice(0, 10),
+        displayName:
+          market.metadata?.displayName ??
+          market.metadata?.symbol ??
+          "Unnamed market",
+        indexPrice: market.indexPrice,
+        collateralPrice: market.collateralPrice,
+        collateralCoinType: market.collateralCoinType,
+        tickSize: market.tickSize(),
+        lotSize: market.lotSize(),
+        openInterestBase,
+        openInterestUsd: openInterestBase * market.indexPrice,
+        openInterestUtilizationPct:
+          maxOpenInterestBase > 0
+            ? (openInterestBase / maxOpenInterestBase) * 100
+            : null,
+        maxOpenInterestBase,
+        fundingRate: market.estimatedFundingRate(),
+        makerFee: market.marketParams.makerFee,
+        volume24hUsd: stats?.volumeUsd ?? null,
+        priceChange24hPct: stats?.priceChangePercentage ?? null,
+      };
     });
-    return markets.map((market) => ({
-      id: market.marketId,
-      symbol: market.metadata?.symbol ?? market.marketId.slice(0, 10),
-      displayName:
-        market.metadata?.displayName ??
-        market.metadata?.symbol ??
-        "Unnamed market",
-      indexPrice: market.indexPrice,
-      collateralPrice: market.collateralPrice,
-      collateralCoinType: market.collateralCoinType,
-      tickSize: market.tickSize(),
-      lotSize: market.lotSize(),
-    }));
   }
 
   async getMarket(marketId: string): Promise<PerpetualsMarket> {
@@ -246,6 +287,18 @@ export class AftermathGateway {
     return result.accountCaps;
   }
 
+  async buildCreateAccountTransaction(inputs: {
+    ownerAddress: string;
+    collateralCoinType: string;
+  }): Promise<string> {
+    const { tx } = await this.sdk.Perpetuals().getCreateAccountTx({
+      walletAddress: inputs.ownerAddress,
+      collateralCoinType: inputs.collateralCoinType,
+    });
+    tx.setSender(inputs.ownerAddress);
+    return tx.toJSON();
+  }
+
   private async findAccountCap(inputs: {
     walletAddress: string;
     accountId: string;
@@ -270,32 +323,73 @@ export class AftermathGateway {
     return cap;
   }
 
-  async getAgentAccountSnapshot(inputs: {
+  async getAgentPortfolioSnapshot(inputs: {
     setup: Setup;
     agentAddress: string;
-    marketId: string;
-  }): Promise<AccountSnapshot> {
+    marketIds: string[];
+  }): Promise<PortfolioSnapshot> {
     const cap = await this.findAccountCap({
       walletAddress: inputs.agentAddress,
       accountId: inputs.setup.accountId,
       collateralCoinType: inputs.setup.collateralCoinType,
       requireAgent: true,
     });
-    const { account } = await this.sdk
-      .Perpetuals()
-      .getAccount({ accountCap: cap, marketIds: [inputs.marketId] });
-    const position = account.account.positions.find(
-      (candidate) => candidate.marketId === inputs.marketId,
-    );
+    const { account } = await this.sdk.Perpetuals().getAccount({
+      accountCap: cap,
+      marketIds: inputs.marketIds,
+    });
+    const positions = inputs.marketIds.map((marketId) => {
+      const position = account.account.positions.find(
+        (candidate) => candidate.marketId === marketId,
+      );
+      const makerOrderIds =
+        position?.pendingOrders
+          .filter(
+            (order) =>
+              order.clientOrderId === MAKER_BID_CLIENT_ORDER_ID ||
+              order.clientOrderId === MAKER_ASK_CLIENT_ORDER_ID,
+          )
+          .map((order) => order.orderId) ?? [];
+      return {
+        marketId,
+        inventoryUsd: position?.quoteAssetNotionalAmount ?? 0,
+        unrealizedPnlUsd:
+          (position?.unrealizedPnlUsd ?? 0) +
+          (position?.unrealizedFundingsUsd ?? 0),
+        makerOrderIds,
+        hasPosition: Boolean(position && position.baseAssetAmount !== 0),
+      };
+    });
 
     return {
       equityUsd: account.account.totalEquityUsd,
-      inventoryUsd: position?.quoteAssetNotionalAmount ?? 0,
-      unrealizedPnlUsd:
-        (position?.unrealizedPnlUsd ?? 0) +
-        (position?.unrealizedFundingsUsd ?? 0),
-      openOrderIds: position?.pendingOrders.map((order) => order.orderId) ?? [],
-      hasPosition: Boolean(position && position.baseAssetAmount !== 0),
+      grossExposureUsd: positions.reduce(
+        (sum, position) => sum + Math.abs(position.inventoryUsd),
+        0,
+      ),
+      unrealizedPnlUsd: positions.reduce(
+        (sum, position) => sum + position.unrealizedPnlUsd,
+        0,
+      ),
+      positions,
+    };
+  }
+
+  async getAgentAccountSnapshot(inputs: {
+    setup: Setup;
+    agentAddress: string;
+    marketId: string;
+  }): Promise<AccountSnapshot> {
+    const portfolio = await this.getAgentPortfolioSnapshot({
+      setup: inputs.setup,
+      agentAddress: inputs.agentAddress,
+      marketIds: [inputs.marketId],
+    });
+    const position = portfolio.positions[0]!;
+    return {
+      ...position,
+      equityUsd: portfolio.equityUsd,
+      openOrderIds: position.makerOrderIds,
     };
   }
 
@@ -498,6 +592,60 @@ export class AftermathGateway {
     );
   }
 
+  async cancelMakerOrders(inputs: {
+    setup: Setup;
+    marketIds: string[];
+    signer: Ed25519Keypair;
+    config: MakerConfig;
+  }): Promise<ExecutionReceipt | null> {
+    const signerAddress = inputs.signer.toSuiAddress();
+    const cap = await this.findAccountCap({
+      walletAddress: signerAddress,
+      accountId: inputs.setup.accountId,
+      collateralCoinType: inputs.setup.collateralCoinType,
+      requireAgent: true,
+    });
+    const { account } = await this.sdk.Perpetuals().getAccount({
+      accountCap: cap,
+      marketIds: inputs.marketIds,
+    });
+    const marketIdsToData: Record<
+      string,
+      { orderIds: bigint[]; collateralChange: number }
+    > = {};
+
+    for (const position of account.account.positions) {
+      const orderIds = position.pendingOrders
+        .filter(
+          (order) =>
+            order.clientOrderId === MAKER_BID_CLIENT_ORDER_ID ||
+            order.clientOrderId === MAKER_ASK_CLIENT_ORDER_ID,
+        )
+        .map((order) => order.orderId);
+      if (orderIds.length) {
+        marketIdsToData[position.marketId] = {
+          orderIds,
+          collateralChange: 0,
+        };
+      }
+    }
+
+    if (!Object.keys(marketIdsToData).length) return null;
+
+    const { tx } = await account.getCancelOrdersTx({ marketIdsToData });
+    tx.setSender(signerAddress);
+    await this.inspectTransaction({ tx, config: inputs.config });
+    const result = await this.client.signAndExecuteTransaction({
+      transaction: tx,
+      signer: inputs.signer,
+      include: { effects: true, events: true },
+    });
+    return {
+      digest: transactionDigest(result),
+      endpoint: this.endpoint,
+    };
+  }
+
   private async inspectTransaction(inputs: {
     tx: Transaction;
     config: MakerConfig;
@@ -537,11 +685,11 @@ export class AftermathGateway {
     const perps = this.sdk.Perpetuals();
     const { account } = await perps.getAccount({
       accountCap: cap,
-      marketIds: [inputs.config.marketId],
+      marketIds: [inputs.quote.marketId],
     });
-    const market = await this.getMarket(inputs.config.marketId);
+    const market = await this.getMarket(inputs.quote.marketId);
     const position = account.account.positions.find(
-      (candidate) => candidate.marketId === inputs.config.marketId,
+      (candidate) => candidate.marketId === inputs.quote.marketId,
     );
 
     const size = market.roundToValidSizeBigInt({
@@ -553,7 +701,7 @@ export class AftermathGateway {
     }
 
     const request = buildQuoteReplacementRequest({
-      marketId: inputs.config.marketId,
+      marketId: inputs.quote.marketId,
       bidPrice: market.roundToValidPriceBigInt({
         price: inputs.quote.bidPrice,
         floor: true,

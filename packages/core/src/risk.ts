@@ -8,6 +8,7 @@ export function evaluateQuoteSafety(inputs: {
   hasAgentKey: boolean;
   liveEnabled: boolean;
   mainnetAllowed: boolean;
+  portfolioGrossExposureUsd?: number;
 }): SafetyCheck[] {
   const {
     config,
@@ -16,6 +17,7 @@ export function evaluateQuoteSafety(inputs: {
     hasAgentKey,
     liveEnabled,
     mainnetAllowed,
+    portfolioGrossExposureUsd = Math.abs(quote?.inventoryUsd ?? 0),
   } = inputs;
   const now = inputs.now ?? new Date();
 
@@ -86,9 +88,15 @@ export function evaluateQuoteSafety(inputs: {
     },
     {
       code: "inventory",
-      label: "Inventory limit",
+      label: "Per-market inventory",
       ok: Math.abs(quote.inventoryUsd) <= config.maxInventoryUsd,
       detail: `$${quote.inventoryUsd.toFixed(2)} of $${config.maxInventoryUsd.toFixed(2)}`,
+    },
+    {
+      code: "gross-exposure",
+      label: "Portfolio gross exposure",
+      ok: portfolioGrossExposureUsd <= config.maxGrossExposureUsd,
+      detail: `$${portfolioGrossExposureUsd.toFixed(2)} of $${config.maxGrossExposureUsd.toFixed(2)}`,
     },
     {
       code: "unrealized-loss",

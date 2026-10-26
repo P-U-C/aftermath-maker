@@ -9,8 +9,7 @@ import {
 } from "../src/index.js";
 
 const config = makerConfigSchema.parse({
-  marketId: "0x1234",
-  symbol: "SUI-PERP",
+  markets: [{ marketId: "0x1234", symbol: "SUI-PERP" }],
 });
 
 describe("quote strategy", () => {
@@ -18,7 +17,7 @@ describe("quote strategy", () => {
     const neutral = buildQuoteIntent({
       config,
       observation: {
-        marketId: config.marketId,
+        marketId: config.markets[0]!.marketId,
         bestBid: 9.99,
         bestAsk: 10.01,
         observedAt: new Date("2026-10-26T12:00:00Z"),
@@ -29,7 +28,7 @@ describe("quote strategy", () => {
     const long = buildQuoteIntent({
       config,
       observation: {
-        marketId: config.marketId,
+        marketId: config.markets[0]!.marketId,
         bestBid: 9.99,
         bestAsk: 10.01,
         observedAt: new Date("2026-10-26T12:00:00Z"),
@@ -48,7 +47,7 @@ describe("quote strategy", () => {
       buildQuoteIntent({
         config,
         observation: {
-          marketId: config.marketId,
+          marketId: config.markets[0]!.marketId,
           bestBid: 10,
           bestAsk: 10,
           observedAt: new Date(),
@@ -65,7 +64,7 @@ describe("risk gates", () => {
     const quote = buildQuoteIntent({
       config: { ...config, mode: "live" },
       observation: {
-        marketId: config.marketId,
+        marketId: config.markets[0]!.marketId,
         bestBid: 9.99,
         bestAsk: 10.01,
         observedAt: new Date("2026-10-26T12:00:00Z"),
@@ -89,7 +88,7 @@ describe("risk gates", () => {
     const quote = buildQuoteIntent({
       config,
       observation: {
-        marketId: config.marketId,
+        marketId: config.markets[0]!.marketId,
         bestBid: 9.99,
         bestAsk: 10.01,
         observedAt: new Date("2026-10-26T12:00:00Z"),
@@ -110,6 +109,29 @@ describe("risk gates", () => {
     expect(checks.find((check) => check.code === "unrealized-loss")?.ok).toBe(
       false,
     );
+  });
+});
+
+describe("portfolio configuration", () => {
+  it("rejects duplicate markets", () => {
+    expect(() =>
+      makerConfigSchema.parse({
+        markets: [
+          { marketId: "0x1234", symbol: "SUI" },
+          { marketId: "0x1234", symbol: "SUI-SECOND" },
+        ],
+      }),
+    ).toThrow("unique");
+  });
+
+  it("requires the gross limit to cover one market", () => {
+    expect(() =>
+      makerConfigSchema.parse({
+        markets: [{ marketId: "0x1234", symbol: "SUI" }],
+        maxInventoryUsd: 100,
+        maxGrossExposureUsd: 50,
+      }),
+    ).toThrow("Gross exposure");
   });
 });
 

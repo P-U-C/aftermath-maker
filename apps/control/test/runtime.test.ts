@@ -22,8 +22,10 @@ function createHarness() {
   });
   const store = databaseStore.forTenant(setup.ownerAddress);
   const config = makerConfigSchema.parse({
-    marketId: "0x5678",
-    symbol: "SUI",
+    markets: [
+      { marketId: "0x5678", symbol: "SUI" },
+      { marketId: "0x9999", symbol: "BTC" },
+    ],
     mode: "live",
   });
   const agent = createEncryptedAgent({
@@ -40,24 +42,39 @@ function createHarness() {
   });
 
   let executionCount = 0;
+  let cancellationCount = 0;
   const gateway = {
-    getOrderbook: async () => ({
+    endpoint: "test",
+    endpointHealth: [],
+    getOrderbook: async (marketId: string) => ({
       market: {
-        metadata: { symbol: "SUI" },
+        metadata: { symbol: marketId === "0x5678" ? "SUI" : "BTC" },
         indexPrice: 10,
+        marketState: { openInterest: 1_000 },
+        marketParams: { maxOpenInterest: 10_000 },
+        estimatedFundingRate: () => 0.0001,
       },
       orderbook: {
         bestBidPrice: 9.99,
         bestAskPrice: 10.01,
       },
     }),
-    getAgentAccountSnapshot: async () => ({
+    getAgentPortfolioSnapshot: async (inputs: { marketIds: string[] }) => ({
       equityUsd: 100,
-      inventoryUsd: 0,
+      grossExposureUsd: 0,
       unrealizedPnlUsd: 0,
-      openOrderIds: [],
-      hasPosition: false,
+      positions: inputs.marketIds.map((marketId) => ({
+        marketId,
+        inventoryUsd: 0,
+        unrealizedPnlUsd: 0,
+        makerOrderIds: [],
+        hasPosition: false,
+      })),
     }),
+    cancelMakerOrders: async () => {
+      cancellationCount += 1;
+      return { digest: "cancel-digest", endpoint: "test" };
+    },
     executeQuote: async (inputs: { shouldContinue: () => boolean }) => {
       if (!inputs.shouldContinue()) throw new Error("cancelled");
       executionCount += 1;
@@ -77,6 +94,7 @@ function createHarness() {
     store: databaseStore,
     gateway,
     executions: () => executionCount,
+    cancellations: () => cancellationCount,
     setExecutions: (value: number) => {
       executionCount = value;
     },
@@ -91,6 +109,17 @@ describe("runtime execution boundaries", () => {
 
     expect(harness.runtime.snapshot.quote).not.toBeNull();
     expect(harness.executions()).toBe(0);
+    harness.store.close();
+  });
+
+  it("rotates through the configured markets", async () => {
+    const harness = createHarness();
+
+    await harness.runtime.cycle();
+    expect(harness.runtime.snapshot.market.id).toBe("0x5678");
+    await harness.runtime.cycle();
+    expect(harness.runtime.snapshot.market.id).toBe("0x9999");
+    expect(harness.runtime.snapshot.markets).toHaveLength(2);
     harness.store.close();
   });
 
@@ -122,6 +151,7 @@ describe("runtime execution boundaries", () => {
     await stopping;
 
     expect(harness.executions()).toBe(0);
+    expect(harness.cancellations()).toBe(1);
     expect(harness.runtime.snapshot.running).toBe(false);
     expect(harness.runtime.snapshot.lastError).toBeNull();
     harness.store.close();

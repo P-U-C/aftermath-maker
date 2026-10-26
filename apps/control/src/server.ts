@@ -343,6 +343,29 @@ app.get("/api/accounts", async (request) => {
   };
 });
 
+app.post("/api/accounts/create-transaction", async (request) => {
+  const identity = requestAuth(request);
+  const body = z
+    .object({
+      collateralCoinType: z.string().min(8).default(USDC_COIN_TYPE),
+    })
+    .strict()
+    .parse(request.body ?? {});
+  const transaction = await runtime(request)
+    .requireGateway()
+    .buildCreateAccountTransaction({
+      ownerAddress: identity.ownerAddress,
+      collateralCoinType: body.collateralCoinType,
+    });
+  tenant(request).logEvent({
+    category: "onboarding",
+    action: "account.create-transaction",
+    outcome: "prepared",
+    detail: { collateralCoinType: body.collateralCoinType },
+  });
+  return { transaction };
+});
+
 app.post("/api/config", async (request) => {
   const scoped = tenant(request);
   const config = makerConfigSchema.parse(request.body);
@@ -361,10 +384,11 @@ app.post("/api/config", async (request) => {
     action: "maker.update",
     outcome: "success",
     detail: {
-      marketId: config.marketId,
+      marketIds: config.markets.map((market) => market.marketId),
       mode: config.mode,
       spreadBps: config.spreadBps,
       quoteSizeUsd: config.quoteSizeUsd,
+      maxGrossExposureUsd: config.maxGrossExposureUsd,
     },
   });
   return { config };

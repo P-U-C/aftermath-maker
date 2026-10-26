@@ -3,6 +3,7 @@ import {
   loadAgentKeypair,
   type EndpointHealth,
   type MarketSummary,
+  type PortfolioSnapshot,
 } from "@puc/aftermath";
 import {
   assertSafe,
@@ -10,6 +11,9 @@ import {
   evaluateQuoteSafety,
   makerConfigSchema,
   type BuilderFeePolicy,
+  type MakerConfig,
+  type MakerMarket,
+  type RuntimeMarketSnapshot,
   type RuntimeSnapshot,
 } from "@puc/core";
 import type { TenantStore } from "./store.js";
@@ -20,6 +24,26 @@ export type RuntimeOptions = {
   mainnetAllowed: boolean;
   builderCode: () => BuilderFeePolicy | null;
 };
+
+const emptyRuntimeMarket = (market: MakerMarket): RuntimeMarketSnapshot => ({
+  id: market.marketId,
+  symbol: market.symbol,
+  status: "queued",
+  indexPrice: null,
+  bestBid: null,
+  bestAsk: null,
+  openInterestBase: null,
+  openInterestUsd: null,
+  openInterestUtilizationPct: null,
+  volume24hUsd: null,
+  fundingRate: null,
+  inventoryUsd: 0,
+  unrealizedPnlUsd: 0,
+  bidPrice: null,
+  askPrice: null,
+  updatedAt: null,
+  error: null,
+});
 
 const initialSnapshot = (): RuntimeSnapshot => ({
   mode: "observe",
@@ -38,6 +62,12 @@ const initialSnapshot = (): RuntimeSnapshot => ({
     bestAsk: null,
     updatedAt: null,
   },
+  markets: [],
+  portfolio: {
+    selectedMarkets: 0,
+    grossExposureUsd: 0,
+    unrealizedPnlUsd: 0,
+  },
   balances: {
     equityUsd: null,
     inventoryUsd: 0,
@@ -46,6 +76,13 @@ const initialSnapshot = (): RuntimeSnapshot => ({
   },
   quote: null,
   safety: [],
+});
+
+const emptyPortfolio = (): PortfolioSnapshot => ({
+  equityUsd: 0,
+  grossExposureUsd: 0,
+  unrealizedPnlUsd: 0,
+  positions: [],
 });
 
 const message = (error: unknown) =>
@@ -57,6 +94,7 @@ export class MakerRuntime {
   private generation = 0;
   private cyclePromise: Promise<void> | null = null;
   private markets: MarketSummary[] = [];
+  private marketIndex = 0;
 
   constructor(
     private readonly store: TenantStore,
@@ -67,6 +105,11 @@ export class MakerRuntime {
     this.snapshotValue = {
       ...this.snapshotValue,
       mode: config?.mode ?? "observe",
+      markets: config?.markets.map(emptyRuntimeMarket) ?? [],
+      portfolio: {
+        ...this.snapshotValue.portfolio,
+        selectedMarkets: config?.markets.length ?? 0,
+      },
       setupComplete: Boolean(
         this.store.getSetup() && this.store.getAgent()?.agentCapId,
       ),
@@ -99,18 +142,50 @@ export class MakerRuntime {
 
   async listMarkets(collateralCoinType: string): Promise<MarketSummary[]> {
     this.markets = await this.gateway.listMarkets(collateralCoinType);
+    const config = this.store.getConfig();
+    if (config) this.syncMarketRows(config);
     return this.markets;
+  }
+
+  private syncMarketRows(config: MakerConfig): void {
+    const previous = new Map(
+      this.snapshotValue.markets.map((market) => [market.id, market]),
+    );
+    this.snapshotValue.markets = config.markets.map((market) => {
+      const current = previous.get(market.marketId);
+      const summary = this.markets.find(
+        (candidate) => candidate.id === market.marketId,
+      );
+      return {
+        ...(current ?? emptyRuntimeMarket(market)),
+        symbol: market.symbol,
+        ...(summary
+          ? {
+              indexPrice: summary.indexPrice,
+              openInterestBase: summary.openInterestBase,
+              openInterestUsd: summary.openInterestUsd,
+              openInterestUtilizationPct: summary.openInterestUtilizationPct,
+              volume24hUsd: summary.volume24hUsd,
+              fundingRate: summary.fundingRate,
+            }
+          : {}),
+      };
+    });
+    this.snapshotValue.portfolio.selectedMarkets = config.markets.length;
   }
 
   start(): void {
     const config = this.store.getConfig();
-    if (!config) throw new Error("Select and configure a market first");
+    if (!config?.markets.length) {
+      throw new Error("Select and configure at least one market first");
+    }
     if (this.timer) return;
 
     this.generation += 1;
     const generation = this.generation;
     this.snapshotValue.running = true;
     this.snapshotValue.mode = config.mode;
+    this.syncMarketRows(config);
     void this.cycle({ executeLive: true, generation });
     this.timer = setInterval(
       () => void this.cycle({ executeLive: true, generation }),
@@ -121,11 +196,15 @@ export class MakerRuntime {
       category: "runtime",
       action: "start",
       outcome: "success",
-      detail: { mode: config.mode, marketId: config.marketId },
+      detail: {
+        mode: config.mode,
+        marketIds: config.markets.map((market) => market.marketId),
+        effectiveMarketRefreshMs: config.refreshMs * config.markets.length,
+      },
     });
   }
 
-  private stopScheduling(): void {
+  private stopScheduling(): boolean {
     const wasRunning = this.snapshotValue.running || Boolean(this.timer);
     this.generation += 1;
     if (this.timer) clearInterval(this.timer);
@@ -138,12 +217,57 @@ export class MakerRuntime {
         outcome: "success",
       });
     }
+    return wasRunning;
+  }
+
+  private async cancelOpenOrders(config: MakerConfig): Promise<void> {
+    const setup = this.store.getSetup();
+    const agent = this.store.getAgent();
+    if (
+      config.mode !== "live" ||
+      !setup ||
+      !agent?.agentCapId ||
+      !this.options.masterKey
+    ) {
+      return;
+    }
+
+    const signer = loadAgentKeypair({
+      masterKey: this.options.masterKey,
+      context: `account:${setup.accountId}`,
+      encryptedSecret: agent.encryptedSecret,
+    });
+    try {
+      const receipt = await this.gateway.cancelMakerOrders({
+        setup,
+        marketIds: config.markets.map((market) => market.marketId),
+        signer,
+        config,
+      });
+      this.store.logEvent({
+        category: "runtime",
+        action: "cancel-maker-orders",
+        outcome: receipt ? "confirmed" : "clear",
+        detail: receipt ?? {},
+      });
+    } catch (error) {
+      const errorText = message(error);
+      this.snapshotValue.lastError = `Quote cancellation failed: ${errorText}`;
+      this.store.logEvent({
+        category: "runtime",
+        action: "cancel-maker-orders",
+        outcome: "error",
+        detail: { error: errorText },
+      });
+    }
   }
 
   async stop(): Promise<void> {
+    const config = this.store.getConfig();
     const activeCycle = this.cyclePromise;
-    this.stopScheduling();
+    const wasRunning = this.stopScheduling();
     if (activeCycle) await activeCycle;
+    if (wasRunning && config) await this.cancelOpenOrders(config);
   }
 
   async cycle(
@@ -168,12 +292,16 @@ export class MakerRuntime {
     executeLive: boolean;
     generation: number;
   }): Promise<void> {
+    let selected: MakerMarket | null = null;
+    let config: MakerConfig | null = null;
     try {
-      const config = makerConfigSchema.parse(this.store.getConfig());
+      config = makerConfigSchema.parse(this.store.getConfig());
+      this.syncMarketRows(config);
+      selected = config.markets[this.marketIndex % config.markets.length]!;
       const setup = this.store.getSetup();
       const agent = this.store.getAgent();
       const { market, orderbook } = await this.gateway.getOrderbook(
-        config.marketId,
+        selected.marketId,
       );
       const bestBid = orderbook.bestBidPrice;
       const bestAsk = orderbook.bestAskPrice;
@@ -181,31 +309,30 @@ export class MakerRuntime {
         throw new Error("Orderbook has no two-sided price");
       }
 
-      let equityUsd: number | null = null;
-      let inventoryUsd = 0;
-      let unrealizedPnlUsd = 0;
+      let portfolio = emptyPortfolio();
       if (setup && agent?.agentCapId) {
-        const account = await this.gateway.getAgentAccountSnapshot({
+        portfolio = await this.gateway.getAgentPortfolioSnapshot({
           setup,
           agentAddress: agent.address,
-          marketId: config.marketId,
+          marketIds: config.markets.map((item) => item.marketId),
         });
-        equityUsd = account.equityUsd;
-        inventoryUsd = account.inventoryUsd;
-        unrealizedPnlUsd = account.unrealizedPnlUsd;
       }
-
+      const position = portfolio.positions.find(
+        (item) => item.marketId === selected!.marketId,
+      );
+      const inventoryUsd = position?.inventoryUsd ?? 0;
+      const marketPnlUsd = position?.unrealizedPnlUsd ?? 0;
       const observedAt = new Date();
       const quote = buildQuoteIntent({
         config,
         observation: {
-          marketId: config.marketId,
+          marketId: selected.marketId,
           bestBid,
           bestAsk,
           observedAt,
         },
         inventoryUsd,
-        unrealizedPnlUsd,
+        unrealizedPnlUsd: portfolio.unrealizedPnlUsd,
       });
       const safety = evaluateQuoteSafety({
         config,
@@ -215,30 +342,77 @@ export class MakerRuntime {
         hasAgentKey: Boolean(agent && this.options.masterKey),
         liveEnabled: this.options.liveEnabled,
         mainnetAllowed: this.options.mainnetAllowed,
+        portfolioGrossExposureUsd: portfolio.grossExposureUsd,
       });
+      const summary = this.markets.find(
+        (item) => item.id === selected!.marketId,
+      );
+      const openInterestBase = Math.abs(market.marketState.openInterest);
+      const maxOpenInterestBase = market.marketParams.maxOpenInterest;
+      const updatedAt = observedAt.toISOString();
 
       this.snapshotValue = {
         ...this.snapshotValue,
         mode: config.mode,
         cycle: this.snapshotValue.cycle + 1,
-        lastCycleAt: observedAt.toISOString(),
+        lastCycleAt: updatedAt,
         lastError: null,
         setupComplete: Boolean(setup && agent?.agentCapId),
         agentAddress: agent?.address ?? null,
         accountId: setup?.accountId ?? null,
         market: {
-          id: config.marketId,
-          symbol: market.metadata?.symbol ?? config.symbol,
+          id: selected.marketId,
+          symbol: market.metadata?.symbol ?? selected.symbol,
           indexPrice: market.indexPrice,
           bestBid,
           bestAsk,
-          updatedAt: observedAt.toISOString(),
+          updatedAt,
+        },
+        markets: this.snapshotValue.markets.map((row) => {
+          const rowPosition = portfolio.positions.find(
+            (item) => item.marketId === row.id,
+          );
+          if (row.id !== selected!.marketId) {
+            return {
+              ...row,
+              inventoryUsd: rowPosition?.inventoryUsd ?? row.inventoryUsd,
+              unrealizedPnlUsd:
+                rowPosition?.unrealizedPnlUsd ?? row.unrealizedPnlUsd,
+            };
+          }
+          return {
+            ...row,
+            symbol: market.metadata?.symbol ?? selected!.symbol,
+            status: "healthy",
+            indexPrice: market.indexPrice,
+            bestBid,
+            bestAsk,
+            openInterestBase,
+            openInterestUsd: openInterestBase * market.indexPrice,
+            openInterestUtilizationPct:
+              maxOpenInterestBase > 0
+                ? (openInterestBase / maxOpenInterestBase) * 100
+                : null,
+            volume24hUsd: summary?.volume24hUsd ?? row.volume24hUsd,
+            fundingRate: market.estimatedFundingRate(),
+            inventoryUsd,
+            unrealizedPnlUsd: marketPnlUsd,
+            bidPrice: quote.bidPrice,
+            askPrice: quote.askPrice,
+            updatedAt,
+            error: null,
+          };
+        }),
+        portfolio: {
+          selectedMarkets: config.markets.length,
+          grossExposureUsd: portfolio.grossExposureUsd,
+          unrealizedPnlUsd: portfolio.unrealizedPnlUsd,
         },
         balances: {
           ...this.snapshotValue.balances,
-          equityUsd,
+          equityUsd: setup ? portfolio.equityUsd : null,
           inventoryUsd,
-          unrealizedPnlUsd,
+          unrealizedPnlUsd: portfolio.unrealizedPnlUsd,
         },
         quote,
         safety,
@@ -249,7 +423,7 @@ export class MakerRuntime {
       if (config.mode === "paper") {
         this.store.logExecution({
           mode: "paper",
-          marketId: config.marketId,
+          marketId: selected.marketId,
           bidPrice: quote.bidPrice,
           askPrice: quote.askPrice,
           sizeUsd: quote.sizeUsd,
@@ -283,7 +457,7 @@ export class MakerRuntime {
       });
       this.store.logExecution({
         mode: "live",
-        marketId: config.marketId,
+        marketId: selected.marketId,
         digest: receipt.digest,
         endpoint: receipt.endpoint,
         bidPrice: quote.bidPrice,
@@ -294,15 +468,32 @@ export class MakerRuntime {
     } catch (error) {
       const errorText = message(error);
       const cancelled = inputs.generation !== this.generation;
-      if (!cancelled) this.snapshotValue.lastError = errorText;
+      if (!cancelled) {
+        this.snapshotValue.lastError = errorText;
+        if (selected) {
+          this.snapshotValue.markets = this.snapshotValue.markets.map((row) =>
+            row.id === selected!.marketId
+              ? { ...row, status: "error", error: errorText }
+              : row,
+          );
+        }
+      }
       this.store.logEvent({
         category: "runtime",
         action: "cycle",
         outcome: cancelled ? "cancelled" : "error",
-        detail: { error: errorText },
+        detail: {
+          error: errorText,
+          ...(selected ? { marketId: selected.marketId } : {}),
+        },
       });
       if (!cancelled && this.snapshotValue.mode === "live") {
         this.stopScheduling();
+        if (config) await this.cancelOpenOrders(config);
+      }
+    } finally {
+      if (config?.markets.length) {
+        this.marketIndex = (this.marketIndex + 1) % config.markets.length;
       }
     }
   }
@@ -310,6 +501,12 @@ export class MakerRuntime {
   async reconfigure(): Promise<void> {
     const wasRunning = this.snapshotValue.running;
     await this.stop();
+    this.marketIndex = 0;
+    const config = this.store.getConfig();
+    if (config) {
+      this.snapshotValue.mode = config.mode;
+      this.syncMarketRows(config);
+    }
     if (wasRunning) this.start();
   }
 }

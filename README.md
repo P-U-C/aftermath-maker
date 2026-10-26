@@ -24,10 +24,13 @@ SUI_FALLBACK_GRPC_URL=https://fullnode.mainnet.sui.io:443
 ## User setup
 
 1. Connect a Sui wallet and sign the readable login message.
-2. Choose an existing Aftermath perpetuals account.
-3. Approve one transaction.
+2. Choose an existing Aftermath USDC perpetuals account, or create one in Maker.
+3. Create the encrypted agent and approve its trading capability once.
+4. Select up to 12 markets, set portfolio limits, and begin in Observe.
 
-That transaction grants a dedicated trading-only agent, sends it 0.1 SUI for gas, and approves the disclosed builder fee. The agent cannot withdraw collateral or grant another agent. No further wallet prompts are required for normal quoting.
+The owner transaction grants a dedicated trading-only agent, sends it 0.1 SUI for gas, and approves the disclosed builder fee. The agent cannot withdraw collateral or grant another agent. No further wallet prompts are required for normal quoting.
+
+Creating an account does not deposit or allocate collateral. Fund the account before moving from Observe to Paper or Live.
 
 ## Public access
 
@@ -63,11 +66,23 @@ The fee is not hidden:
 
 Set `AFTERMATH_INTEGRATOR_FEE_BPS` to a value from `0` to `5`. An active integrator ID is required before a fee is attached.
 
+## Desk model
+
+Maker runs one bounded portfolio per approved wallet:
+
+- Markets are visited round-robin. The configured cycle interval multiplied by the number of selected markets is each market's effective refresh interval.
+- Every visit refreshes the book, current one-sided open interest, funding, account inventory, portfolio exposure, and unrealized PnL.
+- OI in USD is the current base OI multiplied by the live index price. OI capacity is measured against the protocol's market limit.
+- Quote prices skew with inventory. Per-market inventory, portfolio gross exposure, loss, leverage, book freshness, and gas limits remain hard gates.
+- A manual stop or live safety failure cancels only Maker's tagged orders across the selected markets. Manual orders are untouched.
+
+The operating rationale and remaining institutional gaps are documented in [docs/OPERATING_MODEL.md](docs/OPERATING_MODEL.md).
+
 ## Modes
 
-- **Observe:** read markets and compute quotes without submitting orders.
-- **Paper:** record simulated quote cycles.
-- **Live:** atomically replace a post-only bid and ask.
+- **Observe:** read every selected market and compute quotes without submitting orders.
+- **Paper:** rotate through the portfolio and record simulated quote cycles.
+- **Live:** atomically replace a post-only bid and ask on the current market.
 
 Live mode is fail-closed and requires both environment gates:
 
@@ -87,7 +102,8 @@ Start in Observe, move to Paper, and use small limits for the first live run.
 - Serialized quote cycles and stale-cycle cancellation.
 - Pre-sign transaction simulation and explicit gas ceiling.
 - Stable client order IDs that leave manual orders untouched.
-- Inventory, quote size, loss, leverage, spread, and stale-book limits.
+- Per-market inventory, portfolio gross exposure, quote size, loss, leverage, spread, and stale-book limits.
+- Manual stop and live safety failures cancel Maker-tagged quotes across the portfolio.
 - Any live-cycle error stops that wallet's engine.
 - Control API stays on the internal Docker network.
 

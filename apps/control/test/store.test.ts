@@ -23,8 +23,7 @@ describe("persistent control store", () => {
     });
     const store = databaseStore.forTenant(setup.ownerAddress);
     const config = makerConfigSchema.parse({
-      marketId: "0x5678",
-      symbol: "SUI",
+      markets: [{ marketId: "0x5678", symbol: "SUI" }],
     });
     const generated = createEncryptedAgent({
       masterKey,
@@ -72,14 +71,17 @@ describe("persistent control store", () => {
     store.close();
 
     const config = makerConfigSchema.parse({
-      marketId: "0x5678",
-      symbol: "SUI",
+      markets: [{ marketId: "0x5678", symbol: "SUI" }],
       maxUnrealizedLossUsd: 17,
     });
-    const legacy = { ...config, maxDailyLossUsd: 17 } as Record<
-      string,
-      unknown
-    >;
+    const legacy = {
+      ...config,
+      marketId: config.markets[0]!.marketId,
+      symbol: config.markets[0]!.symbol,
+      maxDailyLossUsd: 17,
+    } as Record<string, unknown>;
+    delete legacy.markets;
+    delete legacy.maxGrossExposureUsd;
     delete legacy.maxUnrealizedLossUsd;
 
     const ownerAddress = `0x${"3".repeat(64)}`;
@@ -104,9 +106,10 @@ describe("persistent control store", () => {
     database.close();
 
     const reopened = new Store(path);
-    expect(
-      reopened.forTenant(ownerAddress).getConfig()?.maxUnrealizedLossUsd,
-    ).toBe(17);
+    const migrated = reopened.forTenant(ownerAddress).getConfig();
+    expect(migrated?.maxUnrealizedLossUsd).toBe(17);
+    expect(migrated?.markets).toEqual([{ marketId: "0x5678", symbol: "SUI" }]);
+    expect(migrated?.maxGrossExposureUsd).toBe(50);
     reopened.close();
   });
 });
