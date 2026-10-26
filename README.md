@@ -4,6 +4,8 @@ A wallet-gated control plane for running bounded, non-custodial market-making st
 
 Maker is built for inspectability: users can see account readiness, collateral, gas runway, effective policy per market, quote freshness, fills, known costs, and the exact transaction behind each live action. It does not present volume as profit.
 
+The current strategy is inventory-aware quoting on Aftermath. It is not delta-neutral and does not place external hedge orders.
+
 Hosted service: [maker.permanentupperclass.com](https://maker.permanentupperclass.com)
 
 ## Run locally

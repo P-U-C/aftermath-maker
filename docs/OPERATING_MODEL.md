@@ -29,6 +29,20 @@ Maker currently uses the live Aftermath best bid and ask as its reference. It cr
 
 Every market has stable Maker client order IDs. Portfolio cancellation looks up pending orders and selects only those IDs. It does not cancel manual orders or orders created by another client.
 
+### Delta-neutral boundary
+
+The current engine is inventory-aware but not delta-neutral. It can skew or pull Aftermath quotes as inventory moves away from target, but it does not place an offsetting order on another venue.
+
+A delta-neutral extension would:
+
+1. calculate the delta created by each attributed Aftermath fill;
+2. aggregate small fills until the net delta crosses a configured hedge band;
+3. place an opposite spot or perpetual order on an independent hedge venue;
+4. verify the hedge fill and continue rebalancing toward the target; and
+5. report spread capture and incentives separately from hedge fees, slippage, funding, basis, gas, and residual delta.
+
+For example, a Maker bid filled for $1,000 of SUI perp creates positive SUI delta. A hedge engine would sell roughly $1,000 of SUI spot or short a SUI perp elsewhere. The position is only economically close to neutral after both legs are confirmed, and it still carries venue, basis, funding, liquidation, and execution risk.
+
 ### Independent freshness protection
 
 The rotation interval grows with the number of selected markets. Configuration is rejected unless the stale-quote cutoff can cover one complete rotation plus a buffer.

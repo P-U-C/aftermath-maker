@@ -371,6 +371,7 @@ function DashboardBody() {
   const [selectedAccount, setSelectedAccount] = useState("");
   const [busy, setBusy] = useState("");
   const [flattenArmed, setFlattenArmed] = useState(false);
+  const [advancedOpen, setAdvancedOpen] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [integratorId, setIntegratorId] = useState("");
   const [inspection, setInspection] = useState<{
@@ -1484,7 +1485,35 @@ function DashboardBody() {
               <span className="eyebrow">Strategy</span>
               <h2>Maker controls</h2>
             </div>
-            <Settings2 size={18} />
+            <button
+              type="button"
+              className="icon-button settings-toggle"
+              onClick={() => setAdvancedOpen((open) => !open)}
+              aria-expanded={advancedOpen}
+              aria-label={
+                advancedOpen
+                  ? "Hide advanced strategy controls"
+                  : "Show advanced strategy controls"
+              }
+              title={
+                advancedOpen
+                  ? "Hide advanced strategy controls"
+                  : "Show advanced strategy controls"
+              }
+            >
+              <Settings2 size={18} aria-hidden="true" />
+            </button>
+          </div>
+
+          <div className="execution-model" aria-label="Current execution model">
+            <div>
+              <span>Execution model</span>
+              <strong>Inventory-aware maker</strong>
+            </div>
+            <div>
+              <span>External hedge</span>
+              <strong className="unavailable">Not connected</strong>
+            </div>
           </div>
 
           <fieldset>
@@ -1550,7 +1579,13 @@ function DashboardBody() {
             </div>
           </fieldset>
 
-          <details className="market-overrides">
+          <details
+            className={
+              advancedOpen
+                ? "market-overrides advanced-control visible"
+                : "market-overrides advanced-control"
+            }
+          >
             <summary>
               <SlidersHorizontal size={15} />
               <span>Per-market overrides</span>
@@ -1744,7 +1779,13 @@ function DashboardBody() {
             </label>
           </div>
 
-          <div className="risk-field-grid">
+          <div
+            className={
+              advancedOpen
+                ? "risk-field-grid advanced-control visible"
+                : "risk-field-grid advanced-control"
+            }
+          >
             <label>
               <span>Per-pair inventory</span>
               <div className="input-unit">
@@ -1851,7 +1892,13 @@ function DashboardBody() {
             </label>
           </div>
 
-          <div className="timing-controls">
+          <div
+            className={
+              advancedOpen
+                ? "timing-controls advanced-control visible"
+                : "timing-controls advanced-control"
+            }
+          >
             <label>
               <span>Refresh interval</span>
               <input

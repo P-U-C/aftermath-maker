@@ -565,6 +565,61 @@ button:disabled {
   background: var(--green-soft);
 }
 
+.settings-toggle[aria-expanded="true"] {
+  color: var(--white);
+  background: var(--green);
+  border-color: var(--green);
+}
+
+.settings-toggle:focus-visible {
+  outline: 2px solid var(--green);
+  outline-offset: 2px;
+}
+
+.execution-model {
+  margin-top: 16px;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  border: 1px solid var(--line);
+  background: var(--white);
+}
+
+.execution-model > div {
+  min-width: 0;
+  padding: 9px 10px;
+  display: grid;
+  gap: 4px;
+  border-right: 1px solid var(--line);
+}
+
+.execution-model > div:last-child {
+  border-right: 0;
+}
+
+.execution-model span {
+  color: var(--muted);
+  font:
+    700 9px/1 ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    monospace;
+  text-transform: uppercase;
+}
+
+.execution-model strong {
+  font-size: 11px;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+
+.execution-model strong.unavailable {
+  color: #8f4638;
+}
+
+.advanced-control:not(.visible) {
+  display: none;
+}
+
 .price-line {
   margin-top: 28px;
   display: flex;
