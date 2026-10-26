@@ -179,7 +179,6 @@ app.addHook("onRequest", async (request, reply) => {
 });
 
 app.setErrorHandler((error, request, reply) => {
-  request.log.error({ err: error }, "request failed");
   const errorText =
     error && typeof error === "object" && "message" in error
       ? String(error.message)
@@ -194,6 +193,12 @@ app.setErrorHandler((error, request, reply) => {
             ? 503
             : 500
         : 500;
+
+  if (status >= 500) {
+    request.log.error({ err: error }, "request failed");
+  } else {
+    request.log.info({ status, error: errorText }, "request rejected");
+  }
   reply.code(status).send({ error: errorText });
 });
 
