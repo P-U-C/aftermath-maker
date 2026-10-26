@@ -1,0 +1,32 @@
+{
+  "name": "aftermath-maker",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Self-hosted Aftermath market-making control plane",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "npm run build -w @puc/core && npm run build -w @puc/aftermath && npm run build -w @puc/control && npm run build -w @puc/web",
+    "dev": "dotenv -e .env -- concurrently -n control,web -c green,cyan \"npm run dev -w @puc/control\" \"npm run dev -w @puc/web\"",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "test": "npm run test -w @puc/core && npm run test -w @puc/aftermath && npm run test -w @puc/control",
+    "typecheck": "tsc -b packages/core packages/aftermath apps/control --pretty false && npm run typecheck -w @puc/web",
+    "check": "npm run format:check && npm run typecheck && npm test && npm run build"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "devDependencies": {
+    "@types/node": "26.6.5",
+    "concurrently": "10.0.6",
+    "dotenv-cli": "11.0.0",
+    "playwright-core": "^1.64.1",
+    "prettier": "3.9.10",
+    "tsx": "4.23.15",
+    "typescript": "6.0.3",
+    "vitest": "5.0.5"
+  }
+}
