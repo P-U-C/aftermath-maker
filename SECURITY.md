@@ -1,34 +1,56 @@
 # Security model
 
-This service controls real perpetuals positions. It reduces custody risk; it does not remove market, smart-contract, oracle, liquidation, or validator risk.
+Maker controls real perpetuals positions. It reduces custody and automation risk; it does not remove market, smart-contract, oracle, liquidation, or validator risk.
 
-## Trust boundary
+## Identity and access
 
-The owner wallet remains the account administrator. The local agent receives an Aftermath agent capability that can trade but cannot:
+Public access is gated by the `maker_access::access::Registry` shared object on Sui mainnet.
+
+- Login uses a readable, origin-bound personal message.
+- Challenges are random, expire after five minutes, and are single-use.
+- The server verifies the signature against the claimed Sui address.
+- Session tokens are random, stored only as SHA-256 hashes, and delivered in `HttpOnly`, `Secure`, `SameSite=Strict` cookies.
+- Sessions expire after 12 hours.
+- Membership is re-read from chain at most 30 seconds after a change.
+- Each wallet has separate settings, agent ciphertext, runtime, executions, and audit events.
+
+The operator's `AdminCap` is the authority for membership changes. Keep it in the intended operator wallet. The API refuses to build a transaction that removes the operator's own membership.
+
+Bootstrap mode accepts the first signed wallet only while no registry is configured. It must remain behind Basic Auth and be disabled immediately after deployment. Never expose bootstrap mode directly to the public internet.
+
+## Trading authority
+
+The owner wallet remains the Aftermath account administrator. Its local agent capability can trade but cannot:
 
 - withdraw account collateral;
 - grant another agent; or
 - revoke or replace the administrator.
 
-The owner should keep enough SUI outside the agent for emergency revocation.
+Keep enough SUI in the owner wallet for emergency revocation.
 
 ## Secret handling
 
-- `MAKER_MASTER_KEY` encrypts the agent private key with AES-256-GCM.
-- A unique salt, IV, and authenticated account context are stored with the ciphertext.
-- The plaintext key is never returned by the API or dashboard.
-- `.env`, the SQLite volume, and backups are separate required assets. Possession of both the master key and database is sufficient to recover the agent.
-- Container logs redact the control token and encrypted signer fields.
+- `MAKER_MASTER_KEY` encrypts agent private keys with AES-256-GCM.
+- A unique salt, IV, and authenticated account context are stored with each ciphertext.
+- Plaintext agent keys are never returned by the API or dashboard.
+- `.env`, SQLite, and backups are separate required assets. The master key plus database can recover every tenant agent.
+- Logs redact control tokens, session tokens, signatures, and encrypted signer fields.
+- `CONTROL_TOKEN` exists only between the Next.js proxy and the internal control service.
 
-Keep `.env` mode `0600`. Store an offline copy separately from the database backup.
+Keep `.env` mode `0600` and store an offline copy separately from database backups.
 
-## Network exposure
+## Builder fee
 
-The control API is reachable only on the internal Docker network. The dashboard binds to `127.0.0.1` by default. The internal hosted deployment uses Cloudflare Tunnel to an Nginx virtual host protected by TLS and HTTP Basic Authentication; no application port is directly published to the internet.
+Aftermath assigns the service a numeric integrator ID. The default order fee is 1 bp (0.01%) of filled notional.
 
-The edge credential is stored at `~/.config/maker/access.env` with mode `0600`, and its password hash is stored in `/etc/nginx/htpasswd-maker`. Basic Auth is an internal-phase gate, not the eventual customer identity system.
+The account owner approves the exact fee ceiling during setup. Runtime policy rejects:
 
-All mutating control requests also require `CONTROL_TOKEN`. The browser never receives that token: the Next.js server-side proxy adds it.
+- a different integrator ID;
+- a higher or lower fee than configured;
+- builder fields outside the expected `builderCode` object; or
+- a builder code when no integrator is configured.
+
+Aftermath's current builder code applies to both maker and taker fills. The dashboard discloses the rate before the owner signs. The owner can revoke the approval through Aftermath.
 
 ## Live-trading gates
 
@@ -36,26 +58,33 @@ A live strategy requires all of the following:
 
 - `LIVE_TRADING_ENABLED=true`;
 - `ALLOW_MAINNET=true`;
-- a confirmed agent capability;
+- a confirmed trading-only agent capability;
 - an encrypted signer;
 - fresh two-sided orderbook data;
-- quote, inventory, loss, and spread checks; and
+- quote, inventory, loss, spread, and leverage checks; and
 - successful Sui transaction simulation.
 
-Any failed live cycle stops the engine.
+Any failed live cycle stops that wallet's engine.
 
 ## Transaction policy
 
-Orders are post-only and replaced atomically with cancel-and-place. Stable client order IDs restrict cancellation to this service's bid and ask. Manual refresh is read-only in live mode, and stop or reconfigure invalidates an in-flight cycle before signing. The request object is recursively rejected if it contains any builder-fee field. Gas has an explicit maximum.
+Orders are post-only and replaced atomically with cancel-and-place. Stable client order IDs restrict cancellation to Maker's own bid and ask. Manual refresh is read-only in live mode. Stop and reconfigure invalidate an in-flight cycle before signing. Gas has an explicit maximum.
 
-The transaction itself is built by the official Aftermath API. That remains an external trust dependency. Simulation catches execution failures but is not a semantic proof of every Move call. Before a public release, add a package-and-function allowlist over the fully resolved transaction commands.
+Transactions are built by the official Aftermath SDK/API. That is an external trust dependency. Simulation detects execution failures but is not a semantic proof of every Move call. Pin and review SDK upgrades, especially changes to agent permissions, order builders, or builder-code fields.
+
+## Network exposure
+
+The control API is reachable only on the internal Docker network. The web service binds to `127.0.0.1` by default and is published through Cloudflare Tunnel and Nginx.
+
+During bootstrap, Nginx uses Basic Auth. After the registry is confirmed, deploy `deploy/nginx-public.conf`; wallet authentication and on-chain membership then become the public gate.
 
 ## Incident response
 
-1. Stop the engine in the dashboard or run `docker compose stop control`.
-2. Use the owner wallet to revoke the displayed agent capability.
-3. Preserve `docker compose logs control` and the database backup.
-4. Rotate `CONTROL_TOKEN` and `MAKER_MASTER_KEY`.
-5. Provision a new agent only after the root cause is understood.
+1. Stop the affected engine in the dashboard.
+2. Revoke that agent capability with the owner wallet.
+3. Remove the wallet from the on-chain registry if access is compromised.
+4. Preserve control logs and a database backup.
+5. Rotate `CONTROL_TOKEN` and `MAKER_MASTER_KEY` when exposure is possible.
+6. Provision a new agent only after reconciling on-chain state.
 
-Never delete the encrypted signer during an uncertain broadcast. Reconcile the transaction digest and on-chain capability state first.
+Never delete an encrypted signer during an uncertain broadcast. Reconcile the transaction digest and capability state first.

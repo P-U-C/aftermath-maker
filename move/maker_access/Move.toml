@@ -1,0 +1,8 @@
+[package]
+name = "maker_access"
+edition = "2024"
+
+[dependencies]
+
+[addresses]
+maker_access = "0x0"

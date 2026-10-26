@@ -9,16 +9,16 @@ import {
   buildQuoteIntent,
   evaluateQuoteSafety,
   makerConfigSchema,
+  type BuilderFeePolicy,
   type RuntimeSnapshot,
 } from "@puc/core";
-import type { Store } from "./store.js";
+import type { TenantStore } from "./store.js";
 
-type RuntimeOptions = {
+export type RuntimeOptions = {
   masterKey?: string;
   liveEnabled: boolean;
   mainnetAllowed: boolean;
-  preferredEndpoint?: string;
-  fallbackEndpoint?: string;
+  builderCode: () => BuilderFeePolicy | null;
 };
 
 const initialSnapshot = (): RuntimeSnapshot => ({
@@ -52,7 +52,6 @@ const message = (error: unknown) =>
   error instanceof Error ? error.message : String(error);
 
 export class MakerRuntime {
-  private gateway: AftermathGateway | null = null;
   private snapshotValue = initialSnapshot();
   private timer: NodeJS.Timeout | null = null;
   private generation = 0;
@@ -60,48 +59,26 @@ export class MakerRuntime {
   private markets: MarketSummary[] = [];
 
   constructor(
-    private readonly store: Store,
+    private readonly store: TenantStore,
+    private readonly gateway: AftermathGateway,
     private readonly options: RuntimeOptions,
-  ) {}
-
-  async initialize(): Promise<void> {
-    try {
-      this.gateway = await AftermathGateway.create({
-        ...(this.options.preferredEndpoint
-          ? { preferredEndpoint: this.options.preferredEndpoint }
-          : {}),
-        ...(this.options.fallbackEndpoint
-          ? { fallbackEndpoint: this.options.fallbackEndpoint }
-          : {}),
-      });
-      const config = this.store.getConfig();
-      this.snapshotValue = {
-        ...this.snapshotValue,
-        mode: config?.mode ?? "observe",
-        setupComplete: Boolean(
-          this.store.getSetup() && this.store.getAgent()?.agentCapId,
-        ),
-        agentAddress: this.store.getAgent()?.address ?? null,
-        accountId: this.store.getSetup()?.accountId ?? null,
-      };
-      this.store.logEvent({
-        category: "system",
-        action: "gateway.initialize",
-        outcome: "success",
-        detail: {
-          endpoint: this.gateway.endpoint,
-          health: this.gateway.endpointHealth,
-        },
-      });
-    } catch (error) {
-      this.snapshotValue.lastError = message(error);
-      this.store.logEvent({
-        category: "system",
-        action: "gateway.initialize",
-        outcome: "error",
-        detail: { error: message(error) },
-      });
-    }
+  ) {
+    const config = this.store.getConfig();
+    this.snapshotValue = {
+      ...this.snapshotValue,
+      mode: config?.mode ?? "observe",
+      setupComplete: Boolean(
+        this.store.getSetup() && this.store.getAgent()?.agentCapId,
+      ),
+      agentAddress: this.store.getAgent()?.address ?? null,
+      accountId: this.store.getSetup()?.accountId ?? null,
+    };
+    this.store.logEvent({
+      category: "system",
+      action: "runtime.initialize",
+      outcome: "success",
+      detail: { endpoint: this.gateway.endpoint },
+    });
   }
 
   get snapshot(): RuntimeSnapshot {
@@ -109,24 +86,19 @@ export class MakerRuntime {
   }
 
   get endpointHealth(): EndpointHealth[] {
-    return this.gateway?.endpointHealth ?? [];
+    return this.gateway.endpointHealth;
   }
 
-  get activeEndpoint(): string | null {
-    return this.gateway?.endpoint ?? null;
+  get activeEndpoint(): string {
+    return this.gateway.endpoint;
   }
 
   requireGateway(): AftermathGateway {
-    if (!this.gateway) {
-      throw new Error(
-        this.snapshotValue.lastError ?? "Aftermath gateway is unavailable",
-      );
-    }
     return this.gateway;
   }
 
   async listMarkets(collateralCoinType: string): Promise<MarketSummary[]> {
-    this.markets = await this.requireGateway().listMarkets(collateralCoinType);
+    this.markets = await this.gateway.listMarkets(collateralCoinType);
     return this.markets;
   }
 
@@ -197,11 +169,12 @@ export class MakerRuntime {
     generation: number;
   }): Promise<void> {
     try {
-      const gateway = this.requireGateway();
       const config = makerConfigSchema.parse(this.store.getConfig());
       const setup = this.store.getSetup();
       const agent = this.store.getAgent();
-      const { market, orderbook } = await gateway.getOrderbook(config.marketId);
+      const { market, orderbook } = await this.gateway.getOrderbook(
+        config.marketId,
+      );
       const bestBid = orderbook.bestBidPrice;
       const bestAsk = orderbook.bestAskPrice;
       if (bestBid === undefined || bestAsk === undefined) {
@@ -212,7 +185,7 @@ export class MakerRuntime {
       let inventoryUsd = 0;
       let unrealizedPnlUsd = 0;
       if (setup && agent?.agentCapId) {
-        const account = await gateway.getAgentAccountSnapshot({
+        const account = await this.gateway.getAgentAccountSnapshot({
           setup,
           agentAddress: agent.address,
           marketId: config.marketId,
@@ -300,11 +273,12 @@ export class MakerRuntime {
         context: `account:${setup.accountId}`,
         encryptedSecret: agent.encryptedSecret,
       });
-      const receipt = await gateway.executeQuote({
+      const receipt = await this.gateway.executeQuote({
         setup,
         config,
         quote,
         signer,
+        builderCode: this.options.builderCode(),
         shouldContinue: executionIsCurrent,
       });
       this.store.logExecution({

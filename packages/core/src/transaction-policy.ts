@@ -1,25 +1,68 @@
-const FORBIDDEN_KEYS = new Set([
+const BUILDER_FIELDS = new Set([
   "builderCode",
   "integratorId",
   "integratorFee",
   "maxIntegratorFee",
 ]);
 
-export function assertNoBuilderFee(value: unknown, path = "request"): void {
+export type BuilderFeePolicy = {
+  integratorId: number;
+  integratorFee: number;
+};
+
+function sameFee(actual: number, expected: number): boolean {
+  return Math.abs(actual - expected) <= Number.EPSILON * 8;
+}
+
+export function assertBuilderFeePolicy(
+  value: unknown,
+  expected: BuilderFeePolicy | null,
+  path = "request",
+): void {
   if (Array.isArray(value)) {
     value.forEach((item, index) =>
-      assertNoBuilderFee(item, `${path}[${index}]`),
+      assertBuilderFeePolicy(item, expected, `${path}[${index}]`),
     );
     return;
   }
   if (!value || typeof value !== "object") return;
 
   for (const [key, child] of Object.entries(value)) {
-    if (FORBIDDEN_KEYS.has(key)) {
-      throw new Error(`Builder fee field is forbidden at ${path}.${key}`);
+    if (key === "builderCode") {
+      if (!expected) {
+        throw new Error(`Builder fee field is forbidden at ${path}.${key}`);
+      }
+      if (!child || typeof child !== "object" || Array.isArray(child)) {
+        throw new Error(`Invalid builder fee at ${path}.${key}`);
+      }
+      const builderCode = child as Record<string, unknown>;
+      if (
+        builderCode.integratorId !== expected.integratorId ||
+        typeof builderCode.integratorFee !== "number" ||
+        !sameFee(builderCode.integratorFee, expected.integratorFee)
+      ) {
+        throw new Error(`Unexpected builder fee at ${path}.${key}`);
+      }
+      const extra = Object.keys(builderCode).filter(
+        (field) => !["integratorId", "integratorFee"].includes(field),
+      );
+      if (extra.length) {
+        throw new Error(
+          `Unexpected builder fee field at ${path}.${key}.${extra[0]}`,
+        );
+      }
+      continue;
     }
-    assertNoBuilderFee(child, `${path}.${key}`);
+
+    if (BUILDER_FIELDS.has(key)) {
+      throw new Error(`Builder fee field is misplaced at ${path}.${key}`);
+    }
+    assertBuilderFeePolicy(child, expected, `${path}.${key}`);
   }
+}
+
+export function assertNoBuilderFee(value: unknown, path = "request"): void {
+  assertBuilderFeePolicy(value, null, path);
 }
 
 export class MutationLock {

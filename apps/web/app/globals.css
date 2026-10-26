@@ -87,6 +87,109 @@ button:disabled {
   border: 2px solid var(--black);
 }
 
+.access-shell {
+  min-height: 100vh;
+  padding: 0 28px 32px;
+  background:
+    linear-gradient(rgba(20, 24, 22, 0.035) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(20, 24, 22, 0.035) 1px, transparent 1px),
+    var(--paper);
+  background-size: 32px 32px;
+}
+
+.access-header {
+  height: 78px;
+  max-width: 1180px;
+  margin: 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid var(--ink);
+}
+
+.access-stage {
+  width: min(620px, 100%);
+  min-height: calc(100vh - 160px);
+  margin: 0 auto;
+  display: grid;
+  align-content: center;
+  justify-items: center;
+  text-align: center;
+}
+
+.access-seal {
+  width: 58px;
+  height: 58px;
+  margin-bottom: 24px;
+  display: grid;
+  place-items: center;
+  color: var(--paper);
+  background: var(--black);
+  border: 2px solid var(--black);
+  box-shadow: inset 0 0 0 4px var(--paper);
+}
+
+.access-stage h1 {
+  margin: 10px 0 0;
+  font:
+    500 48px/1.05 Georgia,
+    "Times New Roman",
+    serif;
+}
+
+.access-stage > p {
+  max-width: 520px;
+  margin: 18px 0 0;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1.65;
+}
+
+.access-button {
+  min-width: 190px;
+  margin-top: 24px;
+  color: var(--white) !important;
+  background: var(--green) !important;
+  border-color: var(--green) !important;
+}
+
+.access-notice {
+  width: min(520px, 100%);
+  margin-top: 14px;
+  padding: 10px 12px;
+  color: #5e2b1d;
+  background: #ffded5;
+  border: 1px solid #e89a87;
+  font-size: 12px;
+}
+
+.access-proof {
+  width: min(520px, 100%);
+  margin-top: 32px;
+  padding: 14px 0;
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+}
+
+.access-proof span,
+.access-proof strong {
+  display: block;
+  font-size: 10px;
+}
+
+.access-proof span {
+  color: var(--muted);
+  text-transform: uppercase;
+}
+
+.access-proof strong {
+  grid-row: 2;
+  margin-top: 5px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
 .topbar {
   height: 78px;
   max-width: 1500px;
@@ -238,7 +341,8 @@ button:disabled {
 
 .onboarding,
 .workspace,
-.lower-grid {
+.lower-grid,
+.operator-panel {
   max-width: 1500px;
   margin: 18px auto 0;
 }
@@ -882,6 +986,73 @@ input[type="range"] {
   font-size: 11px;
 }
 
+.operator-panel {
+  padding: 20px;
+  color: var(--paper);
+  background: var(--black);
+  border: 1px solid var(--black);
+}
+
+.operator-panel .eyebrow {
+  color: #9ad8bb;
+}
+
+.operator-grid {
+  margin-top: 18px;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  border: 1px solid #4e5651;
+}
+
+.operator-action {
+  min-height: 92px;
+  padding: 14px;
+  display: grid;
+  grid-template-columns: 36px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  border-right: 1px solid #4e5651;
+}
+
+.operator-action:nth-child(2) {
+  border-right: 0;
+}
+
+.operator-action .step-icon {
+  color: #9ad8bb;
+}
+
+.operator-action strong {
+  font-size: 12px;
+}
+
+.operator-action p {
+  margin: 5px 0 0;
+  color: #aeb6b1;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.member-action {
+  grid-column: 1 / -1;
+  border-top: 1px solid #4e5651;
+  border-right: 0;
+}
+
+.member-action input {
+  width: min(560px, 100%);
+  height: 36px;
+  margin-top: 10px;
+  color: var(--paper);
+  background: #252a27;
+  border: 1px solid #59615c;
+}
+
+.member-buttons {
+  display: flex;
+  gap: 7px;
+}
+
 footer {
   max-width: 1500px;
   min-height: 50px;
@@ -937,8 +1108,31 @@ footer a {
 }
 
 @media (max-width: 720px) {
-  .shell {
+  .shell,
+  .access-shell {
     padding: 0 12px 16px;
+  }
+
+  .access-header {
+    height: 68px;
+  }
+
+  .access-stage {
+    min-height: calc(100vh - 100px);
+  }
+
+  .access-stage h1 {
+    font-size: 36px;
+  }
+
+  .access-proof {
+    grid-template-columns: 1fr;
+    gap: 4px;
+  }
+
+  .access-proof strong {
+    grid-row: auto;
+    margin: 0 0 8px;
   }
 
   .topbar {
@@ -1050,6 +1244,27 @@ footer a {
 
   .event-row i {
     display: none;
+  }
+
+  .operator-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .operator-action,
+  .operator-action:nth-child(2) {
+    grid-column: auto;
+    border-right: 0;
+    border-bottom: 1px solid #4e5651;
+  }
+
+  .member-action {
+    grid-template-columns: 36px minmax(0, 1fr);
+    border-top: 0;
+    border-bottom: 0;
+  }
+
+  .member-buttons {
+    grid-column: 2;
   }
 
   footer {

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  assertBuilderFeePolicy,
   assertNoBuilderFee,
   buildQuoteIntent,
   evaluateQuoteSafety,
@@ -117,6 +118,33 @@ describe("transaction policy", () => {
     expect(() =>
       assertNoBuilderFee({ order: { builderCode: { integratorId: 2 } } }),
     ).toThrow("forbidden");
+  });
+
+  it("allows only the disclosed builder code and exact fee", () => {
+    const request = {
+      order: { builderCode: { integratorId: 7, integratorFee: 0.0001 } },
+    };
+    expect(() =>
+      assertBuilderFeePolicy(request, {
+        integratorId: 7,
+        integratorFee: 0.0001,
+      }),
+    ).not.toThrow();
+    expect(() =>
+      assertBuilderFeePolicy(request, {
+        integratorId: 7,
+        integratorFee: 0.0002,
+      }),
+    ).toThrow("Unexpected builder fee");
+    expect(() =>
+      assertBuilderFeePolicy(
+        { integratorId: 7 },
+        {
+          integratorId: 7,
+          integratorFee: 0.0001,
+        },
+      ),
+    ).toThrow("misplaced");
   });
 
   it("serializes mutations", async () => {

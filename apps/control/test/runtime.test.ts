@@ -13,13 +13,14 @@ function createHarness() {
     `aftermath-maker-${randomBytes(8).toString("hex")}`,
   );
   mkdirSync(directory, { recursive: true });
-  const store = new Store(join(directory, "maker.db"));
+  const databaseStore = new Store(join(directory, "maker.db"));
   const masterKey = randomBytes(32).toString("base64");
   const setup = setupSchema.parse({
     ownerAddress: `0x${"1".repeat(64)}`,
     accountId: "42",
     accountCapId: "0x1234",
   });
+  const store = databaseStore.forTenant(setup.ownerAddress);
   const config = makerConfigSchema.parse({
     marketId: "0x5678",
     symbol: "SUI",
@@ -64,16 +65,16 @@ function createHarness() {
     },
   };
 
-  const runtime = new MakerRuntime(store, {
+  const runtime = new MakerRuntime(store, gateway as never, {
     masterKey,
     liveEnabled: true,
     mainnetAllowed: true,
+    builderCode: () => null,
   });
-  (runtime as unknown as { gateway: unknown }).gateway = gateway;
 
   return {
     runtime,
-    store,
+    store: databaseStore,
     gateway,
     executions: () => executionCount,
     setExecutions: (value: number) => {

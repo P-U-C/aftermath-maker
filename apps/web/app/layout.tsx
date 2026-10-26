@@ -3,9 +3,9 @@ import "./globals.css";
 
 export const metadata: Metadata = {
   title: "Maker | Aftermath on Sui",
-  description: "Private market-making control plane for Aftermath on Sui",
+  description: "Wallet-gated autonomous market making for Aftermath on Sui",
   applicationName: "Maker",
-  robots: { index: false, follow: false },
+  robots: { index: true, follow: true },
 };
 
 export default function RootLayout({

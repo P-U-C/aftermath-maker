@@ -9,7 +9,7 @@ const Dashboard = dynamic(
     loading: () => (
       <main className="loading-shell">
         <div className="loading-mark">AM</div>
-        <span>Starting private control plane...</span>
+        <span>Starting Maker...</span>
       </main>
     ),
   },

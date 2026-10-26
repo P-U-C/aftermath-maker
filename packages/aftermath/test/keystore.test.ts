@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildQuoteReplacementRequest,
   createEncryptedAgent,
+  decodeIntegratorId,
   decryptSecret,
   encryptSecret,
   loadAgentKeypair,
@@ -30,6 +31,33 @@ describe("maker order isolation", () => {
       MAKER_BID_CLIENT_ORDER_ID,
       MAKER_ASK_CLIENT_ORDER_ID,
     ]);
+    expect(request.builderCode).toBeUndefined();
+  });
+
+  it("attaches the configured builder code to the whole atomic batch", () => {
+    const request = buildQuoteReplacementRequest({
+      marketId: "0x1234",
+      bidPrice: 990n,
+      askPrice: 1_010n,
+      size: 5n,
+      leverage: 1,
+      hasPosition: false,
+      builderCode: { integratorId: 7, integratorFee: 0.0001 },
+    });
+
+    expect(request.builderCode).toEqual({
+      integratorId: 7,
+      integratorFee: 0.0001,
+    });
+  });
+});
+
+describe("builder registration", () => {
+  it("decodes Aftermath's little-endian u32 registration result", () => {
+    expect(decodeIntegratorId(Uint8Array.from([15, 0, 0, 0]))).toBe(15);
+    expect(() => decodeIntegratorId(Uint8Array.from([1, 2]))).toThrow(
+      "four-byte",
+    );
   });
 });
 

@@ -14,14 +14,18 @@ import {
   ArrowUpRight,
   CircleStop,
   ExternalLink,
+  Coins,
   Gauge,
   KeyRound,
+  LockKeyhole,
+  LogOut,
   Play,
   RefreshCw,
   Search,
   Server,
   Settings2,
   ShieldCheck,
+  UserPlus,
   WalletCards,
 } from "lucide-react";
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
@@ -123,6 +127,27 @@ type AuditEvent = {
   detail: Record<string, unknown>;
 };
 
+type AccessIdentity = {
+  ownerAddress: string;
+  operator: boolean;
+  registryConfigured: boolean;
+  registryObjectId: string | null;
+};
+
+type BuilderCode = {
+  integratorId: number;
+  integratorFee: number;
+};
+
+type OperatorStatus = {
+  operatorAddress: string;
+  registryObjectId: string | null;
+  packageId: string | null;
+  adminCapId: string | null;
+  builderCode: BuilderCode | null;
+  bootstrap: boolean;
+};
+
 const USDC =
   "0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC";
 
@@ -142,6 +167,15 @@ const defaultConfig: MakerConfig = {
   inventorySkewBps: 20,
 };
 
+class RequestError extends Error {
+  constructor(
+    message: string,
+    public readonly status: number,
+  ) {
+    super(message);
+  }
+}
+
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const response = await fetch(`/api/control/${path}`, {
     ...options,
@@ -152,8 +186,12 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
     cache: "no-store",
   });
   const data = (await response.json()) as T & { error?: string };
-  if (!response.ok)
-    throw new Error(data.error ?? `Request failed: ${response.status}`);
+  if (!response.ok) {
+    throw new RequestError(
+      data.error ?? `Request failed: ${response.status}`,
+      response.status,
+    );
+  }
   return data;
 }
 
@@ -173,6 +211,13 @@ const money = (value: number | null, digits = 2) =>
 function DashboardBody() {
   const account = useCurrentAccount();
   const wallet = useDAppKit();
+  const [identity, setIdentity] = useState<AccessIdentity | null>(null);
+  const [authChecked, setAuthChecked] = useState(false);
+  const [builderCode, setBuilderCode] = useState<BuilderCode | null>(null);
+  const [operatorStatus, setOperatorStatus] = useState<OperatorStatus | null>(
+    null,
+  );
+  const [memberAddress, setMemberAddress] = useState("");
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
   const [markets, setMarkets] = useState<Market[]>([]);
   const [config, setConfig] = useState<MakerConfig>(defaultConfig);
@@ -192,12 +237,15 @@ function DashboardBody() {
   const refresh = useCallback(async () => {
     const [statusResult, configResult, setupResult, eventResult] =
       await Promise.all([
-        request<{ snapshot: Snapshot }>("api/status"),
+        request<{ snapshot: Snapshot; builderCode: BuilderCode | null }>(
+          "api/status",
+        ),
         request<{ config: MakerConfig | null }>("api/config"),
         request<SetupState>("api/setup"),
         request<{ events: AuditEvent[] }>("api/events?limit=12"),
       ]);
     setSnapshot(statusResult.snapshot);
+    setBuilderCode(statusResult.builderCode);
     setSetup(setupResult);
     setEvents(eventResult.events);
     if (configResult.config) setConfig(configResult.config);
@@ -218,33 +266,220 @@ function DashboardBody() {
   }, [config.marketId]);
 
   useEffect(() => {
+    let active = true;
+    request<AccessIdentity>("api/auth/me")
+      .then((result) => {
+        if (active) setIdentity(result);
+      })
+      .catch((error) => {
+        if (
+          active &&
+          !(error instanceof RequestError && error.status === 401)
+        ) {
+          setNotice(error instanceof Error ? error.message : String(error));
+        }
+      })
+      .finally(() => {
+        if (active) setAuthChecked(true);
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!identity) return;
     void refresh().catch((error) => setNotice(String(error)));
     void loadMarkets().catch((error) => setNotice(String(error)));
+    if (identity.operator) {
+      void request<OperatorStatus>("api/operator/status")
+        .then(setOperatorStatus)
+        .catch((error) => setNotice(String(error)));
+    }
     const timer = setInterval(() => {
       void refresh().catch(() => undefined);
     }, 5_000);
     return () => clearInterval(timer);
-  }, [refresh, loadMarkets]);
+  }, [identity, refresh, loadMarkets]);
 
   useEffect(() => {
-    if (!account?.address || setup.setup) {
+    if (
+      !identity ||
+      !account?.address ||
+      account.address.toLowerCase() !== identity.ownerAddress ||
+      setup.setup
+    ) {
       setAccounts([]);
       return;
     }
     void request<{ accounts: AccountCap[] }>(
-      `api/accounts?walletAddress=${account.address}&collateralCoinType=${encodeURIComponent(USDC)}`,
+      `api/accounts?collateralCoinType=${encodeURIComponent(USDC)}`,
     )
       .then((result) => {
         setAccounts(result.accounts);
         setSelectedAccount(result.accounts[0]?.accountId ?? "");
       })
       .catch((error) => setNotice(error.message));
-  }, [account?.address, setup.setup]);
+  }, [account?.address, identity, setup.setup]);
 
   const selectedCap = useMemo(
     () => accounts.find((candidate) => candidate.accountId === selectedAccount),
     [accounts, selectedAccount],
   );
+
+  async function signIn() {
+    if (!account?.address) return;
+    setBusy("sign-in");
+    setNotice(null);
+    try {
+      const challenge = await request<{
+        challengeId: string;
+        message: string;
+      }>("api/auth/challenge", {
+        method: "POST",
+        body: JSON.stringify({ address: account.address }),
+      });
+      const signed = await wallet.signPersonalMessage({
+        message: new TextEncoder().encode(challenge.message),
+      });
+      await request("api/auth/verify", {
+        method: "POST",
+        body: JSON.stringify({
+          challengeId: challenge.challengeId,
+          address: account.address,
+          message: challenge.message,
+          signature: signed.signature,
+        }),
+      });
+      const nextIdentity = await request<AccessIdentity>("api/auth/me");
+      setIdentity(nextIdentity);
+      setNotice("Wallet verified against the Sui access registry.");
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy("");
+      setAuthChecked(true);
+    }
+  }
+
+  async function logout() {
+    await request("api/auth/logout", { method: "POST", body: "{}" }).catch(
+      () => undefined,
+    );
+    setIdentity(null);
+    setOperatorStatus(null);
+    setSnapshot(null);
+  }
+
+  async function deployWhitelist() {
+    if (!account?.address) return;
+    await mutate("deploy-whitelist", async () => {
+      const manifest = (await fetch("/maker-access.json").then((response) =>
+        response.json(),
+      )) as { modules: string[]; dependencies: string[] };
+      const tx = new Transaction();
+      const upgradeCap = tx.publish({
+        modules: manifest.modules,
+        dependencies: manifest.dependencies,
+      });
+      tx.transferObjects([upgradeCap], account.address);
+      const result = await wallet.signAndExecuteTransaction({
+        transaction: tx,
+      });
+      if (result.$kind === "FailedTransaction") {
+        throw new Error(
+          result.FailedTransaction.status.error?.message ??
+            "Whitelist deployment failed",
+        );
+      }
+      await request("api/operator/whitelist/confirm-deployment", {
+        method: "POST",
+        body: JSON.stringify({ digest: result.Transaction.digest }),
+      });
+      const [nextIdentity, nextOperatorStatus] = await Promise.all([
+        request<AccessIdentity>("api/auth/me"),
+        request<OperatorStatus>("api/operator/status"),
+      ]);
+      setIdentity(nextIdentity);
+      setOperatorStatus(nextOperatorStatus);
+      setNotice(
+        "On-chain access registry deployed. Your wallet is member one.",
+      );
+    });
+  }
+
+  async function registerBuilderCode() {
+    await mutate("register-builder", async () => {
+      const built = await request<{
+        transaction: string;
+        expectedIntegratorId: number;
+      }>("api/operator/builder/registration-transaction", {
+        method: "POST",
+        body: "{}",
+      });
+      const result = await wallet.signAndExecuteTransaction({
+        transaction: Transaction.from(built.transaction),
+      });
+      if (result.$kind === "FailedTransaction") {
+        throw new Error(
+          result.FailedTransaction.status.error?.message ??
+            "Builder registration failed",
+        );
+      }
+      const confirmed = await request<{ builderCode: BuilderCode }>(
+        "api/operator/builder/confirm-registration",
+        {
+          method: "POST",
+          body: JSON.stringify({
+            digest: result.Transaction.digest,
+            expectedIntegratorId: built.expectedIntegratorId,
+          }),
+        },
+      );
+      setBuilderCode(confirmed.builderCode);
+      setOperatorStatus((current) =>
+        current ? { ...current, builderCode: confirmed.builderCode } : current,
+      );
+      setNotice(
+        `Builder code #${confirmed.builderCode.integratorId} registered at 1 bp.`,
+      );
+    });
+  }
+
+  async function updateMember(action: "add" | "remove") {
+    if (!memberAddress) return;
+    await mutate(`member-${action}`, async () => {
+      const built = await request<{ transaction: string }>(
+        "api/operator/whitelist/transaction",
+        {
+          method: "POST",
+          body: JSON.stringify({ action, memberAddress }),
+        },
+      );
+      const result = await wallet.signAndExecuteTransaction({
+        transaction: Transaction.from(built.transaction),
+      });
+      if (result.$kind === "FailedTransaction") {
+        throw new Error(
+          result.FailedTransaction.status.error?.message ??
+            "Membership transaction failed",
+        );
+      }
+      await request("api/operator/whitelist/confirm-member", {
+        method: "POST",
+        body: JSON.stringify({
+          address: memberAddress,
+          expected: action === "add",
+        }),
+      });
+      setNotice(
+        action === "add"
+          ? "Wallet added on-chain."
+          : "Wallet removed on-chain.",
+      );
+      setMemberAddress("");
+    });
+  }
 
   async function mutate(label: string, action: () => Promise<void>) {
     setBusy(label);
@@ -342,6 +577,66 @@ function DashboardBody() {
     });
   }
 
+  if (!authChecked) {
+    return (
+      <main className="loading-shell">
+        <div className="loading-mark">M</div>
+        <span>Checking wallet access...</span>
+      </main>
+    );
+  }
+
+  if (!identity) {
+    return (
+      <main className="access-shell">
+        <header className="access-header">
+          <div className="brand">
+            <span className="brand-mark" aria-hidden="true">
+              M
+            </span>
+            <div>
+              <strong>Maker</strong>
+              <span>Aftermath / autonomous liquidity</span>
+            </div>
+          </div>
+          <ConnectButton>Connect wallet</ConnectButton>
+        </header>
+        <section className="access-stage">
+          <div className="access-seal">
+            <LockKeyhole size={26} />
+          </div>
+          <span className="eyebrow">Sui mainnet access</span>
+          <h1>Your wallet is the key.</h1>
+          <p>
+            Connect and sign a readable login message. Membership is checked
+            against the public on-chain registry; signing cannot move funds.
+          </p>
+          <button
+            className="button primary access-button"
+            onClick={() => void signIn()}
+            disabled={!account?.address || Boolean(busy)}
+          >
+            <ShieldCheck size={17} />
+            {busy === "sign-in"
+              ? "Check your wallet..."
+              : account?.address
+                ? "Verify access"
+                : "Connect to continue"}
+          </button>
+          {notice && <div className="access-notice">{notice}</div>}
+          <div className="access-proof">
+            <span>Authentication</span>
+            <strong>Signed message</strong>
+            <span>Membership</span>
+            <strong>Sui object</strong>
+            <span>Trading keys</span>
+            <strong>Per wallet</strong>
+          </div>
+        </section>
+      </main>
+    );
+  }
+
   const market = markets.find((item) => item.id === config.marketId);
   const failedChecks = snapshot?.safety.filter((check) => !check.ok) ?? [];
   const onboardingComplete = Boolean(setup.agent?.agentCapId);
@@ -355,7 +650,7 @@ function DashboardBody() {
           </span>
           <div>
             <strong>Maker</strong>
-            <span>Aftermath / private control plane</span>
+            <span>Aftermath / autonomous liquidity</span>
           </div>
         </div>
         <div className="topbar-actions">
@@ -363,6 +658,14 @@ function DashboardBody() {
             {snapshot?.mode ?? "observe"}
           </span>
           <ConnectButton>Connect</ConnectButton>
+          <button
+            className="icon-button"
+            onClick={() => void logout()}
+            title="Sign out"
+            aria-label="Sign out"
+          >
+            <LogOut size={16} />
+          </button>
         </div>
       </header>
 
@@ -471,16 +774,28 @@ function DashboardBody() {
                     <p>
                       Grant trading-only access and seed 0.1 SUI gas in one
                       owner transaction. The agent cannot withdraw.
+                      {builderCode ? (
+                        <>
+                          {" "}
+                          Maker orders carry a disclosed{" "}
+                          {(builderCode.integratorFee * 100).toFixed(2)}%
+                          builder fee.
+                        </>
+                      ) : (
+                        <> Builder registration must finish first.</>
+                      )}
                     </p>
                     <button
                       className="button primary"
                       onClick={() => void authorizeAgent()}
-                      disabled={Boolean(busy)}
+                      disabled={!builderCode || Boolean(busy)}
                     >
                       <ShieldCheck size={16} />
                       {busy === "authorize"
                         ? "Waiting for wallet..."
-                        : "Authorize agent"}
+                        : builderCode
+                          ? "Authorize agent"
+                          : "Builder setup pending"}
                     </button>
                   </>
                 )}
@@ -826,9 +1141,9 @@ function DashboardBody() {
             <Search size={18} />
           </div>
           <p className="panel-copy">
-            The public DegenYok client contains no builder-code fields. That is
-            not proof of zero: check a known integrator ID against your account.
-            This maker never supplies builder code.
+            {builderCode
+              ? `Maker code #${builderCode.integratorId} charges ${(builderCode.integratorFee * 10_000).toFixed(1)} bp on filled notional. Your one-time approval caps it at that exact rate and remains revocable.`
+              : "Builder incentives are not active. Orders carry no builder code until the operator completes on-chain registration."}
           </p>
           <form className="fee-form" onSubmit={inspectFee}>
             <input
@@ -863,10 +1178,111 @@ function DashboardBody() {
         </div>
       </section>
 
+      {identity.operator && (
+        <section className="operator-panel">
+          <div className="section-heading compact">
+            <div>
+              <span className="eyebrow">Operator</span>
+              <h2>Public access rail</h2>
+            </div>
+            <ShieldCheck size={18} />
+          </div>
+          <div className="operator-grid">
+            <div className="operator-action">
+              <span className="step-icon">
+                <LockKeyhole size={18} />
+              </span>
+              <div>
+                <strong>On-chain registry</strong>
+                <p>
+                  {operatorStatus?.registryObjectId
+                    ? compact(operatorStatus.registryObjectId)
+                    : "Deploy the immutable package and shared member list."}
+                </p>
+              </div>
+              {!operatorStatus?.registryObjectId && (
+                <button
+                  className="button primary"
+                  onClick={() => void deployWhitelist()}
+                  disabled={Boolean(busy)}
+                >
+                  Deploy
+                </button>
+              )}
+            </div>
+
+            <div className="operator-action">
+              <span className="step-icon">
+                <Coins size={18} />
+              </span>
+              <div>
+                <strong>Builder incentive</strong>
+                <p>
+                  {operatorStatus?.builderCode
+                    ? `Code #${operatorStatus.builderCode.integratorId} / 1 bp`
+                    : "Register once with Aftermath. Users approve the 1 bp cap."}
+                </p>
+              </div>
+              {!operatorStatus?.builderCode && (
+                <button
+                  className="button secondary"
+                  onClick={() => void registerBuilderCode()}
+                  disabled={Boolean(busy)}
+                >
+                  Register
+                </button>
+              )}
+            </div>
+
+            <div className="operator-action member-action">
+              <span className="step-icon">
+                <UserPlus size={18} />
+              </span>
+              <div>
+                <strong>Wallet membership</strong>
+                <p>
+                  Each change is public, signed, and independently revocable.
+                </p>
+                <input
+                  aria-label="Sui wallet address"
+                  placeholder="0x... wallet address"
+                  value={memberAddress}
+                  onChange={(event) => setMemberAddress(event.target.value)}
+                />
+              </div>
+              <div className="member-buttons">
+                <button
+                  className="button primary"
+                  onClick={() => void updateMember("add")}
+                  disabled={
+                    !operatorStatus?.registryObjectId ||
+                    !/^0x[0-9a-fA-F]{64}$/.test(memberAddress) ||
+                    Boolean(busy)
+                  }
+                >
+                  Add
+                </button>
+                <button
+                  className="button secondary"
+                  onClick={() => void updateMember("remove")}
+                  disabled={
+                    !operatorStatus?.registryObjectId ||
+                    !/^0x[0-9a-fA-F]{64}$/.test(memberAddress) ||
+                    Boolean(busy)
+                  }
+                >
+                  Remove
+                </button>
+              </div>
+            </div>
+          </div>
+        </section>
+      )}
+
       <footer>
         <span>
-          Maker / internal release / signer encrypted at rest / withdrawals
-          unavailable to agent
+          Maker / wallet-gated public release / signer encrypted at rest /
+          withdrawals unavailable to agent
         </span>
         <a href="https://aftermath.finance/" target="_blank" rel="noreferrer">
           Aftermath <ExternalLink size={13} />

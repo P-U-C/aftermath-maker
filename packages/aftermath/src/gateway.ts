@@ -8,9 +8,10 @@ import {
 } from "aftermath-ts-sdk";
 import { SuiGrpcClient } from "@mysten/sui/grpc";
 import type { Ed25519Keypair } from "@mysten/sui/keypairs/ed25519";
-import type { Transaction } from "@mysten/sui/transactions";
+import { Transaction } from "@mysten/sui/transactions";
 import {
-  assertNoBuilderFee,
+  assertBuilderFeePolicy,
+  type BuilderFeePolicy,
   type MakerConfig,
   type QuoteIntent,
   type Setup,
@@ -61,6 +62,7 @@ export function buildQuoteReplacementRequest(inputs: {
   size: bigint;
   leverage: number;
   hasPosition: boolean;
+  builderCode?: BuilderFeePolicy;
 }): SdkPerpetualsCancelAndPlaceOrdersInputs {
   return {
     marketId: inputs.marketId,
@@ -87,12 +89,24 @@ export function buildQuoteReplacementRequest(inputs: {
     reduceOnly: false,
     leverage: inputs.leverage,
     hasPosition: inputs.hasPosition,
+    ...(inputs.builderCode ? { builderCode: inputs.builderCode } : {}),
     shouldAbortOnMissingId: false,
   };
 }
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+export function decodeIntegratorId(bytes: Uint8Array): number {
+  if (bytes.byteLength !== 4) {
+    throw new Error("Integrator ID must be a four-byte u32");
+  }
+  return new DataView(
+    bytes.buffer,
+    bytes.byteOffset,
+    bytes.byteLength,
+  ).getUint32(0, true);
 }
 
 function transactionDigest(result: unknown): string {
@@ -289,6 +303,7 @@ export class AftermathGateway {
     setup: Setup;
     agentAddress: string;
     gasMist: bigint;
+    builderCode: BuilderFeePolicy | null;
   }): Promise<string> {
     const cap = await this.findAccountCap({
       walletAddress: inputs.setup.ownerAddress,
@@ -302,9 +317,19 @@ export class AftermathGateway {
     const { account } = await this.sdk.Perpetuals().getAccount({
       accountCap: cap,
     });
-    const { tx } = await account.getGrantAgentWalletTx({
+    let { tx } = await account.getGrantAgentWalletTx({
       recipientAddress: inputs.agentAddress,
     });
+    if (inputs.builderCode) {
+      ({ tx } = await this.sdk
+        .Perpetuals()
+        .getCreateBuilderCodeIntegratorConfigTx({
+          accountId: BigInt(inputs.setup.accountId),
+          integratorId: inputs.builderCode.integratorId,
+          maxIntegratorFee: inputs.builderCode.integratorFee,
+          tx,
+        }));
+    }
     const [gasCoin] = tx.splitCoins(tx.gas, [inputs.gasMist]);
     tx.transferObjects([gasCoin], inputs.agentAddress);
     tx.setSender(inputs.setup.ownerAddress);
@@ -314,6 +339,7 @@ export class AftermathGateway {
   async verifyAgentGrant(inputs: {
     setup: Setup;
     agentAddress: string;
+    builderCode: BuilderFeePolicy | null;
   }): Promise<{ agentCapId: string }> {
     const cap = await this.findAccountCap({
       walletAddress: inputs.agentAddress,
@@ -321,6 +347,22 @@ export class AftermathGateway {
       collateralCoinType: inputs.setup.collateralCoinType,
       requireAgent: true,
     });
+    if (inputs.builderCode) {
+      const approval = await this.sdk
+        .Perpetuals()
+        .getBuilderCodeIntegratorConfig({
+          accountId: BigInt(inputs.setup.accountId),
+          integratorId: inputs.builderCode.integratorId,
+        });
+      if (
+        !approval.exists ||
+        approval.maxIntegratorFee === undefined ||
+        approval.maxIntegratorFee + Number.EPSILON <
+          inputs.builderCode.integratorFee
+      ) {
+        throw new Error("Builder-code approval was not confirmed on-chain");
+      }
+    }
     return { agentCapId: cap.objectId };
   }
 
@@ -359,13 +401,108 @@ export class AftermathGateway {
     };
   }
 
+  async buildIntegratorRegistrationTransaction(ownerAddress: string): Promise<{
+    transaction: string;
+    expectedIntegratorId: number;
+  }> {
+    const response = await fetch(
+      "https://aftermath.finance/api/perpetuals/builder-codes/transactions/create-integrator-registration",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: "{}",
+      },
+    );
+    const body = (await response.json()) as {
+      txKind?: string;
+      error?: string;
+    };
+    if (!response.ok || !body.txKind) {
+      throw new Error(
+        body.error ?? "Aftermath did not build the registration transaction",
+      );
+    }
+    const tx = Transaction.fromKind(body.txKind);
+    tx.setSender(ownerAddress);
+    const simulation = await this.client.simulateTransaction({
+      transaction: tx,
+      include: { commandResults: true },
+    });
+    if (simulation.$kind === "FailedTransaction") {
+      throw new Error(
+        simulation.FailedTransaction.status.error?.message ??
+          "Integrator registration simulation failed",
+      );
+    }
+    const bytes = simulation.commandResults?.[0]?.returnValues[0]?.bcs;
+    if (!bytes) {
+      throw new Error("Aftermath did not return the next integrator ID");
+    }
+    const expectedIntegratorId = decodeIntegratorId(bytes);
+    return {
+      transaction: await tx.toJSON(),
+      expectedIntegratorId,
+    };
+  }
+
+  async confirmIntegratorRegistration(inputs: {
+    digest: string;
+    ownerAddress: string;
+    expectedIntegratorId: number;
+  }): Promise<{ integratorId: number; integratorAddress: string }> {
+    const result = await this.client.waitForTransaction({
+      digest: inputs.digest,
+      timeout: 60_000,
+      include: { transaction: true },
+    });
+    if (result.$kind === "FailedTransaction") {
+      throw new Error(
+        result.FailedTransaction.status.error?.message ??
+          "Integrator registration failed",
+      );
+    }
+    if (
+      result.Transaction.transaction?.sender?.toLowerCase() !==
+      inputs.ownerAddress.toLowerCase()
+    ) {
+      throw new Error("Integrator registration was signed by another wallet");
+    }
+
+    for (
+      let integratorId = inputs.expectedIntegratorId;
+      integratorId <= inputs.expectedIntegratorId + 32;
+      integratorId += 1
+    ) {
+      const response = await fetch(
+        "https://aftermath.finance/api/perpetuals/builder-codes/integrator-registration",
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ integratorId }),
+        },
+      );
+      if (!response.ok) continue;
+      const body = (await response.json()) as {
+        integratorAddress?: string;
+      };
+      if (
+        body.integratorAddress?.toLowerCase() ===
+        inputs.ownerAddress.toLowerCase()
+      ) {
+        return { integratorId, integratorAddress: body.integratorAddress };
+      }
+    }
+
+    throw new Error(
+      "Registration succeeded, but its integrator ID could not be verified",
+    );
+  }
+
   private async inspectTransaction(inputs: {
     tx: Transaction;
     config: MakerConfig;
   }): Promise<void> {
     inputs.tx.setGasBudget(BigInt(inputs.config.maxGasMist));
-    const serialized = await inputs.tx.toJSON();
-    assertNoBuilderFee(JSON.parse(serialized));
 
     const simulation = await this.client.simulateTransaction({
       transaction: inputs.tx,
@@ -387,6 +524,7 @@ export class AftermathGateway {
     config: MakerConfig;
     quote: QuoteIntent;
     signer: Ed25519Keypair;
+    builderCode: BuilderFeePolicy | null;
     shouldContinue: () => boolean;
   }): Promise<ExecutionReceipt> {
     const signerAddress = inputs.signer.toSuiAddress();
@@ -427,12 +565,13 @@ export class AftermathGateway {
       size,
       leverage: inputs.config.maxLeverage,
       hasPosition: Boolean(position && position.baseAssetAmount !== 0),
+      ...(inputs.builderCode ? { builderCode: inputs.builderCode } : {}),
     });
 
     if (!inputs.shouldContinue()) {
       throw new Error("Live execution cancelled before transaction build");
     }
-    assertNoBuilderFee(request);
+    assertBuilderFeePolicy(request, inputs.builderCode);
     const { tx } = await account.getCancelAndPlaceOrdersTx(request);
     tx.setSender(signerAddress);
     await this.inspectTransaction({ tx, config: inputs.config });

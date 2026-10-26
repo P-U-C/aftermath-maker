@@ -14,13 +14,14 @@ describe("persistent control store", () => {
       `aftermath-maker-${randomBytes(8).toString("hex")}`,
     );
     mkdirSync(directory, { recursive: true });
-    const store = new Store(join(directory, "maker.db"));
+    const databaseStore = new Store(join(directory, "maker.db"));
     const masterKey = randomBytes(32).toString("base64");
     const setup = setupSchema.parse({
       ownerAddress: `0x${"1".repeat(64)}`,
       accountId: "42",
       accountCapId: "0x1234",
     });
+    const store = databaseStore.forTenant(setup.ownerAddress);
     const config = makerConfigSchema.parse({
       marketId: "0x5678",
       symbol: "SUI",
@@ -51,7 +52,13 @@ describe("persistent control store", () => {
       encryptedSecret: agent!.encryptedSecret,
     });
     expect(restored.toSuiAddress()).toBe(generated.address);
-    store.close();
+
+    const other = databaseStore.forTenant(`0x${"2".repeat(64)}`);
+    expect(other.getSetup()).toBeNull();
+    expect(other.getConfig()).toBeNull();
+    expect(other.getAgent()).toBeNull();
+    expect(other.listEvents()).toEqual([]);
+    databaseStore.close();
   });
 
   it("migrates the legacy daily-loss field without losing the limit", () => {
@@ -75,14 +82,31 @@ describe("persistent control store", () => {
     >;
     delete legacy.maxUnrealizedLossUsd;
 
+    const ownerAddress = `0x${"3".repeat(64)}`;
+    const legacySetup = setupSchema.parse({
+      ownerAddress,
+      accountId: "73",
+      accountCapId: "0xabcd",
+    });
     const database = new Database(path);
+    const insert = database.prepare(
+      `INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?)`,
+    );
+    insert.run("setup", JSON.stringify(legacySetup), new Date().toISOString());
+    insert.run(
+      "maker_config",
+      JSON.stringify(legacy),
+      new Date().toISOString(),
+    );
     database
-      .prepare(`INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?)`)
-      .run("maker_config", JSON.stringify(legacy), new Date().toISOString());
+      .prepare("DELETE FROM system_settings WHERE key = ?")
+      .run("tenant_v2_migrated");
     database.close();
 
     const reopened = new Store(path);
-    expect(reopened.getConfig()?.maxUnrealizedLossUsd).toBe(17);
+    expect(
+      reopened.forTenant(ownerAddress).getConfig()?.maxUnrealizedLossUsd,
+    ).toBe(17);
     reopened.close();
   });
 });
