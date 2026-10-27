@@ -43,7 +43,7 @@ The agent can trade but cannot withdraw collateral or grant another agent. Owner
 - Equity, available and allocated collateral, owner-withdrawable collateral, agent gas, and authority state
 - One-sided OI in base units and estimated USD, protocol capacity, volume, funding, inventory, and unrealized PnL
 - Global defaults plus per-market spread, size, inventory target, inventory cap, skew, and leverage overrides
-- Runtime, last successful cycle, quote freshness, transaction links, measured gas, and estimated gas runway
+- Runtime, last successful cycle, quote freshness, transaction links, measured gas, reserve-aware runway time, and projected 24-hour SUI use
 - A fill ledger limited to order IDs that Maker recorded when posting
 - Current-epoch maker rewards, Q-score share, qualifying uptime, volume share, and direct rebates from Aftermath
 - A live reward-efficiency ranking across every open market, with one-click staging of a reviewable Observe-mode rotation
@@ -54,13 +54,17 @@ Strategy changes reconfigure the running engine and apply on its next cycle.
 
 ## Execution and safety
 
-Maker visits selected markets round-robin. Each live visit atomically cancels and replaces two stable, Maker-tagged, post-only orders. Manual orders are outside that cancellation set.
+Maker supports up to 15 selected markets and visits them round-robin. **Portfolio** mode leaves each market's Maker-tagged pair resting until its next atomic cancel-and-place refresh. **One live pair** mode is intended for small accounts: it carries one resting pair, reconciles any attributed fill before switching, and atomically cancels the prior market while placing the next pair. A switch is blocked if the prior order state is not visible. Manual orders are outside both cancellation sets.
 
 When paired-account hedging is enabled, Maker reacts only to independently filled order IDs that it previously recorded. It aggregates small fills to the configured threshold, cancels its quotes, waits through a bounded account-index consistency window until both accounts report no resting orders, then submits one capped opposite market order from the hedge account. It reloads both accounts and marks fills processed only after actual combined delta reaches the completion tolerance. Partial progress suppresses new quotes and retries; no progress fails closed. It never creates a paired self-match loop or raises the user-approved slippage cap automatically.
 
 Live mode fails closed on setup, signer, mainnet, freshness, book/index divergence, quote size, worst post-fill inventory and gross exposure, two-sided collateral, agent gas, unrealized loss, run equity drawdown, transaction simulation, and gas limits. An independent watchdog cancels Maker orders if any selected market exceeds its maximum quote age, even when the market RPC is stalled.
 
-Flattening is separate from stopping. It first stops scheduling and cancels Maker-tagged orders, then submits reduce-only market orders for positions in the selected markets. The UI requires a second confirmation and states the slippage ceiling.
+Flattening is separate from stopping. It first stops scheduling and confirms Maker-tagged order cancellation, then submits reduce-only market orders for positions in the selected markets. The UI requires a second confirmation and states the slippage ceiling.
+
+The **3-cycle canary** runs Farming, Profit, and Both on one currently eligible saved market for two seconds each. Paper signs nothing. Live requires an exact second confirmation, never raises saved quote or exposure limits, cancels before each policy change, stops after the third round, and flattens both configured accounts before restoring the saved strategy. Three rounds validate mechanics; they do not establish profitability.
+
+A two-second continuous cadence would sign up to 43,200 quote transactions per day. Use it for a bounded canary, not an unattended 15-market run. The desk converts measured quote gas into reserve-aware wall-clock runway and projected SUI per 24 hours at the selected cadence. When the configured worst-case transaction reserve is reached, Live fails closed and attempts all-market cancellation.
 
 Live mode requires both deployment gates:
 

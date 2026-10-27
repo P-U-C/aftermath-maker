@@ -178,6 +178,7 @@ type MakerConfig = {
   }>;
   collateralCoinType: string;
   mode: Mode;
+  rotationMode: "portfolio" | "single-slot";
   strategyObjective: StrategyObjective;
   strategyProfile: "cautious" | "balanced" | "active";
   makerAccountId: string | null;
@@ -351,6 +352,37 @@ type RewardDashboard = {
   };
 };
 
+type LiveGates = {
+  liveTradingEnabled: boolean;
+  mainnetAllowed: boolean;
+};
+
+type StrategyTrialResult = {
+  mode: "paper" | "live";
+  marketId: string;
+  symbol: string;
+  cadenceMs: number;
+  startedAt: string;
+  completedAt: string;
+  rounds: Array<{
+    objective: StrategyObjective;
+    profile: MakerConfig["strategyProfile"];
+    score: number;
+    quoteSizeUsd: number;
+    spreadBps: number;
+    outcome: "simulated" | "confirmed";
+    digest: string | null;
+    startedAt: string;
+    completedAt: string;
+  }>;
+  recovery: {
+    digest: string | null;
+    digests: string[];
+    flattenedMarketIds: string[];
+  } | null;
+  restoredConfig: MakerConfig;
+};
+
 type AuditEvent = {
   id: number;
   occurredAt: string;
@@ -409,6 +441,7 @@ const defaultConfig: MakerConfig = {
   markets: [],
   collateralCoinType: USDC,
   mode: "observe",
+  rotationMode: "portfolio",
   strategyObjective: "both",
   strategyProfile: "balanced",
   makerAccountId: null,
@@ -494,6 +527,16 @@ const compactNumber = (value: number | null) =>
         maximumFractionDigits: 2,
       }).format(value);
 
+const compactDuration = (milliseconds: number | null) => {
+  if (milliseconds === null) return "-";
+  const minutes = milliseconds / 60_000;
+  if (minutes < 60) return `${Math.max(1, Math.floor(minutes))}m`;
+  const hours = minutes / 60;
+  if (hours < 48) return `${hours.toFixed(hours < 10 ? 1 : 0)}h`;
+  const days = hours / 24;
+  return `${days.toFixed(days < 10 ? 1 : 0)}d`;
+};
+
 const percent = (value: number | null, digits = 2) =>
   value === null ? "-" : `${value.toFixed(digits)}%`;
 
@@ -546,6 +589,15 @@ function DashboardBody() {
   const [events, setEvents] = useState<AuditEvent[]>([]);
   const [performance, setPerformance] = useState<Performance | null>(null);
   const [rewards, setRewards] = useState<RewardDashboard | null>(null);
+  const [liveGates, setLiveGates] = useState<LiveGates>({
+    liveTradingEnabled: false,
+    mainnetAllowed: false,
+  });
+  const [trialMode, setTrialMode] = useState<"paper" | "live">("paper");
+  const [trialArmed, setTrialArmed] = useState(false);
+  const [trialResult, setTrialResult] = useState<StrategyTrialResult | null>(
+    null,
+  );
   const [rewardMarketCount, setRewardMarketCount] = useState(3);
   const [rewardFocus, setRewardFocus] = useState<"all" | "thin">("all");
   const [selectedAccount, setSelectedAccount] = useState("");
@@ -567,15 +619,18 @@ function DashboardBody() {
   const refresh = useCallback(async () => {
     const [statusResult, configResult, setupResult, eventResult] =
       await Promise.all([
-        request<{ snapshot: Snapshot; builderCode: BuilderCode | null }>(
-          "api/status",
-        ),
+        request<{
+          snapshot: Snapshot;
+          builderCode: BuilderCode | null;
+          liveGates: LiveGates;
+        }>("api/status"),
         request<{ config: MakerConfig | null }>("api/config"),
         request<SetupState>("api/setup"),
         request<{ events: AuditEvent[] }>("api/events?limit=12"),
       ]);
     setSnapshot(statusResult.snapshot);
     setBuilderCode(statusResult.builderCode);
+    setLiveGates(statusResult.liveGates);
     setSetup(setupResult);
     setEvents(eventResult.events);
     if (!configLoaded.current) {
@@ -1072,7 +1127,7 @@ function DashboardBody() {
           (item) => item.marketId !== market.id,
         );
       } else {
-        if (current.markets.length >= 12) return current;
+        if (current.markets.length >= 15) return current;
         nextMarkets = [
           ...current.markets,
           { marketId: market.id, symbol: market.symbol },
@@ -1199,16 +1254,17 @@ function DashboardBody() {
       availableCollateral !== null && availableCollateral > 0
         ? Math.min(config.maxGrossExposureUsd, availableCollateral * 0.5)
         : config.maxGrossExposureUsd;
-    const minimumQuoteCapital = candidates.reduce(
-      (total, opportunity) =>
-        total +
-        inventoryCapacityFloor(
-          opportunity.minimumQuoteSizeUsd,
-          opportunity.suggestedSpreadBps,
-          config.inventorySkewBps,
-        ),
-      0,
+    const marketCapacityFloors = candidates.map((opportunity) =>
+      inventoryCapacityFloor(
+        opportunity.minimumQuoteSizeUsd,
+        opportunity.suggestedSpreadBps,
+        config.inventorySkewBps,
+      ),
     );
+    const minimumQuoteCapital =
+      config.rotationMode === "single-slot"
+        ? Math.max(...marketCapacityFloors)
+        : marketCapacityFloors.reduce((total, value) => total + value, 0);
     if (minimumQuoteCapital > capitalBudget) {
       setNotice(
         `These ${candidates.length} markets need at least ${money(minimumQuoteCapital)} of inventory capacity after venue minimums, lot-size rounding, and quote-price headroom. Reduce the market count or raise the gross exposure limit.`,
@@ -1217,13 +1273,15 @@ function DashboardBody() {
     }
 
     setConfig((current) => {
+      const simultaneousMarkets =
+        current.rotationMode === "single-slot" ? 1 : candidates.length;
       const basePerMarketInventory = Math.max(
         1,
-        Math.min(current.maxInventoryUsd, capitalBudget / candidates.length),
+        Math.min(current.maxInventoryUsd, capitalBudget / simultaneousMarkets),
       );
       const collateralQuoteCap =
         availableCollateral !== null && availableCollateral > 0
-          ? availableCollateral / (4 * candidates.length)
+          ? availableCollateral / (4 * simultaneousMarkets)
           : Number.POSITIVE_INFINITY;
       const plannedMarkets = candidates.map((opportunity) => {
         const minimumQuoteSizeUsd = opportunity.minimumQuoteSizeUsd;
@@ -1272,7 +1330,7 @@ function DashboardBody() {
       };
     });
     setNotice(
-      `${config.strategyObjective[0]?.toUpperCase()}${config.strategyObjective.slice(1)} rotation staged across ${candidates.length} market${candidates.length === 1 ? "" : "s"} in Observe mode with venue minimums applied. Review the policies, then save the strategy.`,
+      `${config.strategyObjective[0]?.toUpperCase()}${config.strategyObjective.slice(1)} rotation staged across ${candidates.length} market${candidates.length === 1 ? "" : "s"} in Observe mode using ${config.rotationMode === "single-slot" ? "one live pair" : "portfolio quotes"}. Review, then save.`,
     );
   }
 
@@ -1303,6 +1361,61 @@ function DashboardBody() {
         method: "POST",
         body: "{}",
       });
+    });
+  }
+
+  async function runStrategyTrial() {
+    if (configDirty) {
+      setNotice("Save strategy changes before starting the three-cycle trial.");
+      return;
+    }
+    if (snapshot?.running) {
+      setNotice("Stop the engine before starting the three-cycle trial.");
+      return;
+    }
+    if (
+      trialMode === "live" &&
+      (!liveGates.liveTradingEnabled || !liveGates.mainnetAllowed)
+    ) {
+      setNotice("Both deployment gates must be enabled for a live trial.");
+      return;
+    }
+    if (trialMode === "live" && !trialArmed) {
+      setTrialArmed(true);
+      setNotice(
+        "Live trial will place three short quote rounds, cancel between policies, then stop and flatten both accounts. Confirm to proceed.",
+      );
+      return;
+    }
+
+    await mutate("strategy-trial", async () => {
+      const response = await request<{
+        result: StrategyTrialResult;
+        snapshot: Snapshot;
+      }>("api/runtime/strategy-trial", {
+        method: "POST",
+        body: JSON.stringify({
+          mode: trialMode,
+          cadenceMs: 2_000,
+          maxSlippageBps: 500,
+          ...(trialMode === "live"
+            ? { confirmation: "RUN 3 LIVE CYCLES AND FLATTEN" }
+            : {}),
+        }),
+      });
+      setTrialArmed(false);
+      setTrialResult(response.result);
+      setConfig(response.result.restoredConfig);
+      setSavedConfig(response.result.restoredConfig);
+      await Promise.all([
+        loadPerformance().catch(() => undefined),
+        loadRewards(response.result.restoredConfig.strategyObjective).catch(
+          () => undefined,
+        ),
+      ]);
+      setNotice(
+        `${trialMode === "live" ? "Live" : "Paper"} trial completed: ${response.result.rounds.length} rounds on ${response.result.symbol}${trialMode === "live" ? ", followed by cancellation and reduce-only recovery" : ""}.`,
+      );
     });
   }
 
@@ -1479,6 +1592,15 @@ function DashboardBody() {
   );
   const effectiveRefreshSeconds =
     (config.refreshMs * Math.max(1, config.markets.length)) / 1_000;
+  const gasRunwayQuotes = snapshot?.execution.gasRunwayTransactions ?? null;
+  const gasRunwayMs =
+    gasRunwayQuotes === null ? null : gasRunwayQuotes * config.refreshMs;
+  const projectedDailyGasSui =
+    snapshot?.execution.averageGasMist === null ||
+    snapshot?.execution.averageGasMist === undefined
+      ? null
+      : (snapshot.execution.averageGasMist / 1_000_000_000) *
+        (86_400_000 / config.refreshMs);
   const activeRuntimeMarket = snapshot?.markets.find(
     (market) => market.id === snapshot.market.id,
   );
@@ -1495,16 +1617,23 @@ function DashboardBody() {
   const rewardOpportunities =
     rewards?.marketModel.opportunities
       .filter((opportunity) => opportunity.eligible)
-      .slice(0, 8) ?? [];
-  const focusedRewardOpportunities = rewardOpportunities.filter(
-    (opportunity) =>
-      opportunity.objectiveEligible &&
-      (rewardFocus === "all" || opportunity.thinActive),
-  );
+      .slice(0, 30) ?? [];
+  const focusedRewardOpportunities = rewardOpportunities
+    .filter(
+      (opportunity) =>
+        opportunity.objectiveEligible &&
+        (rewardFocus === "all" || opportunity.thinActive),
+    )
+    .slice(0, 15);
   const topRewardOpportunity = focusedRewardOpportunities[0] ?? null;
   const rewardQuotePreviewCap =
     makerAvailableCollateralUsd !== null
-      ? Math.max(1, makerAvailableCollateralUsd / (4 * rewardMarketCount))
+      ? Math.max(
+          1,
+          makerAvailableCollateralUsd /
+            (4 *
+              (config.rotationMode === "single-slot" ? 1 : rewardMarketCount)),
+        )
       : Number.POSITIVE_INFINITY;
   const rewardRotationBlocked =
     Boolean(snapshot?.running) ||
@@ -2294,6 +2423,133 @@ function DashboardBody() {
               })}
             </div>
           </fieldset>
+
+          <fieldset className="rotation-mode-control">
+            <legend>Rotation</legend>
+            <div
+              className="rotation-mode-segments"
+              role="group"
+              aria-label="Market rotation mode"
+            >
+              <button
+                type="button"
+                className={
+                  config.rotationMode === "portfolio" ? "selected" : ""
+                }
+                aria-pressed={config.rotationMode === "portfolio"}
+                onClick={() =>
+                  setConfig((current) => ({
+                    ...current,
+                    rotationMode: "portfolio",
+                  }))
+                }
+              >
+                All pairs live
+              </button>
+              <button
+                type="button"
+                className={
+                  config.rotationMode === "single-slot" ? "selected" : ""
+                }
+                aria-pressed={config.rotationMode === "single-slot"}
+                onClick={() =>
+                  setConfig((current) => ({
+                    ...current,
+                    rotationMode: "single-slot",
+                  }))
+                }
+              >
+                One live pair
+              </button>
+            </div>
+          </fieldset>
+
+          <div
+            className="strategy-trial"
+            aria-label="Three-cycle strategy trial"
+          >
+            <div className="strategy-trial-heading">
+              <span>3-cycle canary</span>
+              <strong>Farming / Profit / Both</strong>
+            </div>
+            <div className="strategy-trial-actions">
+              <div
+                className="trial-mode-segments"
+                role="group"
+                aria-label="Trial mode"
+              >
+                <button
+                  type="button"
+                  className={trialMode === "paper" ? "selected" : ""}
+                  aria-pressed={trialMode === "paper"}
+                  onClick={() => {
+                    setTrialMode("paper");
+                    setTrialArmed(false);
+                  }}
+                >
+                  Paper
+                </button>
+                <button
+                  type="button"
+                  className={trialMode === "live" ? "selected" : ""}
+                  aria-pressed={trialMode === "live"}
+                  onClick={() => {
+                    setTrialMode("live");
+                    setTrialArmed(false);
+                  }}
+                  disabled={
+                    !liveGates.liveTradingEnabled || !liveGates.mainnetAllowed
+                  }
+                >
+                  Live
+                </button>
+              </div>
+              <button
+                type="button"
+                className={trialArmed ? "button danger" : "button secondary"}
+                onClick={() => void runStrategyTrial()}
+                disabled={
+                  Boolean(busy) ||
+                  Boolean(snapshot?.running) ||
+                  configDirty ||
+                  !onboardingComplete
+                }
+              >
+                <TimerReset size={16} aria-hidden="true" />
+                {busy === "strategy-trial"
+                  ? "Running..."
+                  : trialArmed
+                    ? "Confirm live"
+                    : "Run 3 x 2s"}
+              </button>
+              {trialArmed && (
+                <button
+                  type="button"
+                  className="button secondary"
+                  onClick={() => setTrialArmed(false)}
+                  disabled={Boolean(busy)}
+                >
+                  Cancel
+                </button>
+              )}
+            </div>
+            {trialResult && (
+              <div className="strategy-trial-results">
+                {trialResult.rounds.map((round, index) => (
+                  <div key={`${trialResult.completedAt}-${round.objective}`}>
+                    <span>{index + 1}</span>
+                    <strong>{round.objective}</strong>
+                    <small>
+                      {round.spreadBps} bp / ${round.quoteSizeUsd.toFixed(2)}
+                    </small>
+                    <b>
+                      {round.digest ? compact(round.digest) : round.outcome}
+                    </b>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
 
           <fieldset className="account-pair-control">
             <legend>Account roles</legend>
@@ -3182,11 +3438,13 @@ function DashboardBody() {
                 setRewardMarketCount(Number(event.target.value))
               }
             >
-              {[1, 2, 3, 4, 5, 6].map((count) => (
-                <option key={count} value={count}>
-                  {count}
-                </option>
-              ))}
+              {Array.from({ length: 15 }, (_, index) => index + 1).map(
+                (count) => (
+                  <option key={count} value={count}>
+                    {count}
+                  </option>
+                ),
+              )}
             </select>
           </label>
           <button
@@ -3538,10 +3796,17 @@ function DashboardBody() {
             <div>
               <span>Gas runway</span>
               <strong>
-                {snapshot?.execution.gasRunwayTransactions === null ||
-                snapshot?.execution.gasRunwayTransactions === undefined
+                {gasRunwayQuotes === null
                   ? "Learning"
-                  : `~${Math.floor(snapshot.execution.gasRunwayTransactions)} quotes`}
+                  : `~${Math.floor(gasRunwayQuotes)} quotes / ${compactDuration(gasRunwayMs)}`}
+              </strong>
+            </div>
+            <div>
+              <span>Gas / 24h</span>
+              <strong>
+                {projectedDailyGasSui === null
+                  ? "Learning"
+                  : `~${projectedDailyGasSui.toFixed(2)} SUI`}
               </strong>
             </div>
           </div>

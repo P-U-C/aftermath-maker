@@ -730,6 +730,35 @@ app.post("/api/runtime/stop", async (request) => {
   return { snapshot: runtime(request).snapshot };
 });
 
+app.post("/api/runtime/strategy-trial", async (request) => {
+  const body = z
+    .object({
+      mode: z.enum(["paper", "live"]),
+      cadenceMs: z.number().int().min(2_000).max(15_000).default(2_000),
+      maxSlippageBps: z.number().int().min(5).max(500).default(100),
+      confirmation: z.string().optional(),
+    })
+    .strict()
+    .parse(request.body);
+  if (
+    body.mode === "live" &&
+    body.confirmation !== "RUN 3 LIVE CYCLES AND FLATTEN"
+  ) {
+    throw new AuthError(
+      400,
+      "Live trial requires the exact confirmation phrase",
+    );
+  }
+  return {
+    result: await runtime(request).runStrategyTrial({
+      mode: body.mode,
+      cadenceMs: body.cadenceMs,
+      maxSlippageBps: body.maxSlippageBps,
+    }),
+    snapshot: runtime(request).snapshot,
+  };
+});
+
 app.post("/api/runtime/flatten", async (request) => {
   const body = z
     .object({

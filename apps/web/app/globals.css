@@ -1189,6 +1189,106 @@ input:focus {
   outline-offset: 2px;
 }
 
+.rotation-mode-segments,
+.trial-mode-segments {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+}
+
+.rotation-mode-segments button,
+.trial-mode-segments button {
+  min-height: 36px;
+  color: var(--muted);
+  background: transparent;
+  border: 1px solid var(--line);
+}
+
+.rotation-mode-segments button + button,
+.trial-mode-segments button + button {
+  border-left: 0;
+}
+
+.rotation-mode-segments button.selected,
+.trial-mode-segments button.selected {
+  color: var(--white);
+  background: var(--black);
+  border-color: var(--black);
+}
+
+.strategy-trial {
+  margin-top: 20px;
+  padding: 12px 0;
+  display: grid;
+  gap: 10px;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+}
+
+.strategy-trial-heading,
+.strategy-trial-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.strategy-trial-heading span {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.strategy-trial-heading strong {
+  font-size: 11px;
+}
+
+.strategy-trial-actions .trial-mode-segments {
+  flex: 1;
+}
+
+.strategy-trial-actions .button {
+  min-height: 36px;
+  white-space: nowrap;
+}
+
+.strategy-trial-results {
+  display: grid;
+  border-top: 1px solid var(--line);
+}
+
+.strategy-trial-results > div {
+  min-height: 32px;
+  display: grid;
+  grid-template-columns: 20px 64px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 6px;
+  border-bottom: 1px solid var(--line);
+}
+
+.strategy-trial-results > div:last-child {
+  border-bottom: 0;
+}
+
+.strategy-trial-results span,
+.strategy-trial-results small,
+.strategy-trial-results b {
+  color: var(--muted);
+  font-size: 9px;
+}
+
+.strategy-trial-results strong {
+  font-size: 10px;
+  text-transform: capitalize;
+}
+
+.strategy-trial-results b {
+  overflow: hidden;
+  max-width: 76px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .field-pair {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -2901,6 +3001,21 @@ footer a {
 
   .member-buttons {
     grid-column: 2;
+  }
+
+  .strategy-trial-heading,
+  .strategy-trial-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .strategy-trial-heading {
+    align-items: flex-start;
+  }
+
+  .strategy-trial-actions .trial-mode-segments,
+  .strategy-trial-actions .button {
+    width: 100%;
   }
 
   footer {

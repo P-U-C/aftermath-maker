@@ -339,6 +339,27 @@ describe("risk gates", () => {
 });
 
 describe("portfolio configuration", () => {
+  it("supports a fifteen-market universe with an explicit rotation mode", () => {
+    const config = makerConfigSchema.parse({
+      markets: Array.from({ length: 15 }, (_, index) => ({
+        marketId: `0x${(index + 1).toString(16)}`,
+        symbol: `M${index + 1}`,
+      })),
+      rotationMode: "single-slot",
+      refreshMs: 2_000,
+      maxQuoteAgeMs: 40_000,
+    });
+
+    expect(config.markets).toHaveLength(15);
+    expect(config.rotationMode).toBe("single-slot");
+    expect(() =>
+      makerConfigSchema.parse({
+        ...config,
+        markets: [...config.markets, { marketId: "0x100", symbol: "M16" }],
+      }),
+    ).toThrow();
+  });
+
   it("rejects duplicate markets", () => {
     expect(() =>
       makerConfigSchema.parse({

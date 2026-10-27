@@ -9,6 +9,9 @@ export type RuntimeMode = z.infer<typeof runtimeModeSchema>;
 export const strategyObjectiveSchema = z.enum(["farming", "profit", "both"]);
 export type StrategyObjective = z.infer<typeof strategyObjectiveSchema>;
 
+export const rotationModeSchema = z.enum(["portfolio", "single-slot"]);
+export type RotationMode = z.infer<typeof rotationModeSchema>;
+
 export const hedgeConfigSchema = z
   .object({
     enabled: z.boolean().default(false),
@@ -46,9 +49,10 @@ export type MakerMarket = z.infer<typeof makerMarketSchema>;
 
 export const makerConfigSchema = z
   .object({
-    markets: z.array(makerMarketSchema).min(1).max(12),
+    markets: z.array(makerMarketSchema).min(1).max(15),
     collateralCoinType: z.string().min(8).default(USDC_COIN_TYPE),
     mode: runtimeModeSchema.default("observe"),
+    rotationMode: rotationModeSchema.default("portfolio"),
     strategyObjective: strategyObjectiveSchema.default("both"),
     strategyProfile: z
       .enum(["cautious", "balanced", "active"])

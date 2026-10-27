@@ -114,6 +114,22 @@ A 75 bps attempt had previously failed simulation with Aftermath `execute_limit_
 
 See [ITERATION-3.md](ITERATION-3.md) for the failure sequence, fixes, and full hedge evidence.
 
+## Objective and cross-market rotation
+
+The bounded three-objective Live canary confirmed one MON quote transaction for each policy, cancelled between policy changes, then recovered both accounts and restored the prior configuration:
+
+- Farming: [`E2pH2F...FDF9`](https://suiscan.xyz/mainnet/tx/E2pH2F3gKBVDLvyYj5PqPywZsHGvY9CnRtdVPWVFDF9)
+- Profit: [`J8CvTE...zfZP`](https://suiscan.xyz/mainnet/tx/J8CvTEXiiX6oq12Ybupr88VfsdJ8dQUpNYYWL47FzfZP)
+- Both: [`9P4PWt...heab`](https://suiscan.xyz/mainnet/tx/9P4PWtFRHebedqo36Q5uTLEe9QbBgAcXSEEX9dbUheab)
+
+A corrected 15-market one-live-pair canary counted persisted confirmed transactions rather than calculated cycles. It proved three consecutive markets and the atomic cross-market switch path:
+
+- MON: [`V1zMTh...jqo9`](https://suiscan.xyz/mainnet/tx/V1zMThjmDWSzA3KY6m4KDe7jV32Y4TW6BM9qWMbjqo9)
+- CHIP: [`Bg1Nia...bEFH`](https://suiscan.xyz/mainnet/tx/Bg1NiaqFs7Sv4QYNzHouDQGQAuoN37LLPBuYM1FcbEFH)
+- ETH: [`8LtBjo...toHd`](https://suiscan.xyz/mainnet/tx/8LtBjoTxaSrC7xK5Kd1CDAEee7CSxrnUszgf9TJXtoHd)
+
+Both bounded runs ended stopped, restored the saved Paper strategy, and reported zero positions on accounts 1745 and 1746. See [ITERATION-4.md](ITERATION-4.md) for the 15-market set, first observer defect, measured gas economics, and unattended-operation boundary.
+
 ## Browser evidence
 
 - [Final desktop reconciliation](member-reconcile-paper.png)
@@ -122,6 +138,8 @@ See [ITERATION-3.md](ITERATION-3.md) for the failure sequence, fixes, and full h
 - [Post-canary control state](member-live-canary.png)
 - [Staged MON headroom and performance attribution](member-staged-headroom.png)
 - [Funded readiness immediately after a fresh-container restart](member-restart-readiness.png)
+- [Strategy objectives, rotation controls, and canary on desktop](strategy-desktop.png)
+- [Strategy controls at 390 px](strategy-mobile.png)
 
 ## Final state
 
@@ -130,19 +148,23 @@ At the final read:
 - Account 1745 equity: about $7.4861
 - Account 1746 equity: about $7.4919
 - Saved mode: Paper
+- Rotation: one live pair, 15 markets, 15-second turns
 - Engine: stopped
 - Attributed Maker fills: 4, all covered by recorded Maker order IDs
 - Confirmed hedge executions: 1
+- Three confirmed objective-canary quotes and three confirmed corrected rotation-canary quotes
 - Both accounts: zero positions after separate reduce-only recovery transactions
 - Live gates: both disabled
+- Agent gas: 0.167713058 SUI
+- Reserve-aware gas runway: 244 quotes, about 61 minutes at the staged cadence
 - Root response: private, no-cache, no-store
 - Desktop and 390 px authenticated layouts: no page-level horizontal overflow or browser errors
 - Fresh-container readiness: account 1745 immediately reported funded; agent gas remains explicitly unknown until a runtime cycle
 - Membership management: hidden from the member wallet; its operator status request returned HTTP 403
-- Post-audit state backup: `backups/aftermath-maker-20261027T101843Z.tar.gz` on the deployment host
+- Post-rotation state backup: `backups/aftermath-maker-20261027T124559Z.tar.gz` on the deployment host
 
 The agent capabilities remain intentionally authorized on both accounts for further testing. They were not revoked because this is the retained audit setup.
 
 ## What remains unproven
 
-Mainnet now proves fill ingestion, exact order attribution, known fee reporting, repeated atomic replacement, protective halt, post-cancel index-lag reconciliation, a fill-triggered hedge from the second account, actual combined-delta verification, and reduce-only recovery of both accounts. Withdrawal and final capability revocation were not executed because the two-account setup is being retained. Independent external fair value, cross-venue hedging, long-duration economics, and complete net PnL attribution remain outside this bounded audit.
+Mainnet now proves fill ingestion, exact order attribution, known fee reporting, repeated atomic replacement, a three-policy canary, atomic cross-market one-pair rotation, protective halt, post-cancel index-lag reconciliation, a fill-triggered hedge from the second account, actual combined-delta verification, and reduce-only recovery of both accounts. Withdrawal and final capability revocation were not executed because the two-account setup is being retained. Independent external fair value, cross-venue hedging, long-duration economics, restart recovery after a hard host failure, and complete net PnL attribution remain outside this bounded audit.

@@ -23,6 +23,15 @@ A profile supplies conservative global defaults. Every selected market can overr
 
 The engine resolves the effective policy for the current market before quote calculation, risk checks, and transaction construction. Saving while running stops, cancels tagged orders, and restarts with the new configuration.
 
+A strategy can select up to 15 markets in two rotation modes:
+
+- **Portfolio:** each market keeps its pair until the next lap. Capital and stale-quote limits must cover every selected market.
+- **One live pair:** one pair rests at a time. Before switching, Maker checks the prior market for attributed fills. A clean switch combines prior-market cancellation and next-market placement in one Sui transaction. Missing or delayed prior-order state blocks the switch and triggers fail-closed cancellation.
+
+Both modes wrap continuously from the final selected market to the first until stopped or a safety gate trips. One-live-pair rotation uses less simultaneous collateral, but each market receives only its share of active quote time; 15 selected markets imply roughly one-fifteenth uptime per market.
+
+One-live-pair mode reduces simultaneous collateral demand; it does not create 15-market uptime from one market's capital. At a two-second cadence it can submit up to 43,200 quote transactions per day, so two seconds is reserved for bounded testing rather than the recommended unattended cadence.
+
 ### Quote lifecycle
 
 Maker uses Aftermath's protocol index as fair value and the live best bid and ask as execution constraints. It refuses to quote when book midpoint diverges from the index beyond policy, creates a post-only bid and ask around the index, rounds against the venue tick while reserving one tick behind the opposite side, skews both around the configured inventory target, and uses Aftermath's atomic cancel-and-place transaction to replace its prior quote pair.
@@ -52,6 +61,14 @@ For example, $1,000 of attributed Maker bids creates positive perp delta. Once t
 The rotation interval grows with the number of selected markets. Configuration is rejected unless the stale-quote cutoff can cover one complete rotation plus a buffer.
 
 Live mode also runs an independent watchdog. If any selected market exceeds the cutoff, the watchdog invalidates the current cycle, stops scheduling, and immediately cancels Maker-tagged orders with retries. It does not wait for a stalled market RPC. Manual stop uses a bounded wait instead of hanging behind the RPC, and both paths reconcile again after an ambiguous cycle resolves.
+
+Gas runway excludes the configured worst-case transaction reserve. The desk projects both runway time and SUI use per 24 hours from measured quote transactions and the selected cadence. Reaching the reserve fails the next pre-signing safety gate and invokes fail-closed cancellation.
+
+### Three-cycle canary
+
+The canary compares Farming/Active, Profit/Cautious, and Both/Balanced on one saved market that currently passes all three objective gates. It uses the live ranking inputs but caps quote size, inventory, gross exposure, and leverage at the saved policy. Each round lasts two seconds.
+
+Paper records three simulated rounds. Live requires both deployment gates and an exact confirmation, cancels before each policy change, and performs reduce-only recovery on the Maker and hedge accounts after the final round. The original configuration is restored only after recovery succeeds. A failed recovery leaves the final Live configuration saved and stopped so the operator can retry without hiding the active risk state.
 
 ### Stop and flatten
 

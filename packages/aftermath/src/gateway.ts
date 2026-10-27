@@ -1609,6 +1609,8 @@ export class AftermathGateway {
     builderCode: BuilderFeePolicy | null;
     shouldContinue: () => boolean;
     knownMakerOrderIds?: bigint[];
+    cancelMarketIds?: string[];
+    expectedCancelOrderIds?: Record<string, bigint[]>;
   }): Promise<ExecutionReceipt> {
     const signerAddress = inputs.signer.toSuiAddress();
     const cap = await this.findAccountCap({
@@ -1618,9 +1620,17 @@ export class AftermathGateway {
       requireAgent: true,
     });
     const perps = this.sdk.Perpetuals();
+    const marketIds = [
+      ...new Set([
+        inputs.quote.marketId,
+        ...(inputs.cancelMarketIds ?? []).filter(
+          (marketId) => marketId !== inputs.quote.marketId,
+        ),
+      ]),
+    ];
     const { account } = await perps.getAccount({
       accountCap: cap,
-      marketIds: [inputs.quote.marketId],
+      marketIds,
     });
     const market = await this.getMarket(inputs.quote.marketId);
     const position = account.account.positions.find(
@@ -1668,6 +1678,46 @@ export class AftermathGateway {
       ),
     ];
 
+    const marketIdsToCancel = new Set(
+      (inputs.cancelMarketIds ?? []).filter(
+        (marketId) => marketId !== inputs.quote.marketId,
+      ),
+    );
+    const crossMarketCancellations: Record<
+      string,
+      { orderIds: bigint[]; collateralChange: number }
+    > = {};
+    for (const candidate of account.account.positions) {
+      if (!marketIdsToCancel.has(candidate.marketId)) continue;
+      const orderIds = candidate.pendingOrders
+        .filter((order) => isMakerClientOrderId(order.clientOrderId))
+        .map((order) => order.orderId);
+      if (orderIds.length) {
+        crossMarketCancellations[candidate.marketId] = {
+          orderIds,
+          collateralChange: 0,
+        };
+      }
+    }
+    for (const marketId of marketIdsToCancel) {
+      const expected = inputs.expectedCancelOrderIds?.[marketId] ?? [];
+      if (
+        expected.length &&
+        !crossMarketCancellations[marketId]?.orderIds.length
+      ) {
+        throw new Error(
+          `Single-slot switch blocked: ${marketId} order state is not yet visible`,
+        );
+      }
+    }
+
+    let switchTx: Transaction | undefined;
+    if (Object.keys(crossMarketCancellations).length) {
+      ({ tx: switchTx } = await account.getCancelOrdersTx({
+        marketIdsToData: crossMarketCancellations,
+      }));
+    }
+
     const request = buildQuoteReplacementRequest({
       marketId: inputs.quote.marketId,
       bidPrice: market.roundToValidPriceBigInt({
@@ -1691,7 +1741,10 @@ export class AftermathGateway {
       throw new Error("Live execution cancelled before transaction build");
     }
     assertBuilderFeePolicy(request, inputs.builderCode);
-    const { tx } = await account.getCancelAndPlaceOrdersTx(request);
+    const { tx } = await account.getCancelAndPlaceOrdersTx({
+      ...request,
+      ...(switchTx ? { tx: switchTx } : {}),
+    });
     tx.setSender(signerAddress);
     await this.inspectTransaction({ tx, config: inputs.config });
     if (!inputs.shouldContinue()) {

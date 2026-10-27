@@ -20,6 +20,11 @@ import {
   type Setup,
 } from "@puc/core";
 import type { TenantStore } from "./store.js";
+import {
+  buildStrategyTrialPlan,
+  STRATEGY_TRIAL_OBJECTIVES,
+  type StrategyTrialMode,
+} from "./trial.js";
 
 export type RuntimeOptions = {
   masterKey?: string;
@@ -42,6 +47,41 @@ export type MakerFill = {
   protocolFeesUsd: number;
   estimatedBuilderFeeUsd: number;
   orderId: string;
+};
+
+export type FlattenResult = {
+  digest: string | null;
+  digests: string[];
+  flattenedMarketIds: string[];
+  transactions: Array<{
+    accountId: string;
+    digest: string;
+    flattenedMarketIds: string[];
+  }>;
+};
+
+export type StrategyTrialRoundResult = {
+  objective: MakerConfig["strategyObjective"];
+  profile: MakerConfig["strategyProfile"];
+  score: number;
+  quoteSizeUsd: number;
+  spreadBps: number;
+  outcome: "simulated" | "confirmed";
+  digest: string | null;
+  startedAt: string;
+  completedAt: string;
+};
+
+export type StrategyTrialResult = {
+  mode: StrategyTrialMode;
+  marketId: string;
+  symbol: string;
+  cadenceMs: number;
+  startedAt: string;
+  completedAt: string;
+  rounds: StrategyTrialRoundResult[];
+  recovery: FlattenResult | null;
+  restoredConfig: MakerConfig;
 };
 
 export type PerformanceSnapshot = {
@@ -185,6 +225,27 @@ const emptyPortfolio = (): PortfolioSnapshot => ({
 const message = (error: unknown) =>
   error instanceof Error ? error.message : String(error);
 
+async function withTimeout<T>(
+  task: Promise<T>,
+  milliseconds: number,
+  timeoutMessage: string,
+): Promise<T> {
+  let timer: NodeJS.Timeout | null = null;
+  try {
+    return await Promise.race([
+      task,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(
+          () => reject(new Error(timeoutMessage)),
+          milliseconds,
+        );
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 const hedgeFillKey = (order: PerformanceOrder) =>
   [
     order.txDigest,
@@ -209,6 +270,9 @@ export class MakerRuntime {
   private markets: MarketSummary[] = [];
   private marketIndex = 0;
   private runPeakEquityUsd: number | null = null;
+  private activeQuoteMarketId: string | null = null;
+  private singleSlotSwept = false;
+  private strategyTrialActive = false;
 
   constructor(
     private readonly store: TenantStore,
@@ -253,14 +317,20 @@ export class MakerRuntime {
   get snapshot(): RuntimeSnapshot {
     const snapshot = structuredClone(this.snapshotValue);
     const execution = this.store.getExecutionStats();
+    const config = this.store.getConfig();
+    const executableGasMist =
+      snapshot.balances.gasSui === null
+        ? null
+        : Math.max(
+            0,
+            snapshot.balances.gasSui * 1_000_000_000 -
+              (config?.maxGasMist ?? 0),
+          );
     snapshot.execution = {
       ...execution,
       gasRunwayTransactions:
-        execution.averageGasMist && snapshot.balances.gasSui !== null
-          ? Math.floor(
-              (snapshot.balances.gasSui * 1_000_000_000) /
-                execution.averageGasMist,
-            )
+        execution.averageGasMist && executableGasMist !== null
+          ? Math.floor(executableGasMist / execution.averageGasMist)
           : null,
     };
     return snapshot;
@@ -332,6 +402,9 @@ export class MakerRuntime {
   }
 
   start(): void {
+    if (this.strategyTrialActive) {
+      throw new Error("A strategy trial is already running");
+    }
     const config = this.store.getConfig();
     if (!config?.markets.length) {
       throw new Error("Select and configure at least one market first");
@@ -346,6 +419,8 @@ export class MakerRuntime {
     this.snapshotValue.startedAt = startedAt;
     this.snapshotValue.lastError = null;
     this.runPeakEquityUsd = null;
+    this.activeQuoteMarketId = null;
+    this.singleSlotSwept = config.rotationMode !== "single-slot";
     this.snapshotValue.markets = config.markets.map((market) =>
       emptyRuntimeMarket(market, config),
     );
@@ -474,19 +549,21 @@ export class MakerRuntime {
 
   private async cancelOpenOrders(
     config: MakerConfig,
-    options: { attempts?: number; retryDelayMs?: number } = {},
-  ): Promise<void> {
+    options: {
+      attempts?: number;
+      retryDelayMs?: number;
+      marketIds?: string[];
+    } = {},
+  ): Promise<boolean> {
+    if (config.mode !== "live") return true;
+
     const setup = this.store.getSetup();
     const account = setup ? this.store.getAccountSetup(setup.accountId) : null;
     const agent = this.store.getAgent();
-    if (
-      config.mode !== "live" ||
-      !setup ||
-      !account?.agentCapId ||
-      !agent ||
-      !this.options.masterKey
-    ) {
-      return;
+    if (!setup || !account?.agentCapId || !agent || !this.options.masterKey) {
+      this.snapshotValue.lastError =
+        "Quote cancellation requires a confirmed agent signer";
+      return false;
     }
 
     const signer = loadAgentKeypair({
@@ -500,7 +577,9 @@ export class MakerRuntime {
       try {
         const receipt = await this.gateway.cancelMakerOrders({
           setup,
-          marketIds: config.markets.map((market) => market.marketId),
+          marketIds:
+            options.marketIds ??
+            config.markets.map((market) => market.marketId),
           signer,
           config,
         });
@@ -511,7 +590,7 @@ export class MakerRuntime {
             outcome: receipt ? "confirmed" : "clear",
             detail: { attempt, attempts, ...(receipt ?? {}) },
           });
-          return;
+          return true;
         }
       } catch (error) {
         const errorText = message(error);
@@ -523,7 +602,7 @@ export class MakerRuntime {
         });
         if (attempt === attempts) {
           this.snapshotValue.lastError = `Quote cancellation failed after ${attempts} attempts: ${errorText}`;
-          return;
+          return false;
         }
       }
 
@@ -531,6 +610,7 @@ export class MakerRuntime {
         await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
       }
     }
+    return false;
   }
 
   async stop(): Promise<void> {
@@ -547,10 +627,11 @@ export class MakerRuntime {
       ]);
     }
     if (wasRunning && config) {
-      await this.cancelOpenOrders(config, {
+      const cancelled = await this.cancelOpenOrders(config, {
         attempts: 3,
         retryDelayMs: 2_000,
       });
+      if (cancelled) this.activeQuoteMarketId = null;
     }
     if (!cycleSettled && activeCycle && config) {
       void activeCycle
@@ -564,16 +645,10 @@ export class MakerRuntime {
     }
   }
 
-  async flatten(maxSlippage: number): Promise<{
-    digest: string | null;
-    digests: string[];
-    flattenedMarketIds: string[];
-    transactions: Array<{
-      accountId: string;
-      digest: string;
-      flattenedMarketIds: string[];
-    }>;
-  }> {
+  async flatten(
+    maxSlippage: number,
+    options: { refreshSnapshot?: boolean } = {},
+  ): Promise<FlattenResult> {
     const config = makerConfigSchema.parse(this.store.getConfig());
     if (
       config.mode !== "live" ||
@@ -610,7 +685,16 @@ export class MakerRuntime {
     const activeCycle = this.cyclePromise;
     this.stopScheduling();
     if (activeCycle) await activeCycle;
-    await this.cancelOpenOrders(config);
+    const cancelled = await this.cancelOpenOrders(config, {
+      attempts: 3,
+      retryDelayMs: 750,
+    });
+    if (!cancelled) {
+      throw new Error(
+        "Flatten blocked because Maker quote cancellation could not be confirmed",
+      );
+    }
+    this.activeQuoteMarketId = null;
     const signer = loadAgentKeypair({
       masterKey: this.options.masterKey,
       context: agent.encryptionContext,
@@ -658,7 +742,7 @@ export class MakerRuntime {
             accountIds: accounts.map((account) => account.accountId),
           },
     });
-    await this.cycle();
+    if (options.refreshSnapshot !== false) await this.cycle();
     const flattenedMarketIds = [
       ...new Set(
         transactions.flatMap((transaction) => transaction.flattenedMarketIds),
@@ -966,6 +1050,9 @@ export class MakerRuntime {
       signer: inputs.signer,
       config: inputs.marketConfig,
     });
+    if (this.activeQuoteMarketId === inputs.selected.marketId) {
+      this.activeQuoteMarketId = null;
+    }
     this.store.logEvent({
       category: "hedge",
       action: "cancel-maker-quotes",
@@ -1154,6 +1241,7 @@ export class MakerRuntime {
     let selected: MakerMarket | null = null;
     let config: MakerConfig | null = null;
     let hedgeReconciliationCompleted = false;
+    let switchFromMarketId: string | null = null;
     try {
       const storedConfig = this.store.getConfig();
       if (!storedConfig) return;
@@ -1166,6 +1254,35 @@ export class MakerRuntime {
         ? this.store.getAccountSetup(setup.accountId)
         : null;
       const agent = this.store.getAgent();
+      const executionIsCurrent = () =>
+        this.snapshotValue.running && this.generation === inputs.generation;
+
+      if (
+        config.mode === "live" &&
+        inputs.executeLive &&
+        config.rotationMode === "single-slot"
+      ) {
+        if (!this.singleSlotSwept) {
+          const swept = await this.cancelOpenOrders(config, {
+            attempts: 3,
+            retryDelayMs: 750,
+          });
+          if (!swept) {
+            throw new Error(
+              "Single-slot rotation could not confirm its startup order sweep",
+            );
+          }
+          this.singleSlotSwept = true;
+          this.activeQuoteMarketId = null;
+        }
+        if (
+          this.activeQuoteMarketId &&
+          this.activeQuoteMarketId !== selected.marketId
+        ) {
+          switchFromMarketId = this.activeQuoteMarketId;
+        }
+      }
+
       const { market, orderbook } = await this.gateway.getOrderbook(
         selected.marketId,
       );
@@ -1193,6 +1310,37 @@ export class MakerRuntime {
         0,
         (this.runPeakEquityUsd ?? portfolio.equityUsd) - portfolio.equityUsd,
       );
+
+      if (switchFromMarketId) {
+        const priorMarket = config.markets.find(
+          (candidate) => candidate.marketId === switchFromMarketId,
+        );
+        if (!priorMarket || !setup || !agent || !this.options.masterKey) {
+          throw new Error("Single-slot rotation lost its active-market state");
+        }
+        const signer = loadAgentKeypair({
+          masterKey: this.options.masterKey,
+          context: agent.encryptionContext,
+          encryptedSecret: agent.encryptedSecret,
+        });
+        const hedgeReady = await this.reconcileHedge({
+          config,
+          marketConfig: resolveMarketConfig(config, priorMarket),
+          selected: priorMarket,
+          makerSetup: setup,
+          agentAddress: agent.address,
+          signer,
+          makerPortfolio: portfolio,
+          executionIsCurrent,
+        });
+        hedgeReconciliationCompleted = true;
+        if (this.activeQuoteMarketId === null) switchFromMarketId = null;
+        if (!hedgeReady) {
+          this.snapshotValue.lastSuccessfulCycleAt = new Date().toISOString();
+          return;
+        }
+      }
+
       const position = portfolio.positions.find(
         (item) => item.marketId === selected!.marketId,
       );
@@ -1344,8 +1492,6 @@ export class MakerRuntime {
         return;
       }
 
-      const executionIsCurrent = () =>
-        this.snapshotValue.running && this.generation === inputs.generation;
       if (!executionIsCurrent()) return;
 
       if (!this.options.liveEnabled || !this.options.mainnetAllowed) {
@@ -1388,6 +1534,19 @@ export class MakerRuntime {
               /^\d+$/.test(order.orderId) ? [BigInt(order.orderId)] : [],
             )
         : [];
+      const switchOrders = switchFromMarketId
+        ? this.store
+            .listTrackedMakerOrders({ accountId: setup.accountId })
+            .filter((order) => order.marketId === switchFromMarketId)
+        : [];
+      const switchQuoteDigest = switchOrders[0]?.quoteDigest;
+      const expectedCancelOrderIds = switchQuoteDigest
+        ? switchOrders
+            .filter((order) => order.quoteDigest === switchQuoteDigest)
+            .flatMap((order) =>
+              /^\d+$/.test(order.orderId) ? [BigInt(order.orderId)] : [],
+            )
+        : [];
 
       const receipt = await this.gateway.executeQuote({
         setup,
@@ -1397,6 +1556,14 @@ export class MakerRuntime {
         builderCode: this.options.builderCode(),
         shouldContinue: executionIsCurrent,
         knownMakerOrderIds,
+        ...(switchFromMarketId
+          ? {
+              cancelMarketIds: [switchFromMarketId],
+              expectedCancelOrderIds: {
+                [switchFromMarketId]: expectedCancelOrderIds,
+              },
+            }
+          : {}),
       });
       this.store.logExecution({
         mode: "live",
@@ -1415,6 +1582,9 @@ export class MakerRuntime {
         quoteDigest: receipt.digest,
         orderIds: receipt.postedOrderIds ?? [],
       });
+      if (config.rotationMode === "single-slot") {
+        this.activeQuoteMarketId = selected.marketId;
+      }
       this.snapshotValue.lastSuccessfulCycleAt = new Date().toISOString();
       this.snapshotValue.markets = this.snapshotValue.markets.map((row) =>
         row.id === selected!.marketId
@@ -1453,10 +1623,11 @@ export class MakerRuntime {
       if (!cancelled && this.snapshotValue.mode === "live") {
         this.stopScheduling();
         if (config) {
-          await this.cancelOpenOrders(config, {
+          const cancelledOrders = await this.cancelOpenOrders(config, {
             attempts: 3,
             retryDelayMs: 2_000,
           });
+          if (cancelledOrders) this.activeQuoteMarketId = null;
         }
       }
     } finally {
@@ -1466,11 +1637,277 @@ export class MakerRuntime {
     }
   }
 
+  async runStrategyTrial(inputs: {
+    mode: StrategyTrialMode;
+    cadenceMs: number;
+    maxSlippageBps: number;
+  }): Promise<StrategyTrialResult> {
+    if (
+      this.strategyTrialActive ||
+      this.snapshotValue.running ||
+      this.cyclePromise
+    ) {
+      throw new Error("Stop the engine before starting a strategy trial");
+    }
+    if (
+      inputs.mode === "live" &&
+      (!this.options.liveEnabled || !this.options.mainnetAllowed)
+    ) {
+      throw new Error("A live strategy trial requires both mainnet gates");
+    }
+
+    const originalConfig = makerConfigSchema.parse(this.store.getConfig());
+    const setup = this.store.getSetup();
+    const makerAccount = setup
+      ? this.store.getAccountSetup(setup.accountId)
+      : null;
+    const agent = this.store.getAgent();
+    if (!setup || !makerAccount?.agentCapId || !agent) {
+      throw new Error("A confirmed Maker account and agent are required");
+    }
+    if (
+      originalConfig.hedge.enabled &&
+      (!originalConfig.hedge.accountId ||
+        !this.store.getAccountSetup(originalConfig.hedge.accountId)?.agentCapId)
+    ) {
+      throw new Error("The configured hedge account is not authorized");
+    }
+
+    const marketIds = originalConfig.markets.map((market) => market.marketId);
+    const [farming, profit, both, makerPortfolio] = await Promise.all([
+      this.rewardDashboard(setup.collateralCoinType, "farming"),
+      this.rewardDashboard(setup.collateralCoinType, "profit"),
+      this.rewardDashboard(setup.collateralCoinType, "both"),
+      this.gateway.getAgentPortfolioSnapshot({
+        setup,
+        agentAddress: agent.address,
+        marketIds,
+      }),
+    ]);
+    const plan = buildStrategyTrialPlan({
+      originalConfig,
+      dashboards: { farming, profit, both },
+      availableCollateralUsd: makerPortfolio.availableCollateralUsd,
+      mode: inputs.mode,
+      cadenceMs: inputs.cadenceMs,
+    });
+
+    const hedgeSetup = originalConfig.hedge.accountId
+      ? this.store.getAccountSetup(originalConfig.hedge.accountId)
+      : null;
+    const hedgePortfolio = hedgeSetup
+      ? await this.gateway.getAgentPortfolioSnapshot({
+          setup: hedgeSetup,
+          agentAddress: agent.address,
+          marketIds,
+        })
+      : null;
+    const hasExposure = (portfolio: PortfolioSnapshot) =>
+      portfolio.positions.some(
+        (position) =>
+          Math.abs(position.inventoryUsd) > 0.01 ||
+          position.pendingOrderCount > 0,
+      );
+    if (
+      hasExposure(makerPortfolio) ||
+      (hedgePortfolio && hasExposure(hedgePortfolio))
+    ) {
+      throw new Error(
+        "The three-cycle trial requires both configured accounts to start flat with no resting orders",
+      );
+    }
+
+    const recoverySlippageBps = Math.min(
+      inputs.maxSlippageBps,
+      originalConfig.hedge.maxSlippageBps,
+    );
+    const startedAt = new Date().toISOString();
+    const rounds: StrategyTrialRoundResult[] = [];
+    let recovery: FlattenResult | null = null;
+    let recoveryCompleted = inputs.mode === "paper";
+    let activeConfig: MakerConfig | null = null;
+    this.strategyTrialActive = true;
+    this.generation += 1;
+    const trialGeneration = this.generation;
+    this.snapshotValue.running = true;
+    this.snapshotValue.startedAt = startedAt;
+    this.snapshotValue.lastError = null;
+    this.runPeakEquityUsd = null;
+    this.activeQuoteMarketId = null;
+    this.singleSlotSwept = true;
+    this.store.logEvent({
+      category: "runtime",
+      action: "strategy-trial-start",
+      outcome: "success",
+      detail: {
+        mode: inputs.mode,
+        marketId: plan.marketId,
+        objectives: STRATEGY_TRIAL_OBJECTIVES,
+        cadenceMs: plan.cadenceMs,
+      },
+    });
+
+    try {
+      for (const [index, round] of plan.rounds.entries()) {
+        if (
+          this.generation !== trialGeneration ||
+          !this.snapshotValue.running
+        ) {
+          throw new Error("Strategy trial was stopped by the operator");
+        }
+        if (index > 0 && activeConfig?.mode === "live") {
+          const cancelled = await this.cancelOpenOrders(activeConfig, {
+            attempts: 3,
+            retryDelayMs: 750,
+          });
+          if (!cancelled) {
+            throw new Error(
+              "Strategy trial could not confirm cancellation before changing policy",
+            );
+          }
+          this.activeQuoteMarketId = null;
+        }
+
+        activeConfig = round.config;
+        this.store.setConfig(round.config);
+        this.marketIndex = 0;
+        this.snapshotValue.mode = round.config.mode;
+        this.snapshotValue.markets = round.config.markets.map((market) =>
+          emptyRuntimeMarket(market, round.config),
+        );
+        this.syncMarketRows(round.config);
+        this.snapshotValue.watchdog = {
+          state: round.config.mode === "live" ? "armed" : "idle",
+          checkedAt: new Date().toISOString(),
+          maxQuoteAgeMs:
+            round.config.mode === "live" ? round.config.maxQuoteAgeMs : null,
+        };
+
+        const roundStartedAt = new Date().toISOString();
+        const cycle = this.cycle({
+          executeLive: inputs.mode === "live",
+          generation: trialGeneration,
+        });
+        await withTimeout(cycle, 30_000, "Strategy trial cycle timed out");
+        if (this.snapshotValue.lastError) {
+          throw new Error(this.snapshotValue.lastError);
+        }
+        const digest =
+          this.snapshotValue.markets.find(
+            (market) => market.id === plan.marketId,
+          )?.lastTransactionDigest ?? null;
+        if (inputs.mode === "live" && !digest) {
+          throw new Error(
+            "Live strategy trial did not confirm a quote transaction",
+          );
+        }
+        rounds.push({
+          objective: round.objective,
+          profile: round.profile,
+          score: round.score,
+          quoteSizeUsd: round.quoteSizeUsd,
+          spreadBps: round.spreadBps,
+          outcome: inputs.mode === "live" ? "confirmed" : "simulated",
+          digest,
+          startedAt: roundStartedAt,
+          completedAt: new Date().toISOString(),
+        });
+        await (this.options.sleep
+          ? this.options.sleep(plan.cadenceMs)
+          : new Promise((resolve) => setTimeout(resolve, plan.cadenceMs)));
+      }
+
+      if (inputs.mode === "live") {
+        recovery = await this.flatten(recoverySlippageBps / 10_000, {
+          refreshSnapshot: false,
+        });
+        recoveryCompleted = true;
+      } else {
+        this.stopScheduling();
+      }
+
+      this.store.setConfig(originalConfig);
+      this.marketIndex = 0;
+      this.activeQuoteMarketId = null;
+      this.singleSlotSwept = false;
+      this.snapshotValue.mode = originalConfig.mode;
+      this.syncMarketRows(originalConfig);
+      const completedAt = new Date().toISOString();
+      this.store.logEvent({
+        category: "runtime",
+        action: "strategy-trial-complete",
+        outcome: "success",
+        detail: {
+          mode: inputs.mode,
+          marketId: plan.marketId,
+          rounds: rounds.length,
+          recoveryTransactions: recovery?.transactions.length ?? 0,
+        },
+      });
+      return {
+        mode: inputs.mode,
+        marketId: plan.marketId,
+        symbol: plan.symbol,
+        cadenceMs: plan.cadenceMs,
+        startedAt,
+        completedAt,
+        rounds,
+        recovery,
+        restoredConfig: originalConfig,
+      };
+    } catch (error) {
+      this.stopScheduling();
+      let recoveryError: string | null = null;
+      if (inputs.mode === "live" && activeConfig) {
+        try {
+          recovery = await this.flatten(recoverySlippageBps / 10_000, {
+            refreshSnapshot: false,
+          });
+          recoveryCompleted = true;
+        } catch (flattenError) {
+          recoveryError = message(flattenError);
+        }
+      }
+      if (recoveryCompleted) {
+        this.store.setConfig(originalConfig);
+        this.marketIndex = 0;
+        this.activeQuoteMarketId = null;
+        this.singleSlotSwept = false;
+        this.snapshotValue.mode = originalConfig.mode;
+        this.syncMarketRows(originalConfig);
+      }
+      const errorText = message(error);
+      this.store.logEvent({
+        category: "runtime",
+        action: "strategy-trial",
+        outcome: "error",
+        detail: {
+          error: errorText,
+          rounds: rounds.length,
+          recoveryCompleted,
+          ...(recoveryError ? { recoveryError } : {}),
+        },
+      });
+      throw new Error(
+        recoveryError
+          ? `${errorText}; automatic recovery also failed: ${recoveryError}`
+          : errorText,
+      );
+    } finally {
+      this.strategyTrialActive = false;
+    }
+  }
+
   async reconfigure(nextConfig?: MakerConfig): Promise<void> {
+    if (this.strategyTrialActive) {
+      throw new Error("Strategy configuration is locked during a trial");
+    }
     const wasRunning = this.snapshotValue.running;
     await this.stop();
     if (nextConfig) this.store.setConfig(nextConfig);
     this.marketIndex = 0;
+    this.activeQuoteMarketId = null;
+    this.singleSlotSwept = false;
     const config = this.store.getConfig();
     if (config) {
       this.snapshotValue.mode = config.mode;

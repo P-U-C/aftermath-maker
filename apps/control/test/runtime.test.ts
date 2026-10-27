@@ -6,10 +6,80 @@ import {
   createEncryptedAgent,
   type AccountPerformanceHistory,
   type PortfolioSnapshot,
+  type RewardDashboard,
 } from "@puc/aftermath";
-import { makerConfigSchema, setupSchema } from "@puc/core";
+import {
+  makerConfigSchema,
+  setupSchema,
+  type StrategyObjective,
+} from "@puc/core";
 import { MakerRuntime } from "../src/runtime.js";
 import { Store } from "../src/store.js";
+
+function rewardDashboard(objective: StrategyObjective): RewardDashboard {
+  return {
+    asOf: "2026-10-27T12:00:00.000Z",
+    epoch: {
+      number: 4,
+      startedAt: "2026-10-26T00:00:00.000Z",
+      cutoffAt: "2026-11-02T00:00:00.000Z",
+    },
+    account: {
+      trackedAccountIds: ["42", "43"],
+      error: null,
+      makerRewardsSui: 0,
+      qScoreShare: 0,
+      uptime: 0,
+      makerVolumeUsd: 0,
+      makerVolumeShare: 0,
+      directRebatesUsd: 0,
+      baseMakerFeesUsd: 0,
+      accounts: [],
+    },
+    marketModel: {
+      label: "heuristic",
+      methodology: "test",
+      depthBandBps: 50,
+      opportunities: [
+        {
+          rank: 1,
+          marketId: "0x5678",
+          symbol: "SUI",
+          minOrderUsdValue: 1,
+          minimumQuoteSizeUsd: 1.04,
+          objective,
+          score:
+            objective === "farming" ? 82 : objective === "profit" ? 64 : 71,
+          farmingScore: 82,
+          profitScore: 64,
+          bothScore: 71,
+          confidence: "high",
+          eligible: true,
+          objectiveEligible: true,
+          thinActive: true,
+          sessionOpen: true,
+          observedSpreadBps: 12,
+          preRiskEdgeBps: 5,
+          balancedDepth50BpsUsd: 600,
+          volume24hUsd: 100_000,
+          openInterestUsd: 2_000,
+          openInterestUtilizationPct: 10,
+          volumeToDepth: 166,
+          fundingRate: 0,
+          priceChange24hPct: 1,
+          makerRebateBps: 0.5,
+          builderFeeBps: 1,
+          knownCostBps: 0.5,
+          suggestedSpreadBps:
+            objective === "farming" ? 10 : objective === "profit" ? 16 : 12,
+          suggestedQuoteSizeUsd: 20,
+          reasons: ["test"],
+          error: null,
+        },
+      ],
+    },
+  };
+}
 
 function createHarness(options: { configured?: boolean } = {}) {
   const directory = join(
@@ -56,6 +126,7 @@ function createHarness(options: { configured?: boolean } = {}) {
   const flattenedAccountIds: string[] = [];
   let hedgeExecutionCount = 0;
   const executionSequence: string[] = [];
+  const quoteInputs: Array<{ cancelMarketIds?: string[] }> = [];
   let performanceHistory: AccountPerformanceHistory = {
     orders: [],
     marginHistory: [],
@@ -128,6 +199,8 @@ function createHarness(options: { configured?: boolean } = {}) {
       };
     },
     getAccountPerformanceHistory: async () => performanceHistory,
+    getRewardDashboard: async (inputs: { objective: StrategyObjective }) =>
+      rewardDashboard(inputs.objective),
     executeHedge: async (inputs: {
       deltaUsd: number;
       maxOrderUsd: number;
@@ -148,12 +221,16 @@ function createHarness(options: { configured?: boolean } = {}) {
         ),
       };
     },
-    executeQuote: async (inputs: { shouldContinue: () => boolean }) => {
+    executeQuote: async (inputs: {
+      shouldContinue: () => boolean;
+      cancelMarketIds?: string[];
+    }) => {
       if (!inputs.shouldContinue()) throw new Error("cancelled");
+      quoteInputs.push({ cancelMarketIds: inputs.cancelMarketIds });
       executionCount += 1;
       executionSequence.push("quote");
       return {
-        digest: "digest",
+        digest: `digest-${executionCount}`,
         endpoint: "test",
         gasUsedMist: 20,
         postedOrderIds: ["101", "102"],
@@ -181,6 +258,7 @@ function createHarness(options: { configured?: boolean } = {}) {
     flattenedAccountIds: () => flattenedAccountIds,
     hedgeExecutions: () => hedgeExecutionCount,
     executionSequence,
+    quoteInputs: () => quoteInputs,
     setPortfolioResolver: (resolver: typeof portfolioResolver) => {
       portfolioResolver = resolver;
     },
@@ -218,6 +296,33 @@ describe("runtime execution boundaries", () => {
 
     expect(harness.runtime.snapshot.quote).not.toBeNull();
     expect(harness.executions()).toBe(0);
+    harness.store.close();
+  });
+
+  it("reserves worst-case transaction gas from the displayed runway", async () => {
+    const harness = createHarness();
+    const saved = harness.tenant.getConfig();
+    harness.tenant.setConfig(
+      makerConfigSchema.parse({
+        ...saved,
+        mode: "paper",
+        maxGasMist: 50_000_000,
+      }),
+    );
+    await harness.runtime.cycle();
+    harness.tenant.logExecution({
+      mode: "live",
+      marketId: "0x5678",
+      digest: "gas-sample",
+      endpoint: "test",
+      bidPrice: 9.99,
+      askPrice: 10.01,
+      sizeUsd: 1,
+      outcome: "confirmed",
+      gasUsedMist: 10_000_000,
+    });
+
+    expect(harness.runtime.snapshot.execution.gasRunwayTransactions).toBe(5);
     harness.store.close();
   });
 
@@ -821,6 +926,23 @@ describe("runtime execution boundaries", () => {
     harness.store.close();
   });
 
+  it("refuses to flatten when quote cancellation cannot be confirmed", async () => {
+    vi.useFakeTimers();
+    const harness = createHarness();
+    harness.gateway.cancelMakerOrders = async () => {
+      throw new Error("RPC unavailable");
+    };
+
+    const flattening = expect(harness.runtime.flatten(0.01)).rejects.toThrow(
+      "quote cancellation could not be confirmed",
+    );
+    await vi.advanceTimersByTimeAsync(2_000);
+
+    await flattening;
+    expect(harness.flattens()).toBe(0);
+    harness.store.close();
+  });
+
   it("flattens both sides of a configured Maker and hedge pair", async () => {
     const harness = createHarness();
     harness.tenant.setSetup(
@@ -974,6 +1096,100 @@ describe("runtime execution boundaries", () => {
     await stopping;
 
     expect(harness.cancellations()).toBe(1);
+    expect(harness.runtime.snapshot.running).toBe(false);
+    harness.store.close();
+  });
+
+  it("atomically switches the active market in single-slot rotation", async () => {
+    const harness = createHarness();
+    harness.tenant.setConfig(
+      makerConfigSchema.parse({
+        ...harness.tenant.getConfig()!,
+        rotationMode: "single-slot",
+        refreshMs: 2_000,
+        maxQuoteAgeMs: 10_000,
+      }),
+    );
+
+    harness.runtime.start();
+    await harness.runtime.cycle({ executeLive: true });
+    await harness.runtime.cycle({ executeLive: true });
+
+    expect(harness.executions()).toBe(2);
+    expect(harness.quoteInputs()[0]?.cancelMarketIds).toBeUndefined();
+    expect(harness.quoteInputs()[1]?.cancelMarketIds).toEqual(["0x5678"]);
+    expect(harness.cancellations()).toBe(1);
+    await harness.runtime.stop();
+    harness.store.close();
+  });
+
+  it("runs three live objective rounds and restores the saved strategy after flattening", async () => {
+    const harness = createHarness();
+    const original = makerConfigSchema.parse({
+      ...harness.tenant.getConfig()!,
+      markets: [{ marketId: "0x5678", symbol: "SUI" }],
+      mode: "paper",
+      rotationMode: "single-slot",
+      quoteSizeUsd: 1.04,
+      maxInventoryUsd: 1.1,
+      maxGrossExposureUsd: 3,
+    });
+    harness.tenant.setConfig(original);
+
+    const result = await harness.runtime.runStrategyTrial({
+      mode: "live",
+      cadenceMs: 2_000,
+      maxSlippageBps: 100,
+    });
+
+    expect(result.rounds.map((round) => round.objective)).toEqual([
+      "farming",
+      "profit",
+      "both",
+    ]);
+    expect(result.rounds.map((round) => round.profile)).toEqual([
+      "active",
+      "cautious",
+      "balanced",
+    ]);
+    expect(result.rounds.map((round) => round.digest)).toEqual([
+      "digest-1",
+      "digest-2",
+      "digest-3",
+    ]);
+    expect(harness.executions()).toBe(3);
+    expect(harness.flattens()).toBe(1);
+    expect(harness.cancellations()).toBe(3);
+    expect(harness.tenant.getConfig()).toEqual(original);
+    expect(harness.runtime.snapshot.running).toBe(false);
+    harness.store.close();
+  });
+
+  it("simulates all three objective rounds without signing or flattening", async () => {
+    const harness = createHarness();
+    const original = makerConfigSchema.parse({
+      ...harness.tenant.getConfig()!,
+      markets: [{ marketId: "0x5678", symbol: "SUI" }],
+      mode: "paper",
+      quoteSizeUsd: 1.04,
+      maxInventoryUsd: 1.1,
+      maxGrossExposureUsd: 3,
+    });
+    harness.tenant.setConfig(original);
+
+    const result = await harness.runtime.runStrategyTrial({
+      mode: "paper",
+      cadenceMs: 2_000,
+      maxSlippageBps: 100,
+    });
+
+    expect(result.rounds).toHaveLength(3);
+    expect(result.rounds.every((round) => round.outcome === "simulated")).toBe(
+      true,
+    );
+    expect(harness.executions()).toBe(0);
+    expect(harness.flattens()).toBe(0);
+    expect(harness.tenant.getConfig()).toEqual(original);
     expect(harness.runtime.snapshot.running).toBe(false);
     harness.store.close();
   });
