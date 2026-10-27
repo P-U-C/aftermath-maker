@@ -21,7 +21,6 @@ import {
   KeyRound,
   LockKeyhole,
   Search,
-  Settings2,
   Target,
   TimerReset,
   Trophy,
@@ -539,6 +538,39 @@ const strategyObjectives = [
   },
 ] as const;
 
+const strategyProfiles = [
+  {
+    value: "cautious",
+    label: "Cautious",
+    summary: "Wider quotes and slower checks",
+    quoteSizeUsd: 5,
+    spreadBps: 50,
+    refreshMs: 15_000,
+    maxInventoryUsd: 30,
+    inventorySkewBps: 35,
+  },
+  {
+    value: "balanced",
+    label: "Balanced",
+    summary: "Measured spread and inventory",
+    quoteSizeUsd: 10,
+    spreadBps: 30,
+    refreshMs: 8_000,
+    maxInventoryUsd: 50,
+    inventorySkewBps: 20,
+  },
+  {
+    value: "active",
+    label: "Active",
+    summary: "Tighter quotes and faster checks",
+    quoteSizeUsd: 10,
+    spreadBps: 18,
+    refreshMs: 4_000,
+    maxInventoryUsd: 50,
+    inventorySkewBps: 30,
+  },
+] as const;
+
 const defaultConfig: MakerConfig = {
   markets: [],
   collateralCoinType: USDC,
@@ -699,6 +731,12 @@ function DashboardBody() {
   );
   const [rewardMarketCount, setRewardMarketCount] = useState(3);
   const [rewardFocus, setRewardFocus] = useState<"all" | "thin">("all");
+  const [marketVenueFilter, setMarketVenueFilter] = useState<
+    "all" | "aftermath"
+  >("all");
+  const [marketSort, setMarketSort] = useState<
+    "rank" | "score" | "volume" | "depth"
+  >("rank");
   const [selectedAccount, setSelectedAccount] = useState("");
   const [collateralAmounts, setCollateralAmounts] = useState<
     Record<string, string>
@@ -706,7 +744,6 @@ function DashboardBody() {
   const [busy, setBusy] = useState("");
   const [flattenArmed, setFlattenArmed] = useState(false);
   const [liveSheetOpen, setLiveSheetOpen] = useState(false);
-  const [advancedOpen, setAdvancedOpen] = useState(false);
   const [accountManagerOpen, setAccountManagerOpen] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [stopError, setStopError] = useState<string | null>(null);
@@ -1280,32 +1317,16 @@ function DashboardBody() {
   }
 
   function applyProfile(profile: MakerConfig["strategyProfile"]) {
-    const values = {
-      cautious: {
-        quoteSizeUsd: 5,
-        spreadBps: 50,
-        refreshMs: 15_000,
-        maxInventoryUsd: 30,
-        inventorySkewBps: 35,
-      },
-      balanced: {
-        quoteSizeUsd: 10,
-        spreadBps: 30,
-        refreshMs: 8_000,
-        maxInventoryUsd: 50,
-        inventorySkewBps: 20,
-      },
-      active: {
-        quoteSizeUsd: 10,
-        spreadBps: 18,
-        refreshMs: 4_000,
-        maxInventoryUsd: 50,
-        inventorySkewBps: 30,
-      },
-    }[profile];
+    const values = strategyProfiles.find(
+      (candidate) => candidate.value === profile,
+    )!;
     setConfig((current) => ({
       ...current,
-      ...values,
+      quoteSizeUsd: values.quoteSizeUsd,
+      spreadBps: values.spreadBps,
+      refreshMs: values.refreshMs,
+      maxInventoryUsd: values.maxInventoryUsd,
+      inventorySkewBps: values.inventorySkewBps,
       strategyProfile: profile,
       marketDwellMs: Math.max(current.marketDwellMs, values.refreshMs),
       maxRestingMs: Math.max(current.maxRestingMs, values.refreshMs),
@@ -1655,6 +1676,17 @@ function DashboardBody() {
   const configDirty =
     savedConfig === undefined ||
     JSON.stringify(config) !== JSON.stringify(savedConfig);
+  const quoteSizeError =
+    config.quoteSizeUsd <= 0
+      ? "Size must be greater than zero."
+      : config.quoteSizeUsd > config.maxInventoryUsd
+        ? "Size cannot exceed the per-market inventory limit."
+        : null;
+  const grossExposureError =
+    config.maxGrossExposureUsd < config.maxInventoryUsd
+      ? "Gross exposure must cover at least one market's inventory limit."
+      : null;
+  const strategyValid = !quoteSizeError && !grossExposureError;
   const selectedMarketIds = new Set(
     config.markets.map((market) => market.marketId),
   );
@@ -1710,6 +1742,16 @@ function DashboardBody() {
     rewards?.marketModel.opportunities
       .filter((opportunity) => opportunity.eligible)
       .slice(0, MAX_SELECTED_MARKETS) ?? [];
+  const sortedRewardOpportunities = [...rewardOpportunities].sort(
+    (left, right) => {
+      if (marketSort === "score") return right.score - left.score;
+      if (marketSort === "volume")
+        return (right.volume24hUsd ?? 0) - (left.volume24hUsd ?? 0);
+      if (marketSort === "depth")
+        return right.balancedDepth50BpsUsd - left.balancedDepth50BpsUsd;
+      return left.rank - right.rank;
+    },
+  );
   const focusedRewardOpportunities = rewardOpportunities.filter(
     (opportunity) =>
       opportunity.objectiveEligible &&
@@ -2320,30 +2362,13 @@ function DashboardBody() {
       <StrategyView active={displayedView === "strategy"}>
         <section className="workspace workspace-strategy">
           <form className="settings-panel" onSubmit={saveConfig}>
-            <div className="section-heading compact">
-              <div>
-                <span className="eyebrow">Strategy</span>
-                <h2>Maker controls</h2>
-              </div>
-              <button
-                type="button"
-                className="icon-button settings-toggle"
-                onClick={() => setAdvancedOpen((open) => !open)}
-                aria-expanded={advancedOpen}
-                aria-label={
-                  advancedOpen
-                    ? "Hide advanced strategy controls"
-                    : "Show advanced strategy controls"
-                }
-                title={
-                  advancedOpen
-                    ? "Hide advanced strategy controls"
-                    : "Show advanced strategy controls"
-                }
-              >
-                <Settings2 size={18} aria-hidden="true" />
-              </button>
-            </div>
+            <header className="strategy-title">
+              <h1>Strategy</h1>
+              <p>
+                Set how Maker allocates capital, controls inventory, and moves
+                between markets.
+              </p>
+            </header>
 
             <div
               className="execution-model"
@@ -2560,8 +2585,12 @@ function DashboardBody() {
               )}
             </div>
 
-            <fieldset className="account-pair-control">
-              <legend>Account roles</legend>
+            <fieldset className="account-pair-control strategy-section strategy-hedging">
+              <legend>Hedging</legend>
+              <p className="strategy-section-copy">
+                Use a separate account to offset fills without giving either
+                trading key withdrawal authority.
+              </p>
               <div className="account-role-grid">
                 <label>
                   <span>Maker</span>
@@ -2764,8 +2793,14 @@ function DashboardBody() {
                       </div>
                       <small>
                         {percent(rebalanceEquityPct, 1)} of Maker equity.
-                        Cancels quotes and uses reduce-only market orders on
-                        both dedicated accounts.
+                        Cancels quotes and uses{" "}
+                        <abbr
+                          className="glossary-term"
+                          title="Reduce-only orders can shrink or close a position, but cannot increase it."
+                        >
+                          reduce-only
+                        </abbr>{" "}
+                        market orders on both dedicated accounts.
                       </small>
                     </label>
                   )}
@@ -2773,28 +2808,79 @@ function DashboardBody() {
               )}
             </fieldset>
 
-            <fieldset>
-              <legend>Profile</legend>
-              <div className="segments">
-                {(["cautious", "balanced", "active"] as const).map(
-                  (profile) => (
-                    <button
-                      key={profile}
-                      type="button"
-                      className={
-                        config.strategyProfile === profile ? "selected" : ""
-                      }
-                      onClick={() => applyProfile(profile)}
-                    >
-                      {profile}
-                    </button>
-                  ),
-                )}
+            <fieldset className="strategy-section strategy-profile-section">
+              <legend>Risk profile</legend>
+              <p className="strategy-section-copy">
+                Pick a starting policy, then tune individual controls.
+              </p>
+              <div className="strategy-profile-cards">
+                {strategyProfiles.map((profile) => (
+                  <button
+                    key={profile.value}
+                    type="button"
+                    className={
+                      config.strategyProfile === profile.value
+                        ? "strategy-profile-card is-selected"
+                        : "strategy-profile-card"
+                    }
+                    aria-pressed={config.strategyProfile === profile.value}
+                    onClick={() => applyProfile(profile.value)}
+                  >
+                    <span>
+                      <strong>{profile.label}</strong>
+                      <small>{profile.summary}</small>
+                    </span>
+                    <dl>
+                      <div>
+                        <dt>Size</dt>
+                        <dd>{money(profile.quoteSizeUsd)}</dd>
+                      </div>
+                      <div>
+                        <dt>Spread</dt>
+                        <dd>{profile.spreadBps} bps</dd>
+                      </div>
+                      <div>
+                        <dt>Checks</dt>
+                        <dd>{profile.refreshMs / 1_000}s</dd>
+                      </div>
+                      <div>
+                        <dt>Inventory</dt>
+                        <dd>{money(profile.maxInventoryUsd)}</dd>
+                      </div>
+                    </dl>
+                  </button>
+                ))}
               </div>
             </fieldset>
 
-            <fieldset className="pair-picker">
-              <legend>Market rotation</legend>
+            <fieldset className="pair-picker strategy-section strategy-markets-section">
+              <legend>Markets</legend>
+              <p className="strategy-section-copy">
+                Choose the venue markets this strategy may quote.
+              </p>
+              <div
+                className="strategy-venue-filters"
+                aria-label="Market venue filter"
+              >
+                <button
+                  type="button"
+                  className={marketVenueFilter === "all" ? "is-selected" : ""}
+                  aria-pressed={marketVenueFilter === "all"}
+                  onClick={() => setMarketVenueFilter("all")}
+                >
+                  All venues
+                </button>
+                <button
+                  type="button"
+                  className={
+                    marketVenueFilter === primaryVenue.id ? "is-selected" : ""
+                  }
+                  aria-pressed={marketVenueFilter === primaryVenue.id}
+                  onClick={() => setMarketVenueFilter("aftermath")}
+                >
+                  <VenueChip venue={primaryVenue} />
+                </button>
+              </div>
               <div className="pair-picker-head">
                 <strong>{config.markets.length} selected</strong>
                 <span>each pair every {effectiveRefreshSeconds}s</span>
@@ -2809,6 +2895,10 @@ function DashboardBody() {
                   aria-label="Find a market pair"
                 />
               </label>
+              <div className="pair-venue-heading">
+                <VenueChip venue={primaryVenue} />
+                <span>{primaryVenue.network}</span>
+              </div>
               <div className="pair-options">
                 {!visibleMarkets.length && (
                   <p className="pair-empty">No matching markets</p>
@@ -2842,13 +2932,7 @@ function DashboardBody() {
               </div>
             </fieldset>
 
-            <details
-              className={
-                advancedOpen
-                  ? "market-overrides advanced-control visible"
-                  : "market-overrides advanced-control"
-              }
-            >
+            <details className="market-overrides strategy-market-overrides">
               <summary>
                 <SlidersHorizontal size={15} />
                 <span>Per-market overrides</span>
@@ -2993,405 +3077,497 @@ function DashboardBody() {
               </div>
             </details>
 
-            <fieldset className="strategy-mode-fieldset">
-              <legend>Mode</legend>
-              <div className="segments">
-                {(["observe", "paper", "live"] as const).map((mode) => (
-                  <button
-                    key={mode}
-                    type="button"
-                    className={config.mode === mode ? "selected" : ""}
-                    aria-pressed={config.mode === mode}
-                    disabled={mode === "live" && !liveAvailable}
-                    title={
-                      mode === "live" && !liveAvailable
-                        ? "Live trading is off on this server"
-                        : undefined
-                    }
-                    onClick={() => {
-                      if (mode === "live") {
-                        setLiveSheetOpen(true);
-                      } else {
-                        setConfig((current) => ({ ...current, mode }));
+            <section className="strategy-section strategy-capital-section">
+              <h2>Capital</h2>
+              <p className="strategy-section-copy">
+                Set execution mode, order size, and the minimum edge quoted on
+                each side.
+              </p>
+              <fieldset className="strategy-mode-fieldset">
+                <legend>Mode</legend>
+                <div className="segments">
+                  {(["observe", "paper", "live"] as const).map((mode) => (
+                    <button
+                      key={mode}
+                      type="button"
+                      className={config.mode === mode ? "selected" : ""}
+                      aria-pressed={config.mode === mode}
+                      disabled={mode === "live" && !liveAvailable}
+                      title={
+                        mode === "live" && !liveAvailable
+                          ? "Live trading is off on this server"
+                          : undefined
                       }
-                    }}
-                  >
-                    {mode}
-                  </button>
-                ))}
+                      onClick={() => {
+                        if (mode === "live") {
+                          setLiveSheetOpen(true);
+                        } else {
+                          setConfig((current) => ({ ...current, mode }));
+                        }
+                      }}
+                    >
+                      {mode}
+                    </button>
+                  ))}
+                </div>
+                {!liveAvailable && (
+                  <small>Live trading is off on this server</small>
+                )}
+                <button
+                  className="strategy-live-review"
+                  type="button"
+                  onClick={() => setLiveSheetOpen(true)}
+                >
+                  Review live setup
+                </button>
+              </fieldset>
+
+              <div className="field-pair">
+                <label>
+                  <span>Quote / side</span>
+                  <div className="input-unit">
+                    <b>$</b>
+                    <input
+                      type="number"
+                      min="0.01"
+                      max="1000"
+                      step="0.01"
+                      value={config.quoteSizeUsd}
+                      onChange={(event) =>
+                        setConfig((current) => ({
+                          ...current,
+                          quoteSizeUsd: Number(event.target.value),
+                        }))
+                      }
+                    />
+                  </div>
+                  {quoteSizeError ? (
+                    <small className="field-error">{quoteSizeError}</small>
+                  ) : (
+                    <small>{percent(quoteEquityPct, 1)} of Maker equity</small>
+                  )}
+                </label>
+                <label>
+                  <span>
+                    Spread{" "}
+                    <abbr
+                      className="glossary-term"
+                      title="Basis points. One basis point is 0.01%."
+                    >
+                      bps
+                    </abbr>
+                  </span>
+                  <div className="input-unit suffix">
+                    <input
+                      type="number"
+                      aria-label="Spread in basis points"
+                      min="8"
+                      max="500"
+                      value={config.spreadBps}
+                      onChange={(event) =>
+                        setConfig((current) => ({
+                          ...current,
+                          spreadBps: Number(event.target.value),
+                        }))
+                      }
+                    />
+                    <b>bps</b>
+                  </div>
+                </label>
               </div>
-              {!liveAvailable && (
-                <small>Live trading is off on this server</small>
-              )}
-              <button
-                className="strategy-live-review"
-                type="button"
-                onClick={() => setLiveSheetOpen(true)}
-              >
-                Review live setup
-              </button>
-            </fieldset>
+            </section>
 
-            <div className="field-pair">
-              <label>
-                <span>Quote / side</span>
-                <div className="input-unit">
-                  <b>$</b>
-                  <input
-                    type="number"
-                    min="0.01"
-                    max="1000"
-                    step="0.01"
-                    value={config.quoteSizeUsd}
-                    onChange={(event) =>
-                      setConfig((current) => ({
-                        ...current,
-                        quoteSizeUsd: Number(event.target.value),
-                      }))
-                    }
-                  />
-                </div>
-                <small>{percent(quoteEquityPct, 1)} of Maker equity</small>
-              </label>
-              <label>
-                <span>Spread</span>
-                <div className="input-unit suffix">
-                  <input
-                    type="number"
-                    min="8"
-                    max="500"
-                    value={config.spreadBps}
-                    onChange={(event) =>
-                      setConfig((current) => ({
-                        ...current,
-                        spreadBps: Number(event.target.value),
-                      }))
-                    }
-                  />
-                  <b>bps</b>
-                </div>
-              </label>
-            </div>
-
-            <div
-              className={
-                advancedOpen
-                  ? "risk-field-grid advanced-control visible"
-                  : "risk-field-grid advanced-control"
-              }
-            >
-              <label>
-                <span>Per-pair inventory</span>
-                <div className="input-unit">
-                  <b>$</b>
-                  <input
-                    type="number"
-                    min="0.01"
-                    step="0.01"
-                    value={config.maxInventoryUsd}
-                    onChange={(event) =>
-                      setConfig((current) => ({
-                        ...current,
-                        maxInventoryUsd: Number(event.target.value),
-                      }))
-                    }
-                  />
-                </div>
-              </label>
-              <label>
-                <span>Inventory target</span>
-                <div className="input-unit">
-                  <b>$</b>
-                  <input
-                    type="number"
-                    value={config.inventoryTargetUsd}
-                    onChange={(event) =>
-                      setConfig((current) => ({
-                        ...current,
-                        inventoryTargetUsd: Number(event.target.value),
-                      }))
-                    }
-                  />
-                </div>
-              </label>
-              <label>
-                <span>Gross exposure</span>
-                <div className="input-unit">
-                  <b>$</b>
-                  <input
-                    type="number"
-                    min={config.maxInventoryUsd}
-                    step="0.01"
-                    value={config.maxGrossExposureUsd}
-                    onChange={(event) => {
-                      const maxGrossExposureUsd = Number(event.target.value);
-                      setConfig((current) => ({
-                        ...current,
-                        maxGrossExposureUsd,
-                        rebalanceGrossExposureUsd: Math.min(
-                          current.rebalanceGrossExposureUsd,
+            <details className="strategy-section strategy-advanced">
+              <summary>Advanced</summary>
+              <p className="strategy-section-copy">
+                Portfolio limits, quote guards, and timing controls.
+              </p>
+              <div className="risk-field-grid">
+                <label>
+                  <span>Per-pair inventory</span>
+                  <div className="input-unit">
+                    <b>$</b>
+                    <input
+                      type="number"
+                      min="0.01"
+                      step="0.01"
+                      value={config.maxInventoryUsd}
+                      onChange={(event) =>
+                        setConfig((current) => ({
+                          ...current,
+                          maxInventoryUsd: Number(event.target.value),
+                        }))
+                      }
+                    />
+                  </div>
+                </label>
+                <label>
+                  <span>Inventory target</span>
+                  <div className="input-unit">
+                    <b>$</b>
+                    <input
+                      type="number"
+                      value={config.inventoryTargetUsd}
+                      onChange={(event) =>
+                        setConfig((current) => ({
+                          ...current,
+                          inventoryTargetUsd: Number(event.target.value),
+                        }))
+                      }
+                    />
+                  </div>
+                </label>
+                <label>
+                  <span>Gross exposure</span>
+                  <div className="input-unit">
+                    <b>$</b>
+                    <input
+                      type="number"
+                      min={config.maxInventoryUsd}
+                      step="0.01"
+                      value={config.maxGrossExposureUsd}
+                      onChange={(event) => {
+                        const maxGrossExposureUsd = Number(event.target.value);
+                        setConfig((current) => ({
+                          ...current,
                           maxGrossExposureUsd,
+                          rebalanceGrossExposureUsd: Math.min(
+                            current.rebalanceGrossExposureUsd,
+                            maxGrossExposureUsd,
+                          ),
+                        }));
+                      }}
+                    />
+                  </div>
+                  {grossExposureError ? (
+                    <small className="field-error">{grossExposureError}</small>
+                  ) : (
+                    <small>
+                      {percent(grossCapEquityPct, 1)} of Maker equity
+                    </small>
+                  )}
+                </label>
+                <label>
+                  <span>Unrealized loss</span>
+                  <div className="input-unit">
+                    <b>$</b>
+                    <input
+                      type="number"
+                      min="1"
+                      value={config.maxUnrealizedLossUsd}
+                      onChange={(event) =>
+                        setConfig((current) => ({
+                          ...current,
+                          maxUnrealizedLossUsd: Number(event.target.value),
+                        }))
+                      }
+                    />
+                  </div>
+                </label>
+                <label>
+                  <span>Run drawdown</span>
+                  <div className="input-unit">
+                    <b>$</b>
+                    <input
+                      type="number"
+                      min="1"
+                      value={config.maxRunDrawdownUsd}
+                      onChange={(event) =>
+                        setConfig((current) => ({
+                          ...current,
+                          maxRunDrawdownUsd: Number(event.target.value),
+                        }))
+                      }
+                    />
+                  </div>
+                  <small>{percent(drawdownEquityPct, 1)} of Maker equity</small>
+                </label>
+                <label>
+                  <span>
+                    Book / index{" "}
+                    <abbr
+                      className="glossary-term"
+                      title="Divergence is the distance between the venue book and index price."
+                    >
+                      divergence
+                    </abbr>
+                  </span>
+                  <div className="input-unit suffix">
+                    <input
+                      type="number"
+                      min="1"
+                      max="5000"
+                      value={config.maxBookDivergenceBps}
+                      onChange={(event) =>
+                        setConfig((current) => ({
+                          ...current,
+                          maxBookDivergenceBps: Number(event.target.value),
+                        }))
+                      }
+                    />
+                    <b>bps</b>
+                  </div>
+                </label>
+                <label>
+                  <span>
+                    Inventory{" "}
+                    <abbr
+                      className="glossary-term"
+                      title="Skew shifts quotes to encourage fills that move inventory toward its target."
+                    >
+                      skew
+                    </abbr>
+                  </span>
+                  <div className="input-unit suffix">
+                    <input
+                      type="number"
+                      min="0"
+                      max="250"
+                      value={config.inventorySkewBps}
+                      onChange={(event) =>
+                        setConfig((current) => ({
+                          ...current,
+                          inventorySkewBps: Number(event.target.value),
+                        }))
+                      }
+                    />
+                    <b>bps</b>
+                  </div>
+                </label>
+                <label>
+                  <span>Max leverage</span>
+                  <div className="input-unit suffix">
+                    <input
+                      type="number"
+                      min="1"
+                      max="3"
+                      step="0.1"
+                      value={config.maxLeverage}
+                      onChange={(event) =>
+                        setConfig((current) => ({
+                          ...current,
+                          maxLeverage: Number(event.target.value),
+                        }))
+                      }
+                    />
+                    <b>x</b>
+                  </div>
+                </label>
+              </div>
+
+              <div className="timing-controls">
+                <label>
+                  <span>Poll interval</span>
+                  <input
+                    type="range"
+                    min="2000"
+                    max="30000"
+                    step="1000"
+                    value={config.refreshMs}
+                    onChange={(event) => {
+                      const refreshMs = Number(event.target.value);
+                      setConfig((current) => ({
+                        ...current,
+                        refreshMs,
+                        marketDwellMs: Math.max(
+                          current.marketDwellMs,
+                          refreshMs,
+                        ),
+                        maxRestingMs: Math.max(current.maxRestingMs, refreshMs),
+                        maxQuoteAgeMs: Math.max(
+                          current.maxQuoteAgeMs,
+                          minimumObservationWindowMs(
+                            refreshMs,
+                            current.markets.length,
+                            current.rotationMode,
+                            Math.max(current.maxRestingMs, refreshMs),
+                          ),
                         ),
                       }));
                     }}
                   />
-                </div>
-                <small>{percent(grossCapEquityPct, 1)} of Maker equity</small>
-              </label>
-              <label>
-                <span>Unrealized loss</span>
-                <div className="input-unit">
-                  <b>$</b>
-                  <input
-                    type="number"
-                    min="1"
-                    value={config.maxUnrealizedLossUsd}
-                    onChange={(event) =>
-                      setConfig((current) => ({
-                        ...current,
-                        maxUnrealizedLossUsd: Number(event.target.value),
-                      }))
-                    }
-                  />
-                </div>
-              </label>
-              <label>
-                <span>Run drawdown</span>
-                <div className="input-unit">
-                  <b>$</b>
-                  <input
-                    type="number"
-                    min="1"
-                    value={config.maxRunDrawdownUsd}
-                    onChange={(event) =>
-                      setConfig((current) => ({
-                        ...current,
-                        maxRunDrawdownUsd: Number(event.target.value),
-                      }))
-                    }
-                  />
-                </div>
-                <small>{percent(drawdownEquityPct, 1)} of Maker equity</small>
-              </label>
-              <label>
-                <span>Book / index limit</span>
-                <div className="input-unit suffix">
-                  <input
-                    type="number"
-                    min="1"
-                    max="5000"
-                    value={config.maxBookDivergenceBps}
-                    onChange={(event) =>
-                      setConfig((current) => ({
-                        ...current,
-                        maxBookDivergenceBps: Number(event.target.value),
-                      }))
-                    }
-                  />
-                  <b>bps</b>
-                </div>
-              </label>
-              <label>
-                <span>Inventory skew</span>
-                <div className="input-unit suffix">
-                  <input
-                    type="number"
-                    min="0"
-                    max="250"
-                    value={config.inventorySkewBps}
-                    onChange={(event) =>
-                      setConfig((current) => ({
-                        ...current,
-                        inventorySkewBps: Number(event.target.value),
-                      }))
-                    }
-                  />
-                  <b>bps</b>
-                </div>
-              </label>
-              <label>
-                <span>Max leverage</span>
-                <div className="input-unit suffix">
-                  <input
-                    type="number"
-                    min="1"
-                    max="3"
-                    step="0.1"
-                    value={config.maxLeverage}
-                    onChange={(event) =>
-                      setConfig((current) => ({
-                        ...current,
-                        maxLeverage: Number(event.target.value),
-                      }))
-                    }
-                  />
-                  <b>x</b>
-                </div>
-              </label>
-            </div>
-
-            <div
-              className={
-                advancedOpen
-                  ? "timing-controls advanced-control visible"
-                  : "timing-controls advanced-control"
-              }
-            >
-              <label>
-                <span>Poll interval</span>
-                <input
-                  type="range"
-                  min="2000"
-                  max="30000"
-                  step="1000"
-                  value={config.refreshMs}
-                  onChange={(event) => {
-                    const refreshMs = Number(event.target.value);
-                    setConfig((current) => ({
-                      ...current,
-                      refreshMs,
-                      marketDwellMs: Math.max(current.marketDwellMs, refreshMs),
-                      maxRestingMs: Math.max(current.maxRestingMs, refreshMs),
-                      maxQuoteAgeMs: Math.max(
-                        current.maxQuoteAgeMs,
-                        minimumObservationWindowMs(
-                          refreshMs,
-                          current.markets.length,
-                          current.rotationMode,
-                          Math.max(current.maxRestingMs, refreshMs),
-                        ),
-                      ),
-                    }));
-                  }}
-                />
-                <small>{config.refreshMs / 1000}s risk and price checks</small>
-              </label>
-              <label>
-                <span>Market dwell</span>
-                <div className="input-unit suffix">
-                  <input
-                    type="number"
-                    min={Math.ceil(config.refreshMs / 1_000)}
-                    max="3600"
-                    step="1"
-                    value={config.marketDwellMs / 1_000}
-                    onChange={(event) =>
-                      setConfig((current) => ({
-                        ...current,
-                        marketDwellMs: Math.max(
-                          current.refreshMs,
-                          Number(event.target.value) * 1_000,
-                        ),
-                      }))
-                    }
-                  />
-                  <b>sec</b>
-                </div>
-                <small>Switches the one live pair.</small>
-              </label>
-              <label>
-                <span>Requote movement</span>
-                <div className="input-unit suffix">
-                  <input
-                    type="number"
-                    min="0"
-                    max="500"
-                    step="0.5"
-                    value={config.requoteThresholdBps}
-                    onChange={(event) =>
-                      setConfig((current) => ({
-                        ...current,
-                        requoteThresholdBps: Number(event.target.value),
-                      }))
-                    }
-                  />
-                  <b>bps</b>
-                </div>
-                <small>Smaller moves keep the resting quote.</small>
-              </label>
-              <label>
-                <span>Forced refresh</span>
-                <div className="input-unit suffix">
-                  <input
-                    type="number"
-                    min={Math.ceil(config.refreshMs / 1_000)}
-                    max="3600"
-                    step="1"
-                    value={config.maxRestingMs / 1_000}
-                    onChange={(event) => {
-                      const requestedMs = Number(event.target.value) * 1_000;
-                      setConfig((current) => {
-                        const maxRestingMs = Math.max(
-                          current.refreshMs,
-                          requestedMs,
-                        );
-                        return {
+                  <small>
+                    {config.refreshMs / 1000}s risk and price checks
+                  </small>
+                </label>
+                <label>
+                  <span>Market dwell</span>
+                  <div className="input-unit suffix">
+                    <input
+                      type="number"
+                      min={Math.ceil(config.refreshMs / 1_000)}
+                      max="3600"
+                      step="1"
+                      value={config.marketDwellMs / 1_000}
+                      onChange={(event) =>
+                        setConfig((current) => ({
                           ...current,
-                          maxRestingMs,
-                          maxQuoteAgeMs: Math.max(
-                            current.maxQuoteAgeMs,
-                            minimumObservationWindowMs(
-                              current.refreshMs,
-                              current.markets.length,
-                              current.rotationMode,
-                              maxRestingMs,
-                            ),
+                          marketDwellMs: Math.max(
+                            current.refreshMs,
+                            Number(event.target.value) * 1_000,
                           ),
-                        };
-                      });
-                    }}
-                  />
-                  <b>sec</b>
-                </div>
-                <small>Maximum time before a paid requote.</small>
-              </label>
-              <label>
-                <span>Stale-observation cutoff</span>
-                <div className="input-unit suffix">
-                  <input
-                    type="number"
-                    min={Math.ceil(
-                      minimumObservationWindowMs(
-                        config.refreshMs,
-                        config.markets.length,
-                        config.rotationMode,
-                        config.maxRestingMs,
-                      ) / 1_000,
-                    )}
-                    max="86400"
-                    value={config.maxQuoteAgeMs / 1_000}
-                    onChange={(event) =>
-                      setConfig((current) => ({
-                        ...current,
-                        maxQuoteAgeMs: Number(event.target.value) * 1_000,
-                      }))
-                    }
-                  />
-                  <b>sec</b>
-                </div>
-                <small>Watchdog cancels on missing market observations.</small>
-              </label>
-            </div>
+                        }))
+                      }
+                    />
+                    <b>sec</b>
+                  </div>
+                  <small>Switches the one live pair.</small>
+                </label>
+                <label>
+                  <span>Requote movement</span>
+                  <div className="input-unit suffix">
+                    <input
+                      type="number"
+                      min="0"
+                      max="500"
+                      step="0.5"
+                      value={config.requoteThresholdBps}
+                      onChange={(event) =>
+                        setConfig((current) => ({
+                          ...current,
+                          requoteThresholdBps: Number(event.target.value),
+                        }))
+                      }
+                    />
+                    <b>bps</b>
+                  </div>
+                  <small>Smaller moves keep the resting quote.</small>
+                </label>
+                <label>
+                  <span>Forced refresh</span>
+                  <div className="input-unit suffix">
+                    <input
+                      type="number"
+                      min={Math.ceil(config.refreshMs / 1_000)}
+                      max="3600"
+                      step="1"
+                      value={config.maxRestingMs / 1_000}
+                      onChange={(event) => {
+                        const requestedMs = Number(event.target.value) * 1_000;
+                        setConfig((current) => {
+                          const maxRestingMs = Math.max(
+                            current.refreshMs,
+                            requestedMs,
+                          );
+                          return {
+                            ...current,
+                            maxRestingMs,
+                            maxQuoteAgeMs: Math.max(
+                              current.maxQuoteAgeMs,
+                              minimumObservationWindowMs(
+                                current.refreshMs,
+                                current.markets.length,
+                                current.rotationMode,
+                                maxRestingMs,
+                              ),
+                            ),
+                          };
+                        });
+                      }}
+                    />
+                    <b>sec</b>
+                  </div>
+                  <small>Maximum time before a paid requote.</small>
+                </label>
+                <label>
+                  <span>Stale-observation cutoff</span>
+                  <div className="input-unit suffix">
+                    <input
+                      type="number"
+                      min={Math.ceil(
+                        minimumObservationWindowMs(
+                          config.refreshMs,
+                          config.markets.length,
+                          config.rotationMode,
+                          config.maxRestingMs,
+                        ) / 1_000,
+                      )}
+                      max="86400"
+                      value={config.maxQuoteAgeMs / 1_000}
+                      onChange={(event) =>
+                        setConfig((current) => ({
+                          ...current,
+                          maxQuoteAgeMs: Number(event.target.value) * 1_000,
+                        }))
+                      }
+                    />
+                    <b>sec</b>
+                  </div>
+                  <small>
+                    Watchdog cancels on missing market observations.
+                  </small>
+                </label>
+              </div>
+            </details>
 
-            <button
-              type="submit"
-              className="button primary full"
-              disabled={!config.markets.length || Boolean(busy)}
-            >
-              {busy === "save" ? "Saving..." : "Save strategy"}
-            </button>
-            <p className="apply-note">
-              Saved changes apply on the next market cycle.
-            </p>
+            {configDirty && (
+              <div className="strategy-save-bar" role="status">
+                <span>Unsaved changes</span>
+                <div>
+                  <button
+                    type="button"
+                    className="button secondary"
+                    onClick={() =>
+                      setConfig(
+                        savedConfig ?? {
+                          ...defaultConfig,
+                          makerAccountId: activeMakerAccountId,
+                        },
+                      )
+                    }
+                    disabled={Boolean(busy)}
+                  >
+                    Discard
+                  </button>
+                  <button
+                    type="submit"
+                    className="button primary"
+                    disabled={
+                      !config.markets.length || !strategyValid || Boolean(busy)
+                    }
+                  >
+                    {busy === "save" ? "Saving..." : "Save strategy"}
+                  </button>
+                </div>
+                <small>Saved changes apply on the next market cycle.</small>
+              </div>
+            )}
           </form>
         </section>
       </StrategyView>
 
       <MarketsView active={displayedView === "markets"}>
+        <header className="markets-title">
+          <div>
+            <h1>Markets</h1>
+            <p>
+              Compare live exposure and reward efficiency across venue markets.
+            </p>
+          </div>
+          <div className="market-venue-filters" aria-label="Venue filter">
+            <button
+              type="button"
+              className={marketVenueFilter === "all" ? "is-selected" : ""}
+              aria-pressed={marketVenueFilter === "all"}
+              onClick={() => setMarketVenueFilter("all")}
+            >
+              All venues
+            </button>
+            <button
+              type="button"
+              className={
+                marketVenueFilter === primaryVenue.id ? "is-selected" : ""
+              }
+              aria-pressed={marketVenueFilter === primaryVenue.id}
+              onClick={() => setMarketVenueFilter("aftermath")}
+            >
+              <VenueChip venue={primaryVenue} />
+            </button>
+          </div>
+        </header>
         <section className="rotation-board">
           <div className="section-heading compact rotation-heading">
             <div>
-              <span className="eyebrow">Market book</span>
               <h2>Rotation and exposure</h2>
             </div>
             <span className="rotation-cadence">
@@ -3409,7 +3585,14 @@ function DashboardBody() {
                   <th>Policy</th>
                   <th>Index</th>
                   <th>Open interest</th>
-                  <th>OI capacity</th>
+                  <th>
+                    <abbr
+                      className="glossary-term"
+                      title="Open-interest capacity is current one-sided open interest as a share of the venue limit."
+                    >
+                      OI capacity
+                    </abbr>
+                  </th>
                   <th>24h volume</th>
                   <th>Funding</th>
                   <th>Inventory</th>
@@ -3501,7 +3684,6 @@ function DashboardBody() {
         <section className="rewards-board">
           <div className="section-heading compact rewards-heading">
             <div>
-              <span className="eyebrow">Bi-weekly incentives</span>
               <h2>Reward efficiency</h2>
             </div>
             <div className="reward-heading-actions">
@@ -3534,7 +3716,14 @@ function DashboardBody() {
               </strong>
             </div>
             <div>
-              <span>Q-score share</span>
+              <span>
+                <abbr
+                  className="glossary-term"
+                  title="Q-score share estimates this account's share of qualifying maker liquidity."
+                >
+                  Q-score share
+                </abbr>
+              </span>
               <strong>
                 {rewards ? percent(rewards.account.qScoreShare * 100, 3) : "-"}
               </strong>
@@ -3671,11 +3860,44 @@ function DashboardBody() {
             <table className="reward-table">
               <thead>
                 <tr>
-                  <th>Rank</th>
+                  <th>
+                    <button
+                      type="button"
+                      aria-pressed={marketSort === "rank"}
+                      onClick={() => setMarketSort("rank")}
+                    >
+                      Rank
+                    </button>
+                  </th>
                   <th>Pair</th>
-                  <th>{config.strategyObjective} score</th>
-                  <th>24h flow</th>
-                  <th>Depth +/-50bp</th>
+                  <th>Venue</th>
+                  <th>
+                    <button
+                      type="button"
+                      aria-pressed={marketSort === "score"}
+                      onClick={() => setMarketSort("score")}
+                    >
+                      {config.strategyObjective} score
+                    </button>
+                  </th>
+                  <th>
+                    <button
+                      type="button"
+                      aria-pressed={marketSort === "volume"}
+                      onClick={() => setMarketSort("volume")}
+                    >
+                      24h flow
+                    </button>
+                  </th>
+                  <th>
+                    <button
+                      type="button"
+                      aria-pressed={marketSort === "depth"}
+                      onClick={() => setMarketSort("depth")}
+                    >
+                      Depth +/-50bp
+                    </button>
+                  </th>
                   <th>Flow / depth</th>
                   <th>Book spread</th>
                   <th>Pre-risk edge</th>
@@ -3684,8 +3906,8 @@ function DashboardBody() {
                 </tr>
               </thead>
               <tbody>
-                {rewardOpportunities.length ? (
-                  rewardOpportunities.map((opportunity) => (
+                {sortedRewardOpportunities.length ? (
+                  sortedRewardOpportunities.map((opportunity) => (
                     <tr
                       key={opportunity.marketId}
                       title={opportunity.reasons.join(". ")}
@@ -3706,6 +3928,9 @@ function DashboardBody() {
                             fails objective
                           </span>
                         ) : null}
+                      </td>
+                      <td>
+                        <VenueChip venue={primaryVenue} />
                       </td>
                       <td>
                         <div className="score-cell">
@@ -3770,7 +3995,7 @@ function DashboardBody() {
                   ))
                 ) : (
                   <tr>
-                    <td className="empty-fill" colSpan={10}>
+                    <td className="empty-fill" colSpan={11}>
                       {rewards?.account.error ??
                         "Scanning live books for eligible markets."}
                     </td>

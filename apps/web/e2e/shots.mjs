@@ -35,6 +35,7 @@ const baseUrl = option(
 );
 const showFlattenSheet = process.argv.includes("--flatten-sheet");
 const showLiveSheet = process.argv.includes("--live-sheet");
+const verifyConfigSave = process.argv.includes("--verify-config-save");
 const outputDirectory = path.resolve(
   projectRoot,
   option("--output", defaultOutput),
@@ -165,6 +166,7 @@ async function capture(browser, stateName, captureConfig, view) {
   const page = await context.newPage();
   const browserErrors = [];
   const remoteRequests = [];
+  let capturedConfigBody = null;
   const exerciseStop =
     stateName === "live-running" &&
     captureConfig.name === "desktop-light" &&
@@ -190,6 +192,21 @@ async function capture(browser, stateName, captureConfig, view) {
   await page.route("**/api/control/**", async (route) => {
     const request = route.request();
     const url = new URL(request.url());
+    if (
+      verifyConfigSave &&
+      request.method() === "POST" &&
+      url.pathname.endsWith("/api/config")
+    ) {
+      capturedConfigBody = request.postData();
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          config: JSON.parse(capturedConfigBody ?? "{}"),
+        }),
+      });
+      return;
+    }
     if (
       exerciseStop &&
       request.method() === "POST" &&
@@ -286,6 +303,31 @@ async function capture(browser, stateName, captureConfig, view) {
           "Live mode was selectable while deployment gates were off",
         );
       }
+    }
+    if (
+      verifyConfigSave &&
+      stateName === "stopped" &&
+      captureConfig.name === "desktop-light" &&
+      view === "strategy"
+    ) {
+      const nextSpread = fixture.config.config.spreadBps + 1;
+      await page
+        .getByRole("spinbutton", { name: "Spread in basis points" })
+        .fill(String(nextSpread));
+      await page.getByRole("button", { name: "Save strategy" }).click();
+      await page.getByText("Unsaved changes").waitFor({ state: "hidden" });
+      const expectedBody = JSON.stringify({
+        ...fixture.config.config,
+        spreadBps: nextSpread,
+      });
+      if (capturedConfigBody !== expectedBody) {
+        throw new Error(
+          `Strategy save body changed. Expected ${expectedBody}, received ${capturedConfigBody}`,
+        );
+      }
+      process.stdout.write(
+        `${stateName}/${view}/${captureConfig.name}: config request body is byte-identical\n`,
+      );
     }
     await page.waitForTimeout(100);
 
