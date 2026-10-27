@@ -170,7 +170,9 @@ export type SetupState = {
 
 export type Performance = {
   asOf: string;
-  period: "1D";
+  period: "1D" | "EPOCH" | "ALL";
+  periodStartedAt: string | null;
+  historyComplete: boolean;
   account: {
     realizedPnlUsd: number;
     fundingPnlUsd: number;
@@ -689,6 +691,8 @@ function snapshot(
 const performance: Performance = {
   asOf: fixedNow,
   period: "1D",
+  periodStartedAt: "2026-10-26T17:08:32.000Z",
+  historyComplete: true,
   account: {
     realizedPnlUsd: -0.0062,
     fundingPnlUsd: 0.0004,
@@ -841,6 +845,16 @@ const events: AuditEvent[] = [
     outcome: "success",
     detail: { markets: 5 },
   },
+  ...Array.from({ length: 9 }, (_, index) => ({
+    id: index + 4,
+    occurredAt: new Date(
+      Date.parse("2026-10-27T16:50:00.000Z") - index * 60_000,
+    ).toISOString(),
+    category: "runtime",
+    action: "market-cycle-completed",
+    outcome: "success",
+    detail: { cycle: index + 1 },
+  })),
 ];
 
 const identity: AccessIdentity = {

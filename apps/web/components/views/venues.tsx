@@ -79,8 +79,8 @@ export function VenueBoard({
         <div>
           <h1>Venues</h1>
           <p>
-            Each venue keeps its own accounts, trading key, and fees. Risk
-            limits apply across all of them.
+            Inspect execution connectivity, delegated authority, fees, and
+            portfolio exposure for every supported venue.
           </p>
         </div>
       </header>
@@ -170,17 +170,20 @@ export function VenueBoard({
           </div>
         </Card>
 
-        <Card className="venue-add-card" title="Add another venue">
+        <Card className="venue-add-card" title="Execution boundary">
           <p>
-            Maker treats every venue the same way. Connecting one takes three
-            steps, and its markets join the same desk, limits, and Stop button.
+            Aftermath is the only active venue integration. Maker reads market
+            state, signs through a trading-only key, and keeps withdrawals with
+            the owner wallet.
           </p>
           <ol>
-            <li>Connect the wallet that owns your account there</li>
-            <li>Grant Maker a trade-only key and fund its gas</li>
-            <li>Pick markets and run a Paper pass first</li>
+            <li>Market data and account state come from Aftermath</li>
+            <li>The delegated key can quote, cancel, and reduce positions</li>
+            <li>Deposits, withdrawals, and permissions stay owner-signed</li>
           </ol>
-          <span>New integrations appear here as they ship.</span>
+          <span>
+            Additional venues will appear only after their controls are live.
+          </span>
         </Card>
       </div>
 
@@ -209,7 +212,7 @@ export function VenueBoard({
             <span>{accounts.length}</span>
           </ListRow>
           <ListRow>
-            <strong>All venues</strong>
+            <strong>Portfolio total</strong>
             <span>{formatMoney(totalEquityUsd)}</span>
             <span>
               {formatMoney(grossExposureUsd)} of{" "}

@@ -4,6 +4,7 @@ import {
   PerpetualsOrderType,
   type PerpetualsAccountCap,
   type PerpetualsAccountMarginHistoryData,
+  type PerpetualsAccountMarginHistoryTimeframeKey,
   type PerpetualsMarket,
   type SdkPerpetualsCancelAndPlaceOrdersInputs,
 } from "aftermath-ts-sdk";
@@ -159,6 +160,7 @@ export type PerformanceOrder = {
 export type AccountPerformanceHistory = {
   orders: PerformanceOrder[];
   marginHistory: PerpetualsAccountMarginHistoryData[];
+  historyComplete?: boolean;
 };
 
 export type AccountSnapshot = PositionSnapshot & {
@@ -1301,6 +1303,8 @@ export class AftermathGateway {
     setup: Setup;
     agentAddress: string;
     limit?: number;
+    timeframe?: PerpetualsAccountMarginHistoryTimeframeKey;
+    sinceMs?: number;
   }): Promise<AccountPerformanceHistory> {
     const cap = await this.findAccountCap({
       walletAddress: inputs.agentAddress,
@@ -1311,15 +1315,43 @@ export class AftermathGateway {
     const { account } = await this.sdk.Perpetuals().getAccount({
       accountCap: cap,
     });
-    const [orders, margin] = await Promise.all([
-      account.getOrderHistory({
-        limit: inputs.limit ?? 200,
-        eventTypes: ["FilledMakerOrder", "FilledTakerOrder"],
-      }),
-      account.getMarginHistory({ timeframe: "1D" }),
+    const pageSize = Math.min(200, Math.max(1, inputs.limit ?? 200));
+    const maxOrders = 10_000;
+    const eventTypes = ["FilledMakerOrder", "FilledTakerOrder"] as const;
+    const [firstPage, margin] = await Promise.all([
+      account.getOrderHistory({ limit: pageSize, eventTypes: [...eventTypes] }),
+      account.getMarginHistory({ timeframe: inputs.timeframe ?? "1D" }),
     ]);
-    return {
-      orders: orders.orders.map((order) => ({
+    const orderRows = [...firstPage.orders];
+    let cursor = firstPage.nextBeforeTimestampCursor;
+    let historyComplete = !cursor;
+    const seenCursors = new Set<string>();
+
+    while (cursor && orderRows.length < maxOrders) {
+      const cursorKey = String(cursor);
+      if (seenCursors.has(cursorKey)) break;
+      seenCursors.add(cursorKey);
+      if (
+        inputs.sinceMs !== undefined &&
+        orderRows.some(
+          (order) => timestampMs(order.timestamp) < inputs.sinceMs!,
+        )
+      ) {
+        historyComplete = true;
+        break;
+      }
+      const page = await account.getOrderHistory({
+        limit: pageSize,
+        eventTypes: [...eventTypes],
+        beforeTimestampCursor: cursor,
+      });
+      orderRows.push(...page.orders);
+      cursor = page.nextBeforeTimestampCursor;
+      historyComplete = !cursor;
+    }
+
+    const orders = orderRows
+      .map((order) => ({
         timestampMs: timestampMs(order.timestamp),
         txDigest: order.txDigest,
         marketId: order.marketId,
@@ -1334,8 +1366,20 @@ export class AftermathGateway {
         realizedPnlUsd: order.pnl ?? 0,
         feesUsd: order.fees ?? 0,
         maker: order.eventType.includes("FilledMakerOrder"),
-      })),
-      marginHistory: margin.marginHistoryDatas,
+      }))
+      .filter(
+        (order) =>
+          inputs.sinceMs === undefined || order.timestampMs >= inputs.sinceMs,
+      );
+
+    return {
+      orders,
+      marginHistory: margin.marginHistoryDatas.filter(
+        (point) =>
+          inputs.sinceMs === undefined ||
+          timestampMs(point.timestamp) >= inputs.sinceMs,
+      ),
+      historyComplete,
     };
   }
 
