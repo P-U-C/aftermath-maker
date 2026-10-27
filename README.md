@@ -73,6 +73,8 @@ The reward desk keeps protocol facts separate from strategy estimates. Account t
 
 Closed-session markets and markets without meaningful two-sided depth, OI, or organic volume are ineligible. **Stage rotation** selects the requested number of top markets, applies bounded per-market policies, and forces Observe mode. It never saves, starts, or enables Live trading.
 
+Aftermath trading incentives require a manual claim. The desk links to the official Rewards page rather than constructing or automatically signing a value-moving claim transaction.
+
 The ranking is not Aftermath's private per-market rewards formula and does not estimate guaranteed profit. Its purpose is to direct scarce collateral toward measurable, independently generated flow while avoiding volume churn and self-trading.
 
 ## Performance boundary

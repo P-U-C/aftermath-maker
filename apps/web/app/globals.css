@@ -1574,11 +1574,36 @@ input[type="range"] {
   border-bottom: 1px solid var(--line);
 }
 
+.reward-heading-actions {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+}
+
 .reward-cutoff {
   display: grid;
   grid-template-columns: 20px auto;
   gap: 3px 8px;
   align-items: center;
+}
+
+.reward-claim-link {
+  min-height: 34px;
+  padding: 0 10px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--ink);
+  background: var(--paper);
+  border: 1px solid var(--ink);
+  font-size: 10px;
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.reward-claim-link:hover {
+  color: white;
+  background: var(--violet);
 }
 
 .reward-cutoff svg {
@@ -2532,6 +2557,11 @@ footer a {
   .performance-heading {
     align-items: flex-start;
     flex-direction: column;
+  }
+
+  .reward-heading-actions {
+    width: 100%;
+    justify-content: space-between;
   }
 
   .reward-metrics {

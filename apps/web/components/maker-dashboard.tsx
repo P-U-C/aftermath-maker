@@ -2622,10 +2622,22 @@ function DashboardBody() {
             <span className="eyebrow">Bi-weekly incentives</span>
             <h2>Reward efficiency</h2>
           </div>
-          <div className="reward-cutoff">
-            <TimerReset size={16} aria-hidden="true" />
-            <span>Next snapshot</span>
-            <strong>{timeUntil(rewards?.epoch.cutoffAt ?? null)}</strong>
+          <div className="reward-heading-actions">
+            <div className="reward-cutoff">
+              <TimerReset size={16} aria-hidden="true" />
+              <span>Next snapshot</span>
+              <strong>{timeUntil(rewards?.epoch.cutoffAt ?? null)}</strong>
+            </div>
+            <a
+              className="reward-claim-link"
+              href="https://aftermath.finance/rewards"
+              target="_blank"
+              rel="noreferrer"
+            >
+              <Coins size={15} aria-hidden="true" />
+              Claim rewards
+              <ExternalLink size={13} aria-hidden="true" />
+            </a>
           </div>
         </div>
 
