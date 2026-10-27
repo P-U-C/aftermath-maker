@@ -283,6 +283,28 @@ async function capture(browser, stateName, captureConfig, view) {
           `${stateName}/${captureConfig.name} has unreachable view tabs`,
         );
       }
+      if (captureConfig.name === "desktop-light" && view === null) {
+        for (const targetView of makerViews) {
+          await page
+            .getByRole("link", { name: targetView, exact: false })
+            .click();
+          await page
+            .locator(`[data-view="${targetView}"]:not([hidden])`)
+            .first()
+            .waitFor();
+          if (new URL(page.url()).hash !== `#${targetView}`) {
+            throw new Error(
+              `${stateName}/${captureConfig.name} did not navigate to ${targetView}`,
+            );
+          }
+        }
+        const resetView = stateName === "onboarding" ? "venues" : "desk";
+        await page.getByRole("link", { name: resetView, exact: false }).click();
+        await page
+          .locator(`[data-view="${resetView}"]:not([hidden])`)
+          .first()
+          .waitFor();
+      }
     }
     if (view && stateName !== "onboarding") {
       await page
@@ -349,6 +371,17 @@ async function capture(browser, stateName, captureConfig, view) {
         .fill(String(nextSpread));
       await page.getByRole("button", { name: "Save strategy" }).click();
       await page.getByText("Unsaved changes").waitFor({ state: "hidden" });
+      const successNotice = page.locator(".notice.notice-success");
+      await successNotice.getByText(/Strategy saved\./).waitFor();
+      if (
+        !(await successNotice.evaluate((node) =>
+          node.matches("[role='status']"),
+        ))
+      ) {
+        throw new Error(
+          "Successful strategy save did not use a polite status notice",
+        );
+      }
       const expectedBody = JSON.stringify({
         ...fixture.config.config,
         spreadBps: nextSpread,

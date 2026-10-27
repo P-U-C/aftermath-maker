@@ -1,6 +1,6 @@
 "use client";
 
-import { AlertTriangle, LogOut } from "lucide-react";
+import { AlertTriangle, CircleCheck, CircleX, LogOut } from "lucide-react";
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 
 import { Pill } from "./ui/primitives";
@@ -15,6 +15,7 @@ export const makerViews = [
 ] as const;
 
 export type MakerView = (typeof makerViews)[number]["id"];
+export type MakerNoticeTone = "success" | "warning" | "error";
 
 function viewFromHash(hash: string): MakerView {
   const candidate = hash.replace(/^#/, "");
@@ -60,6 +61,7 @@ type MakerShellProps = {
   live: boolean;
   accountLabel: string;
   notice: string | null;
+  noticeTone: MakerNoticeTone;
   onDismissNotice: () => void;
   onLogout: () => void;
   children: ReactNode;
@@ -74,6 +76,7 @@ export function MakerShell({
   live,
   accountLabel,
   notice,
+  noticeTone,
   onDismissNotice,
   onLogout,
   children,
@@ -87,6 +90,12 @@ export function MakerShell({
         : "neutral";
   const activeLabel =
     makerViews.find((view) => view.id === activeView)?.label ?? "Desk";
+  const NoticeIcon =
+    noticeTone === "success"
+      ? CircleCheck
+      : noticeTone === "warning"
+        ? AlertTriangle
+        : CircleX;
 
   return (
     <main className="shell">
@@ -154,8 +163,11 @@ export function MakerShell({
       </header>
 
       {notice && (
-        <div className="notice" role="status">
-          <AlertTriangle size={16} aria-hidden="true" />
+        <div
+          className={`notice notice-${noticeTone}`}
+          role={noticeTone === "error" ? "alert" : "status"}
+        >
+          <NoticeIcon size={16} aria-hidden="true" />
           <span>{notice}</span>
           <button onClick={onDismissNotice} aria-label="Dismiss notice">
             ×

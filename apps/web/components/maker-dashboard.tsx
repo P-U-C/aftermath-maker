@@ -41,7 +41,7 @@ import {
 import { dAppKit } from "../app/dapp-kit";
 import { primaryVenue } from "../lib/venues";
 import { AccessScreen } from "./access-screen";
-import { MakerShell, useMakerView } from "./maker-shell";
+import { MakerShell, useMakerView, type MakerNoticeTone } from "./maker-shell";
 import { SpreadMark } from "./spread-mark";
 import { VenueChip } from "./venue-chip";
 import { DeskView } from "./views/desk";
@@ -763,7 +763,8 @@ function DashboardBody() {
   const [flattenArmed, setFlattenArmed] = useState(false);
   const [liveSheetOpen, setLiveSheetOpen] = useState(false);
   const [accountManagerOpen, setAccountManagerOpen] = useState(false);
-  const [notice, setNotice] = useState<string | null>(null);
+  const [notice, setNoticeMessage] = useState<string | null>(null);
+  const [noticeTone, setNoticeTone] = useState<MakerNoticeTone>("error");
   const [stopError, setStopError] = useState<string | null>(null);
   const [integratorId, setIntegratorId] = useState("");
   const [inspection, setInspection] = useState<{
@@ -771,6 +772,15 @@ function DashboardBody() {
     maxIntegratorFee: number | null;
     checkedAt: string;
   } | null>(null);
+  const onboardingRouteOwner = useRef<string | null>(null);
+
+  const setNotice = useCallback(
+    (message: string | null, tone: MakerNoticeTone = "error") => {
+      setNoticeMessage(message);
+      if (message) setNoticeTone(tone);
+    },
+    [],
+  );
 
   const refresh = useCallback(async () => {
     const [statusResult, configResult, setupResult, eventResult] =
@@ -931,6 +941,29 @@ function DashboardBody() {
       .finally(() => setAccountsLoaded(true));
   }, [account?.address, identity]);
 
+  useEffect(() => {
+    if (
+      !identity ||
+      savedConfig === undefined ||
+      onboardingRouteOwner.current === identity.ownerAddress
+    ) {
+      return;
+    }
+    onboardingRouteOwner.current = identity.ownerAddress;
+    const makerAccountId =
+      config.makerAccountId ?? setup.setup?.accountId ?? null;
+    const onboardingComplete = Boolean(
+      setup.agent &&
+      setup.accounts.some(
+        (managed) =>
+          managed.accountId === makerAccountId && Boolean(managed.agentCapId),
+      ),
+    );
+    if (!onboardingComplete && !window.location.hash) {
+      selectView("venues");
+    }
+  }, [config.makerAccountId, identity, savedConfig, selectView, setup]);
+
   const selectedCap = useMemo(
     () => accounts.find((candidate) => candidate.accountId === selectedAccount),
     [accounts, selectedAccount],
@@ -963,7 +996,7 @@ function DashboardBody() {
       const nextIdentity = await request<AccessIdentity>("api/auth/me");
       setIdentity(nextIdentity);
       setAccessDenied(false);
-      setNotice("Wallet verified against the Sui access registry.");
+      setNotice("Wallet verified against the Sui access registry.", "success");
     } catch (error) {
       if (error instanceof RequestError && error.status === 403) {
         setAccessDenied(true);
@@ -1024,6 +1057,7 @@ function DashboardBody() {
       setOperatorStatus(nextOperatorStatus);
       setNotice(
         "On-chain access registry deployed. Your wallet is member one.",
+        "success",
       );
     });
   }
@@ -1062,6 +1096,7 @@ function DashboardBody() {
       );
       setNotice(
         `Venue fee code #${confirmed.builderCode.integratorId} registered at 1 bp.`,
+        "success",
       );
     });
   }
@@ -1096,6 +1131,7 @@ function DashboardBody() {
         action === "add"
           ? "Wallet added on-chain."
           : "Wallet removed on-chain.",
+        "success",
       );
       setMemberAddress("");
     });
@@ -1151,6 +1187,7 @@ function DashboardBody() {
         discovered.length
           ? `${primaryVenue.name} account created. Select it and create the trading key.`
           : "Account transaction confirmed; refresh account discovery shortly.",
+        "success",
       );
     });
   }
@@ -1200,6 +1237,7 @@ function DashboardBody() {
       setAccounts(response.accounts);
       setNotice(
         `${amountUsdc} USDC ${direction === "deposit" ? "deposited into" : "withdrawn from"} account ${accountId}.`,
+        "success",
       );
     });
   }
@@ -1220,7 +1258,10 @@ function DashboardBody() {
         }),
       });
       setSelectedAccount(accountId);
-      setNotice(`Account ${accountId} added. One owner transaction remains.`);
+      setNotice(
+        `Account ${accountId} added. One owner transaction remains.`,
+        "success",
+      );
     });
   }
 
@@ -1264,6 +1305,7 @@ function DashboardBody() {
       }));
       setNotice(
         `Account ${accountId} authorized for trading and funded with trading key gas.`,
+        "success",
       );
     });
   }
@@ -1298,6 +1340,7 @@ function DashboardBody() {
       });
       setNotice(
         `Account ${accountId} trading key and venue fee approval revoked.`,
+        "success",
       );
     });
   }
@@ -1419,12 +1462,14 @@ function DashboardBody() {
         rewardFocus === "thin"
           ? `No thin markets pass the ${config.strategyObjective} objective gates in the latest scan.`
           : `No markets pass the ${config.strategyObjective} objective gates in the latest scan.`,
+        "warning",
       );
       return;
     }
     if (snapshot?.running || (snapshot?.portfolio.grossExposureUsd ?? 0) > 0) {
       setNotice(
         "Stop quoting and clear portfolio exposure before changing the market rotation.",
+        "warning",
       );
       return;
     }
@@ -1448,6 +1493,7 @@ function DashboardBody() {
     if (minimumQuoteCapital > capitalBudget) {
       setNotice(
         `These ${candidates.length} markets need at least ${money(minimumQuoteCapital)} of inventory capacity after venue minimums, lot-size rounding, and quote-price headroom. Reduce the market count or raise the gross exposure limit.`,
+        "warning",
       );
       return;
     }
@@ -1514,6 +1560,7 @@ function DashboardBody() {
     });
     setNotice(
       `${config.strategyObjective[0]?.toUpperCase()}${config.strategyObjective.slice(1)} rotation staged across ${candidates.length} market${candidates.length === 1 ? "" : "s"} in Observe mode using ${config.rotationMode === "single-slot" ? "one live pair" : "portfolio quotes"}. Review, then save.`,
+      "success",
     );
   }
 
@@ -1529,13 +1576,14 @@ function DashboardBody() {
         snapshot?.running
           ? "Strategy saved. The next market cycle will use it."
           : "Strategy saved. It will apply when the engine starts.",
+        "success",
       );
     });
   }
 
   async function startRuntime() {
     if (configDirty) {
-      setNotice("Save strategy changes before starting the engine.");
+      setNotice("Save strategy changes before starting the engine.", "warning");
       return;
     }
     await mutate("start", async () => {
@@ -1561,24 +1609,34 @@ function DashboardBody() {
 
   async function runStrategyTrial() {
     if (configDirty) {
-      setNotice("Save strategy changes before starting the three-cycle trial.");
+      setNotice(
+        "Save strategy changes before starting the three-cycle trial.",
+        "warning",
+      );
       return;
     }
     if (snapshot?.running) {
-      setNotice("Stop the engine before starting the three-cycle trial.");
+      setNotice(
+        "Stop the engine before starting the three-cycle trial.",
+        "warning",
+      );
       return;
     }
     if (
       trialMode === "live" &&
       (!liveGates.liveTradingEnabled || !liveGates.mainnetAllowed)
     ) {
-      setNotice("Both deployment gates must be enabled for a live trial.");
+      setNotice(
+        "Both deployment gates must be enabled for a live trial.",
+        "warning",
+      );
       return;
     }
     if (trialMode === "live" && !trialArmed) {
       setTrialArmed(true);
       setNotice(
         "Live trial will place three short quote rounds, cancel between policies, then stop and flatten both accounts. Confirm to proceed.",
+        "warning",
       );
       return;
     }
@@ -1610,6 +1668,7 @@ function DashboardBody() {
       ]);
       setNotice(
         `${trialMode === "live" ? "Live" : "Paper"} trial completed: ${response.result.rounds.length} rounds on ${response.result.symbol}${trialMode === "live" ? ", followed by cancellation and reduce-only recovery" : ""}.`,
+        "success",
       );
     });
   }
@@ -1619,6 +1678,7 @@ function DashboardBody() {
       setFlattenArmed(true);
       setNotice(
         "Flatten uses reduce-only market orders across every open position on both the Maker and hedge accounts, with up to 1% slippage. Review, then confirm.",
+        "warning",
       );
       return;
     }
@@ -1647,6 +1707,7 @@ function DashboardBody() {
         response.result.digest
           ? `Flatten confirmed across ${response.result.transactions.length} account(s) and ${response.result.flattenedMarketIds.length} market(s): ${response.result.digests.map(compact).join(", ")}`
           : "No open positions remained on the Maker or hedge account.",
+        "success",
       );
     });
   }
@@ -1930,7 +1991,7 @@ function DashboardBody() {
     : snapshot.mode === "live"
       ? "live"
       : "paper";
-  const displayedView = onboardingComplete ? activeView : "venues";
+  const displayedView = activeView;
 
   return (
     <MakerShell
@@ -1946,6 +2007,7 @@ function DashboardBody() {
           : compact(account?.address ?? null)
       }
       notice={notice}
+      noticeTone={noticeTone}
       onDismissNotice={() => setNotice(null)}
       onLogout={() => void logout()}
     >
