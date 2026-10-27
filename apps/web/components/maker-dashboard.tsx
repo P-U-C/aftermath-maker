@@ -39,11 +39,13 @@ import {
   useState,
 } from "react";
 import { dAppKit } from "../app/dapp-kit";
+import { walletSessionMatches } from "../lib/access";
 import { primaryVenue } from "../lib/venues";
 import { AccessScreen } from "./access-screen";
 import { MakerShell, useMakerView, type MakerNoticeTone } from "./maker-shell";
 import { SpreadMark } from "./spread-mark";
 import { VenueChip } from "./venue-chip";
+import { AccountsView } from "./views/accounts";
 import { DeskView } from "./views/desk";
 import { MarketsView } from "./views/markets";
 import { PerformanceView } from "./views/performance";
@@ -343,9 +345,13 @@ type MakerFill = {
   orderId: string;
 };
 
+type PerformancePeriod = "1D" | "EPOCH" | "ALL";
+
 type Performance = {
   asOf: string;
-  period: "1D";
+  period: PerformancePeriod;
+  periodStartedAt: string | null;
+  historyComplete: boolean;
   account: {
     realizedPnlUsd: number;
     fundingPnlUsd: number;
@@ -737,6 +743,8 @@ function DashboardBody() {
   const [accountsLoaded, setAccountsLoaded] = useState(false);
   const [events, setEvents] = useState<AuditEvent[]>([]);
   const [performance, setPerformance] = useState<Performance | null>(null);
+  const [performancePeriod, setPerformancePeriod] =
+    useState<PerformancePeriod>("1D");
   const [rewards, setRewards] = useState<RewardDashboard | null>(null);
   const [liveGates, setLiveGates] = useState<LiveGates>({
     liveTradingEnabled: false,
@@ -762,7 +770,6 @@ function DashboardBody() {
   const [busy, setBusy] = useState("");
   const [flattenArmed, setFlattenArmed] = useState(false);
   const [liveSheetOpen, setLiveSheetOpen] = useState(false);
-  const [accountManagerOpen, setAccountManagerOpen] = useState(false);
   const [notice, setNoticeMessage] = useState<string | null>(null);
   const [noticeTone, setNoticeTone] = useState<MakerNoticeTone>("error");
   const [stopError, setStopError] = useState<string | null>(null);
@@ -773,6 +780,11 @@ function DashboardBody() {
     checkedAt: string;
   } | null>(null);
   const onboardingRouteOwner = useRef<string | null>(null);
+
+  const walletSessionMismatch = !walletSessionMatches(
+    identity?.ownerAddress ?? null,
+    account?.address ?? null,
+  );
 
   const setNotice = useCallback(
     (message: string | null, tone: MakerNoticeTone = "error") => {
@@ -818,11 +830,16 @@ function DashboardBody() {
   }, []);
 
   const loadPerformance = useCallback(async () => {
+    if (performancePeriod === "EPOCH" && !rewards?.epoch.startedAt) return;
+    const params = new URLSearchParams({ period: performancePeriod });
+    if (performancePeriod === "EPOCH" && rewards?.epoch.startedAt) {
+      params.set("since", rewards.epoch.startedAt);
+    }
     const result = await request<{ performance: Performance }>(
-      "api/performance",
+      `api/performance?${params.toString()}`,
     );
     setPerformance(result.performance);
-  }, []);
+  }, [performancePeriod, rewards?.epoch.startedAt]);
 
   const loadRewards = useCallback(async (objective: StrategyObjective) => {
     const result = await request<{ rewards: RewardDashboard }>(
@@ -880,7 +897,17 @@ function DashboardBody() {
   }, []);
 
   useEffect(() => {
-    if (!identity) return;
+    if (!walletSessionMismatch) return;
+    void logout().then(() => {
+      setNotice(
+        "Wallet changed. Verify the connected address before accessing Maker.",
+        "warning",
+      );
+    });
+  }, [account?.address, identity?.ownerAddress]);
+
+  useEffect(() => {
+    if (!identity || walletSessionMismatch) return;
     void refresh().catch((error) => setNotice(String(error)));
     void loadMarkets().catch((error) => setNotice(String(error)));
     void loadPerformance().catch(() => undefined);
@@ -899,10 +926,10 @@ function DashboardBody() {
       clearInterval(timer);
       clearInterval(performanceTimer);
     };
-  }, [identity, refresh, loadMarkets, loadPerformance]);
+  }, [identity, walletSessionMismatch, refresh, loadMarkets, loadPerformance]);
 
   useEffect(() => {
-    if (!identity) return;
+    if (!identity || walletSessionMismatch) return;
     void loadRewards(config.strategyObjective).catch((error) =>
       setNotice(String(error)),
     );
@@ -910,7 +937,7 @@ function DashboardBody() {
       void loadRewards(config.strategyObjective).catch(() => undefined);
     }, 60_000);
     return () => clearInterval(rewardsTimer);
-  }, [identity, config.strategyObjective, loadRewards]);
+  }, [identity, walletSessionMismatch, config.strategyObjective, loadRewards]);
 
   useEffect(() => {
     if (
@@ -960,7 +987,7 @@ function DashboardBody() {
       ),
     );
     if (!onboardingComplete && !window.location.hash) {
-      selectView("venues");
+      selectView("accounts");
     }
   }, [config.makerAccountId, identity, savedConfig, selectView, setup]);
 
@@ -1010,10 +1037,13 @@ function DashboardBody() {
     }
   }
 
-  async function logout() {
+  async function logout(disconnectWallet = false) {
     await request("api/auth/logout", { method: "POST", body: "{}" }).catch(
       () => undefined,
     );
+    if (disconnectWallet) {
+      await wallet.disconnectWallet().catch(() => undefined);
+    }
     configLoaded.current = false;
     setConfig(defaultConfig);
     setSavedConfig(undefined);
@@ -1581,6 +1611,22 @@ function DashboardBody() {
     });
   }
 
+  async function saveAccountAssignments() {
+    await mutate("save-accounts", async () => {
+      await request("api/config", {
+        method: "POST",
+        body: JSON.stringify(config),
+      });
+      setSavedConfig(config);
+      setNotice(
+        snapshot?.running
+          ? "Account assignments saved for the next market cycle."
+          : "Account assignments saved.",
+        "success",
+      );
+    });
+  }
+
   async function startRuntime() {
     if (configDirty) {
       setNotice("Save strategy changes before starting the engine.", "warning");
@@ -1739,7 +1785,7 @@ function DashboardBody() {
     );
   }
 
-  if (!identity) {
+  if (!identity || walletSessionMismatch) {
     return (
       <AccessScreen
         venue={primaryVenue}
@@ -2001,17 +2047,39 @@ function DashboardBody() {
       mode={snapshot?.mode ?? "observe"}
       running={Boolean(snapshot?.running)}
       live={Boolean(snapshot?.running && snapshot.mode === "live")}
+      walletAddress={identity.ownerAddress}
+      walletLabel={compact(identity.ownerAddress)}
       accountLabel={
         activeMakerAccountId
           ? `Account ${activeMakerAccountId}`
-          : compact(account?.address ?? null)
+          : "Not assigned"
       }
+      operator={identity.operator}
       notice={notice}
       noticeTone={noticeTone}
       onDismissNotice={() => setNotice(null)}
-      onLogout={() => void logout()}
+      onLogout={() => void logout(true)}
     >
-      <VenuesView active={displayedView === "venues"}>
+      <AccountsView active={displayedView === "accounts"}>
+        <header className="accounts-title">
+          <div>
+            <h1>Accounts</h1>
+            <p>
+              Create, fund, authorize, and assign the accounts Maker operates.
+            </p>
+          </div>
+          {onboardingComplete && (
+            <button
+              className="button secondary"
+              onClick={() => void createVenueAccount()}
+              disabled={!account?.address || Boolean(busy)}
+              type="button"
+            >
+              <UserPlus size={16} aria-hidden="true" />
+              {busy === "create-account" ? "Check wallet..." : "New account"}
+            </button>
+          )}
+        </header>
         {!onboardingComplete && (
           <section className="onboarding">
             <div className="section-heading">
@@ -2149,36 +2217,6 @@ function DashboardBody() {
         )}
 
         {onboardingComplete && (
-          <VenueBoard
-            venue={primaryVenue}
-            connected
-            quoting={Boolean(snapshot?.running)}
-            tradingKeyReady={Boolean(activeMakerAccount?.agentCapId)}
-            feeText={
-              builderCode
-                ? `${(builderCode.integratorFee * 10_000).toFixed(0)} bp on filled orders`
-                : "Not approved"
-            }
-            gasText={venueGasText}
-            selectedMarkets={config.markets.length}
-            eligibleMarkets={markets.length}
-            accounts={venueAccountRows}
-            totalEquityUsd={venueEquityUsd}
-            grossExposureUsd={snapshot?.portfolio.grossExposureUsd ?? 0}
-            grossExposureLimitUsd={config.maxGrossExposureUsd}
-            unrealizedPnlUsd={snapshot?.portfolio.unrealizedPnlUsd ?? 0}
-            onManage={() => setAccountManagerOpen((open) => !open)}
-            {...(activeMakerAccountId
-              ? {
-                  onRevoke: () => {
-                    void revokeAgent(activeMakerAccountId);
-                  },
-                }
-              : {})}
-          />
-        )}
-
-        {onboardingComplete && accountManagerOpen && (
           <section
             className="account-desk"
             aria-label={`${primaryVenue.name} accounts`}
@@ -2188,15 +2226,10 @@ function DashboardBody() {
                 <span className="eyebrow">Account desk</span>
                 <h2>Trading accounts</h2>
               </div>
-              <button
-                className="button secondary"
-                onClick={() => void createVenueAccount()}
-                disabled={!account?.address || Boolean(busy)}
-                type="button"
-              >
-                <UserPlus size={16} aria-hidden="true" />
-                {busy === "create-account" ? "Check wallet..." : "New account"}
-              </button>
+              <span className="account-desk-status">
+                {accounts.length} discovered / {authorizedAccounts.length}{" "}
+                authorized
+              </span>
             </div>
             <div className="account-desk-grid">
               {accounts.map((owned) => {
@@ -2363,9 +2396,22 @@ function DashboardBody() {
                 );
               })}
             </div>
+            {configDirty && (
+              <div className="account-save-bar">
+                <span>Account assignments have unsaved changes.</span>
+                <button
+                  className="button primary"
+                  type="button"
+                  onClick={() => void saveAccountAssignments()}
+                  disabled={Boolean(busy)}
+                >
+                  {busy === "save-accounts" ? "Saving..." : "Save assignments"}
+                </button>
+              </div>
+            )}
           </section>
         )}
-      </VenuesView>
+      </AccountsView>
 
       <DeskView
         active={displayedView === "desk"}
@@ -3624,7 +3670,8 @@ function DashboardBody() {
           <div>
             <h1>Markets</h1>
             <p>
-              Compare live exposure and reward efficiency across venue markets.
+              Compare rotation state, capacity, and live exposure across
+              markets.
             </p>
           </div>
           <div className="market-venue-filters" aria-label="Venue filter">
@@ -3763,7 +3810,9 @@ function DashboardBody() {
             against the protocol limit at the data timestamp.
           </p>
         </section>
+      </MarketsView>
 
+      <PerformanceView active={displayedView === "performance"}>
         <section className="rewards-board">
           <div className="section-heading compact rewards-heading">
             <div>
@@ -4109,21 +4158,53 @@ function DashboardBody() {
             </p>
           </details>
         </section>
-      </MarketsView>
 
-      <PerformanceView active={displayedView === "performance"}>
         <section className="performance-board">
           <div className="section-heading compact performance-heading">
             <div>
-              <span className="eyebrow">Last 24 hours</span>
+              <span className="eyebrow">
+                {performancePeriod === "1D"
+                  ? "Last 24 hours"
+                  : performancePeriod === "EPOCH"
+                    ? `Epoch ${rewards?.epoch.number ?? ""}`
+                    : "All time"}
+              </span>
               <h2>Attributed strategy performance</h2>
             </div>
-            <span className="coverage-badge">
-              {performance?.attributed.makerVolumeCoveragePct === null ||
-              performance?.attributed.makerVolumeCoveragePct === undefined
-                ? "Awaiting fills"
-                : `${performance.attributed.makerVolumeCoveragePct.toFixed(1)}% of maker volume traced`}
-            </span>
+            <div className="performance-heading-actions">
+              <div
+                className="performance-period"
+                role="group"
+                aria-label="Performance period"
+              >
+                {(
+                  [
+                    ["1D", "24h"],
+                    ["EPOCH", "Epoch"],
+                    ["ALL", "All time"],
+                  ] as const
+                ).map(([period, label]) => (
+                  <button
+                    key={period}
+                    type="button"
+                    className={performancePeriod === period ? "selected" : ""}
+                    aria-pressed={performancePeriod === period}
+                    onClick={() => {
+                      setPerformance(null);
+                      setPerformancePeriod(period);
+                    }}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+              <span className="coverage-badge">
+                {performance?.attributed.makerVolumeCoveragePct === null ||
+                performance?.attributed.makerVolumeCoveragePct === undefined
+                  ? "Awaiting fills"
+                  : `${performance.attributed.makerVolumeCoveragePct.toFixed(1)}% of maker volume traced`}
+              </span>
+            </div>
           </div>
           <div className="performance-metrics">
             <div>
@@ -4269,14 +4350,44 @@ function DashboardBody() {
               volume / {money(performance?.account?.fundingPnlUsd ?? 0)} funding
             </span>
             <span>
-              {performance?.note ??
-                "Attribution starts when this release records its first order IDs."}
+              {performance && !performance.historyComplete
+                ? "History reached the retained fill limit; account totals remain complete."
+                : (performance?.note ??
+                  "Attribution starts when this release records its first order IDs.")}
             </span>
           </div>
         </section>
       </PerformanceView>
 
       <VenuesView active={displayedView === "venues"}>
+        <VenueBoard
+          venue={primaryVenue}
+          connected
+          quoting={Boolean(snapshot?.running)}
+          tradingKeyReady={Boolean(activeMakerAccount?.agentCapId)}
+          feeText={
+            builderCode
+              ? `${(builderCode.integratorFee * 10_000).toFixed(0)} bp on filled orders`
+              : "Not approved"
+          }
+          gasText={venueGasText}
+          selectedMarkets={config.markets.length}
+          eligibleMarkets={markets.length}
+          accounts={venueAccountRows}
+          totalEquityUsd={venueEquityUsd}
+          grossExposureUsd={snapshot?.portfolio.grossExposureUsd ?? 0}
+          grossExposureLimitUsd={config.maxGrossExposureUsd}
+          unrealizedPnlUsd={snapshot?.portfolio.unrealizedPnlUsd ?? 0}
+          onManage={() => selectView("accounts")}
+          {...(activeMakerAccountId
+            ? {
+                onRevoke: () => {
+                  void revokeAgent(activeMakerAccountId);
+                },
+              }
+            : {})}
+        />
+
         <section className="lower-grid lower-grid-venues">
           <div className="fee-panel">
             <div className="section-heading compact">

@@ -1,6 +1,14 @@
 "use client";
 
-import { AlertTriangle, CircleCheck, CircleX, LogOut } from "lucide-react";
+import {
+  AlertTriangle,
+  ChevronDown,
+  CircleCheck,
+  CircleX,
+  Copy,
+  LogOut,
+  WalletCards,
+} from "lucide-react";
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 
 import { Pill } from "./ui/primitives";
@@ -11,6 +19,7 @@ export const makerViews = [
   { id: "strategy", label: "Strategy" },
   { id: "markets", label: "Markets" },
   { id: "performance", label: "Performance" },
+  { id: "accounts", label: "Accounts" },
   { id: "venues", label: "Venues" },
 ] as const;
 
@@ -59,7 +68,10 @@ type MakerShellProps = {
   mode: "observe" | "paper" | "live";
   running: boolean;
   live: boolean;
+  walletAddress: string;
+  walletLabel: string;
   accountLabel: string;
+  operator: boolean;
   notice: string | null;
   noticeTone: MakerNoticeTone;
   onDismissNotice: () => void;
@@ -74,13 +86,17 @@ export function MakerShell({
   mode,
   running,
   live,
+  walletAddress,
+  walletLabel,
   accountLabel,
+  operator,
   notice,
   noticeTone,
   onDismissNotice,
   onLogout,
   children,
 }: MakerShellProps) {
+  const [addressCopied, setAddressCopied] = useState(false);
   const displayedMode = running ? mode : "stopped";
   const modeTone =
     displayedMode === "live"
@@ -149,16 +165,54 @@ export function MakerShell({
             {displayedMode[0]?.toUpperCase()}
             {displayedMode.slice(1)}
           </Pill>
-          <span className="maker-account-label">{accountLabel}</span>
-          <button
-            className="ui-button ui-button-quiet ui-button-icon maker-logout"
-            onClick={onLogout}
-            title="Sign out"
-            aria-label="Sign out"
-            type="button"
-          >
-            <LogOut size={16} aria-hidden="true" />
-          </button>
+          <details className="maker-wallet-menu">
+            <summary aria-label={`Wallet ${walletLabel}`}>
+              <WalletCards size={15} aria-hidden="true" />
+              <span>{walletLabel}</span>
+              <ChevronDown size={14} aria-hidden="true" />
+            </summary>
+            <div className="maker-wallet-popover">
+              <div className="maker-wallet-heading">
+                <span>Connected wallet</span>
+                <strong>{walletLabel}</strong>
+                <small>{walletAddress}</small>
+              </div>
+              <dl className="maker-wallet-facts">
+                <div>
+                  <dt>Access</dt>
+                  <dd>{operator ? "Operator" : "Whitelisted"}</dd>
+                </div>
+                <div>
+                  <dt>Trading account</dt>
+                  <dd>{accountLabel}</dd>
+                </div>
+              </dl>
+              <div className="maker-wallet-actions">
+                <button
+                  type="button"
+                  onClick={() => {
+                    void navigator.clipboard
+                      .writeText(walletAddress)
+                      .then(() => {
+                        setAddressCopied(true);
+                        window.setTimeout(() => setAddressCopied(false), 1_500);
+                      });
+                  }}
+                >
+                  <Copy size={15} aria-hidden="true" />
+                  {addressCopied ? "Copied" : "Copy address"}
+                </button>
+                <button type="button" onClick={() => selectView("accounts")}>
+                  <WalletCards size={15} aria-hidden="true" />
+                  Manage accounts
+                </button>
+                <button type="button" onClick={onLogout}>
+                  <LogOut size={15} aria-hidden="true" />
+                  Disconnect
+                </button>
+              </div>
+            </div>
+          </details>
         </div>
       </header>
 

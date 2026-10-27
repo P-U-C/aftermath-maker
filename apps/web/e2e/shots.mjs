@@ -41,7 +41,14 @@ const outputDirectory = path.resolve(
   option("--output", defaultOutput),
 );
 
-const makerViews = ["desk", "strategy", "markets", "performance", "venues"];
+const makerViews = [
+  "desk",
+  "strategy",
+  "markets",
+  "performance",
+  "accounts",
+  "venues",
+];
 
 function selectedViews() {
   const requested = option("--view", null);
@@ -120,7 +127,22 @@ function apiResponse(fixture, url) {
     return { status: 200, body: fixture.events };
   }
   if (routePath === "api/performance") {
-    return { status: 200, body: fixture.performance };
+    const period = url.searchParams.get("period") ?? "1D";
+    return {
+      status: 200,
+      body: {
+        performance: {
+          ...fixture.performance.performance,
+          period,
+          periodStartedAt:
+            period === "ALL"
+              ? null
+              : period === "EPOCH"
+                ? fixture.rewards.rewards.epoch.startedAt
+                : fixture.performance.performance.periodStartedAt,
+        },
+      },
+    };
   }
   if (routePath === "api/rewards") {
     return { status: 200, body: fixture.rewards };
@@ -284,6 +306,30 @@ async function capture(browser, stateName, captureConfig, view) {
         );
       }
       if (captureConfig.name === "desktop-light" && view === null) {
+        const walletMenu = page.locator(".maker-wallet-menu");
+        await walletMenu.locator("summary").click();
+        await walletMenu
+          .getByRole("button", { name: "Copy address" })
+          .waitFor();
+        await walletMenu
+          .getByRole("button", { name: "Manage accounts" })
+          .waitFor();
+        await walletMenu.getByRole("button", { name: "Disconnect" }).waitFor();
+        await walletMenu.locator("summary").click();
+
+        if (stateName === "stopped") {
+          await page.getByRole("link", { name: "Accounts" }).click();
+          const hedgeAccount = page.locator("article").filter({
+            hasText: "Account 1746",
+          });
+          await hedgeAccount.getByRole("button", { name: "Maker" }).click();
+          await page.getByRole("button", { name: "Save assignments" }).click();
+          await page
+            .locator(".notice.notice-success")
+            .getByText("Account assignments saved.")
+            .waitFor();
+        }
+
         for (const targetView of makerViews) {
           await page
             .getByRole("link", { name: targetView, exact: false })
@@ -298,7 +344,21 @@ async function capture(browser, stateName, captureConfig, view) {
             );
           }
         }
-        const resetView = stateName === "onboarding" ? "venues" : "desk";
+        if (stateName !== "onboarding") {
+          await page.getByRole("link", { name: "Performance" }).click();
+          await page
+            .getByRole("button", { name: "Epoch", exact: true })
+            .click();
+          await page
+            .getByText(/Epoch 128/)
+            .first()
+            .waitFor();
+          await page
+            .getByRole("button", { name: "All time", exact: true })
+            .click();
+          await page.getByText("All time").first().waitFor();
+        }
+        const resetView = stateName === "onboarding" ? "accounts" : "desk";
         await page.getByRole("link", { name: resetView, exact: false }).click();
         await page
           .locator(`[data-view="${resetView}"]:not([hidden])`)
@@ -396,6 +456,32 @@ async function capture(browser, stateName, captureConfig, view) {
       );
     }
     await page.waitForTimeout(100);
+
+    if (
+      fixture.auth.status === 200 &&
+      stateName !== "onboarding" &&
+      captureConfig.name === "desktop-light" &&
+      (view === null || view === "desk")
+    ) {
+      const logViewport = await page
+        .locator(".desk-event-list")
+        .evaluate((node) => {
+          const style = getComputedStyle(node);
+          return {
+            clientHeight: node.clientHeight,
+            scrollHeight: node.scrollHeight,
+            overflowY: style.overflowY,
+          };
+        });
+      if (
+        logViewport.overflowY !== "auto" ||
+        logViewport.scrollHeight <= logViewport.clientHeight
+      ) {
+        throw new Error(
+          `Control log is not constrained after ten rows: ${JSON.stringify(logViewport)}`,
+        );
+      }
+    }
 
     const dimensions = await page.evaluate(() => ({
       scrollWidth: document.documentElement.scrollWidth,

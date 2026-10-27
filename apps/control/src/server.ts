@@ -337,9 +337,24 @@ app.get("/api/events", async (request) => {
   return { events: tenant(request).listEvents(query.limit) };
 });
 
-app.get("/api/performance", async (request) => ({
-  performance: await runtime(request).performance(),
-}));
+app.get("/api/performance", async (request) => {
+  const query = z
+    .object({
+      period: z.enum(["1D", "EPOCH", "ALL"]).default("1D"),
+      since: z.string().datetime().optional(),
+    })
+    .strict()
+    .parse(request.query);
+  if (query.period === "EPOCH" && !query.since) {
+    throw new AuthError(400, "Epoch performance requires a start time");
+  }
+  return {
+    performance: await runtime(request).performance({
+      period: query.period,
+      ...(query.since ? { since: query.since } : {}),
+    }),
+  };
+});
 
 app.get("/api/markets", async (request) => {
   const query = z

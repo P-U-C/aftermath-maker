@@ -90,9 +90,13 @@ export type StrategyTrialResult = {
   restoredConfig: MakerConfig;
 };
 
+export type PerformancePeriod = "1D" | "EPOCH" | "ALL";
+
 export type PerformanceSnapshot = {
   asOf: string;
-  period: "1D";
+  period: PerformancePeriod;
+  periodStartedAt: string | null;
+  historyComplete: boolean;
   account: {
     realizedPnlUsd: number;
     fundingPnlUsd: number;
@@ -929,7 +933,24 @@ export class MakerRuntime {
     };
   }
 
-  async performance(): Promise<PerformanceSnapshot> {
+  async performance(
+    inputs: { period?: PerformancePeriod; since?: string } = {},
+  ): Promise<PerformanceSnapshot> {
+    const period = inputs.period ?? "1D";
+    const requestedSince =
+      period === "1D"
+        ? Date.now() - 24 * 60 * 60 * 1_000
+        : period === "EPOCH"
+          ? Date.parse(inputs.since ?? "")
+          : undefined;
+    if (period === "EPOCH" && !Number.isFinite(requestedSince)) {
+      throw new Error("Epoch performance requires a valid start time");
+    }
+    const sinceMs =
+      requestedSince === undefined ? undefined : Number(requestedSince);
+    const periodStartedAt =
+      sinceMs === undefined ? null : new Date(sinceMs).toISOString();
+    const timeframe = period === "1D" ? ("1D" as const) : ("ALL" as const);
     const config = this.store.getConfig();
     const setup = this.store.getSetup();
     const accountSetup = setup
@@ -939,7 +960,9 @@ export class MakerRuntime {
     if (!setup || !accountSetup?.agentCapId || !agent) {
       return {
         asOf: new Date().toISOString(),
-        period: "1D",
+        period,
+        periodStartedAt,
+        historyComplete: true,
         account: null,
         attributed: {
           fills: 0,
@@ -971,6 +994,8 @@ export class MakerRuntime {
       setup,
       agentAddress: agent.address,
       limit: 200,
+      timeframe,
+      ...(sinceMs === undefined ? {} : { sinceMs }),
     });
     const trackedIds = new Set(
       this.store
@@ -1036,10 +1061,12 @@ export class MakerRuntime {
           }
         : null;
 
-    const cutoff = Date.now() - 24 * 60 * 60 * 1_000;
     const hedgeExecutions = this.store
-      .listHedgeExecutions(500)
-      .filter((execution) => Date.parse(execution.occurredAt) >= cutoff);
+      .listHedgeExecutions(period === "ALL" ? 10_000 : 2_000)
+      .filter(
+        (execution) =>
+          sinceMs === undefined || Date.parse(execution.occurredAt) >= sinceMs,
+      );
     const hedge = {
       enabled: config?.hedge.enabled ?? false,
       accountId: config?.hedge.accountId ?? null,
@@ -1059,6 +1086,8 @@ export class MakerRuntime {
         setup: hedgeSetup,
         agentAddress: agent.address,
         limit: 200,
+        timeframe,
+        ...(sinceMs === undefined ? {} : { sinceMs }),
       });
       const executionDigests = new Set(
         hedgeExecutions.map((execution) => execution.digest),
@@ -1090,7 +1119,9 @@ export class MakerRuntime {
 
     return {
       asOf: new Date().toISOString(),
-      period: "1D",
+      period,
+      periodStartedAt,
+      historyComplete: history.historyComplete ?? true,
       account,
       attributed: {
         fills: fills.length,
@@ -1108,7 +1139,7 @@ export class MakerRuntime {
       combinedNetAfterKnownCostsUsd:
         makerNetAfterKnownCostsUsd + hedge.netAfterKnownCostsUsd,
       fills,
-      note: "Maker attribution uses recorded order IDs. Hedge attribution uses confirmed hedge transaction digests. Builder fees are deterministic estimates from filled notional; account metrics come from Aftermath's 1D history.",
+      note: `Maker attribution uses recorded order IDs. Hedge attribution uses confirmed hedge transaction digests. Builder fees are deterministic estimates from filled notional; account metrics come from Aftermath's ${period === "1D" ? "24-hour" : period === "EPOCH" ? "current-epoch" : "all-time"} history.`,
     };
   }
 

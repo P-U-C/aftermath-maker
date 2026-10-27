@@ -5714,7 +5714,7 @@ footer a {
 
   .maker-phone-title strong {
     overflow: hidden;
-    font-size: 32px;
+    font-size: 26px;
     font-stretch: 122%;
     font-weight: 640;
     text-overflow: ellipsis;
@@ -6094,6 +6094,326 @@ footer a {
 
   footer a {
     min-height: 44px;
+  }
+}
+
+/* Accounts, wallet identity, and period controls. */
+.maker-wallet-menu {
+  position: relative;
+}
+
+.maker-wallet-menu > summary {
+  min-height: 38px;
+  padding: 0 10px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--ink-2);
+  background: var(--fill);
+  border: 1px solid transparent;
+  border-radius: 999px;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 560;
+  list-style: none;
+}
+
+.maker-wallet-menu > summary::-webkit-details-marker {
+  display: none;
+}
+
+.maker-wallet-menu[open] > summary {
+  color: var(--ink);
+  background: var(--surface);
+  border-color: var(--hair);
+}
+
+.maker-wallet-menu[open] > summary svg:last-child {
+  transform: rotate(180deg);
+}
+
+.maker-wallet-popover {
+  width: min(330px, calc(100vw - 28px));
+  padding: 14px;
+  position: absolute;
+  z-index: 80;
+  top: calc(100% + 9px);
+  right: 0;
+  color: var(--ink);
+  background: var(--surface);
+  border: 1px solid var(--hair);
+  border-radius: 14px;
+  box-shadow: var(--float);
+}
+
+.maker-wallet-heading {
+  display: grid;
+  gap: 4px;
+}
+
+.maker-wallet-heading > span,
+.maker-wallet-facts dt {
+  color: var(--ink-3);
+  font-size: 11px;
+  font-weight: 560;
+}
+
+.maker-wallet-heading strong {
+  font-size: 15px;
+}
+
+.maker-wallet-heading small {
+  overflow-wrap: anywhere;
+  color: var(--ink-2);
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.maker-wallet-facts {
+  margin: 12px 0;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  border-top: 1px solid var(--hair);
+  border-bottom: 1px solid var(--hair);
+}
+
+.maker-wallet-facts > div {
+  padding: 10px 0;
+  display: grid;
+  gap: 4px;
+}
+
+.maker-wallet-facts > div + div {
+  padding-left: 12px;
+  border-left: 1px solid var(--hair);
+}
+
+.maker-wallet-facts dd {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 620;
+}
+
+.maker-wallet-actions {
+  display: grid;
+  gap: 4px;
+}
+
+.maker-wallet-actions button {
+  min-height: 40px;
+  padding: 0 10px;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  color: var(--ink);
+  background: transparent;
+  border: 0;
+  border-radius: 8px;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.maker-wallet-actions button:hover {
+  background: var(--fill);
+}
+
+.accounts-title {
+  width: min(1200px, calc(100% - 48px));
+  margin: 0 auto;
+  padding: 44px 0 24px;
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 20px;
+}
+
+.accounts-title h1 {
+  margin: 0;
+  font-size: 34px;
+  font-stretch: 122%;
+  font-weight: 640;
+  line-height: 1.1;
+}
+
+.accounts-title p {
+  margin: 7px 0 0;
+  color: var(--ink-2);
+  font-size: 15px;
+}
+
+.maker-view-accounts .onboarding,
+.maker-view-accounts .account-desk {
+  width: min(1200px, calc(100% - 48px));
+  margin: 0 auto 20px;
+  border-radius: 20px;
+}
+
+.maker-view-accounts .account-desk {
+  padding: 22px 24px;
+  background: var(--surface);
+  border: 0;
+}
+
+.account-desk-status {
+  color: var(--ink-2);
+  font-size: 13px;
+  font-weight: 560;
+}
+
+.account-save-bar {
+  min-height: 64px;
+  margin-top: 14px;
+  padding: 10px 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  background: var(--fill);
+  border-radius: 10px;
+}
+
+.account-save-bar span {
+  color: var(--ink-2);
+  font-size: 13px;
+  font-weight: 560;
+}
+
+.maker-view-performance:not([hidden]) {
+  display: flex;
+  flex-direction: column;
+}
+
+.maker-view-performance .performance-board {
+  width: min(1200px, calc(100% - 48px));
+  max-width: 1200px;
+  margin: 18px auto 20px;
+  order: 1;
+  overflow: hidden;
+  background: var(--surface);
+  border: 0;
+  border-radius: 20px;
+}
+
+.maker-view-performance .rewards-board {
+  order: 2;
+}
+
+.performance-heading-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.performance-period {
+  padding: 3px;
+  display: inline-flex;
+  gap: 2px;
+  background: var(--fill);
+  border-radius: 9px;
+}
+
+.performance-period button {
+  min-height: 32px;
+  padding: 0 11px;
+  color: var(--ink-2);
+  background: transparent;
+  border: 0;
+  border-radius: 7px;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 560;
+  cursor: pointer;
+}
+
+.performance-period button.selected {
+  color: var(--ink);
+  background: var(--surface);
+  box-shadow: 0 1px 2px rgba(16, 18, 22, 0.08);
+}
+
+.desk-event-list {
+  max-height: 520px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+
+@media (max-width: 720px) {
+  .accounts-title,
+  .maker-view-accounts .onboarding,
+  .maker-view-accounts .account-desk,
+  .maker-view-performance .performance-board {
+    width: calc(100% - 28px);
+  }
+
+  .accounts-title {
+    padding-top: 28px;
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .accounts-title h1 {
+    font-size: 30px;
+  }
+
+  .maker-wallet-menu > summary {
+    min-width: 44px;
+    min-height: 44px;
+    justify-content: center;
+  }
+
+  .maker-wallet-menu > summary span {
+    display: none;
+  }
+
+  .performance-heading-actions {
+    width: 100%;
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .performance-period {
+    width: 100%;
+  }
+
+  .performance-period button {
+    min-height: 44px;
+    flex: 1;
+  }
+
+  .account-row :is(span, strong, label, input, button),
+  .account-desk-status {
+    font-size: 12px !important;
+  }
+
+  .accounts-title .button,
+  .account-row .button,
+  .account-row .role-button,
+  .account-row input {
+    min-height: 44px;
+    height: 44px;
+  }
+
+  .account-row .revoke-agent {
+    width: 44px;
+    min-width: 44px;
+    height: 44px;
+  }
+
+  .account-save-bar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .account-save-bar .button {
+    min-height: 44px;
+  }
+
+  .desk-event-list {
+    max-height: 700px;
   }
 }
 

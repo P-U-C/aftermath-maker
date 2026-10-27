@@ -131,6 +131,10 @@ function createHarness(options: { configured?: boolean } = {}) {
     orders: [],
     marginHistory: [],
   };
+  const performanceRequests: Array<{
+    timeframe?: "1D" | "1W" | "1M" | "ALL";
+    sinceMs?: number;
+  }> = [];
   let portfolioResolver = (inputs: {
     setup: { accountId: string };
     marketIds: string[];
@@ -219,7 +223,13 @@ function createHarness(options: { configured?: boolean } = {}) {
         flattenedMarketIds: ["0x5678"],
       };
     },
-    getAccountPerformanceHistory: async () => performanceHistory,
+    getAccountPerformanceHistory: async (inputs: {
+      timeframe?: "1D" | "1W" | "1M" | "ALL";
+      sinceMs?: number;
+    }) => {
+      performanceRequests.push(inputs);
+      return performanceHistory;
+    },
     getRewardDashboard: async (inputs: { objective: StrategyObjective }) =>
       rewardDashboard(inputs.objective),
     executeHedge: async (inputs: {
@@ -280,6 +290,7 @@ function createHarness(options: { configured?: boolean } = {}) {
     hedgeExecutions: () => hedgeExecutionCount,
     executionSequence,
     quoteInputs: () => quoteInputs,
+    performanceRequests: () => performanceRequests,
     setPortfolioResolver: (resolver: typeof portfolioResolver) => {
       portfolioResolver = resolver;
     },
@@ -476,6 +487,32 @@ describe("runtime execution boundaries", () => {
       netAfterKnownCostsUsd: 0.978,
     });
     expect(performance.fills[0]?.orderId).toBe("tracked");
+    expect(performance).toMatchObject({
+      period: "1D",
+      historyComplete: true,
+    });
+
+    const epoch = await harness.runtime.performance({
+      period: "EPOCH",
+      since: "2026-10-26T00:00:00.000Z",
+    });
+    expect(epoch).toMatchObject({
+      period: "EPOCH",
+      periodStartedAt: "2026-10-26T00:00:00.000Z",
+    });
+
+    const allTime = await harness.runtime.performance({ period: "ALL" });
+    expect(allTime).toMatchObject({
+      period: "ALL",
+      periodStartedAt: null,
+    });
+    expect(
+      harness.performanceRequests().map(({ timeframe }) => timeframe),
+    ).toEqual(["1D", "ALL", "ALL"]);
+    expect(harness.performanceRequests()[1]?.sinceMs).toBe(
+      Date.parse("2026-10-26T00:00:00.000Z"),
+    );
+    expect(harness.performanceRequests()[2]?.sinceMs).toBeUndefined();
     harness.store.close();
   });
 
