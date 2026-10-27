@@ -17,6 +17,9 @@ RUN npm run build
 RUN npm prune --omit=dev
 
 FROM node:22-bookworm-slim@sha256:de170b39439eb0e5a3444ad7d60b015614a381e10fecae2e30ec9e735122f38d AS runtime
+ARG VCS_REF=unknown
+LABEL org.opencontainers.image.source="https://github.com/P-U-C/aftermath-maker" \
+      org.opencontainers.image.revision="$VCS_REF"
 ENV NODE_ENV=production
 WORKDIR /app
 

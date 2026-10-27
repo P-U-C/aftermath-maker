@@ -4,6 +4,8 @@ services:
   control:
     build:
       context: .
+      args:
+        VCS_REF: ${VCS_REF:-unknown}
       sbom: true
       provenance: mode=max
     image: puc/aftermath-maker:internal
