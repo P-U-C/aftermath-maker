@@ -2,6 +2,10 @@
 
 Maker controls real perpetuals positions. It reduces custody and automation risk; it does not remove market, smart-contract, oracle, liquidation, or validator risk.
 
+## Reporting a vulnerability
+
+Do not open a public issue for an exploitable finding. Use [GitHub private vulnerability reporting](https://github.com/P-U-C/aftermath-maker/security/advisories/new) and include the reviewed commit or tag, required authority, reproduction, impact, and a suggested regression test. Do not test Live against the hosted deployment or retained audit accounts without written authorization.
+
 ## Identity and access
 
 Public access is gated by the `maker_access::access::Registry` shared object on Sui mainnet.

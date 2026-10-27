@@ -8,6 +8,12 @@ The current strategy is inventory-aware quoting with an optional fill-driven hed
 
 Hosted service: [maker.permanentupperclass.com](https://maker.permanentupperclass.com)
 
+## External review
+
+The repository is public for independent review. Start with the [external audit guide](docs/REVIEW_GUIDE.md), then inspect the [security model](SECURITY.md), [mainnet evidence](audits/2026-10-27-mainnet/EVIDENCE.md), and [latest live-testing iteration](audits/2026-10-27-mainnet/ITERATION-5.md). The fixed review target is the `external-audit-v1` tag.
+
+The reproduced baseline is 98 passing TypeScript application tests, one passing Move test, successful production builds, zero vulnerabilities reported by `npm audit --omit=dev`, and authenticated browser checks at desktop and mobile widths. The mainnet evidence includes failed-closed defects found during testing as well as corrected runs. This is not a claim that the system has already been independently audited.
+
 ## Run locally
 
 ```bash
