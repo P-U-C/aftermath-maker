@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   createEncryptedAgent,
   type AccountPerformanceHistory,
+  type PortfolioSnapshot,
 } from "@puc/aftermath";
 import { makerConfigSchema, setupSchema } from "@puc/core";
 import { MakerRuntime } from "../src/runtime.js";
@@ -38,8 +39,12 @@ function createHarness() {
 
   store.setSetup(setup);
   store.setConfig(config);
-  store.createAgent(agent);
+  store.createAgent({
+    ...agent,
+    encryptionContext: "account:42",
+  });
   store.confirmAgentGrant({
+    accountId: "42",
     digest: "A".repeat(32),
     agentCapId: "0x9876",
   });
@@ -47,10 +52,36 @@ function createHarness() {
   let executionCount = 0;
   let cancellationCount = 0;
   let flattenCount = 0;
+  let hedgeExecutionCount = 0;
+  const executionSequence: string[] = [];
   let performanceHistory: AccountPerformanceHistory = {
     orders: [],
     marginHistory: [],
   };
+  let portfolioResolver = (inputs: {
+    setup: { accountId: string };
+    marketIds: string[];
+  }): PortfolioSnapshot => ({
+    equityUsd: 100,
+    availableCollateralUsd: 80,
+    allocatedCollateralUsd: 20,
+    freeMarginUsd: 70,
+    withdrawableCollateralUsd: 75,
+    grossExposureUsd: 0,
+    unrealizedPnlUsd: 0,
+    gasSui: 0.1,
+    positions: inputs.marketIds.map((marketId) => ({
+      marketId,
+      baseAssetAmount: 0,
+      pendingOrderCount: 0,
+      inventoryUsd: 0,
+      unrealizedPnlUsd: 0,
+      collateralUsd: 0,
+      freeMarginUsd: 0,
+      makerOrderIds: [],
+      hasPosition: false,
+    })),
+  });
   const gateway = {
     endpoint: "test",
     endpointHealth: [],
@@ -67,28 +98,13 @@ function createHarness() {
         bestAskPrice: 10.01,
       },
     }),
-    getAgentPortfolioSnapshot: async (inputs: { marketIds: string[] }) => ({
-      equityUsd: 100,
-      availableCollateralUsd: 80,
-      allocatedCollateralUsd: 20,
-      freeMarginUsd: 70,
-      withdrawableCollateralUsd: 75,
-      grossExposureUsd: 0,
-      unrealizedPnlUsd: 0,
-      gasSui: 0.1,
-      positions: inputs.marketIds.map((marketId) => ({
-        marketId,
-        baseAssetAmount: 0,
-        inventoryUsd: 0,
-        unrealizedPnlUsd: 0,
-        collateralUsd: 0,
-        freeMarginUsd: 0,
-        makerOrderIds: [],
-        hasPosition: false,
-      })),
-    }),
+    getAgentPortfolioSnapshot: async (inputs: {
+      setup: { accountId: string };
+      marketIds: string[];
+    }) => portfolioResolver(inputs),
     cancelMakerOrders: async () => {
       cancellationCount += 1;
+      executionSequence.push("cancel");
       return {
         digest: "cancel-digest",
         endpoint: "test",
@@ -107,9 +123,30 @@ function createHarness() {
       };
     },
     getAccountPerformanceHistory: async () => performanceHistory,
+    executeHedge: async (inputs: {
+      deltaUsd: number;
+      maxOrderUsd: number;
+      shouldContinue: () => boolean;
+    }) => {
+      if (!inputs.shouldContinue()) throw new Error("cancelled");
+      hedgeExecutionCount += 1;
+      executionSequence.push("hedge");
+      return {
+        digest: `hedge-digest-${hedgeExecutionCount}`,
+        endpoint: "test",
+        gasUsedMist: 15,
+        postedOrderIds: [],
+        side: inputs.deltaUsd > 0 ? ("ask" as const) : ("bid" as const),
+        requestedNotionalUsd: Math.min(
+          Math.abs(inputs.deltaUsd),
+          inputs.maxOrderUsd,
+        ),
+      };
+    },
     executeQuote: async (inputs: { shouldContinue: () => boolean }) => {
       if (!inputs.shouldContinue()) throw new Error("cancelled");
       executionCount += 1;
+      executionSequence.push("quote");
       return {
         digest: "digest",
         endpoint: "test",
@@ -134,6 +171,11 @@ function createHarness() {
     executions: () => executionCount,
     cancellations: () => cancellationCount,
     flattens: () => flattenCount,
+    hedgeExecutions: () => hedgeExecutionCount,
+    executionSequence,
+    setPortfolioResolver: (resolver: typeof portfolioResolver) => {
+      portfolioResolver = resolver;
+    },
     setExecutions: (value: number) => {
       executionCount = value;
     },
@@ -201,6 +243,7 @@ describe("runtime execution boundaries", () => {
   it("attributes only fills whose Maker order IDs were recorded", async () => {
     const harness = createHarness();
     harness.tenant.trackMakerOrders({
+      accountId: "42",
       marketId: "0x5678",
       quoteDigest: "quote-digest",
       orderIds: ["tracked"],
@@ -248,6 +291,252 @@ describe("runtime execution boundaries", () => {
       netAfterKnownCostsUsd: 0.978,
     });
     expect(performance.fills[0]?.orderId).toBe("tracked");
+    harness.store.close();
+  });
+
+  it("does not hedge an untracked account fill", async () => {
+    const harness = createHarness();
+    const hedgeSetup = setupSchema.parse({
+      ownerAddress: `0x${"1".repeat(64)}`,
+      accountId: "43",
+      accountCapId: "0x1243",
+    });
+    harness.tenant.setSetup(hedgeSetup);
+    harness.tenant.confirmAgentGrant({
+      accountId: "43",
+      digest: "H".repeat(32),
+      agentCapId: "0xhedge",
+    });
+    harness.tenant.setConfig(
+      makerConfigSchema.parse({
+        markets: [{ marketId: "0x5678", symbol: "SUI" }],
+        mode: "live",
+        makerAccountId: "42",
+        hedge: {
+          enabled: true,
+          accountId: "43",
+          thresholdUsd: 25,
+          maxOrderUsd: 100,
+          maxSlippageBps: 75,
+        },
+      }),
+    );
+    harness.setPerformanceHistory({
+      orders: [
+        {
+          timestampMs: Date.parse("2026-10-26T12:00:00Z"),
+          txDigest: "other-client-fill",
+          marketId: "0x5678",
+          eventType: "FilledMakerOrder",
+          side: "bid",
+          price: 10,
+          size: 3,
+          orderId: "not-recorded-by-maker",
+          realizedPnlUsd: 0,
+          feesUsd: 0,
+          maker: true,
+        },
+      ],
+      marginHistory: [],
+    });
+
+    harness.runtime.start();
+    await harness.runtime.cycle();
+
+    expect(harness.hedgeExecutions()).toBe(0);
+    expect(harness.cancellations()).toBe(0);
+    expect(harness.executions()).toBe(1);
+    await harness.runtime.stop();
+    harness.store.close();
+  });
+
+  it("hedges only after an attributed Maker fill and cancels quotes first", async () => {
+    const harness = createHarness();
+    const hedgeSetup = setupSchema.parse({
+      ownerAddress: `0x${"1".repeat(64)}`,
+      accountId: "43",
+      accountCapId: "0x1243",
+    });
+    harness.tenant.setSetup(hedgeSetup);
+    harness.tenant.confirmAgentGrant({
+      accountId: "43",
+      digest: "H".repeat(32),
+      agentCapId: "0xhedge",
+    });
+    harness.tenant.setConfig(
+      makerConfigSchema.parse({
+        markets: [{ marketId: "0x5678", symbol: "SUI" }],
+        mode: "live",
+        makerAccountId: "42",
+        hedge: {
+          enabled: true,
+          accountId: "43",
+          thresholdUsd: 25,
+          maxOrderUsd: 100,
+          maxSlippageBps: 75,
+        },
+      }),
+    );
+    harness.tenant.trackMakerOrders({
+      accountId: "42",
+      marketId: "0x5678",
+      quoteDigest: "quote-digest",
+      orderIds: ["tracked-fill"],
+    });
+    harness.setPerformanceHistory({
+      orders: [
+        {
+          timestampMs: Date.parse("2026-10-26T12:00:00Z"),
+          txDigest: "fill-digest",
+          marketId: "0x5678",
+          eventType: "FilledMakerOrder",
+          side: "bid",
+          price: 10,
+          size: 3,
+          orderId: "tracked-fill",
+          realizedPnlUsd: 0,
+          feesUsd: 0,
+          maker: true,
+        },
+      ],
+      marginHistory: [],
+    });
+    harness.setPortfolioResolver((inputs) => {
+      const maker = inputs.setup.accountId === "42";
+      const inventoryUsd = maker ? 30 : 0;
+      return {
+        equityUsd: 100,
+        availableCollateralUsd: 80,
+        allocatedCollateralUsd: 20,
+        freeMarginUsd: 70,
+        withdrawableCollateralUsd: 75,
+        grossExposureUsd: Math.abs(inventoryUsd),
+        unrealizedPnlUsd: 0,
+        gasSui: 0.1,
+        positions: inputs.marketIds.map((marketId) => ({
+          marketId,
+          baseAssetAmount: maker ? 3 : 0,
+          pendingOrderCount: maker && harness.cancellations() === 0 ? 2 : 0,
+          inventoryUsd,
+          unrealizedPnlUsd: 0,
+          collateralUsd: 20,
+          freeMarginUsd: 70,
+          makerOrderIds: [],
+          hasPosition: maker,
+        })),
+      };
+    });
+
+    harness.runtime.start();
+    await harness.runtime.cycle();
+
+    expect(harness.hedgeExecutions()).toBe(1);
+    expect(harness.executionSequence.slice(0, 3)).toEqual([
+      "cancel",
+      "hedge",
+      "quote",
+    ]);
+    expect(harness.runtime.snapshot.hedge).toMatchObject({
+      enabled: true,
+      state: "ready",
+      accountId: "43",
+      lastDigest: "hedge-digest-1",
+    });
+    expect(harness.tenant.listHedgeExecutions(1)[0]).toMatchObject({
+      makerAccountId: "42",
+      hedgeAccountId: "43",
+      requestedNotionalUsd: 30,
+    });
+    await harness.runtime.stop();
+    harness.store.close();
+  });
+
+  it("fails closed when either hedge account has an unrelated resting order", async () => {
+    const harness = createHarness();
+    const hedgeSetup = setupSchema.parse({
+      ownerAddress: `0x${"1".repeat(64)}`,
+      accountId: "43",
+      accountCapId: "0x1243",
+    });
+    harness.tenant.setSetup(hedgeSetup);
+    harness.tenant.confirmAgentGrant({
+      accountId: "43",
+      digest: "H".repeat(32),
+      agentCapId: "0xhedge",
+    });
+    harness.tenant.setConfig(
+      makerConfigSchema.parse({
+        markets: [{ marketId: "0x5678", symbol: "SUI" }],
+        mode: "live",
+        makerAccountId: "42",
+        hedge: {
+          enabled: true,
+          accountId: "43",
+          thresholdUsd: 25,
+          maxOrderUsd: 100,
+          maxSlippageBps: 75,
+        },
+      }),
+    );
+    harness.tenant.trackMakerOrders({
+      accountId: "42",
+      marketId: "0x5678",
+      quoteDigest: "quote-digest",
+      orderIds: ["tracked-fill"],
+    });
+    harness.setPerformanceHistory({
+      orders: [
+        {
+          timestampMs: Date.parse("2026-10-26T12:00:00Z"),
+          txDigest: "fill-digest",
+          marketId: "0x5678",
+          eventType: "FilledMakerOrder",
+          side: "bid",
+          price: 10,
+          size: 3,
+          orderId: "tracked-fill",
+          realizedPnlUsd: 0,
+          feesUsd: 0,
+          maker: true,
+        },
+      ],
+      marginHistory: [],
+    });
+    harness.setPortfolioResolver((inputs) => {
+      const maker = inputs.setup.accountId === "42";
+      return {
+        equityUsd: 100,
+        availableCollateralUsd: 80,
+        allocatedCollateralUsd: 20,
+        freeMarginUsd: 70,
+        withdrawableCollateralUsd: 75,
+        grossExposureUsd: maker ? 30 : 0,
+        unrealizedPnlUsd: 0,
+        gasSui: 0.1,
+        positions: inputs.marketIds.map((marketId) => ({
+          marketId,
+          baseAssetAmount: maker ? 3 : 0,
+          pendingOrderCount: maker ? 0 : 1,
+          inventoryUsd: maker ? 30 : 0,
+          unrealizedPnlUsd: 0,
+          collateralUsd: 20,
+          freeMarginUsd: 70,
+          makerOrderIds: [],
+          hasPosition: maker,
+        })),
+      };
+    });
+
+    harness.runtime.start();
+    await harness.runtime.cycle();
+
+    expect(harness.hedgeExecutions()).toBe(0);
+    expect(harness.executions()).toBe(0);
+    expect(harness.runtime.snapshot.running).toBe(false);
+    expect(harness.runtime.snapshot.lastError).toContain(
+      "clear every resting order",
+    );
+    expect(harness.runtime.snapshot.hedge.state).toBe("error");
     harness.store.close();
   });
 

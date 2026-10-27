@@ -317,15 +317,20 @@ app.get("/api/markets", async (request) => {
 app.get("/api/setup", async (request) => {
   const scoped = tenant(request);
   const setup = scoped.getSetup();
+  const accounts = scoped.listAccountSetups();
+  const active = setup
+    ? accounts.find((account) => account.accountId === setup.accountId)
+    : null;
   const agent = scoped.getAgent();
   return {
     setup,
+    accounts,
     agent: agent
       ? {
           address: agent.address,
           createdAt: agent.createdAt,
-          grantDigest: agent.grantDigest,
-          agentCapId: agent.agentCapId,
+          grantDigest: active?.grantDigest ?? null,
+          agentCapId: active?.agentCapId ?? null,
         }
       : null,
   };
@@ -378,6 +383,18 @@ app.post("/api/config", async (request) => {
       "Live mode requires LIVE_TRADING_ENABLED=true and ALLOW_MAINNET=true",
     );
   }
+  if (config.makerAccountId) {
+    const makerAccount = scoped.getAccountSetup(config.makerAccountId);
+    if (!makerAccount?.agentCapId) {
+      throw new Error("The selected Maker account is not authorized");
+    }
+  }
+  if (config.hedge.enabled && config.hedge.accountId) {
+    const hedgeAccount = scoped.getAccountSetup(config.hedge.accountId);
+    if (!hedgeAccount?.agentCapId) {
+      throw new Error("The selected hedge account is not authorized");
+    }
+  }
   scoped.setConfig(config);
   await runtime(request).reconfigure();
   scoped.logEvent({
@@ -405,22 +422,16 @@ app.post("/api/setup/provision", async (request) => {
   if (setup.ownerAddress.toLowerCase() !== identity.ownerAddress) {
     throw new AuthError(403, "Setup owner must be the signed-in wallet");
   }
-  const existingSetup = scoped.getSetup();
-  if (
-    existingSetup &&
-    (existingSetup.ownerAddress !== setup.ownerAddress.toLowerCase() ||
-      existingSetup.accountId !== setup.accountId)
-  ) {
-    throw new Error(
-      "A different account is already configured; explicit reset is required",
-    );
-  }
   scoped.setSetup(setup);
+  const encryptionContext = `account:${setup.accountId}`;
   const created = createEncryptedAgent({
     masterKey: env.MAKER_MASTER_KEY,
-    context: `account:${setup.accountId}`,
+    context: encryptionContext,
   });
-  const agent = scoped.createAgent(created);
+  const agent = scoped.createAgent({
+    ...created,
+    encryptionContext,
+  });
   scoped.logEvent({
     category: "onboarding",
     action: "agent.provision",
@@ -441,6 +452,7 @@ app.post("/api/setup/provision", async (request) => {
 app.post("/api/setup/grant-transaction", async (request) => {
   const body = z
     .object({
+      accountId: z.string().regex(/^\d+$/),
       gasMist: z.coerce
         .bigint()
         .min(20_000_000n)
@@ -449,9 +461,9 @@ app.post("/api/setup/grant-transaction", async (request) => {
     })
     .parse(request.body ?? {});
   const scoped = tenant(request);
-  const setup = scoped.getSetup();
+  const setup = scoped.getAccountSetup(body.accountId);
   const agent = scoped.getAgent();
-  if (!setup || !agent) throw new Error("Provision the setup first");
+  if (!setup || !agent) throw new Error("Provision the account first");
 
   const fee = builderCode();
   if (!fee) {
@@ -475,12 +487,15 @@ app.post("/api/setup/grant-transaction", async (request) => {
 
 app.post("/api/setup/confirm", async (request) => {
   const body = z
-    .object({ digest: z.string().min(20).max(100) })
+    .object({
+      accountId: z.string().regex(/^\d+$/),
+      digest: z.string().min(20).max(100),
+    })
     .parse(request.body);
   const scoped = tenant(request);
-  const setup = scoped.getSetup();
+  const setup = scoped.getAccountSetup(body.accountId);
   const agent = scoped.getAgent();
-  if (!setup || !agent) throw new Error("Provision the setup first");
+  if (!setup || !agent) throw new Error("Provision the account first");
 
   const fee = builderCode();
   if (!fee) {
@@ -492,9 +507,17 @@ app.post("/api/setup/confirm", async (request) => {
     builderCode: fee,
   });
   scoped.confirmAgentGrant({
+    accountId: body.accountId,
     digest: body.digest,
     agentCapId: verified.agentCapId,
   });
+  const currentConfig = scoped.getConfig();
+  if (currentConfig && !currentConfig.makerAccountId) {
+    scoped.setConfig({
+      ...currentConfig,
+      makerAccountId: body.accountId,
+    });
+  }
   scoped.logEvent({
     category: "onboarding",
     action: "agent.grant",
@@ -514,18 +537,20 @@ app.post("/api/setup/confirm", async (request) => {
 });
 
 app.post("/api/setup/revoke-transaction", async (request) => {
+  const body = z
+    .object({ accountId: z.string().regex(/^\d+$/) })
+    .parse(request.body);
   const scoped = tenant(request);
-  const setup = scoped.getSetup();
-  const agent = scoped.getAgent();
-  if (!setup || !agent?.agentCapId) {
-    throw new Error("No confirmed agent capability exists");
+  const setup = scoped.getAccountSetup(body.accountId);
+  if (!setup?.agentCapId) {
+    throw new Error("No confirmed agent capability exists for this account");
   }
   return {
     transaction: await runtime(request)
       .requireGateway()
       .buildRevokeAgentTransaction({
         setup,
-        agentCapId: agent.agentCapId,
+        agentCapId: setup.agentCapId,
       }),
   };
 });

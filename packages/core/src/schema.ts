@@ -6,6 +6,18 @@ export const USDC_COIN_TYPE =
 export const runtimeModeSchema = z.enum(["observe", "paper", "live"]);
 export type RuntimeMode = z.infer<typeof runtimeModeSchema>;
 
+export const hedgeConfigSchema = z
+  .object({
+    enabled: z.boolean().default(false),
+    accountId: z.string().regex(/^\d+$/).nullable().default(null),
+    thresholdUsd: z.number().positive().max(10_000).default(25),
+    maxOrderUsd: z.number().positive().max(10_000).default(100),
+    maxSlippageBps: z.number().int().min(5).max(500).default(75),
+  })
+  .strict();
+
+export type HedgeConfig = z.infer<typeof hedgeConfigSchema>;
+
 export const makerMarketOverridesSchema = z
   .object({
     quoteSizeUsd: z.number().positive().max(1_000).optional(),
@@ -37,6 +49,14 @@ export const makerConfigSchema = z
     strategyProfile: z
       .enum(["cautious", "balanced", "active"])
       .default("balanced"),
+    makerAccountId: z.string().regex(/^\d+$/).nullable().default(null),
+    hedge: hedgeConfigSchema.default({
+      enabled: false,
+      accountId: null,
+      thresholdUsd: 25,
+      maxOrderUsd: 100,
+      maxSlippageBps: 75,
+    }),
     quoteSizeUsd: z.number().positive().max(1_000).default(10),
     spreadBps: z.number().min(8).max(500).default(30),
     refreshMs: z.number().int().min(2_000).max(300_000).default(8_000),
@@ -58,6 +78,28 @@ export const makerConfigSchema = z
   .strict()
   .superRefine((config, context) => {
     const ids = config.markets.map((market) => market.marketId.toLowerCase());
+    if (config.hedge.enabled) {
+      if (!config.makerAccountId || !config.hedge.accountId) {
+        context.addIssue({
+          code: "custom",
+          path: ["hedge", "accountId"],
+          message: "Hedging requires authorized Maker and hedge accounts",
+        });
+      } else if (config.makerAccountId === config.hedge.accountId) {
+        context.addIssue({
+          code: "custom",
+          path: ["hedge", "accountId"],
+          message: "Maker and hedge accounts must be different",
+        });
+      }
+      if (config.hedge.maxOrderUsd < config.hedge.thresholdUsd) {
+        context.addIssue({
+          code: "custom",
+          path: ["hedge", "maxOrderUsd"],
+          message: "Maximum hedge order must cover the hedge threshold",
+        });
+      }
+    }
     if (new Set(ids).size !== ids.length) {
       context.addIssue({
         code: "custom",
@@ -213,6 +255,15 @@ export type RuntimeSnapshot = {
     averageGasMist: number | null;
     gasRunwayTransactions: number | null;
     lastExecutionAt: string | null;
+  };
+  hedge: {
+    enabled: boolean;
+    state: "off" | "waiting" | "ready" | "hedging" | "error";
+    accountId: string | null;
+    combinedDeltaUsd: number | null;
+    lastHedgeAt: string | null;
+    lastDigest: string | null;
+    error: string | null;
   };
   quote: QuoteIntent | null;
   safety: SafetyCheck[];

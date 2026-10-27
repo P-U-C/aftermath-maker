@@ -6,7 +6,7 @@ Maker is an execution and measurement system, not a promise that one spread sett
 
 ### Account readiness
 
-The desk reads the selected Aftermath account and shows equity, available collateral, collateral allocated to positions, free margin, owner-withdrawable collateral, agent SUI, and agent authority. Account creation and agent authorization are separate owner-signed transactions.
+The account desk discovers every Aftermath USDC account held by the signed-in wallet. It shows equity, available collateral, positions, agent authorization, and the assigned Maker or hedge role. One locally encrypted agent signer can hold a separate trading capability for each authorized account; account creation and each capability grant remain owner-signed transactions.
 
 Do not withdraw collateral while an engine is running. Stop quoting first, reconcile open orders and positions, then withdraw through the owner account.
 
@@ -29,19 +29,20 @@ Maker currently uses the live Aftermath best bid and ask as its reference. It cr
 
 Every market has stable Maker client order IDs. Portfolio cancellation looks up pending orders and selects only those IDs. It does not cancel manual orders or orders created by another client.
 
-### Delta-neutral boundary
+### Paired-account delta hedge
 
-The current engine is inventory-aware but not delta-neutral. It can skew or pull Aftermath quotes as inventory moves away from target, but it does not place an offsetting order on another venue.
+A wallet can assign one authorized Aftermath account to quoting and a different authorized account to hedging. The hedge path is fill-driven:
 
-A delta-neutral extension would:
+1. accept only fills whose order IDs were recorded by Maker;
+2. aggregate their signed notional until it crosses the configured hedge threshold;
+3. cancel Maker-tagged quotes on that market;
+4. require both accounts to have no resting orders, including manual orders;
+5. cap the hedge to the smaller of combined account delta, attributed pending-fill delta, and the configured maximum; and
+6. submit an opposite market order from the hedge account and record its transaction digest.
 
-1. calculate the delta created by each attributed Aftermath fill;
-2. aggregate small fills until the net delta crosses a configured hedge band;
-3. place an opposite spot or perpetual order on an independent hedge venue;
-4. verify the hedge fill and continue rebalancing toward the target; and
-5. report spread capture and incentives separately from hedge fees, slippage, funding, basis, gas, and residual delta.
+This design cannot intentionally self-match: the hedge is triggered by a previously confirmed independent fill, and no hedge is submitted while either account has a resting order. It also avoids absorbing unrelated manual exposure by capping each action to newly attributed fill delta.
 
-For example, a Maker bid filled for $1,000 of SUI perp creates positive SUI delta. A hedge engine would sell roughly $1,000 of SUI spot or short a SUI perp elsewhere. The position is only economically close to neutral after both legs are confirmed, and it still carries venue, basis, funding, liquidation, and execution risk.
+For example, $1,000 of attributed Maker bids creates positive perp delta. Once the threshold is crossed, the second account sells up to that attributable delta into the public Aftermath book. This reduces wallet-level direction, but both legs remain on Aftermath. It is not a cross-venue or spot hedge and still carries venue, basis, funding, liquidation, slippage, and execution risk.
 
 ### Independent freshness protection
 
@@ -63,14 +64,15 @@ The desk separates:
 
 - account-wide maker and taker volume;
 - attributed Maker fill count and notional;
+- confirmed hedge executions and matched taker fills;
 - realized trading PnL before fees;
 - reported order fees;
-- deterministic builder-fee estimate; and
-- net result after those known costs.
+- deterministic builder-fee estimates; and
+- Maker, hedge, and combined results after those known costs.
 
 Historical orders created before order tracking, manual orders, and other clients' orders are not claimed. Coverage reports attributed notional as a percentage of account-wide maker volume.
 
-“Net known result” still excludes gas converted to USD, position-level funding attribution, markouts, hedge costs, and inventory carry. Those are the next accounting fields required before calling a strategy profitable.
+“Net known result” still excludes gas converted to USD, position-level funding attribution, markouts, explicit slippage decomposition, and inventory carry. Those are the next accounting fields required before calling a strategy profitable.
 
 ## Fee economics
 
@@ -88,7 +90,7 @@ There is no single Wintermute setting to copy. The transferable operating ideas 
 4. **Measure realized outcomes.** Compare spread capture, markouts, funding, incentives, builder fees, protocol fees, gas, hedge cost, and capital at risk.
 5. **Prefer reliability over nominal activity.** Stale-order controls, atomic replacement, reconciliation, and collateral visibility matter more than gross volume.
 
-Maker now supplies the measurement and control foundation for those experiments. It does not yet implement external fair-value feeds or automated cross-venue hedging.
+Maker now supplies the measurement and control foundation for those experiments. It implements a guarded same-venue paired-account hedge, but does not yet provide external fair-value feeds or automated cross-venue hedging.
 
 ## Strategy families to test
 
@@ -96,7 +98,8 @@ These are hypotheses to compare in Observe, Paper, and small Live runs:
 
 - **Inventory-aware quoting:** the current baseline, with market-specific targets and limits.
 - **Volatility-adaptive quoting:** widen, reduce size, or pause when realized volatility and source divergence cross thresholds.
-- **Hedged market making:** quote on Aftermath and hedge externally when expected spread exceeds hedge, funding, fee, gas, and basis costs.
+- **Paired-account hedging:** the implemented same-venue baseline for reducing bot-attributed delta while measuring taker fees and residual exposure.
+- **Cross-venue hedged market making:** quote on Aftermath and hedge externally when expected spread exceeds hedge, funding, fee, gas, and basis costs.
 - **Funding and basis:** pair spot and perps, or two perp venues, while measuring funding reversal, margin, liquidation, and basis risk.
 - **Incentive-aware liquidity:** allocate by verified net return per unit of collateral, not low OI or gross volume alone.
 
@@ -111,7 +114,7 @@ The next implementation sequence is:
 3. Add realized spread and inventory-carry decomposition.
 4. Add volatility and oracle-versus-book divergence signals.
 5. Run profiles long enough to compare net return on collateral at risk.
-6. Add external fair-value inputs and optional hedging only after reconciliation is reliable.
+6. Add external fair-value inputs and a venue-diversified hedge after same-venue reconciliation is validated with mainnet traces.
 
 ## References
 

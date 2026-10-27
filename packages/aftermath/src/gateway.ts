@@ -41,6 +41,7 @@ export type MarketSummary = {
 export type PositionSnapshot = {
   marketId: string;
   baseAssetAmount: number;
+  pendingOrderCount: number;
   inventoryUsd: number;
   unrealizedPnlUsd: number;
   collateralUsd: number;
@@ -114,6 +115,11 @@ export type ExecutionReceipt = {
 
 export type FlattenReceipt = ExecutionReceipt & {
   flattenedMarketIds: string[];
+};
+
+export type HedgeReceipt = ExecutionReceipt & {
+  side: "bid" | "ask";
+  requestedNotionalUsd: number;
 };
 
 const PUBLIC_MAINNET_GRPC = "https://fullnode.mainnet.sui.io:443";
@@ -487,6 +493,7 @@ export class AftermathGateway {
       return {
         marketId,
         baseAssetAmount: position?.baseAssetAmount ?? 0,
+        pendingOrderCount: position?.pendingOrders.length ?? 0,
         inventoryUsd: position?.quoteAssetNotionalAmount ?? 0,
         unrealizedPnlUsd:
           (position?.unrealizedPnlUsd ?? 0) +
@@ -930,6 +937,84 @@ export class AftermathGateway {
       gasUsedMist: executionGasUsedMist(result),
       postedOrderIds: [],
       flattenedMarketIds,
+    };
+  }
+
+  async executeHedge(inputs: {
+    setup: Setup;
+    config: MakerConfig;
+    signer: Ed25519Keypair;
+    marketId: string;
+    deltaUsd: number;
+    maxOrderUsd: number;
+    maxSlippage: number;
+    builderCode: BuilderFeePolicy | null;
+    shouldContinue: () => boolean;
+  }): Promise<HedgeReceipt> {
+    const signerAddress = inputs.signer.toSuiAddress();
+    const cap = await this.findAccountCap({
+      walletAddress: signerAddress,
+      accountId: inputs.setup.accountId,
+      collateralCoinType: inputs.setup.collateralCoinType,
+      requireAgent: true,
+    });
+    const { account } = await this.sdk.Perpetuals().getAccount({
+      accountCap: cap,
+      marketIds: [inputs.marketId],
+    });
+    const market = await this.getMarket(inputs.marketId);
+    const position = account.account.positions.find(
+      (candidate) => candidate.marketId === inputs.marketId,
+    );
+    const requestedNotionalUsd = Math.min(
+      Math.abs(inputs.deltaUsd),
+      inputs.maxOrderUsd,
+    );
+    const size = market.roundToValidSizeBigInt({
+      size: requestedNotionalUsd / market.indexPrice,
+      floor: true,
+    });
+    if (size <= 0n) {
+      throw new Error("Hedge size is below the market lot size");
+    }
+
+    const side =
+      inputs.deltaUsd > 0 ? PerpetualsOrderSide.Ask : PerpetualsOrderSide.Bid;
+    const order = {
+      marketId: inputs.marketId,
+      side,
+      size,
+      collateralChange: 0,
+      hasPosition: Boolean(position && position.baseAssetAmount !== 0),
+      cancelSlTp: false,
+      reduceOnly: false,
+      slippage: inputs.maxSlippage,
+      leverage: inputs.config.maxLeverage,
+      ...(inputs.builderCode ? { builderCode: inputs.builderCode } : {}),
+    };
+    assertBuilderFeePolicy(order, inputs.builderCode);
+    if (!inputs.shouldContinue()) {
+      throw new Error("Hedge execution cancelled before transaction build");
+    }
+    const { tx } = await account.getPlaceMarketOrderTx(order);
+    tx.setSender(signerAddress);
+    await this.inspectTransaction({ tx, config: inputs.config });
+    if (!inputs.shouldContinue()) {
+      throw new Error("Hedge execution cancelled before signing");
+    }
+
+    const result = await this.client.signAndExecuteTransaction({
+      transaction: tx,
+      signer: inputs.signer,
+      include: { effects: true, events: true, balanceChanges: true },
+    });
+    return {
+      digest: transactionDigest(result),
+      endpoint: this.endpoint,
+      gasUsedMist: executionGasUsedMist(result),
+      postedOrderIds: [],
+      side: side === PerpetualsOrderSide.Bid ? "bid" : "ask",
+      requestedNotionalUsd,
     };
   }
 

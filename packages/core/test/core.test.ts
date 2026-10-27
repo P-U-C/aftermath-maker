@@ -148,6 +148,38 @@ describe("portfolio configuration", () => {
     ).toThrow("full rotation");
   });
 
+  it("requires distinct account roles for same-venue hedging", () => {
+    expect(() =>
+      makerConfigSchema.parse({
+        markets: [{ marketId: "0x1234", symbol: "SUI" }],
+        makerAccountId: "42",
+        hedge: {
+          enabled: true,
+          accountId: "42",
+          thresholdUsd: 25,
+          maxOrderUsd: 100,
+          maxSlippageBps: 75,
+        },
+      }),
+    ).toThrow("different");
+  });
+
+  it("requires the maximum hedge order to cover its trigger", () => {
+    expect(() =>
+      makerConfigSchema.parse({
+        markets: [{ marketId: "0x1234", symbol: "SUI" }],
+        makerAccountId: "42",
+        hedge: {
+          enabled: true,
+          accountId: "43",
+          thresholdUsd: 50,
+          maxOrderUsd: 25,
+          maxSlippageBps: 75,
+        },
+      }),
+    ).toThrow("cover the hedge threshold");
+  });
+
   it("applies market policy overrides without changing global defaults", () => {
     const configured = makerConfigSchema.parse({
       markets: [

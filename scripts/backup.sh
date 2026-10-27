@@ -12,8 +12,8 @@ if ! docker info >/dev/null 2>&1; then
   docker_cmd=(sudo -n docker)
 fi
 
+trap '"${docker_cmd[@]}" compose start control >/dev/null || true' EXIT
 "${docker_cmd[@]}" compose stop control
-trap '"${docker_cmd[@]}" compose start control >/dev/null' EXIT
 
 archive_name="$(basename "$archive")"
 "${docker_cmd[@]}" run --rm \

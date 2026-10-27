@@ -22,7 +22,12 @@ const normalizeAddress = (address: string) => address.toLowerCase();
 export type StoredAgent = {
   address: string;
   encryptedSecret: EncryptedSecret;
+  encryptionContext: string;
   createdAt: string;
+};
+
+export type StoredAccountSetup = Setup & {
+  addedAt: string;
   grantDigest: string | null;
   agentCapId: string | null;
 };
@@ -57,10 +62,22 @@ export type ExecutionStats = {
 };
 
 export type TrackedMakerOrder = {
+  accountId: string;
   orderId: string;
   marketId: string;
   quoteDigest: string;
   postedAt: string;
+};
+
+export type HedgeExecution = {
+  occurredAt: string;
+  makerAccountId: string;
+  hedgeAccountId: string;
+  marketId: string;
+  digest: string;
+  side: "bid" | "ask";
+  requestedNotionalUsd: number;
+  gasUsedMist: number;
 };
 
 export class Store {
@@ -174,6 +191,29 @@ export class Store {
         PRIMARY KEY (owner_address, order_id)
       );
 
+      CREATE TABLE IF NOT EXISTS tenant_hedge_executions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        owner_address TEXT NOT NULL,
+        occurred_at TEXT NOT NULL,
+        maker_account_id TEXT NOT NULL,
+        hedge_account_id TEXT NOT NULL,
+        market_id TEXT NOT NULL,
+        digest TEXT NOT NULL,
+        side TEXT NOT NULL,
+        requested_notional_usd REAL NOT NULL,
+        gas_used_mist INTEGER NOT NULL,
+        UNIQUE (owner_address, digest)
+      );
+
+      CREATE TABLE IF NOT EXISTS tenant_hedged_fills (
+        owner_address TEXT NOT NULL,
+        maker_account_id TEXT NOT NULL,
+        fill_key TEXT NOT NULL,
+        hedge_digest TEXT NOT NULL,
+        processed_at TEXT NOT NULL,
+        PRIMARY KEY (owner_address, maker_account_id, fill_key)
+      );
+
       CREATE TABLE IF NOT EXISTS auth_challenges (
         id TEXT PRIMARY KEY,
         owner_address TEXT NOT NULL,
@@ -197,6 +237,8 @@ export class Store {
         ON tenant_executions(owner_address, occurred_at DESC);
       CREATE INDEX IF NOT EXISTS tenant_maker_orders_owner_time
         ON tenant_maker_orders(owner_address, posted_at DESC);
+      CREATE INDEX IF NOT EXISTS tenant_hedge_executions_owner_time
+        ON tenant_hedge_executions(owner_address, occurred_at DESC);
       CREATE INDEX IF NOT EXISTS auth_sessions_owner
         ON auth_sessions(owner_address);
       CREATE INDEX IF NOT EXISTS auth_sessions_expiry
@@ -211,6 +253,15 @@ export class Store {
     if (!executionColumns.some((column) => column.name === "gas_used_mist")) {
       this.db.exec(
         "ALTER TABLE tenant_executions ADD COLUMN gas_used_mist INTEGER",
+      );
+    }
+
+    const makerOrderColumns = this.db
+      .prepare("PRAGMA table_info(tenant_maker_orders)")
+      .all() as Array<{ name: string }>;
+    if (!makerOrderColumns.some((column) => column.name === "account_id")) {
+      this.db.exec(
+        "ALTER TABLE tenant_maker_orders ADD COLUMN account_id TEXT NOT NULL DEFAULT ''",
       );
     }
   }
@@ -589,24 +640,92 @@ export class TenantStore {
     this.setSetting("maker_config", config);
   }
 
-  getSetup(): Setup | null {
-    return this.getSetting<Setup>("setup");
+  listAccountSetups(): StoredAccountSetup[] {
+    const stored = this.getSetting<StoredAccountSetup[]>("account_setups");
+    if (stored) return stored;
+
+    const legacy = this.getSetting<Setup>("setup");
+    if (!legacy) return [];
+
+    const grant = this.db
+      .prepare(
+        `SELECT grant_digest, agent_cap_id
+         FROM tenant_agents WHERE owner_address = ?`,
+      )
+      .get(this.ownerAddress) as
+      { grant_digest: string | null; agent_cap_id: string | null } | undefined;
+    const migrated: StoredAccountSetup[] = [
+      {
+        ...legacy,
+        ownerAddress: this.ownerAddress,
+        addedAt: new Date().toISOString(),
+        grantDigest: grant?.grant_digest ?? null,
+        agentCapId: grant?.agent_cap_id ?? null,
+      },
+    ];
+    this.setSetting("account_setups", migrated);
+    if (!this.getSetting<string>("agent_encryption_context")) {
+      this.setSetting(
+        "agent_encryption_context",
+        `account:${legacy.accountId}`,
+      );
+    }
+    return migrated;
   }
 
-  setSetup(setup: Setup): void {
+  getAccountSetup(accountId: string): StoredAccountSetup | null {
+    return (
+      this.listAccountSetups().find(
+        (account) => account.accountId === accountId,
+      ) ?? null
+    );
+  }
+
+  getSetup(): Setup | null {
+    const accounts = this.listAccountSetups();
+    const configuredId = this.getConfig()?.makerAccountId;
+    const selected =
+      (configuredId
+        ? accounts.find((account) => account.accountId === configuredId)
+        : null) ??
+      accounts.find((account) => account.agentCapId) ??
+      accounts[0];
+    if (!selected) return null;
+    const {
+      addedAt: _addedAt,
+      grantDigest: _grantDigest,
+      agentCapId: _agentCapId,
+      ...setup
+    } = selected;
+    return setup;
+  }
+
+  setSetup(setup: Setup): StoredAccountSetup {
     if (normalizeAddress(setup.ownerAddress) !== this.ownerAddress) {
       throw new Error("Setup owner does not match authenticated wallet");
     }
-    this.setSetting("setup", {
+    const accounts = this.listAccountSetups();
+    const existing = accounts.find(
+      (account) => account.accountId === setup.accountId,
+    );
+    const next: StoredAccountSetup = {
       ...setup,
       ownerAddress: this.ownerAddress,
-    });
+      addedAt: existing?.addedAt ?? new Date().toISOString(),
+      grantDigest: existing?.grantDigest ?? null,
+      agentCapId: existing?.agentCapId ?? null,
+    };
+    this.setSetting("account_setups", [
+      ...accounts.filter((account) => account.accountId !== setup.accountId),
+      next,
+    ]);
+    return next;
   }
 
   getAgent(): StoredAgent | null {
     const row = this.db
       .prepare(
-        `SELECT address, encrypted_secret, created_at, grant_digest, agent_cap_id
+        `SELECT address, encrypted_secret, created_at
          FROM tenant_agents WHERE owner_address = ?`,
       )
       .get(this.ownerAddress) as
@@ -614,24 +733,28 @@ export class TenantStore {
           address: string;
           encrypted_secret: string;
           created_at: string;
-          grant_digest: string | null;
-          agent_cap_id: string | null;
         }
       | undefined;
-    return row
-      ? {
-          address: row.address,
-          encryptedSecret: parse<EncryptedSecret>(row.encrypted_secret),
-          createdAt: row.created_at,
-          grantDigest: row.grant_digest,
-          agentCapId: row.agent_cap_id,
-        }
-      : null;
+    if (!row) return null;
+    const fallbackAccount = this.listAccountSetups()[0];
+    const encryptionContext =
+      this.getSetting<string>("agent_encryption_context") ??
+      (fallbackAccount ? `account:${fallbackAccount.accountId}` : null);
+    if (!encryptionContext) {
+      throw new Error("Agent encryption context is unavailable");
+    }
+    return {
+      address: row.address,
+      encryptedSecret: parse<EncryptedSecret>(row.encrypted_secret),
+      encryptionContext,
+      createdAt: row.created_at,
+    };
   }
 
   createAgent(inputs: {
     address: string;
     encryptedSecret: EncryptedSecret;
+    encryptionContext: string;
   }): StoredAgent {
     const existing = this.getAgent();
     if (existing) return existing;
@@ -649,23 +772,36 @@ export class TenantStore {
         stringify(inputs.encryptedSecret),
         createdAt,
       );
+    this.setSetting("agent_encryption_context", inputs.encryptionContext);
     return {
       address: inputs.address,
       encryptedSecret: inputs.encryptedSecret,
+      encryptionContext: inputs.encryptionContext,
       createdAt,
-      grantDigest: null,
-      agentCapId: null,
     };
   }
 
-  confirmAgentGrant(inputs: { digest: string; agentCapId: string }): void {
-    this.db
-      .prepare(
-        `UPDATE tenant_agents
-         SET grant_digest = ?, agent_cap_id = ?
-         WHERE owner_address = ?`,
-      )
-      .run(inputs.digest, inputs.agentCapId, this.ownerAddress);
+  confirmAgentGrant(inputs: {
+    accountId: string;
+    digest: string;
+    agentCapId: string;
+  }): void {
+    const accounts = this.listAccountSetups();
+    if (!accounts.some((account) => account.accountId === inputs.accountId)) {
+      throw new Error("Account setup was not found");
+    }
+    this.setSetting(
+      "account_setups",
+      accounts.map((account) =>
+        account.accountId === inputs.accountId
+          ? {
+              ...account,
+              grantDigest: inputs.digest,
+              agentCapId: inputs.agentCapId,
+            }
+          : account,
+      ),
+    );
   }
 
   logEvent(inputs: {
@@ -752,20 +888,22 @@ export class TenantStore {
   }
 
   trackMakerOrders(inputs: {
+    accountId: string;
     marketId: string;
     quoteDigest: string;
     orderIds: string[];
   }): void {
     const insert = this.db.prepare(
       `INSERT OR IGNORE INTO tenant_maker_orders
-        (owner_address, order_id, market_id, quote_digest, posted_at)
-       VALUES (?, ?, ?, ?, ?)`,
+        (owner_address, account_id, order_id, market_id, quote_digest, posted_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
     );
     const postedAt = new Date().toISOString();
     this.db.transaction(() => {
       for (const orderId of inputs.orderIds) {
         insert.run(
           this.ownerAddress,
+          inputs.accountId,
           orderId,
           inputs.marketId,
           inputs.quoteDigest,
@@ -775,26 +913,151 @@ export class TenantStore {
     })();
   }
 
-  listTrackedMakerOrders(limit = 2_000): TrackedMakerOrder[] {
+  listTrackedMakerOrders(
+    inputs: { accountId?: string; limit?: number } = {},
+  ): TrackedMakerOrder[] {
+    const limit = inputs.limit ?? 2_000;
     const rows = this.db
       .prepare(
-        `SELECT order_id, market_id, quote_digest, posted_at
+        `SELECT account_id, order_id, market_id, quote_digest, posted_at
          FROM tenant_maker_orders
          WHERE owner_address = ?
+           AND (? IS NULL OR account_id = ? OR account_id = '')
          ORDER BY posted_at DESC
          LIMIT ?`,
       )
-      .all(this.ownerAddress, limit) as Array<{
+      .all(
+        this.ownerAddress,
+        inputs.accountId ?? null,
+        inputs.accountId ?? null,
+        limit,
+      ) as Array<{
+      account_id: string;
       order_id: string;
       market_id: string;
       quote_digest: string;
       posted_at: string;
     }>;
     return rows.map((row) => ({
+      accountId: row.account_id,
       orderId: row.order_id,
       marketId: row.market_id,
       quoteDigest: row.quote_digest,
       postedAt: row.posted_at,
+    }));
+  }
+
+  isHedgeFillProcessed(makerAccountId: string, fillKey: string): boolean {
+    return Boolean(
+      this.db
+        .prepare(
+          `SELECT 1 FROM tenant_hedged_fills
+           WHERE owner_address = ? AND maker_account_id = ? AND fill_key = ?`,
+        )
+        .get(this.ownerAddress, makerAccountId, fillKey),
+    );
+  }
+
+  markHedgeFillsProcessed(inputs: {
+    makerAccountId: string;
+    fillKeys: string[];
+    hedgeDigest: string;
+  }): void {
+    const mark = this.db.prepare(
+      `INSERT OR IGNORE INTO tenant_hedged_fills
+        (owner_address, maker_account_id, fill_key, hedge_digest, processed_at)
+       VALUES (?, ?, ?, ?, ?)`,
+    );
+    const processedAt = new Date().toISOString();
+    this.db.transaction(() => {
+      for (const fillKey of inputs.fillKeys) {
+        mark.run(
+          this.ownerAddress,
+          inputs.makerAccountId,
+          fillKey,
+          inputs.hedgeDigest,
+          processedAt,
+        );
+      }
+    })();
+  }
+
+  recordHedgeExecution(inputs: {
+    makerAccountId: string;
+    hedgeAccountId: string;
+    marketId: string;
+    digest: string;
+    side: "bid" | "ask";
+    requestedNotionalUsd: number;
+    gasUsedMist: number;
+    fillKeys: string[];
+  }): void {
+    const occurredAt = new Date().toISOString();
+    this.db.transaction(() => {
+      this.db
+        .prepare(
+          `INSERT OR IGNORE INTO tenant_hedge_executions
+            (owner_address, occurred_at, maker_account_id, hedge_account_id,
+             market_id, digest, side, requested_notional_usd, gas_used_mist)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          this.ownerAddress,
+          occurredAt,
+          inputs.makerAccountId,
+          inputs.hedgeAccountId,
+          inputs.marketId,
+          inputs.digest,
+          inputs.side,
+          inputs.requestedNotionalUsd,
+          inputs.gasUsedMist,
+        );
+      const mark = this.db.prepare(
+        `INSERT OR IGNORE INTO tenant_hedged_fills
+          (owner_address, maker_account_id, fill_key, hedge_digest, processed_at)
+         VALUES (?, ?, ?, ?, ?)`,
+      );
+      for (const fillKey of inputs.fillKeys) {
+        mark.run(
+          this.ownerAddress,
+          inputs.makerAccountId,
+          fillKey,
+          inputs.digest,
+          occurredAt,
+        );
+      }
+    })();
+  }
+
+  listHedgeExecutions(limit = 500): HedgeExecution[] {
+    const rows = this.db
+      .prepare(
+        `SELECT occurred_at, maker_account_id, hedge_account_id, market_id,
+                digest, side, requested_notional_usd, gas_used_mist
+         FROM tenant_hedge_executions
+         WHERE owner_address = ?
+         ORDER BY occurred_at DESC
+         LIMIT ?`,
+      )
+      .all(this.ownerAddress, limit) as Array<{
+      occurred_at: string;
+      maker_account_id: string;
+      hedge_account_id: string;
+      market_id: string;
+      digest: string;
+      side: "bid" | "ask";
+      requested_notional_usd: number;
+      gas_used_mist: number;
+    }>;
+    return rows.map((row) => ({
+      occurredAt: row.occurred_at,
+      makerAccountId: row.maker_account_id,
+      hedgeAccountId: row.hedge_account_id,
+      marketId: row.market_id,
+      digest: row.digest,
+      side: row.side,
+      requestedNotionalUsd: row.requested_notional_usd,
+      gasUsedMist: row.gas_used_mist,
     }));
   }
 

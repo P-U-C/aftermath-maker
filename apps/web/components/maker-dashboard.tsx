@@ -31,7 +31,14 @@ import {
   UserPlus,
   WalletCards,
 } from "lucide-react";
-import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
+import {
+  FormEvent,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { dAppKit } from "../app/dapp-kit";
 
 type Mode = "observe" | "paper" | "live";
@@ -114,6 +121,15 @@ type Snapshot = {
     gasRunwayTransactions: number | null;
     lastExecutionAt: string | null;
   };
+  hedge: {
+    enabled: boolean;
+    state: "off" | "waiting" | "ready" | "hedging" | "error";
+    accountId: string | null;
+    combinedDeltaUsd: number | null;
+    lastHedgeAt: string | null;
+    lastDigest: string | null;
+    error: string | null;
+  };
   quote: {
     bidPrice: number;
     askPrice: number;
@@ -157,6 +173,14 @@ type MakerConfig = {
   collateralCoinType: string;
   mode: Mode;
   strategyProfile: "cautious" | "balanced" | "active";
+  makerAccountId: string | null;
+  hedge: {
+    enabled: boolean;
+    accountId: string | null;
+    thresholdUsd: number;
+    maxOrderUsd: number;
+    maxSlippageBps: number;
+  };
   quoteSizeUsd: number;
   spreadBps: number;
   refreshMs: number;
@@ -182,6 +206,16 @@ type AccountCap = {
   positionCount: number;
 };
 
+type ManagedAccount = {
+  ownerAddress: string;
+  accountId: string;
+  accountCapId: string;
+  collateralCoinType: string;
+  addedAt: string;
+  grantDigest: string | null;
+  agentCapId: string | null;
+};
+
 type SetupState = {
   setup: {
     ownerAddress: string;
@@ -189,6 +223,7 @@ type SetupState = {
     accountCapId: string;
     collateralCoinType: string;
   } | null;
+  accounts: ManagedAccount[];
   agent: {
     address: string;
     createdAt: string;
@@ -232,6 +267,18 @@ type Performance = {
     netAfterKnownCostsUsd: number;
     makerVolumeCoveragePct: number | null;
   };
+  hedge: {
+    enabled: boolean;
+    accountId: string | null;
+    executions: number;
+    fills: number;
+    notionalUsd: number;
+    realizedPnlUsd: number;
+    protocolFeesUsd: number;
+    estimatedBuilderFeesUsd: number;
+    netAfterKnownCostsUsd: number;
+  };
+  combinedNetAfterKnownCostsUsd: number;
   fills: MakerFill[];
   note: string;
 };
@@ -274,6 +321,14 @@ const defaultConfig: MakerConfig = {
   collateralCoinType: USDC,
   mode: "observe",
   strategyProfile: "balanced",
+  makerAccountId: null,
+  hedge: {
+    enabled: false,
+    accountId: null,
+    thresholdUsd: 25,
+    maxOrderUsd: 100,
+    maxSlippageBps: 75,
+  },
   quoteSizeUsd: 10,
   spreadBps: 30,
   refreshMs: 8_000,
@@ -364,7 +419,12 @@ function DashboardBody() {
   const [markets, setMarkets] = useState<Market[]>([]);
   const [marketQuery, setMarketQuery] = useState("");
   const [config, setConfig] = useState<MakerConfig>(defaultConfig);
-  const [setup, setSetup] = useState<SetupState>({ setup: null, agent: null });
+  const configLoaded = useRef(false);
+  const [setup, setSetup] = useState<SetupState>({
+    setup: null,
+    accounts: [],
+    agent: null,
+  });
   const [accounts, setAccounts] = useState<AccountCap[]>([]);
   const [events, setEvents] = useState<AuditEvent[]>([]);
   const [performance, setPerformance] = useState<Performance | null>(null);
@@ -372,6 +432,7 @@ function DashboardBody() {
   const [busy, setBusy] = useState("");
   const [flattenArmed, setFlattenArmed] = useState(false);
   const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [accountManagerOpen, setAccountManagerOpen] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [integratorId, setIntegratorId] = useState("");
   const [inspection, setInspection] = useState<{
@@ -394,7 +455,16 @@ function DashboardBody() {
     setBuilderCode(statusResult.builderCode);
     setSetup(setupResult);
     setEvents(eventResult.events);
-    if (configResult.config) setConfig(configResult.config);
+    if (configResult.config && !configLoaded.current) {
+      configLoaded.current = true;
+      setConfig({
+        ...configResult.config,
+        makerAccountId:
+          configResult.config.makerAccountId ??
+          setupResult.setup?.accountId ??
+          null,
+      });
+    }
   }, []);
 
   const loadPerformance = useCallback(async () => {
@@ -470,9 +540,8 @@ function DashboardBody() {
   useEffect(() => {
     if (
       !identity ||
-      !account?.address ||
-      account.address.toLowerCase() !== identity.ownerAddress ||
-      setup.setup
+      (account?.address &&
+        account.address.toLowerCase() !== identity.ownerAddress)
     ) {
       setAccounts([]);
       return;
@@ -482,10 +551,17 @@ function DashboardBody() {
     )
       .then((result) => {
         setAccounts(result.accounts);
-        setSelectedAccount(result.accounts[0]?.accountId ?? "");
+        setSelectedAccount((current) =>
+          result.accounts.some((candidate) => candidate.accountId === current)
+            ? current
+            : (config.makerAccountId ??
+              setup.setup?.accountId ??
+              result.accounts[0]?.accountId ??
+              ""),
+        );
       })
       .catch((error) => setNotice(error.message));
-  }, [account?.address, identity, setup.setup]);
+  }, [account?.address, identity]);
 
   const selectedCap = useMemo(
     () => accounts.find((candidate) => candidate.accountId === selectedAccount),
@@ -531,6 +607,8 @@ function DashboardBody() {
     await request("api/auth/logout", { method: "POST", body: "{}" }).catch(
       () => undefined,
     );
+    configLoaded.current = false;
+    setConfig(defaultConfig);
     setIdentity(null);
     setOperatorStatus(null);
     setSnapshot(null);
@@ -698,30 +776,38 @@ function DashboardBody() {
     });
   }
 
-  async function provision() {
-    if (!account?.address || !selectedCap) return;
-    await mutate("provision", async () => {
+  async function provision(accountId = selectedAccount) {
+    const accountCap = accounts.find(
+      (candidate) => candidate.accountId === accountId,
+    );
+    if (!account?.address || !accountCap) return;
+    await mutate(`provision-${accountId}`, async () => {
       await request("api/setup/provision", {
         method: "POST",
         body: JSON.stringify({
           ownerAddress: account.address,
-          accountId: selectedCap.accountId,
-          accountCapId: selectedCap.accountCapId,
-          collateralCoinType: selectedCap.collateralCoinType,
+          accountId: accountCap.accountId,
+          accountCapId: accountCap.accountCapId,
+          collateralCoinType: accountCap.collateralCoinType,
         }),
       });
-      setNotice("Agent created locally. One owner transaction remains.");
+      setSelectedAccount(accountId);
+      setNotice(`Account ${accountId} added. One owner transaction remains.`);
     });
   }
 
-  async function authorizeAgent() {
-    await mutate("authorize", async () => {
+  async function authorizeAgent(accountId = selectedAccount) {
+    if (!accountId) return;
+    await mutate(`authorize-${accountId}`, async () => {
       const built = await request<{
         transaction: string;
         agentAddress: string;
       }>("api/setup/grant-transaction", {
         method: "POST",
-        body: JSON.stringify({ gasMist: "100000000" }),
+        body: JSON.stringify({
+          accountId,
+          gasMist: "100000000",
+        }),
       });
       const result = await wallet.signAndExecuteTransaction({
         transaction: Transaction.from(built.transaction),
@@ -734,10 +820,17 @@ function DashboardBody() {
       }
       await request("api/setup/confirm", {
         method: "POST",
-        body: JSON.stringify({ digest: result.Transaction.digest }),
+        body: JSON.stringify({
+          accountId,
+          digest: result.Transaction.digest,
+        }),
       });
+      setConfig((current) => ({
+        ...current,
+        makerAccountId: current.makerAccountId ?? accountId,
+      }));
       setNotice(
-        "Agent authorized and funded. No further wallet prompts are needed.",
+        `Account ${accountId} authorized for trading and funded with agent gas.`,
       );
     });
   }
@@ -990,7 +1083,20 @@ function DashboardBody() {
     (market) => market.id === snapshot?.market.id,
   );
   const failedChecks = snapshot?.safety.filter((check) => !check.ok) ?? [];
-  const onboardingComplete = Boolean(setup.agent?.agentCapId);
+  const authorizedAccounts = setup.accounts.filter(
+    (managed) => managed.agentCapId,
+  );
+  const activeMakerAccountId =
+    config.makerAccountId ?? setup.setup?.accountId ?? null;
+  const activeMakerAccount = setup.accounts.find(
+    (managed) => managed.accountId === activeMakerAccountId,
+  );
+  const onboardingComplete = Boolean(
+    setup.agent && activeMakerAccount?.agentCapId,
+  );
+  const activeHedgeAccount = setup.accounts.find(
+    (managed) => managed.accountId === config.hedge.accountId,
+  );
   const effectiveRefreshSeconds =
     (config.refreshMs * Math.max(1, config.markets.length)) / 1_000;
   const activeRuntimeMarket = snapshot?.markets.find(
@@ -1197,7 +1303,9 @@ function DashboardBody() {
                         disabled={!selectedCap || Boolean(busy)}
                         type="button"
                       >
-                        Create agent
+                        {busy === `provision-${selectedAccount}`
+                          ? "Creating..."
+                          : "Create agent"}
                       </button>
                     </div>
                   </>
@@ -1223,7 +1331,7 @@ function DashboardBody() {
                       disabled={!builderCode || Boolean(busy)}
                     >
                       <ShieldCheck size={16} />
-                      {busy === "authorize"
+                      {busy === `authorize-${selectedAccount}`
                         ? "Waiting for wallet..."
                         : builderCode
                           ? "Authorize agent"
@@ -1244,7 +1352,9 @@ function DashboardBody() {
         <section className="account-band" aria-label="Account readiness">
           <div className="account-band-title">
             <span className="eyebrow">Account readiness</span>
-            <strong>Account {setup.setup?.accountId}</strong>
+            <strong>
+              Maker account {snapshot?.accountId ?? setup.setup?.accountId}
+            </strong>
             <span
               className={
                 (snapshot?.balances.equityUsd ?? 0) > 0 &&
@@ -1258,6 +1368,16 @@ function DashboardBody() {
                 ? "Ready"
                 : "Needs funding"}
             </span>
+            <button
+              type="button"
+              className="icon-button account-manager-toggle"
+              onClick={() => setAccountManagerOpen((open) => !open)}
+              aria-expanded={accountManagerOpen}
+              aria-label="Manage Aftermath accounts"
+              title="Manage Aftermath accounts"
+            >
+              <WalletCards size={16} aria-hidden="true" />
+            </button>
           </div>
           <div>
             <span>Equity</span>
@@ -1293,6 +1413,128 @@ function DashboardBody() {
           <div>
             <span>Agent authority</span>
             <strong>Trade / no withdrawals</strong>
+          </div>
+        </section>
+      )}
+
+      {onboardingComplete && accountManagerOpen && (
+        <section className="account-desk" aria-label="Aftermath accounts">
+          <div className="section-heading compact">
+            <div>
+              <span className="eyebrow">Account desk</span>
+              <h2>Trading accounts</h2>
+            </div>
+            <button
+              className="button secondary"
+              onClick={() => void createAftermathAccount()}
+              disabled={!account?.address || Boolean(busy)}
+              type="button"
+            >
+              <UserPlus size={16} aria-hidden="true" />
+              {busy === "create-account" ? "Check wallet..." : "New account"}
+            </button>
+          </div>
+          <div className="account-desk-grid">
+            {accounts.map((owned) => {
+              const managed = setup.accounts.find(
+                (candidate) => candidate.accountId === owned.accountId,
+              );
+              const isMaker = activeMakerAccountId === owned.accountId;
+              const isHedge = config.hedge.accountId === owned.accountId;
+              return (
+                <article className="account-row" key={owned.accountId}>
+                  <div className="account-row-id">
+                    <strong>Account {owned.accountId}</strong>
+                    <span>
+                      {isMaker ? "Maker" : isHedge ? "Hedge" : "Available"}
+                    </span>
+                  </div>
+                  <div>
+                    <span>Equity</span>
+                    <strong>{money(owned.equityUsd)}</strong>
+                  </div>
+                  <div>
+                    <span>Free collateral</span>
+                    <strong>{money(owned.availableCollateralUsd)}</strong>
+                  </div>
+                  <div>
+                    <span>Positions</span>
+                    <strong>{owned.positionCount}</strong>
+                  </div>
+                  <div className="account-row-actions">
+                    {!managed ? (
+                      <button
+                        className="button secondary"
+                        type="button"
+                        onClick={() => void provision(owned.accountId)}
+                        disabled={Boolean(busy)}
+                      >
+                        <KeyRound size={15} aria-hidden="true" />
+                        {busy === `provision-${owned.accountId}`
+                          ? "Adding..."
+                          : "Add agent"}
+                      </button>
+                    ) : !managed.agentCapId ? (
+                      <button
+                        className="button primary"
+                        type="button"
+                        onClick={() => void authorizeAgent(owned.accountId)}
+                        disabled={!builderCode || Boolean(busy)}
+                      >
+                        <ShieldCheck size={15} aria-hidden="true" />
+                        {busy === `authorize-${owned.accountId}`
+                          ? "Authorizing..."
+                          : "Authorize"}
+                      </button>
+                    ) : (
+                      <>
+                        <button
+                          className={
+                            isMaker ? "role-button selected" : "role-button"
+                          }
+                          type="button"
+                          onClick={() =>
+                            setConfig((current) => ({
+                              ...current,
+                              makerAccountId: owned.accountId,
+                              hedge:
+                                current.hedge.accountId === owned.accountId
+                                  ? {
+                                      ...current.hedge,
+                                      enabled: false,
+                                      accountId: null,
+                                    }
+                                  : current.hedge,
+                            }))
+                          }
+                        >
+                          Maker
+                        </button>
+                        <button
+                          className={
+                            isHedge ? "role-button selected" : "role-button"
+                          }
+                          type="button"
+                          disabled={isMaker}
+                          onClick={() =>
+                            setConfig((current) => ({
+                              ...current,
+                              hedge: {
+                                ...current.hedge,
+                                enabled: true,
+                                accountId: owned.accountId,
+                              },
+                            }))
+                          }
+                        >
+                          Hedge
+                        </button>
+                      </>
+                    )}
+                  </div>
+                </article>
+              );
+            })}
           </div>
         </section>
       )}
@@ -1507,14 +1749,183 @@ function DashboardBody() {
 
           <div className="execution-model" aria-label="Current execution model">
             <div>
-              <span>Execution model</span>
-              <strong>Inventory-aware maker</strong>
+              <span>Maker path</span>
+              <strong>
+                {activeMakerAccountId
+                  ? `Account ${activeMakerAccountId}`
+                  : "Select account"}
+              </strong>
             </div>
             <div>
-              <span>External hedge</span>
-              <strong className="unavailable">Not connected</strong>
+              <span>Hedge path</span>
+              <strong
+                className={config.hedge.enabled ? "available" : "unavailable"}
+              >
+                {config.hedge.enabled && activeHedgeAccount
+                  ? `Account ${activeHedgeAccount.accountId} / ${snapshot?.hedge.state ?? "waiting"}`
+                  : "Off"}
+              </strong>
             </div>
           </div>
+
+          <fieldset className="account-pair-control">
+            <legend>Account roles</legend>
+            <div className="account-role-grid">
+              <label>
+                <span>Maker</span>
+                <select
+                  value={activeMakerAccountId ?? ""}
+                  onChange={(event) => {
+                    const makerAccountId = event.target.value || null;
+                    setConfig((current) => ({
+                      ...current,
+                      makerAccountId,
+                      hedge:
+                        current.hedge.accountId === makerAccountId
+                          ? {
+                              ...current.hedge,
+                              enabled: false,
+                              accountId: null,
+                            }
+                          : current.hedge,
+                    }));
+                  }}
+                >
+                  <option value="">Select account</option>
+                  {authorizedAccounts.map((managed) => (
+                    <option key={managed.accountId} value={managed.accountId}>
+                      Account {managed.accountId}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                <span>Hedge account</span>
+                <select
+                  value={config.hedge.accountId ?? ""}
+                  disabled={!config.hedge.enabled}
+                  onChange={(event) =>
+                    setConfig((current) => ({
+                      ...current,
+                      hedge: {
+                        ...current.hedge,
+                        accountId: event.target.value || null,
+                      },
+                    }))
+                  }
+                >
+                  <option value="">Select account</option>
+                  {authorizedAccounts
+                    .filter(
+                      (managed) => managed.accountId !== activeMakerAccountId,
+                    )
+                    .map((managed) => (
+                      <option key={managed.accountId} value={managed.accountId}>
+                        Account {managed.accountId}
+                      </option>
+                    ))}
+                </select>
+              </label>
+            </div>
+            <label className="switch-row">
+              <input
+                type="checkbox"
+                checked={config.hedge.enabled}
+                disabled={
+                  !activeMakerAccountId || authorizedAccounts.length < 2
+                }
+                onChange={(event) => {
+                  const enabled = event.target.checked;
+                  const fallback = authorizedAccounts.find(
+                    (managed) => managed.accountId !== activeMakerAccountId,
+                  );
+                  setConfig((current) => ({
+                    ...current,
+                    makerAccountId:
+                      current.makerAccountId ?? activeMakerAccountId,
+                    hedge: {
+                      ...current.hedge,
+                      enabled,
+                      accountId: enabled
+                        ? (current.hedge.accountId ??
+                          fallback?.accountId ??
+                          null)
+                        : current.hedge.accountId,
+                    },
+                  }));
+                }}
+              />
+              <span aria-hidden="true" />
+              <strong>Fill-driven same-venue delta hedge</strong>
+            </label>
+            {config.hedge.enabled && (
+              <div className="hedge-limit-grid">
+                <label>
+                  <span>Trigger</span>
+                  <div className="input-unit">
+                    <b>$</b>
+                    <input
+                      type="number"
+                      min="1"
+                      max="10000"
+                      value={config.hedge.thresholdUsd}
+                      onChange={(event) =>
+                        setConfig((current) => ({
+                          ...current,
+                          hedge: {
+                            ...current.hedge,
+                            thresholdUsd: Number(event.target.value),
+                          },
+                        }))
+                      }
+                    />
+                  </div>
+                </label>
+                <label>
+                  <span>Max order</span>
+                  <div className="input-unit">
+                    <b>$</b>
+                    <input
+                      type="number"
+                      min={config.hedge.thresholdUsd}
+                      max="10000"
+                      value={config.hedge.maxOrderUsd}
+                      onChange={(event) =>
+                        setConfig((current) => ({
+                          ...current,
+                          hedge: {
+                            ...current.hedge,
+                            maxOrderUsd: Number(event.target.value),
+                          },
+                        }))
+                      }
+                    />
+                  </div>
+                </label>
+                <label>
+                  <span>Slippage</span>
+                  <div className="input-unit suffix">
+                    <input
+                      type="number"
+                      min="5"
+                      max="500"
+                      value={config.hedge.maxSlippageBps}
+                      onChange={(event) =>
+                        setConfig((current) => ({
+                          ...current,
+                          hedge: {
+                            ...current.hedge,
+                            maxSlippageBps: Number(event.target.value),
+                          },
+                        }))
+                      }
+                    />
+                    <b>bps</b>
+                  </div>
+                </label>
+              </div>
+            )}
+          </fieldset>
 
           <fieldset>
             <legend>Profile</legend>
@@ -2072,7 +2483,7 @@ function DashboardBody() {
         <div className="section-heading compact performance-heading">
           <div>
             <span className="eyebrow">Last 24 hours</span>
-            <h2>Attributed Maker performance</h2>
+            <h2>Attributed strategy performance</h2>
           </div>
           <span className="coverage-badge">
             {performance?.attributed.makerVolumeCoveragePct === null ||
@@ -2124,6 +2535,39 @@ function DashboardBody() {
               }
             >
               {money(performance?.attributed.netAfterKnownCostsUsd ?? 0)}
+            </strong>
+          </div>
+        </div>
+        <div className="hedge-performance-strip">
+          <div>
+            <span>Hedge account</span>
+            <strong>
+              {performance?.hedge.accountId
+                ? `Account ${performance.hedge.accountId}`
+                : "Off"}
+            </strong>
+          </div>
+          <div>
+            <span>Hedge executions / fills</span>
+            <strong>
+              {performance?.hedge.executions ?? 0} /{" "}
+              {performance?.hedge.fills ?? 0}
+            </strong>
+          </div>
+          <div>
+            <span>Hedge notional</span>
+            <strong>{money(performance?.hedge.notionalUsd ?? 0)}</strong>
+          </div>
+          <div>
+            <span>Combined known result</span>
+            <strong
+              className={
+                (performance?.combinedNetAfterKnownCostsUsd ?? 0) < 0
+                  ? "negative-number"
+                  : ""
+              }
+            >
+              {money(performance?.combinedNetAfterKnownCostsUsd ?? 0)}
             </strong>
           </div>
         </div>

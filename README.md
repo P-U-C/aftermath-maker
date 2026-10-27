@@ -4,7 +4,7 @@ A wallet-gated control plane for running bounded, non-custodial market-making st
 
 Maker is built for inspectability: users can see account readiness, collateral, gas runway, effective policy per market, quote freshness, fills, known costs, and the exact transaction behind each live action. It does not present volume as profit.
 
-The current strategy is inventory-aware quoting on Aftermath. It is not delta-neutral and does not place external hedge orders.
+The current strategy is inventory-aware quoting with an optional fill-driven hedge on a second Aftermath account. The paired-account mode reduces bot-attributed directional exposure; it is not a cross-venue hedge and does not remove venue, basis, funding, liquidation, or execution risk.
 
 Hosted service: [maker.permanentupperclass.com](https://maker.permanentupperclass.com)
 
@@ -27,22 +27,23 @@ SUI_FALLBACK_GRPC_URL=https://fullnode.mainnet.sui.io:443
 ## User flow
 
 1. Connect a Sui wallet and sign a readable login message.
-2. Select an existing Aftermath USDC account or create one in Maker.
-3. Create an encrypted trading agent and approve it once.
-4. Check collateral and gas readiness.
-5. Select markets, choose a profile, then tune global or per-market limits.
+2. Select or create an Aftermath USDC account.
+3. Create one encrypted trading agent and authorize it on each account you want Maker to use.
+4. Assign a Maker account and, optionally, a different hedge account.
+5. Check collateral and gas readiness, select markets, then set portfolio limits.
 6. Run Observe, then Paper, then deliberately small Live limits.
 
 The agent can trade but cannot withdraw collateral or grant another agent. Creating an account does not deposit collateral.
 
 ## What the desk shows
 
+- Every owner account, its collateral and positions, agent authorization, and assigned Maker or hedge role
 - Equity, available and allocated collateral, owner-withdrawable collateral, agent gas, and authority state
 - One-sided OI in base units and estimated USD, protocol capacity, volume, funding, inventory, and unrealized PnL
 - Global defaults plus per-market spread, size, inventory target, inventory cap, skew, and leverage overrides
 - Runtime, last successful cycle, quote freshness, transaction links, measured gas, and estimated gas runway
 - A fill ledger limited to order IDs that Maker recorded when posting
-- Realized PnL, protocol fees, estimated builder fees, and net result after those known costs
+- Separate Maker and hedge attribution, protocol fees, estimated builder fees, and combined result after those known costs
 - Separate **Stop quoting** and **Flatten at market** actions
 
 Strategy changes reconfigure the running engine and apply on its next cycle.
@@ -50,6 +51,8 @@ Strategy changes reconfigure the running engine and apply on its next cycle.
 ## Execution and safety
 
 Maker visits selected markets round-robin. Each live visit atomically cancels and replaces two stable, Maker-tagged, post-only orders. Manual orders are outside that cancellation set.
+
+When paired-account hedging is enabled, Maker reacts only to independently filled order IDs that it previously recorded. It aggregates small fills to the configured threshold, cancels its quotes, requires both accounts to have no resting orders, then submits one capped opposite market order from the hedge account. It never creates a paired self-match loop.
 
 Live mode fails closed on setup, signer, mainnet, freshness, spread, quote size, inventory, gross exposure, loss, transaction simulation, and gas limits. An independent watchdog cancels Maker orders if any selected market exceeds its maximum quote age, even when the market RPC is stalled.
 
@@ -64,7 +67,7 @@ ALLOW_MAINNET=true
 
 ## Performance boundary
 
-"Net known result" means attributed realized trading PnL minus reported order fees and the deterministic builder-fee estimate. It is not a complete profitability figure. It currently excludes gas converted to USD, position-level funding attribution, markouts, hedging costs, and inventory carry.
+"Net known result" means attributed realized trading PnL minus reported order fees and the deterministic builder-fee estimate. Hedge fills are reconciled from confirmed hedge transaction digests and reported separately. It is not a complete profitability figure: it still excludes gas converted to USD, position-level funding attribution, markouts, explicit slippage decomposition, and inventory carry.
 
 Attribution starts when this release records posted order IDs. Older account activity and other clients' orders remain account-wide and are not claimed as Maker performance.
 
