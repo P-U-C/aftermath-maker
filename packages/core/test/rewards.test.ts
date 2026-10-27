@@ -27,7 +27,7 @@ const market = (
 });
 
 describe("reward opportunity ranking", () => {
-  it("prefers organic flow with less competing near-book capital", () => {
+  it("prefers reported flow with less competing near-book capital", () => {
     const ranked = rankRewardMarkets({
       builderFeeBps: 1,
       markets: [
@@ -178,6 +178,130 @@ describe("reward opportunity ranking", () => {
     expect(ranked[0]?.symbol).toBe("OPEN");
     expect(ranked[1]?.eligible).toBe(false);
     expect(ranked[1]?.reasons).toContain("Market session is closed");
+  });
+
+  it("lets capital-efficient turnover win the farming objective", () => {
+    const ranked = rankRewardMarkets({
+      builderFeeBps: 1,
+      objective: "farming",
+      markets: [
+        market({
+          marketId: "0x1",
+          symbol: "TURNOVER",
+          volume24hUsd: 2_000_000,
+          bidDepth50BpsUsd: 200,
+          askDepth50BpsUsd: 200,
+          priceChange24hPct: 0.08,
+          fundingRate: 0.001,
+        }),
+        market({
+          marketId: "0x2",
+          symbol: "DEEP",
+          volume24hUsd: 100_000,
+          bidDepth50BpsUsd: 5_000,
+          askDepth50BpsUsd: 5_000,
+          priceChange24hPct: 0.01,
+        }),
+      ],
+    });
+
+    expect(ranked[0]?.symbol).toBe("TURNOVER");
+    expect(ranked[0]?.objective).toBe("farming");
+    expect(ranked[0]?.objectiveEligible).toBe(true);
+    expect(ranked[0]?.reasons).toContain(
+      "High reported flow per dollar near the book",
+    );
+  });
+
+  it("prefers stable exit depth and fill edge for profit", () => {
+    const ranked = rankRewardMarkets({
+      builderFeeBps: 1,
+      objective: "profit",
+      markets: [
+        market({
+          marketId: "0x1",
+          symbol: "FAST-THIN",
+          volume24hUsd: 2_000_000,
+          bidDepth50BpsUsd: 150,
+          askDepth50BpsUsd: 150,
+          bestBid: 0.9998,
+          bestAsk: 1.0002,
+          priceChange24hPct: 0.15,
+          fundingRate: 0.005,
+        }),
+        market({
+          marketId: "0x2",
+          symbol: "STABLE-EDGE",
+          volume24hUsd: 200_000,
+          bidDepth50BpsUsd: 5_000,
+          askDepth50BpsUsd: 5_000,
+          bestBid: 0.995,
+          bestAsk: 1.005,
+          priceChange24hPct: 0.005,
+          fundingRate: 0.00001,
+        }),
+      ],
+    });
+
+    expect(ranked[0]?.symbol).toBe("STABLE-EDGE");
+    expect(ranked[0]?.objective).toBe("profit");
+    expect(ranked[0]?.preRiskEdgeBps).toBeGreaterThan(0);
+    expect(ranked[0]?.suggestedSpreadBps).toBeGreaterThan(
+      ranked[0]?.observedSpreadBps ?? 0,
+    );
+  });
+
+  it("rejects negative known fill economics in both mode", () => {
+    const ranked = rankRewardMarkets({
+      builderFeeBps: 3,
+      objective: "both",
+      markets: [
+        market({
+          marketId: "0x1",
+          symbol: "COST-BOUND",
+          makerFee: 0.00015,
+          bestBid: 0.9998,
+          bestAsk: 1.0002,
+          volume24hUsd: 5_000_000,
+          bidDepth50BpsUsd: 100,
+          askDepth50BpsUsd: 100,
+        }),
+        market({
+          marketId: "0x2",
+          symbol: "POSITIVE",
+          bestBid: 0.995,
+          bestAsk: 1.005,
+          bidDepth50BpsUsd: 500,
+          askDepth50BpsUsd: 500,
+        }),
+      ],
+    });
+
+    const costBound = ranked.find((row) => row.symbol === "COST-BOUND");
+    expect(ranked[0]?.symbol).toBe("POSITIVE");
+    expect(costBound?.eligible).toBe(true);
+    expect(costBound?.objectiveEligible).toBe(false);
+    expect(costBound?.preRiskEdgeBps).toBeLessThanOrEqual(0);
+  });
+
+  it("stages faster farming and wider, smaller profit policies", () => {
+    const input = {
+      builderFeeBps: 1,
+      markets: [market({ bestBid: 0.999, bestAsk: 1.001 })],
+    };
+    const farming = rankRewardMarkets({
+      ...input,
+      objective: "farming",
+    })[0]!;
+    const profit = rankRewardMarkets({
+      ...input,
+      objective: "profit",
+    })[0]!;
+
+    expect(farming.suggestedQuoteSizeUsd).toBeGreaterThan(
+      profit.suggestedQuoteSizeUsd,
+    );
+    expect(farming.suggestedSpreadBps).toBeLessThan(profit.suggestedSpreadBps);
   });
 });
 

@@ -284,13 +284,17 @@ export class MakerRuntime {
     return this.markets;
   }
 
-  async rewardDashboard(collateralCoinType: string) {
+  async rewardDashboard(
+    collateralCoinType: string,
+    objective: MakerConfig["strategyObjective"],
+  ) {
     return this.gateway.getRewardDashboard({
       accountIds: this.store
         .listAccountSetups()
         .map((account) => account.accountId),
       collateralCoinType,
       builderFeeBps: (this.options.builderCode()?.integratorFee ?? 0) * 10_000,
+      objective,
     });
   }
 

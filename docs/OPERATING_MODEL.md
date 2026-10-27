@@ -76,9 +76,9 @@ Historical orders created before order tracking, manual orders, and other client
 
 ## Fee economics
 
-Maker's default builder fee is 1 bp of filled notional and applies to maker and taker fills carrying its code. Aftermath's documented base maker fee is a 0.5 bp rebate. Before any market-share rebate or spread capture, the builder fee therefore creates a 0.5 bp user cost.
+Maker's default builder fee is 1 bp of filled notional and applies to fills carrying its code. The market scorer reads the current maker fee exposed for each Aftermath market instead of assuming a fixed rebate. Its **pre-risk edge** is half the observed book spread less that maker fee and Maker's builder fee.
 
-The fee is displayed before authorization, approved on-chain at an exact maximum, checked before every quote transaction, and reported separately in the fill ledger. Platform revenue must not be combined with trader strategy PnL.
+Pre-risk edge is a comparison input, not a profit forecast. It excludes adverse selection, fill probability, gas converted to USD, funding attribution, markouts, hedge slippage, and inventory carry. The builder fee is displayed before authorization, approved on-chain at an exact maximum, checked before every quote transaction, and reported separately in the fill ledger. Platform revenue must not be combined with trader strategy PnL.
 
 ## What professional operations suggest
 
@@ -101,21 +101,35 @@ These are hypotheses to compare in Observe, Paper, and small Live runs:
 - **Paired-account hedging:** the implemented same-venue baseline for reducing bot-attributed delta while measuring taker fees and residual exposure.
 - **Cross-venue hedged market making:** quote on Aftermath and hedge externally when expected spread exceeds hedge, funding, fee, gas, and basis costs.
 - **Funding and basis:** pair spot and perps, or two perp venues, while measuring funding reversal, margin, liquidation, and basis risk.
-- **Incentive-aware liquidity:** the reward desk ranks open markets by organic flow per dollar of balanced near-book depth, adjusted for competition, spread, volatility, funding, OI capacity, and book balance. Eligibility requires at least $10,000 reported 24-hour volume, $100 balanced depth within 50 bps, positive OI, and a valid two-sided book. Suggested quote size cannot exceed 5% of that measured depth or the account-aware collateral allowance. **Best net** uses all eligible markets; **Thin & active** restricts selection to $100-$1,000 of balanced depth without relaxing any other gate. Both stage an Observe-mode rotation for review; neither starts the engine.
+- **Farming:** rank reported flow and turnover per dollar of balanced near-book depth, with competition, uptime proxies, funding, capacity, and book balance as controls. This mode deliberately allows a high-turnover market to win when its measured capital efficiency is stronger.
+- **Profit:** rank half-spread after known maker and builder fees, then favor stable markets with stronger two-sided exit depth and lower funding risk.
+- **Both:** require positive pre-risk edge and rank the harmonic mean of Farming and Profit scores. This prevents a very high farming score from fully masking weak fill economics.
+- **Thin-book liquidity:** optionally restrict any objective to otherwise-eligible books with $100-$1,000 of balanced depth within 50 bps. Thinness alone never qualifies a market.
 
-The ranking is a transparent allocation heuristic, not an Aftermath reward formula. Exact current-epoch account Q-score, qualifying uptime, maker volume share, rewards, and rebates come directly from Aftermath. Aftermath currently documents no designated market-maker program or special rebate beyond its public fee and incentive systems. Low OI or depth alone is never treated as opportunity: either can mean little organic flow, toxic fills, and no safe exit.
+All objectives retain the same structural gates: at least $10,000 reported 24-hour volume, $100 balanced depth within 50 bps, positive OI, an open session, and a valid two-sided book. Suggested quote size cannot exceed 5% of measured depth before the objective-specific size reduction and account-aware collateral cap. Farming stages tighter, larger quotes; Profit stages wider, smaller quotes; Both sits between them. Every staged rotation remains in Observe mode.
 
-## Next measurement layer
+These rankings are transparent allocation heuristics, not Aftermath reward or profit formulas. Exact current-epoch account Q-score, qualifying uptime, maker volume share, rewards, and rebates come directly from Aftermath. Gross turnover can be economically optimal when marginal rewards, rebates, and spread exceed all costs. Maker does not generate self-matched volume: its second account hedges only after an independently attributed fill and only after both accounts have no resting orders. Because no explicit published eligibility rule was found for self-trading, it is treated as an unresolved policy risk rather than assumed eligible activity.
+
+## Objective tests and blind spots
+
+Each mode has a falsifiable pass condition:
+
+1. **Farming:** realized reward value and rebates per collateral-day increase after every trading, builder, gas, funding, hedge, and inventory cost.
+2. **Profit:** complete trading PnL is positive after the same costs, with positive fixed-horizon markouts.
+3. **Both:** both tests pass in the same run; rewards cannot convert a negative trading operation into “profitable farming” unless the final combined net result is positive.
+
+The current dashboard cannot complete those tests yet. It still lacks reward valuation against the final pool denominator, fixed-horizon markouts, gas converted to USD, position-level funding, realized spread, hedge slippage decomposition, and inventory carry. Current-epoch Q-score is account-level rather than a guaranteed marginal reward for the next selected market. The public reward formula and eligibility rules may also change.
 
 The next implementation sequence is:
 
 1. Calculate post-fill markouts at fixed horizons.
 2. Attribute actual funding and gas in USD to each position and run.
-3. Add realized spread and inventory-carry decomposition.
-4. Compare staged reward rotations against realized rewards per dollar of collateral.
-5. Add realized-volatility sizing around the implemented index-versus-book divergence gate.
-6. Run profiles long enough to compare net return on collateral at risk.
-7. Add independent external fair-value inputs and a venue-diversified hedge after same-venue reconciliation is validated with mainnet traces.
+3. Add realized spread, hedge slippage, and inventory-carry decomposition.
+4. Record collateral-time and compare staged rotations by net rewards per collateral-day.
+5. Add reward-pool valuation and break-even cost per $1 million of turnover.
+6. Add realized-volatility sizing around the implemented index-versus-book divergence gate.
+7. Run objective/profile combinations long enough to compare net return on collateral at risk.
+8. Add independent external fair-value inputs and a venue-diversified hedge after same-venue reconciliation is validated with mainnet traces.
 
 ## References
 

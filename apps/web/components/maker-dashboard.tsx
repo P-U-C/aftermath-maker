@@ -46,6 +46,7 @@ import {
 import { dAppKit } from "../app/dapp-kit";
 
 type Mode = "observe" | "paper" | "live";
+type StrategyObjective = "farming" | "profit" | "both";
 
 type SafetyCheck = {
   code: string;
@@ -176,6 +177,7 @@ type MakerConfig = {
   }>;
   collateralCoinType: string;
   mode: Mode;
+  strategyObjective: StrategyObjective;
   strategyProfile: "cautious" | "balanced" | "active";
   makerAccountId: string | null;
   hedge: {
@@ -293,11 +295,17 @@ type RewardOpportunity = {
   rank: number;
   marketId: string;
   symbol: string;
+  objective: StrategyObjective;
   score: number;
+  farmingScore: number;
+  profitScore: number;
+  bothScore: number;
   confidence: "high" | "medium" | "low";
   eligible: boolean;
+  objectiveEligible: boolean;
   thinActive: boolean;
   observedSpreadBps: number | null;
+  preRiskEdgeBps: number | null;
   balancedDepth50BpsUsd: number;
   volume24hUsd: number | null;
   openInterestUsd: number;
@@ -373,10 +381,32 @@ type OperatorStatus = {
 const USDC =
   "0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC";
 
+const strategyObjectives = [
+  {
+    value: "farming",
+    label: "Farming",
+    measure: "Rewards / capital",
+    icon: Coins,
+  },
+  {
+    value: "profit",
+    label: "Profit",
+    measure: "Edge after known costs",
+    icon: Gauge,
+  },
+  {
+    value: "both",
+    label: "Both",
+    measure: "Positive on both tests",
+    icon: Target,
+  },
+] as const;
+
 const defaultConfig: MakerConfig = {
   markets: [],
   collateralCoinType: USDC,
   mode: "observe",
+  strategyObjective: "both",
   strategyProfile: "balanced",
   makerAccountId: null,
   hedge: {
@@ -501,7 +531,7 @@ function DashboardBody() {
   const [performance, setPerformance] = useState<Performance | null>(null);
   const [rewards, setRewards] = useState<RewardDashboard | null>(null);
   const [rewardMarketCount, setRewardMarketCount] = useState(3);
-  const [rewardFocus, setRewardFocus] = useState<"best" | "thin">("best");
+  const [rewardFocus, setRewardFocus] = useState<"all" | "thin">("all");
   const [selectedAccount, setSelectedAccount] = useState("");
   const [collateralAmounts, setCollateralAmounts] = useState<
     Record<string, string>
@@ -557,9 +587,9 @@ function DashboardBody() {
     setPerformance(result.performance);
   }, []);
 
-  const loadRewards = useCallback(async () => {
+  const loadRewards = useCallback(async (objective: StrategyObjective) => {
     const result = await request<{ rewards: RewardDashboard }>(
-      `api/rewards?collateralCoinType=${encodeURIComponent(USDC)}`,
+      `api/rewards?collateralCoinType=${encodeURIComponent(USDC)}&objective=${objective}`,
     );
     setRewards(result.rewards);
   }, []);
@@ -610,7 +640,6 @@ function DashboardBody() {
     void refresh().catch((error) => setNotice(String(error)));
     void loadMarkets().catch((error) => setNotice(String(error)));
     void loadPerformance().catch(() => undefined);
-    void loadRewards().catch((error) => setNotice(String(error)));
     if (identity.operator) {
       void request<OperatorStatus>("api/operator/status")
         .then(setOperatorStatus)
@@ -622,15 +651,22 @@ function DashboardBody() {
     const performanceTimer = setInterval(() => {
       void loadPerformance().catch(() => undefined);
     }, 30_000);
-    const rewardsTimer = setInterval(() => {
-      void loadRewards().catch(() => undefined);
-    }, 60_000);
     return () => {
       clearInterval(timer);
       clearInterval(performanceTimer);
-      clearInterval(rewardsTimer);
     };
-  }, [identity, refresh, loadMarkets, loadPerformance, loadRewards]);
+  }, [identity, refresh, loadMarkets, loadPerformance]);
+
+  useEffect(() => {
+    if (!identity) return;
+    void loadRewards(config.strategyObjective).catch((error) =>
+      setNotice(String(error)),
+    );
+    const rewardsTimer = setInterval(() => {
+      void loadRewards(config.strategyObjective).catch(() => undefined);
+    }, 60_000);
+    return () => clearInterval(rewardsTimer);
+  }, [identity, config.strategyObjective, loadRewards]);
 
   useEffect(() => {
     if (
@@ -1123,15 +1159,15 @@ function DashboardBody() {
       rewards?.marketModel.opportunities
         .filter(
           (opportunity) =>
-            opportunity.eligible &&
-            (rewardFocus === "best" || opportunity.thinActive),
+            opportunity.objectiveEligible &&
+            (rewardFocus === "all" || opportunity.thinActive),
         )
         .slice(0, rewardMarketCount) ?? [];
     if (!candidates.length) {
       setNotice(
         rewardFocus === "thin"
-          ? "No thin, active markets pass every safety gate in the latest scan."
-          : "No eligible reward markets are available in the latest scan.",
+          ? `No thin markets pass the ${config.strategyObjective} objective gates in the latest scan.`
+          : `No markets pass the ${config.strategyObjective} objective gates in the latest scan.`,
       );
       return;
     }
@@ -1143,8 +1179,7 @@ function DashboardBody() {
     }
 
     setConfig((current) => {
-      const availableCollateral =
-        snapshot?.portfolio.availableCollateralUsd ?? null;
+      const availableCollateral = makerAvailableCollateralUsd;
       const capitalBudget =
         availableCollateral !== null && availableCollateral > 0
           ? Math.min(current.maxGrossExposureUsd, availableCollateral * 0.5)
@@ -1179,6 +1214,7 @@ function DashboardBody() {
       return {
         ...current,
         mode: "observe",
+        strategyObjective: config.strategyObjective,
         markets: nextMarkets,
         maxInventoryUsd: perMarketInventory,
         maxGrossExposureUsd: Math.max(perMarketInventory, capitalBudget),
@@ -1186,7 +1222,7 @@ function DashboardBody() {
       };
     });
     setNotice(
-      `${rewardFocus === "thin" ? "Thin & active" : "Best net"} rotation staged across ${candidates.length} market${candidates.length === 1 ? "" : "s"} in Observe mode. Review the policies, then save the strategy.`,
+      `${config.strategyObjective[0]?.toUpperCase()}${config.strategyObjective.slice(1)} rotation staged across ${candidates.length} market${candidates.length === 1 ? "" : "s"} in Observe mode. Review the policies, then save the strategy.`,
     );
   }
 
@@ -1344,6 +1380,11 @@ function DashboardBody() {
   const activeMakerAccount = setup.accounts.find(
     (managed) => managed.accountId === activeMakerAccountId,
   );
+  const makerAvailableCollateralUsd =
+    accounts.find((candidate) => candidate.accountId === activeMakerAccountId)
+      ?.availableCollateralUsd ??
+    snapshot?.portfolio.availableCollateralUsd ??
+    null;
   const onboardingComplete = Boolean(
     setup.agent && activeMakerAccount?.agentCapId,
   );
@@ -1370,12 +1411,47 @@ function DashboardBody() {
       .filter((opportunity) => opportunity.eligible)
       .slice(0, 8) ?? [];
   const focusedRewardOpportunities = rewardOpportunities.filter(
-    (opportunity) => rewardFocus === "best" || opportunity.thinActive,
+    (opportunity) =>
+      opportunity.objectiveEligible &&
+      (rewardFocus === "all" || opportunity.thinActive),
   );
   const topRewardOpportunity = focusedRewardOpportunities[0] ?? null;
+  const rewardQuotePreviewCap =
+    makerAvailableCollateralUsd !== null
+      ? Math.max(1, makerAvailableCollateralUsd / (4 * rewardMarketCount))
+      : Number.POSITIVE_INFINITY;
   const rewardRotationBlocked =
     Boolean(snapshot?.running) ||
     (snapshot?.portfolio.grossExposureUsd ?? 0) > 0;
+  const objectiveEvidence =
+    config.strategyObjective === "farming"
+      ? {
+          test: "Rewards per collateral-day rise",
+          evidence: rewards
+            ? `${rewards.account.makerRewardsSui.toFixed(2)} SUI / ${compactUsd(rewards.account.makerVolumeUsd)} flow`
+            : "Awaiting reward data",
+          blindSpot: "Reward USD value and pool denominator",
+        }
+      : config.strategyObjective === "profit"
+        ? {
+            test: "Complete net trading PnL is positive",
+            evidence:
+              performance &&
+              performance.attributed.fills + performance.hedge.fills > 0
+                ? `${money(performance.combinedNetAfterKnownCostsUsd)} known result`
+                : "Awaiting attributed fills",
+            blindSpot: "Markouts, gas, funding, and carry",
+          }
+        : {
+            test: "Farming and profit tests both pass",
+            evidence:
+              rewards &&
+              performance &&
+              performance.attributed.fills + performance.hedge.fills > 0
+                ? `${rewards.account.makerRewardsSui.toFixed(2)} SUI + ${money(performance.combinedNetAfterKnownCostsUsd)} known`
+                : "Rewards live; attributed fills pending",
+            blindSpot: "Reward valuation and complete net costs",
+          };
   const visibleMarkets = markets.filter((market) => {
     const query = marketQuery.trim().toLowerCase();
     return (
@@ -2116,6 +2192,43 @@ function DashboardBody() {
               </strong>
             </div>
           </div>
+
+          <fieldset className="objective-control">
+            <legend>Objective</legend>
+            <div
+              className="objective-segments"
+              role="group"
+              aria-label="Strategy objective"
+            >
+              {strategyObjectives.map((objective) => {
+                const ObjectiveIcon = objective.icon;
+                return (
+                  <button
+                    key={objective.value}
+                    type="button"
+                    className={
+                      config.strategyObjective === objective.value
+                        ? "selected"
+                        : ""
+                    }
+                    aria-pressed={config.strategyObjective === objective.value}
+                    onClick={() =>
+                      setConfig((current) => ({
+                        ...current,
+                        strategyObjective: objective.value,
+                      }))
+                    }
+                  >
+                    <ObjectiveIcon size={15} aria-hidden="true" />
+                    <span>
+                      <strong>{objective.label}</strong>
+                      <small>{objective.measure}</small>
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          </fieldset>
 
           <fieldset className="account-pair-control">
             <legend>Account roles</legend>
@@ -2917,11 +3030,17 @@ function DashboardBody() {
             </strong>
           </div>
           <div>
-            <span>Base maker rebates</span>
-            <strong>
-              {money(
-                rewards ? Math.max(0, -rewards.account.baseMakerFeesUsd) : null,
-              )}
+            <span>Maker fee result</span>
+            <strong
+              className={
+                (rewards?.account.baseMakerFeesUsd ?? 0) > 0
+                  ? "negative-number"
+                  : (rewards?.account.baseMakerFeesUsd ?? 0) < 0
+                    ? "positive-number"
+                    : ""
+              }
+            >
+              {money(rewards ? -rewards.account.baseMakerFeesUsd : null)}
             </strong>
           </div>
           <div>
@@ -2930,9 +3049,31 @@ function DashboardBody() {
           </div>
         </div>
 
+        <div className="objective-evidence">
+          <div>
+            <span>Active objective</span>
+            <strong>
+              {config.strategyObjective[0]?.toUpperCase()}
+              {config.strategyObjective.slice(1)}
+            </strong>
+          </div>
+          <div>
+            <span>Pass condition</span>
+            <strong>{objectiveEvidence.test}</strong>
+          </div>
+          <div>
+            <span>Current evidence</span>
+            <strong>{objectiveEvidence.evidence}</strong>
+          </div>
+          <div>
+            <span>Still unmeasured</span>
+            <strong>{objectiveEvidence.blindSpot}</strong>
+          </div>
+        </div>
+
         <div className="reward-command">
           <div className="reward-leader">
-            <span>Best measured opportunity</span>
+            <span>Best {config.strategyObjective} candidate</span>
             <strong>
               {topRewardOpportunity
                 ? `#1 ${topRewardOpportunity.symbol} / ${topRewardOpportunity.score}`
@@ -2948,11 +3089,11 @@ function DashboardBody() {
             <div role="group" aria-label="Reward rotation focus">
               <button
                 type="button"
-                className={rewardFocus === "best" ? "selected" : ""}
-                aria-pressed={rewardFocus === "best"}
-                onClick={() => setRewardFocus("best")}
+                className={rewardFocus === "all" ? "selected" : ""}
+                aria-pressed={rewardFocus === "all"}
+                onClick={() => setRewardFocus("all")}
               >
-                Best net
+                All eligible
               </button>
               <button
                 type="button"
@@ -2960,7 +3101,7 @@ function DashboardBody() {
                 aria-pressed={rewardFocus === "thin"}
                 onClick={() => setRewardFocus("thin")}
               >
-                Thin & active
+                Thin books
               </button>
             </div>
           </div>
@@ -2991,8 +3132,8 @@ function DashboardBody() {
               rewardRotationBlocked
                 ? "Stop the engine and clear exposure before changing markets"
                 : rewardFocus === "thin"
-                  ? "Stage eligible markets with $100-$1,000 balanced depth in Observe mode"
-                  : "Stage the highest-ranked markets in Observe mode"
+                  ? `Stage thin markets passing the ${config.strategyObjective} gates in Observe mode`
+                  : `Stage the highest-ranked ${config.strategyObjective} markets in Observe mode`
             }
           >
             <Target size={16} aria-hidden="true" />
@@ -3006,11 +3147,12 @@ function DashboardBody() {
               <tr>
                 <th>Rank</th>
                 <th>Pair</th>
-                <th>Efficiency</th>
+                <th>{config.strategyObjective} score</th>
                 <th>24h flow</th>
                 <th>Depth +/-50bp</th>
                 <th>Flow / depth</th>
                 <th>Book spread</th>
+                <th>Pre-risk edge</th>
                 <th>Known fill cost</th>
                 <th>Suggested policy</th>
               </tr>
@@ -3032,6 +3174,9 @@ function DashboardBody() {
                       </span>
                       {opportunity.thinActive ? (
                         <span className="thin-active">thin + active</span>
+                      ) : null}
+                      {!opportunity.objectiveEligible ? (
+                        <span className="objective-miss">fails objective</span>
                       ) : null}
                     </td>
                     <td>
@@ -3056,6 +3201,18 @@ function DashboardBody() {
                     </td>
                     <td
                       className={
+                        (opportunity.preRiskEdgeBps ?? 0) > 0
+                          ? "positive-number"
+                          : "negative-number"
+                      }
+                      title="Half of the observed spread less current maker and builder fees; excludes adverse selection, gas, funding, hedging, and inventory carry"
+                    >
+                      {opportunity.preRiskEdgeBps === null
+                        ? "-"
+                        : `${opportunity.preRiskEdgeBps.toFixed(1)} bp`}
+                    </td>
+                    <td
+                      className={
                         opportunity.knownCostBps <= 0 ? "positive-number" : ""
                       }
                     >
@@ -3065,7 +3222,13 @@ function DashboardBody() {
                     </td>
                     <td className="dual-value">
                       <strong>
-                        {money(opportunity.suggestedQuoteSizeUsd, 0)}
+                        {money(
+                          Math.min(
+                            opportunity.suggestedQuoteSizeUsd,
+                            rewardQuotePreviewCap,
+                          ),
+                          0,
+                        )}
                       </strong>
                       <span>{opportunity.suggestedSpreadBps} bp spread</span>
                     </td>
@@ -3073,7 +3236,7 @@ function DashboardBody() {
                 ))
               ) : (
                 <tr>
-                  <td className="empty-fill" colSpan={9}>
+                  <td className="empty-fill" colSpan={10}>
                     {rewards?.account.error ??
                       "Scanning live books for eligible markets."}
                   </td>
@@ -3086,13 +3249,21 @@ function DashboardBody() {
           <summary>Method and limits</summary>
           <p>{rewards?.marketModel.methodology}</p>
           <p>
-            Thin & active means $100-$1,000 of balanced depth within 50 bps, at
+            Thin books means $100-$1,000 of balanced depth within 50 bps, at
             least $10,000 of reported 24h volume, positive open interest, and an
-            open, two-sided book. It does not imply a guaranteed reward.
+            open, two-sided book. Farming can favor high turnover when its
+            reported flow per unit of capital is stronger; this is not a reward
+            guarantee.
+          </p>
+          <p>
+            Pre-risk edge is half the observed spread less current maker and
+            builder fees. It excludes adverse selection, gas, funding, hedge
+            slippage, markouts, inventory carry, and reward-rule changes.
           </p>
           <p>
             Staging only changes the draft strategy and forces Observe mode.
-            Save after review; starting Live remains a separate action.
+            Self-matched volume is not modeled as eligible flow. Save after
+            review; starting Live remains a separate action.
           </p>
         </details>
       </section>
@@ -3363,9 +3534,9 @@ function DashboardBody() {
           </p>
           {builderCode && (
             <p className="fee-caveat">
-              At 1 bp this exceeds the base 0.5 bp maker rebate before any
-              market-share rebate, spread capture, or adverse selection. Maker
-              reports it separately from strategy PnL.
+              Each market's current maker fee is included in its known fill
+              cost. A 1 bp builder fee can reduce a rebate or turn a narrow
+              spread negative. Maker reports it separately from strategy PnL.
             </p>
           )}
           <form className="fee-form" onSubmit={inspectFee}>

@@ -21,6 +21,7 @@ import {
   type RewardMarketEvidence,
   type RewardMarketOpportunity,
   type Setup,
+  type StrategyObjective,
 } from "@puc/core";
 
 export type MarketSummary = {
@@ -643,6 +644,7 @@ export class AftermathGateway {
     accountIds: string[];
     collateralCoinType: string;
     builderFeeBps: number;
+    objective: StrategyObjective;
   }): Promise<RewardDashboard> {
     const uniqueAccountIds = [...new Set(inputs.accountIds)];
     const [evidence, distributionResult] = await Promise.all([
@@ -719,11 +721,12 @@ export class AftermathGateway {
       marketModel: {
         label: "heuristic",
         methodology:
-          "Ranks organic volume per dollar of balanced near-book depth, then adjusts for competition, spread, volatility, funding, capacity, and book balance. Thin & active identifies otherwise-eligible books with $100-$1,000 balanced depth. It is not Aftermath's private per-market reward formula.",
+          "Farming ranks reported turnover and reward signals per dollar near the book. Profit ranks half-spread after known fill costs, then discounts weak depth, movement, and funding risk. Both uses their harmonic mean and requires positive pre-risk edge. These are transparent allocation heuristics, not Aftermath reward or profit forecasts.",
         depthBandBps: 50,
         opportunities: rankRewardMarkets({
           markets: evidence,
           builderFeeBps: inputs.builderFeeBps,
+          objective: inputs.objective,
         }),
       },
     };

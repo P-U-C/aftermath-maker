@@ -69,17 +69,17 @@ LIVE_TRADING_ENABLED=true
 ALLOW_MAINNET=true
 ```
 
-## Reward efficiency
+## Strategy objectives
 
-The reward desk keeps protocol facts separate from strategy estimates. Account totals come from Aftermath's current-epoch rewards endpoint. Market rankings are Maker's heuristic: organic 24-hour flow per dollar of balanced depth within 50 bps, adjusted for competition, spread, volatility, funding, open-interest capacity, and book balance.
+Risk profile and strategy objective are separate controls. Cautious, Balanced, and Active govern execution intensity. The objective determines how eligible markets are ranked and which bounded policy is staged:
 
-Closed-session markets and markets with less than $10,000 of reported 24-hour volume, $100 of balanced depth within 50 bps, positive OI, or a valid two-sided book are ineligible. Suggested quote size is capped at 5% of measured balanced depth and by available account collateral.
+- **Farming** favors reported turnover and reward signals per dollar of near-book capital. High turnover can rank first when the measured economics support it.
+- **Profit** favors positive half-spread after the live market maker fee and Maker's builder fee, then discounts weak depth, large price movement, and funding risk.
+- **Both** requires positive pre-risk fill edge and ranks the harmonic mean of Farming and Profit scores so one strong dimension cannot completely hide the other.
 
-**Best net** stages the highest-ranked eligible markets. **Thin & active** narrows that set to books with $100-$1,000 of balanced depth within 50 bps, preserving the same activity and safety gates. **Stage rotation** applies bounded per-market policies and forces Observe mode. It never saves, starts, enables Live trading, or promises that a shallow market will earn a larger reward.
+Closed sessions and markets with less than $10,000 of reported 24-hour volume, $100 of balanced depth within 50 bps, positive OI, or a valid two-sided book are ineligible. **Thin books** is an optional $100-$1,000 depth filter, not a separate strategy. Staging always forces Observe mode and never saves, starts, or enables Live trading.
 
-Aftermath trading incentives require a manual claim. The desk links to the official Rewards page rather than constructing or automatically signing a value-moving claim transaction.
-
-The ranking is not an Aftermath per-market rewards formula and does not estimate guaranteed profit. Aftermath currently documents no designated market-maker program or special latency advantage; trading incentives are bi-weekly and discretionary. The model's purpose is to direct scarce collateral toward measurable, independently generated flow while avoiding volume churn, self-trading, and books too thin to exit safely.
+Account reward totals come from Aftermath's current-epoch endpoint. Market scores remain transparent Maker heuristics: they do not know the future reward pool denominator, fill probability, adverse selection, or whether a particular activity will qualify. Self-matched volume is excluded from Maker's execution design and must not be treated as eligible without explicit protocol confirmation. Aftermath rewards are claimed manually through the official interface.
 
 ## Performance boundary
 
@@ -87,7 +87,7 @@ The ranking is not an Aftermath per-market rewards formula and does not estimate
 
 Attribution starts when this release records posted order IDs. Older account activity and other clients' orders remain account-wide and are not claimed as Maker performance.
 
-The default builder fee is **1 bp (0.01%) of filled notional**. That exceeds Aftermath's base 0.5 bp maker rebate before market-share rebates, spread capture, and adverse selection. The dashboard discloses and reports it separately.
+The default builder fee is **1 bp (0.01%) of filled notional**. Maker reads each market's current maker fee from Aftermath and includes it in the displayed known fill cost and pre-risk edge. Fee schedules and incentives can change; the dashboard does not rely on a fixed rebate assumption. Builder revenue is disclosed and reported separately from trader performance.
 
 Read [the operating model](docs/OPERATING_MODEL.md), [review guide](docs/REVIEW_GUIDE.md), [security model](SECURITY.md), [mainnet findings](audits/2026-10-27-mainnet/FINDINGS.md), and [transaction evidence](audits/2026-10-27-mainnet/EVIDENCE.md) before using Live.
 

@@ -267,6 +267,7 @@ describe("persistent control store", () => {
     delete legacy.markets;
     delete legacy.maxGrossExposureUsd;
     delete legacy.maxUnrealizedLossUsd;
+    delete legacy.strategyObjective;
 
     const ownerAddress = `0x${"3".repeat(64)}`;
     const legacySetup = setupSchema.parse({
@@ -294,6 +295,7 @@ describe("persistent control store", () => {
     expect(migrated?.maxUnrealizedLossUsd).toBe(17);
     expect(migrated?.markets).toEqual([{ marketId: "0x5678", symbol: "SUI" }]);
     expect(migrated?.maxGrossExposureUsd).toBe(50);
+    expect(migrated?.strategyObjective).toBe("both");
     reopened.close();
   });
 });

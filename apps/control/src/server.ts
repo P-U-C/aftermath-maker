@@ -325,10 +325,16 @@ app.get("/api/markets", async (request) => {
 
 app.get("/api/rewards", async (request) => {
   const query = z
-    .object({ collateralCoinType: z.string().default(USDC_COIN_TYPE) })
+    .object({
+      collateralCoinType: z.string().default(USDC_COIN_TYPE),
+      objective: z.enum(["farming", "profit", "both"]).default("both"),
+    })
     .parse(request.query);
   return {
-    rewards: await runtime(request).rewardDashboard(query.collateralCoinType),
+    rewards: await runtime(request).rewardDashboard(
+      query.collateralCoinType,
+      query.objective,
+    ),
   };
 });
 
@@ -487,6 +493,8 @@ app.post("/api/config", async (request) => {
     detail: {
       marketIds: config.markets.map((market) => market.marketId),
       mode: config.mode,
+      strategyObjective: config.strategyObjective,
+      strategyProfile: config.strategyProfile,
       spreadBps: config.spreadBps,
       quoteSizeUsd: config.quoteSizeUsd,
       maxGrossExposureUsd: config.maxGrossExposureUsd,

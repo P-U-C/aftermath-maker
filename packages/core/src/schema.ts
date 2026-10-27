@@ -6,6 +6,9 @@ export const USDC_COIN_TYPE =
 export const runtimeModeSchema = z.enum(["observe", "paper", "live"]);
 export type RuntimeMode = z.infer<typeof runtimeModeSchema>;
 
+export const strategyObjectiveSchema = z.enum(["farming", "profit", "both"]);
+export type StrategyObjective = z.infer<typeof strategyObjectiveSchema>;
+
 export const hedgeConfigSchema = z
   .object({
     enabled: z.boolean().default(false),
@@ -46,6 +49,7 @@ export const makerConfigSchema = z
     markets: z.array(makerMarketSchema).min(1).max(12),
     collateralCoinType: z.string().min(8).default(USDC_COIN_TYPE),
     mode: runtimeModeSchema.default("observe"),
+    strategyObjective: strategyObjectiveSchema.default("both"),
     strategyProfile: z
       .enum(["cautious", "balanced", "active"])
       .default("balanced"),

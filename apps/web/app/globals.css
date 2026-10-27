@@ -1127,6 +1127,68 @@ input:focus {
   border-color: var(--black);
 }
 
+.objective-segments {
+  display: grid;
+  border: 1px solid var(--line);
+}
+
+.objective-segments button {
+  min-height: 48px;
+  padding: 7px 10px;
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  text-align: left;
+}
+
+.objective-segments button:last-child {
+  border-bottom: 0;
+}
+
+.objective-segments button > span {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.objective-segments strong {
+  color: var(--ink);
+  font-size: 11px;
+}
+
+.settings-panel .objective-segments small {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 9px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.objective-segments button.selected {
+  color: var(--amber);
+  background: var(--black);
+  box-shadow: inset 3px 0 0 var(--amber);
+}
+
+.objective-segments button.selected strong {
+  color: var(--white);
+}
+
+.settings-panel .objective-segments button.selected small {
+  color: #c7cec9;
+}
+
+.objective-segments button:focus-visible {
+  position: relative;
+  outline: 2px solid var(--green);
+  outline-offset: 2px;
+}
+
 .field-pair {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -1720,6 +1782,44 @@ input[type="range"] {
   white-space: nowrap;
 }
 
+.objective-evidence {
+  display: grid;
+  grid-template-columns: 0.7fr 1.2fr 1fr 1.2fr;
+  background: #ecece4;
+  border-bottom: 1px solid var(--ink);
+}
+
+.objective-evidence > div {
+  min-width: 0;
+  min-height: 58px;
+  padding: 10px 14px;
+  display: grid;
+  align-content: center;
+  gap: 5px;
+  border-right: 1px solid var(--line);
+}
+
+.objective-evidence > div:last-child {
+  border-right: 0;
+}
+
+.objective-evidence span {
+  color: var(--muted);
+  font-size: 9px;
+  text-transform: uppercase;
+}
+
+.objective-evidence strong {
+  overflow: hidden;
+  font:
+    650 11px/1.25 ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    monospace;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .reward-command {
   min-height: 74px;
   padding: 12px 16px;
@@ -1823,7 +1923,7 @@ input[type="range"] {
 
 .reward-table {
   width: 100%;
-  min-width: 1000px;
+  min-width: 1140px;
   border-collapse: collapse;
   font:
     500 11px/1.25 ui-monospace,
@@ -1884,14 +1984,23 @@ input[type="range"] {
   color: var(--coral);
 }
 
-.thin-active {
+.thin-active,
+.objective-miss {
   width: fit-content;
   margin-top: 3px;
   padding: 2px 4px;
-  color: #624500;
-  background: #fff0bf;
   font-size: 8px;
   text-transform: uppercase;
+}
+
+.thin-active {
+  color: #624500;
+  background: #fff0bf;
+}
+
+.objective-miss {
+  color: #812c1d;
+  background: #f8d8d0;
 }
 
 .score-cell {
@@ -2657,6 +2766,26 @@ footer a {
 
   .reward-metrics {
     grid-template-columns: 1fr 1fr;
+  }
+
+  .objective-evidence {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .objective-evidence > div {
+    border-bottom: 1px solid var(--line);
+  }
+
+  .objective-evidence > div:nth-child(2n) {
+    border-right: 0;
+  }
+
+  .objective-evidence > div:nth-last-child(-n + 2) {
+    border-bottom: 0;
+  }
+
+  .objective-evidence strong {
+    white-space: normal;
   }
 
   .reward-metrics > div,
