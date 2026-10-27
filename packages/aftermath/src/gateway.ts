@@ -33,6 +33,7 @@ export type MarketSummary = {
   collateralCoinType: string;
   tickSize: number;
   lotSize: number;
+  minOrderUsdValue: number;
   openInterestBase: number;
   openInterestUsd: number;
   openInterestUtilizationPct: number | null;
@@ -239,8 +240,34 @@ function parseRewardOrderbooks(value: unknown): RewardOrderbook[] {
   });
 }
 
+const MAKER_CLIENT_ORDER_PREFIX = 0x5055430000000000n;
+const MAKER_CLIENT_ORDER_MASK = 0xffffff0000000000n;
+const MAKER_CLIENT_ORDER_NONCE_MASK = 0x0000007fffffffffn;
+
 export const MAKER_BID_CLIENT_ORDER_ID = 0x5055434d4b520001n;
 export const MAKER_ASK_CLIENT_ORDER_ID = 0x5055434d4b520002n;
+
+export function isMakerClientOrderId(
+  clientOrderId: bigint | undefined,
+): boolean {
+  return (
+    clientOrderId !== undefined &&
+    (clientOrderId & MAKER_CLIENT_ORDER_MASK) === MAKER_CLIENT_ORDER_PREFIX
+  );
+}
+
+export function nextMakerClientOrderIds(nowMs = Date.now()): {
+  bid: bigint;
+  ask: bigint;
+} {
+  const nonce =
+    (BigInt(Math.max(0, Math.trunc(nowMs))) & MAKER_CLIENT_ORDER_NONCE_MASK) <<
+    1n;
+  return {
+    bid: MAKER_CLIENT_ORDER_PREFIX | nonce,
+    ask: MAKER_CLIENT_ORDER_PREFIX | nonce | 1n,
+  };
+}
 
 export function buildQuoteReplacementRequest(inputs: {
   marketId: string;
@@ -249,12 +276,19 @@ export function buildQuoteReplacementRequest(inputs: {
   size: bigint;
   leverage: number;
   hasPosition: boolean;
+  activeMakerOrderIds?: bigint[];
+  activeMakerClientOrderIds?: bigint[];
+  clientOrderIds?: { bid: bigint; ask: bigint };
   builderCode?: BuilderFeePolicy;
 }): SdkPerpetualsCancelAndPlaceOrdersInputs {
+  const clientOrderIds = inputs.clientOrderIds ?? {
+    bid: MAKER_BID_CLIENT_ORDER_ID,
+    ask: MAKER_ASK_CLIENT_ORDER_ID,
+  };
   return {
     marketId: inputs.marketId,
-    orderIdsToCancel: [],
-    clientOrderIdsToCancel: [
+    orderIdsToCancel: inputs.activeMakerOrderIds ?? [],
+    clientOrderIdsToCancel: inputs.activeMakerClientOrderIds ?? [
       MAKER_BID_CLIENT_ORDER_ID,
       MAKER_ASK_CLIENT_ORDER_ID,
     ],
@@ -263,13 +297,13 @@ export function buildQuoteReplacementRequest(inputs: {
         side: PerpetualsOrderSide.Bid,
         price: inputs.bidPrice,
         size: inputs.size,
-        clientOrderId: MAKER_BID_CLIENT_ORDER_ID,
+        clientOrderId: clientOrderIds.bid,
       },
       {
         side: PerpetualsOrderSide.Ask,
         price: inputs.askPrice,
         size: inputs.size,
-        clientOrderId: MAKER_ASK_CLIENT_ORDER_ID,
+        clientOrderId: clientOrderIds.ask,
       },
     ],
     orderType: PerpetualsOrderType.PostOnly,
@@ -279,6 +313,22 @@ export function buildQuoteReplacementRequest(inputs: {
     ...(inputs.builderCode ? { builderCode: inputs.builderCode } : {}),
     shouldAbortOnMissingId: false,
   };
+}
+
+export function assertRoundedQuoteOrderValue(inputs: {
+  symbol: string;
+  sizeBase: number;
+  bidPrice: number;
+  askPrice: number;
+  minOrderUsdValue: number;
+}): void {
+  const roundedNotionalUsd =
+    inputs.sizeBase * Math.min(inputs.bidPrice, inputs.askPrice);
+  if (roundedNotionalUsd + 1e-9 >= inputs.minOrderUsdValue) return;
+
+  throw new Error(
+    `${inputs.symbol} quote rounds to $${roundedNotionalUsd.toFixed(4)}, below the venue's $${inputs.minOrderUsdValue.toFixed(2)} minimum. Restage the market to apply a lot-size buffer.`,
+  );
 }
 
 function errorMessage(error: unknown): string {
@@ -488,6 +538,7 @@ export class AftermathGateway {
         collateralCoinType: market.collateralCoinType,
         tickSize: market.tickSize(),
         lotSize: market.lotSize(),
+        minOrderUsdValue: market.marketParams.minOrderUsdValue,
         openInterestBase,
         openInterestUsd: openInterestBase * market.indexPrice,
         openInterestUtilizationPct:
@@ -591,6 +642,8 @@ export class AftermathGateway {
         marketId: market.id,
         symbol: market.symbol,
         indexPrice: market.indexPrice,
+        minOrderUsdValue: market.minOrderUsdValue,
+        lotSize: market.lotSize,
         volume24hUsd: market.volume24hUsd,
         openInterestUsd: market.openInterestUsd,
         openInterestUtilizationPct: market.openInterestUtilizationPct,
@@ -913,11 +966,7 @@ export class AftermathGateway {
       );
       const makerOrderIds =
         position?.pendingOrders
-          .filter(
-            (order) =>
-              order.clientOrderId === MAKER_BID_CLIENT_ORDER_ID ||
-              order.clientOrderId === MAKER_ASK_CLIENT_ORDER_ID,
-          )
+          .filter((order) => isMakerClientOrderId(order.clientOrderId))
           .map((order) => order.orderId) ?? [];
       return {
         marketId,
@@ -1340,11 +1389,7 @@ export class AftermathGateway {
 
     for (const position of account.account.positions) {
       const orderIds = position.pendingOrders
-        .filter(
-          (order) =>
-            order.clientOrderId === MAKER_BID_CLIENT_ORDER_ID ||
-            order.clientOrderId === MAKER_ASK_CLIENT_ORDER_ID,
-        )
+        .filter((order) => isMakerClientOrderId(order.clientOrderId))
         .map((order) => order.orderId);
       if (orderIds.length) {
         marketIdsToData[position.marketId] = {
@@ -1511,7 +1556,7 @@ export class AftermathGateway {
       side,
       size,
       collateralChange: 0,
-      hasPosition: Boolean(position && position.baseAssetAmount !== 0),
+      hasPosition: Boolean(position),
       cancelSlTp: false,
       reduceOnly: false,
       slippage: inputs.maxSlippage,
@@ -1551,6 +1596,7 @@ export class AftermathGateway {
     signer: Ed25519Keypair;
     builderCode: BuilderFeePolicy | null;
     shouldContinue: () => boolean;
+    knownMakerOrderIds?: bigint[];
   }): Promise<ExecutionReceipt> {
     const signerAddress = inputs.signer.toSuiAddress();
     const cap = await this.findAccountCap({
@@ -1569,27 +1615,63 @@ export class AftermathGateway {
       (candidate) => candidate.marketId === inputs.quote.marketId,
     );
 
-    const size = market.roundToValidSizeBigInt({
+    const roundedSizeBase = market.roundToValidSize({
       size: inputs.quote.sizeBase,
       floor: true,
     });
-    if (size <= 0n) {
+    if (roundedSizeBase <= 0) {
       throw new Error("Quote size is below the market lot size");
     }
+    const roundedBidPrice = market.roundToValidPrice({
+      price: inputs.quote.bidPrice,
+      floor: true,
+    });
+    const roundedAskPrice = market.roundToValidPrice({
+      price: inputs.quote.askPrice,
+      ceil: true,
+    });
+    assertRoundedQuoteOrderValue({
+      symbol: market.metadata?.symbol ?? inputs.quote.marketId.slice(0, 10),
+      sizeBase: roundedSizeBase,
+      bidPrice: roundedBidPrice,
+      askPrice: roundedAskPrice,
+      minOrderUsdValue: market.marketParams.minOrderUsdValue,
+    });
+
+    const snapshotMakerOrders =
+      position?.pendingOrders.filter((order) =>
+        isMakerClientOrderId(order.clientOrderId),
+      ) ?? [];
+    const activeMakerOrderIds = [
+      ...new Set([
+        ...(inputs.knownMakerOrderIds ?? []),
+        ...snapshotMakerOrders.map((order) => order.orderId),
+      ]),
+    ];
+    const activeMakerClientOrderIds = [
+      ...new Set(
+        snapshotMakerOrders.flatMap((order) =>
+          order.clientOrderId === undefined ? [] : [order.clientOrderId],
+        ),
+      ),
+    ];
 
     const request = buildQuoteReplacementRequest({
       marketId: inputs.quote.marketId,
       bidPrice: market.roundToValidPriceBigInt({
-        price: inputs.quote.bidPrice,
-        floor: true,
+        price: roundedBidPrice,
       }),
       askPrice: market.roundToValidPriceBigInt({
-        price: inputs.quote.askPrice,
-        ceil: true,
+        price: roundedAskPrice,
       }),
-      size,
+      size: market.roundToValidSizeBigInt({
+        size: roundedSizeBase,
+      }),
       leverage: inputs.config.maxLeverage,
-      hasPosition: Boolean(position && position.baseAssetAmount !== 0),
+      hasPosition: Boolean(position),
+      activeMakerOrderIds,
+      activeMakerClientOrderIds,
+      clientOrderIds: nextMakerClientOrderIds(),
       ...(inputs.builderCode ? { builderCode: inputs.builderCode } : {}),
     });
 

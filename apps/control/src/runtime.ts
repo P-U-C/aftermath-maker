@@ -565,7 +565,13 @@ export class MakerRuntime {
 
   async flatten(maxSlippage: number): Promise<{
     digest: string | null;
+    digests: string[];
     flattenedMarketIds: string[];
+    transactions: Array<{
+      accountId: string;
+      digest: string;
+      flattenedMarketIds: string[];
+    }>;
   }> {
     const config = makerConfigSchema.parse(this.store.getConfig());
     if (
@@ -576,10 +582,28 @@ export class MakerRuntime {
       throw new Error("Flattening requires live mode and both mainnet gates");
     }
     const setup = this.store.getSetup();
-    const account = setup ? this.store.getAccountSetup(setup.accountId) : null;
+    const makerAccount = setup
+      ? this.store.getAccountSetup(setup.accountId)
+      : null;
     const agent = this.store.getAgent();
-    if (!setup || !account?.agentCapId || !agent || !this.options.masterKey) {
+    if (
+      !setup ||
+      !makerAccount?.agentCapId ||
+      !agent ||
+      !this.options.masterKey
+    ) {
       throw new Error("A confirmed agent signer is required");
+    }
+
+    const accounts = [makerAccount];
+    if (config.hedge.enabled && config.hedge.accountId) {
+      const hedgeAccount = this.store.getAccountSetup(config.hedge.accountId);
+      if (!hedgeAccount?.agentCapId) {
+        throw new Error("The configured hedge account is not authorized");
+      }
+      if (hedgeAccount.accountId !== makerAccount.accountId) {
+        accounts.push(hedgeAccount);
+      }
     }
 
     const activeCycle = this.cyclePromise;
@@ -591,23 +615,28 @@ export class MakerRuntime {
       context: agent.encryptionContext,
       encryptedSecret: agent.encryptedSecret,
     });
-    const receipt = await this.gateway.flattenPositions({
-      setup,
-      config,
-      signer,
-      marketIds: config.markets.map((market) => market.marketId),
-      maxSlippage,
-    });
-    this.store.logEvent({
-      category: "risk",
-      action: "reduce-only-flatten",
-      outcome: receipt ? "confirmed" : "clear",
-      detail: receipt ?? { reason: "No positions in selected markets" },
-    });
-    if (receipt) {
+    const transactions: Array<{
+      accountId: string;
+      digest: string;
+      flattenedMarketIds: string[];
+    }> = [];
+    for (const account of accounts) {
+      const receipt = await this.gateway.flattenPositions({
+        setup: account,
+        config,
+        signer,
+        marketIds: config.markets.map((market) => market.marketId),
+        maxSlippage,
+      });
+      if (!receipt) continue;
+      transactions.push({
+        accountId: account.accountId,
+        digest: receipt.digest,
+        flattenedMarketIds: receipt.flattenedMarketIds,
+      });
       this.store.logExecution({
         mode: "live",
-        marketId: "portfolio",
+        marketId: `portfolio:${account.accountId}`,
         digest: receipt.digest,
         endpoint: receipt.endpoint,
         bidPrice: 0,
@@ -617,10 +646,29 @@ export class MakerRuntime {
         gasUsedMist: receipt.gasUsedMist,
       });
     }
+    this.store.logEvent({
+      category: "risk",
+      action: "reduce-only-flatten",
+      outcome: transactions.length ? "confirmed" : "clear",
+      detail: transactions.length
+        ? { transactions }
+        : {
+            reason: "No positions in selected markets",
+            accountIds: accounts.map((account) => account.accountId),
+          },
+    });
     await this.cycle();
+    const flattenedMarketIds = [
+      ...new Set(
+        transactions.flatMap((transaction) => transaction.flattenedMarketIds),
+      ),
+    ];
+    const digests = transactions.map((transaction) => transaction.digest);
     return {
-      digest: receipt?.digest ?? null,
-      flattenedMarketIds: receipt?.flattenedMarketIds ?? [],
+      digest: digests[0] ?? null,
+      digests,
+      flattenedMarketIds,
+      transactions,
     };
   }
 
@@ -1043,6 +1091,7 @@ export class MakerRuntime {
   }): Promise<void> {
     let selected: MakerMarket | null = null;
     let config: MakerConfig | null = null;
+    let hedgeReconciliationCompleted = false;
     try {
       const storedConfig = this.store.getConfig();
       if (!storedConfig) return;
@@ -1236,7 +1285,9 @@ export class MakerRuntime {
         this.snapshotValue.running && this.generation === inputs.generation;
       if (!executionIsCurrent()) return;
 
-      assertSafe(safety);
+      if (!this.options.liveEnabled || !this.options.mainnetAllowed) {
+        assertSafe(safety);
+      }
       if (!setup || !agent || !this.options.masterKey) {
         throw new Error("Live signer state is incomplete");
       }
@@ -1255,7 +1306,21 @@ export class MakerRuntime {
         makerPortfolio: portfolio,
         executionIsCurrent,
       });
+      hedgeReconciliationCompleted = true;
       if (!executionIsCurrent()) return;
+      assertSafe(safety);
+
+      const trackedMakerOrders = this.store
+        .listTrackedMakerOrders({ accountId: setup.accountId })
+        .filter((order) => order.marketId === selected!.marketId);
+      const latestQuoteDigest = trackedMakerOrders[0]?.quoteDigest;
+      const knownMakerOrderIds = latestQuoteDigest
+        ? trackedMakerOrders
+            .filter((order) => order.quoteDigest === latestQuoteDigest)
+            .flatMap((order) =>
+              /^\d+$/.test(order.orderId) ? [BigInt(order.orderId)] : [],
+            )
+        : [];
 
       const receipt = await this.gateway.executeQuote({
         setup,
@@ -1264,6 +1329,7 @@ export class MakerRuntime {
         signer,
         builderCode: this.options.builderCode(),
         shouldContinue: executionIsCurrent,
+        knownMakerOrderIds,
       });
       this.store.logExecution({
         mode: "live",
@@ -1293,7 +1359,7 @@ export class MakerRuntime {
       const cancelled = inputs.generation !== this.generation;
       if (!cancelled) {
         this.snapshotValue.lastError = errorText;
-        if (config?.hedge.enabled) {
+        if (config?.hedge.enabled && !hedgeReconciliationCompleted) {
           this.snapshotValue.hedge = {
             ...this.snapshotValue.hedge,
             state: "error",

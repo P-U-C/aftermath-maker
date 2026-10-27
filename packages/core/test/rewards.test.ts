@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  minimumLiveQuoteSizeUsd,
   rankRewardMarkets,
   rewardEpochWindow,
   type RewardMarketEvidence,
@@ -11,6 +12,8 @@ const market = (
   marketId: "0x1",
   symbol: "SUI",
   indexPrice: 1,
+  minOrderUsdValue: 1,
+  lotSize: 0.01,
   volume24hUsd: 100_000,
   openInterestUsd: 10_000,
   openInterestUtilizationPct: 10,
@@ -27,6 +30,21 @@ const market = (
 });
 
 describe("reward opportunity ranking", () => {
+  it("buffers venue minimums for lot rounding and inventory skew", () => {
+    const minimum = minimumLiveQuoteSizeUsd({
+      indexPrice: 0.02124012,
+      minOrderUsdValue: 1,
+      lotSize: 0.1,
+      bestBid: 0.021212,
+      bestAsk: 0.021272,
+      spreadBps: 29,
+      inventorySkewBps: 35,
+    });
+
+    expect(minimum).toBeGreaterThan(1);
+    expect(minimum).toBeLessThanOrEqual(1.02);
+  });
+
   it("prefers reported flow with less competing near-book capital", () => {
     const ranked = rankRewardMarkets({
       builderFeeBps: 1,

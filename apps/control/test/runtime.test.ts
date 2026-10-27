@@ -53,6 +53,7 @@ function createHarness(options: { configured?: boolean } = {}) {
   let cancellationCount = 0;
   const cancelledMarketSets: string[][] = [];
   let flattenCount = 0;
+  const flattenedAccountIds: string[] = [];
   let hedgeExecutionCount = 0;
   const executionSequence: string[] = [];
   let performanceHistory: AccountPerformanceHistory = {
@@ -114,10 +115,11 @@ function createHarness(options: { configured?: boolean } = {}) {
         postedOrderIds: [],
       };
     },
-    flattenPositions: async () => {
+    flattenPositions: async (inputs: { setup: { accountId: string } }) => {
       flattenCount += 1;
+      flattenedAccountIds.push(inputs.setup.accountId);
       return {
-        digest: "flatten-digest",
+        digest: `flatten-digest-${inputs.setup.accountId}`,
         endpoint: "test",
         gasUsedMist: 25,
         postedOrderIds: [],
@@ -174,6 +176,7 @@ function createHarness(options: { configured?: boolean } = {}) {
     cancellations: () => cancellationCount,
     cancelledMarketSets: () => cancelledMarketSets,
     flattens: () => flattenCount,
+    flattenedAccountIds: () => flattenedAccountIds,
     hedgeExecutions: () => hedgeExecutionCount,
     executionSequence,
     setPortfolioResolver: (resolver: typeof portfolioResolver) => {
@@ -484,6 +487,100 @@ describe("runtime execution boundaries", () => {
     harness.store.close();
   });
 
+  it("hedges an attributed fill before quote-entry safety halts the engine", async () => {
+    const harness = createHarness();
+    const hedgeSetup = setupSchema.parse({
+      ownerAddress: `0x${"1".repeat(64)}`,
+      accountId: "43",
+      accountCapId: "0x1243",
+    });
+    harness.tenant.setSetup(hedgeSetup);
+    harness.tenant.confirmAgentGrant({
+      accountId: "43",
+      digest: "H".repeat(32),
+      agentCapId: "0xhedge",
+    });
+    harness.tenant.setConfig(
+      makerConfigSchema.parse({
+        markets: [{ marketId: "0x5678", symbol: "SUI" }],
+        mode: "live",
+        makerAccountId: "42",
+        maxInventoryUsd: 30,
+        hedge: {
+          enabled: true,
+          accountId: "43",
+          thresholdUsd: 25,
+          maxOrderUsd: 100,
+          maxSlippageBps: 75,
+        },
+      }),
+    );
+    harness.tenant.trackMakerOrders({
+      accountId: "42",
+      marketId: "0x5678",
+      quoteDigest: "quote-digest",
+      orderIds: ["tracked-fill"],
+    });
+    harness.setPerformanceHistory({
+      orders: [
+        {
+          timestampMs: Date.parse("2026-10-26T12:00:00Z"),
+          txDigest: "fill-digest",
+          marketId: "0x5678",
+          eventType: "FilledMakerOrder",
+          side: "bid",
+          price: 10,
+          size: 3,
+          orderId: "tracked-fill",
+          realizedPnlUsd: 0,
+          feesUsd: 0,
+          maker: true,
+        },
+      ],
+      marginHistory: [],
+    });
+    harness.setPortfolioResolver((inputs) => {
+      const maker = inputs.setup.accountId === "42";
+      const inventoryUsd = maker ? 30 : 0;
+      return {
+        equityUsd: 100,
+        availableCollateralUsd: 80,
+        allocatedCollateralUsd: 20,
+        freeMarginUsd: 70,
+        withdrawableCollateralUsd: 75,
+        grossExposureUsd: Math.abs(inventoryUsd),
+        unrealizedPnlUsd: 0,
+        gasSui: 0.1,
+        positions: inputs.marketIds.map((marketId) => ({
+          marketId,
+          baseAssetAmount: maker ? 3 : 0,
+          pendingOrderCount: 0,
+          inventoryUsd,
+          unrealizedPnlUsd: 0,
+          collateralUsd: 20,
+          freeMarginUsd: 70,
+          makerOrderIds: [],
+          hasPosition: maker,
+        })),
+      };
+    });
+
+    harness.runtime.start();
+    await harness.runtime.cycle();
+
+    expect(harness.hedgeExecutions()).toBe(1);
+    expect(harness.executions()).toBe(0);
+    expect(harness.executionSequence.slice(0, 2)).toEqual(["cancel", "hedge"]);
+    expect(harness.runtime.snapshot.running).toBe(false);
+    expect(harness.runtime.snapshot.lastError).toContain("inventory");
+    expect(harness.runtime.snapshot.hedge).toMatchObject({
+      state: "ready",
+      lastDigest: "hedge-digest-1",
+      error: null,
+    });
+    harness.store.close();
+  });
+
   it("fails closed when either hedge account has an unrelated resting order", async () => {
     const harness = createHarness();
     const hedgeSetup = setupSchema.parse({
@@ -581,10 +678,59 @@ describe("runtime execution boundaries", () => {
     expect(harness.cancellations()).toBe(1);
     expect(harness.flattens()).toBe(1);
     expect(result).toEqual({
-      digest: "flatten-digest",
+      digest: "flatten-digest-42",
+      digests: ["flatten-digest-42"],
       flattenedMarketIds: ["0x5678"],
+      transactions: [
+        {
+          accountId: "42",
+          digest: "flatten-digest-42",
+          flattenedMarketIds: ["0x5678"],
+        },
+      ],
     });
     expect(harness.runtime.snapshot.running).toBe(false);
+    harness.store.close();
+  });
+
+  it("flattens both sides of a configured Maker and hedge pair", async () => {
+    const harness = createHarness();
+    harness.tenant.setSetup(
+      setupSchema.parse({
+        ownerAddress: `0x${"1".repeat(64)}`,
+        accountId: "43",
+        accountCapId: "0x4321",
+      }),
+    );
+    harness.tenant.confirmAgentGrant({
+      accountId: "43",
+      digest: "B".repeat(32),
+      agentCapId: "0x8765",
+    });
+    const current = harness.tenant.getConfig()!;
+    harness.tenant.setConfig(
+      makerConfigSchema.parse({
+        ...current,
+        makerAccountId: "42",
+        hedge: {
+          enabled: true,
+          accountId: "43",
+          thresholdUsd: 1,
+          maxOrderUsd: 5,
+          maxSlippageBps: 75,
+        },
+      }),
+    );
+
+    const result = await harness.runtime.flatten(0.01);
+
+    expect(harness.cancellations()).toBe(1);
+    expect(harness.flattens()).toBe(2);
+    expect(harness.flattenedAccountIds()).toEqual(["42", "43"]);
+    expect(result.digests).toEqual(["flatten-digest-42", "flatten-digest-43"]);
+    expect(
+      result.transactions.map((transaction) => transaction.accountId),
+    ).toEqual(["42", "43"]);
     harness.store.close();
   });
 

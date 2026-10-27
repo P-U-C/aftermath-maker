@@ -4,6 +4,8 @@ export type RewardMarketEvidence = {
   marketId: string;
   symbol: string;
   indexPrice: number;
+  minOrderUsdValue: number;
+  lotSize: number;
   volume24hUsd: number | null;
   openInterestUsd: number;
   openInterestUtilizationPct: number | null;
@@ -22,6 +24,8 @@ export type RewardMarketOpportunity = {
   rank: number;
   marketId: string;
   symbol: string;
+  minOrderUsdValue: number;
+  minimumQuoteSizeUsd: number;
   objective: StrategyObjective;
   score: number;
   farmingScore: number;
@@ -56,6 +60,50 @@ const clamp = (value: number, minimum: number, maximum: number) =>
   Math.min(maximum, Math.max(minimum, value));
 
 const round = (value: number, decimals = 2) => Number(value.toFixed(decimals));
+
+export function minimumLiveQuoteSizeUsd(inputs: {
+  indexPrice: number;
+  minOrderUsdValue: number;
+  lotSize: number;
+  bestBid: number | null;
+  bestAsk: number | null;
+  spreadBps: number;
+  inventorySkewBps?: number;
+}): number {
+  const {
+    indexPrice,
+    minOrderUsdValue,
+    lotSize,
+    bestBid,
+    bestAsk,
+    spreadBps,
+    inventorySkewBps = 250,
+  } = inputs;
+  const bookMid =
+    bestBid !== null && bestAsk !== null && bestAsk > bestBid
+      ? (bestBid + bestAsk) / 2
+      : indexPrice;
+  const conservativeBid =
+    indexPrice *
+    (1 -
+      clamp(spreadBps, 0, 500) / 20_000 -
+      clamp(inventorySkewBps, 0, 250) / 10_000);
+
+  if (
+    minOrderUsdValue <= 0 ||
+    lotSize <= 0 ||
+    bookMid <= 0 ||
+    conservativeBid <= 0
+  ) {
+    return Math.ceil(Math.max(0.01, minOrderUsdValue) * 100) / 100;
+  }
+
+  const requiredLots = Math.ceil(
+    minOrderUsdValue / (conservativeBid * lotSize),
+  );
+  const bufferedBaseSize = (requiredLots + 1) * lotSize;
+  return Math.ceil(bufferedBaseSize * bookMid * 100) / 100;
+}
 
 function percentile(value: number, values: number[]): number {
   if (values.length <= 1) return 0.5;
@@ -348,15 +396,25 @@ export function rankRewardMarkets(inputs: {
       );
       const sizeMultiplier =
         objective === "farming" ? 1 : objective === "profit" ? 0.6 : 0.75;
-      const suggestedQuoteSizeUsd = round(
-        clamp(baseQuoteSizeUsd * sizeMultiplier, 1, 100),
-        0,
+      const minimumQuoteSizeUsd = minimumLiveQuoteSizeUsd({
+        indexPrice: market.indexPrice,
+        minOrderUsdValue: market.minOrderUsdValue,
+        lotSize: market.lotSize,
+        bestBid: market.bestBid,
+        bestAsk: market.bestAsk,
+        spreadBps: suggestedSpreadBps,
+      });
+      const suggestedQuoteSizeUsd = Math.max(
+        minimumQuoteSizeUsd,
+        round(clamp(baseQuoteSizeUsd * sizeMultiplier, 1, 100), 0),
       );
 
       return {
         rank: 0,
         marketId: market.marketId,
         symbol: market.symbol,
+        minOrderUsdValue: market.minOrderUsdValue,
+        minimumQuoteSizeUsd,
         objective,
         score: objectiveScore(objective, scores),
         farmingScore: scores.farming,

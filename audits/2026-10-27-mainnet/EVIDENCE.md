@@ -86,32 +86,53 @@ No order filled. Manual stop canceled both exact order IDs:
 
 The first audit build added the non-refundable storage fee twice when displaying paid gas. The chain balance change exposed the discrepancy. The release now uses Sui's SDK formula: computation cost plus storage cost minus storage rebate.
 
+## MON replacement and fill iteration
+
+The second iteration moved to MON and proved sustained atomic replacement with unique Maker-owned client IDs. Three initial quote transactions and two replacements completed without the previous HTTP 409:
+
+- [Initial MON quote](https://suiscan.xyz/mainnet/tx/2eRwMvYNTpasK5QszX3PEDuv22giLqCyeAN71U21GAjh)
+- [First atomic replacement](https://suiscan.xyz/mainnet/tx/NF8Um4pmCpXKDrNE4hFS8d6iJ9DkYwuNbHvfcFvDjq4)
+- [Second atomic replacement](https://suiscan.xyz/mainnet/tx/6Xy9sUNfYDWT5gRXqTb6YUgYv17xvEmVb13aat4KHPb4)
+- [Final pair cancellation](https://suiscan.xyz/mainnet/tx/FtJPNqxtqitsRxLUzsreLYcufDZVTcM2ss47GESFc8uf)
+
+An independent taker then filled one 48.1 MON Maker ask for $1.0309273 in [HETLEy...](https://suiscan.xyz/mainnet/tx/HETLEyv5HkfH819CNLuCX11Soe1XTHHaYL6wW7xEWPVd). The order ID matched Maker's ledger, giving 100% attribution coverage for reported Maker volume. Known fill economics were a $0.000051546365 base maker rebate and a $0.00010309273 builder fee.
+
+That fill exposed a hedge-ordering defect: quote-entry safety halted the cycle before fill reconciliation. The position was closed through the product's reduce-only flatten action in [8gjkdG...](https://suiscan.xyz/mainnet/tx/8gjkdGLMkJWK25aiaSEXfA3dW4CfMvxX4G6WTKhx2kTK). The fix now runs defensive fill reconciliation before quote-entry safety and flattens both configured account roles. A post-fix 10-minute run completed 41 consecutive replacements without an error or second fill, then cancelled its final pair in [Ag91ka...](https://suiscan.xyz/mainnet/tx/Ag91kaEac4VH2sRiqS1fHa8rzjLfr9uvP2fYEqAMcMVc).
+
+See [ITERATION-2.md](ITERATION-2.md) for the full trace, defect analysis, and evidence boundary.
+
 ## Browser evidence
 
 - [Final desktop reconciliation](member-reconcile-paper.png)
 - [Authenticated 390 px account and strategy view](member-mobile.png)
 - [Fail-closed Live gate](member-test-live-gate.png)
 - [Post-canary control state](member-live-canary.png)
+- [Staged MON headroom and performance attribution](member-staged-headroom.png)
+- [Funded readiness immediately after a fresh-container restart](member-restart-readiness.png)
 
 ## Final state
 
 At the final read:
 
 - Owner wallet: 5 USDC and 0.758343458 SUI
-- Agent wallet: 0 USDC and 0.196601524 SUI
+- Agent wallet: 0 USDC and 0.184537027 SUI
+- Account 1745 equity: about $7.4961
+- Account 1746 equity: about $7.4978
 - Saved mode: Paper
 - Engine: stopped
-- Live quote count: 1
-- Maker fills: 0
+- Confirmed Live quote count: 65
+- Attributed Maker fills: 1
 - Hedge executions: 0
+- Both accounts: zero positions and zero pending orders
 - Live gates: both disabled
 - Root response: private, no-cache, no-store
-- Desktop and 390 px authenticated layouts: no page-level horizontal overflow
+- Desktop and 390 px authenticated layouts: no page-level horizontal overflow or browser errors
+- Fresh-container readiness: account 1745 immediately reported funded with $7.50 equity; agent gas remained explicitly unknown until a runtime cycle
 - Membership management: hidden from the member wallet; its operator status request returned HTTP 403
-- Post-canary state backup: `backups/aftermath-maker-20261027T030843Z.tar.gz` on the deployment host
+- Post-audit state backup: `backups/aftermath-maker-20261027T061234Z.tar.gz` on the deployment host
 
 The agent capabilities remain intentionally authorized on both accounts for the next fill-driven hedge test. They were not revoked because this is the retained audit setup.
 
 ## What remains unproven
 
-A zero-fill canary cannot prove fill ingestion, realized spread, fee attribution, the fill-triggered hedge, reduce-only flattening, or hedge slippage. Withdrawal and final capability revocation were also not executed because the two-account setup is being retained. Those paths have local regressions, but they remain mainnet verification items.
+Mainnet now proves fill ingestion, exact order attribution, known fee reporting, repeated atomic replacement, protective halt, and reduce-only flattening of the Maker position. No second organic fill occurred after the hedge-ordering fix, so a fill-triggered hedge transaction, hedge slippage, and a two-account mainnet flatten remain unproven. Withdrawal and final capability revocation were also not executed because the two-account setup is being retained. Their local regressions do not replace a mainnet trace.

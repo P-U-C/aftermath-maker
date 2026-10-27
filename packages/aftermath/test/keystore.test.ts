@@ -1,17 +1,42 @@
 import { randomBytes } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import {
+  assertRoundedQuoteOrderValue,
   buildQuoteReplacementRequest,
   createEncryptedAgent,
   decodeIntegratorId,
   decryptSecret,
   encryptSecret,
+  isMakerClientOrderId,
   loadAgentKeypair,
   MAKER_ASK_CLIENT_ORDER_ID,
   MAKER_BID_CLIENT_ORDER_ID,
+  nextMakerClientOrderIds,
 } from "../src/index.js";
 
 describe("maker order isolation", () => {
+  it("rejects rounded quotes below the venue minimum before transaction build", () => {
+    expect(() =>
+      assertRoundedQuoteOrderValue({
+        symbol: "MON",
+        sizeBase: 47,
+        bidPrice: 0.02120932,
+        askPrice: 0.02127092,
+        minOrderUsdValue: 1,
+      }),
+    ).toThrow("below the venue's $1.00 minimum");
+
+    expect(() =>
+      assertRoundedQuoteOrderValue({
+        symbol: "MON",
+        sizeBase: 47.6,
+        bidPrice: 0.02120932,
+        askPrice: 0.02127092,
+        minOrderUsdValue: 1,
+      }),
+    ).not.toThrow();
+  });
+
   it("replaces only orders tagged by this service", () => {
     const request = buildQuoteReplacementRequest({
       marketId: "0x1234",
@@ -32,6 +57,51 @@ describe("maker order isolation", () => {
       MAKER_ASK_CLIENT_ORDER_ID,
     ]);
     expect(request.builderCode).toBeUndefined();
+  });
+
+  it("rotates client IDs within the Maker-owned namespace", () => {
+    const first = nextMakerClientOrderIds(1_000);
+    const second = nextMakerClientOrderIds(1_001);
+
+    expect(first).not.toEqual(second);
+    expect(
+      [
+        first.bid,
+        first.ask,
+        second.bid,
+        second.ask,
+        MAKER_BID_CLIENT_ORDER_ID,
+        MAKER_ASK_CLIENT_ORDER_ID,
+      ].every(isMakerClientOrderId),
+    ).toBe(true);
+    expect(isMakerClientOrderId(123n)).toBe(false);
+    expect(isMakerClientOrderId(0x5055000000000001n)).toBe(false);
+  });
+
+  it("cancels active Maker IDs while placing with a fresh pair", () => {
+    const activeClientIds = nextMakerClientOrderIds(1_000);
+    const freshClientIds = nextMakerClientOrderIds(2_000);
+    const request = buildQuoteReplacementRequest({
+      marketId: "0x1234",
+      bidPrice: 990n,
+      askPrice: 1_010n,
+      size: 5n,
+      leverage: 1,
+      hasPosition: false,
+      activeMakerOrderIds: [101n, 202n],
+      activeMakerClientOrderIds: [activeClientIds.bid, activeClientIds.ask],
+      clientOrderIds: freshClientIds,
+    });
+
+    expect(request.orderIdsToCancel).toEqual([101n, 202n]);
+    expect(request.clientOrderIdsToCancel).toEqual([
+      activeClientIds.bid,
+      activeClientIds.ask,
+    ]);
+    expect(request.ordersToPlace.map((order) => order.clientOrderId)).toEqual([
+      freshClientIds.bid,
+      freshClientIds.ask,
+    ]);
   });
 
   it("attaches the configured builder code to the whole atomic batch", () => {

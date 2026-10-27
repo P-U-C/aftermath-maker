@@ -150,6 +150,7 @@ type Market = {
   indexPrice: number;
   tickSize: number;
   lotSize: number;
+  minOrderUsdValue: number;
   openInterestBase: number;
   openInterestUsd: number;
   openInterestUtilizationPct: number | null;
@@ -295,6 +296,8 @@ type RewardOpportunity = {
   rank: number;
   marketId: string;
   symbol: string;
+  minOrderUsdValue: number;
+  minimumQuoteSizeUsd: number;
   objective: StrategyObjective;
   score: number;
   farmingScore: number;
@@ -493,6 +496,19 @@ const compactNumber = (value: number | null) =>
 
 const percent = (value: number | null, digits = 2) =>
   value === null ? "-" : `${value.toFixed(digits)}%`;
+
+const inventoryCapacityFloor = (
+  quoteSizeUsd: number,
+  spreadBps: number,
+  inventorySkewBps: number,
+) =>
+  Math.ceil(
+    quoteSizeUsd *
+      (1 +
+        Math.max(0, spreadBps) / 20_000 +
+        Math.max(0, inventorySkewBps) / 10_000) *
+      100,
+  ) / 100;
 
 const timeUntil = (timestamp: string | null) => {
   if (!timestamp) return "Schedule unavailable";
@@ -1178,51 +1194,85 @@ function DashboardBody() {
       return;
     }
 
+    const availableCollateral = makerAvailableCollateralUsd;
+    const capitalBudget =
+      availableCollateral !== null && availableCollateral > 0
+        ? Math.min(config.maxGrossExposureUsd, availableCollateral * 0.5)
+        : config.maxGrossExposureUsd;
+    const minimumQuoteCapital = candidates.reduce(
+      (total, opportunity) =>
+        total +
+        inventoryCapacityFloor(
+          opportunity.minimumQuoteSizeUsd,
+          opportunity.suggestedSpreadBps,
+          config.inventorySkewBps,
+        ),
+      0,
+    );
+    if (minimumQuoteCapital > capitalBudget) {
+      setNotice(
+        `These ${candidates.length} markets need at least ${money(minimumQuoteCapital)} of inventory capacity after venue minimums, lot-size rounding, and quote-price headroom. Reduce the market count or raise the gross exposure limit.`,
+      );
+      return;
+    }
+
     setConfig((current) => {
-      const availableCollateral = makerAvailableCollateralUsd;
-      const capitalBudget =
-        availableCollateral !== null && availableCollateral > 0
-          ? Math.min(current.maxGrossExposureUsd, availableCollateral * 0.5)
-          : current.maxGrossExposureUsd;
-      const perMarketInventory = Math.max(
+      const basePerMarketInventory = Math.max(
         1,
         Math.min(current.maxInventoryUsd, capitalBudget / candidates.length),
       );
       const collateralQuoteCap =
         availableCollateral !== null && availableCollateral > 0
-          ? Math.max(1, availableCollateral / (4 * candidates.length))
+          ? availableCollateral / (4 * candidates.length)
           : Number.POSITIVE_INFINITY;
-      const nextMarkets = candidates.map((opportunity) => ({
-        marketId: opportunity.marketId,
-        symbol: opportunity.symbol,
-        overrides: {
-          quoteSizeUsd: Math.min(
+      const plannedMarkets = candidates.map((opportunity) => {
+        const minimumQuoteSizeUsd = opportunity.minimumQuoteSizeUsd;
+        const quoteSizeUsd = Math.max(
+          minimumQuoteSizeUsd,
+          Math.min(
             opportunity.suggestedQuoteSizeUsd,
-            Math.max(1, perMarketInventory / 2),
-            collateralQuoteCap,
+            Math.max(minimumQuoteSizeUsd, basePerMarketInventory / 2),
+            Math.max(minimumQuoteSizeUsd, collateralQuoteCap),
           ),
-          spreadBps: opportunity.suggestedSpreadBps,
-          maxInventoryUsd: perMarketInventory,
-          inventoryTargetUsd: 0,
-          inventorySkewBps: current.inventorySkewBps,
-          maxLeverage: 1,
-        },
-      }));
+        );
+        return {
+          marketId: opportunity.marketId,
+          symbol: opportunity.symbol,
+          overrides: {
+            quoteSizeUsd,
+            spreadBps: opportunity.suggestedSpreadBps,
+            maxInventoryUsd: Math.max(
+              basePerMarketInventory,
+              inventoryCapacityFloor(
+                quoteSizeUsd,
+                opportunity.suggestedSpreadBps,
+                current.inventorySkewBps,
+              ),
+            ),
+            inventoryTargetUsd: 0,
+            inventorySkewBps: current.inventorySkewBps,
+            maxLeverage: 1,
+          },
+        };
+      });
+      const stagedMaxInventory = Math.max(
+        ...plannedMarkets.map((market) => market.overrides.maxInventoryUsd),
+      );
       const minimumQuoteAge =
-        current.refreshMs * nextMarkets.length +
+        current.refreshMs * plannedMarkets.length +
         Math.min(10_000, current.refreshMs);
       return {
         ...current,
         mode: "observe",
         strategyObjective: config.strategyObjective,
-        markets: nextMarkets,
-        maxInventoryUsd: perMarketInventory,
-        maxGrossExposureUsd: Math.max(perMarketInventory, capitalBudget),
+        markets: plannedMarkets,
+        maxInventoryUsd: stagedMaxInventory,
+        maxGrossExposureUsd: Math.max(stagedMaxInventory, capitalBudget),
         maxQuoteAgeMs: Math.max(current.maxQuoteAgeMs, minimumQuoteAge),
       };
     });
     setNotice(
-      `${config.strategyObjective[0]?.toUpperCase()}${config.strategyObjective.slice(1)} rotation staged across ${candidates.length} market${candidates.length === 1 ? "" : "s"} in Observe mode. Review the policies, then save the strategy.`,
+      `${config.strategyObjective[0]?.toUpperCase()}${config.strategyObjective.slice(1)} rotation staged across ${candidates.length} market${candidates.length === 1 ? "" : "s"} in Observe mode with venue minimums applied. Review the policies, then save the strategy.`,
     );
   }
 
@@ -1260,13 +1310,22 @@ function DashboardBody() {
     if (!flattenArmed) {
       setFlattenArmed(true);
       setNotice(
-        "Flatten uses reduce-only market orders across selected markets with up to 1% slippage. Review, then confirm.",
+        "Flatten uses reduce-only market orders across selected markets on both the Maker and hedge accounts, with up to 1% slippage. Review, then confirm.",
       );
       return;
     }
     await mutate("flatten", async () => {
       const response = await request<{
-        result: { digest: string | null; flattenedMarketIds: string[] };
+        result: {
+          digest: string | null;
+          digests: string[];
+          flattenedMarketIds: string[];
+          transactions: Array<{
+            accountId: string;
+            digest: string;
+            flattenedMarketIds: string[];
+          }>;
+        };
       }>("api/runtime/flatten", {
         method: "POST",
         body: JSON.stringify({
@@ -1278,8 +1337,8 @@ function DashboardBody() {
       await loadPerformance().catch(() => undefined);
       setNotice(
         response.result.digest
-          ? `Flatten confirmed for ${response.result.flattenedMarketIds.length} market(s): ${compact(response.result.digest)}`
-          : "No open positions remained in the selected markets.",
+          ? `Flatten confirmed across ${response.result.transactions.length} account(s) and ${response.result.flattenedMarketIds.length} market(s): ${response.result.digests.map(compact).join(", ")}`
+          : "No open positions remained on the Maker or hedge account.",
       );
     });
   }
@@ -1380,11 +1439,38 @@ function DashboardBody() {
   const activeMakerAccount = setup.accounts.find(
     (managed) => managed.accountId === activeMakerAccountId,
   );
-  const makerAvailableCollateralUsd =
-    accounts.find((candidate) => candidate.accountId === activeMakerAccountId)
-      ?.availableCollateralUsd ??
-    snapshot?.portfolio.availableCollateralUsd ??
+  const activeMakerCap = accounts.find(
+    (candidate) => candidate.accountId === activeMakerAccountId,
+  );
+  const activeMakerSnapshot =
+    snapshot?.accountId === activeMakerAccountId ? snapshot : null;
+  const makerEquityUsd =
+    activeMakerSnapshot?.balances.equityUsd ??
+    activeMakerCap?.equityUsd ??
     null;
+  const makerAvailableCollateralUsd =
+    activeMakerSnapshot?.portfolio.availableCollateralUsd ??
+    activeMakerCap?.availableCollateralUsd ??
+    null;
+  const makerAllocatedCollateralUsd =
+    activeMakerSnapshot?.portfolio.allocatedCollateralUsd ??
+    activeMakerCap?.allocatedCollateralUsd ??
+    null;
+  const makerWithdrawableCollateralUsd =
+    activeMakerSnapshot?.portfolio.withdrawableCollateralUsd ??
+    activeMakerCap?.availableCollateralUsd ??
+    null;
+  const agentGasSui = activeMakerSnapshot?.balances.gasSui ?? null;
+  const readiness =
+    makerEquityUsd === null
+      ? { label: "Checking funds", ready: false }
+      : makerEquityUsd <= 0
+        ? { label: "Needs funding", ready: false }
+        : agentGasSui === null
+          ? { label: "Funded", ready: true }
+          : agentGasSui <= 0
+            ? { label: "Needs gas", ready: false }
+            : { label: "Ready", ready: true };
   const onboardingComplete = Boolean(
     setup.agent && activeMakerAccount?.agentCapId,
   );
@@ -1703,21 +1789,9 @@ function DashboardBody() {
         <section className="account-band" aria-label="Account readiness">
           <div className="account-band-title">
             <span className="eyebrow">Account readiness</span>
-            <strong>
-              Maker account {snapshot?.accountId ?? setup.setup?.accountId}
-            </strong>
-            <span
-              className={
-                (snapshot?.balances.equityUsd ?? 0) > 0 &&
-                (snapshot?.balances.gasSui ?? 0) > 0
-                  ? "readiness ready"
-                  : "readiness"
-              }
-            >
-              {(snapshot?.balances.equityUsd ?? 0) > 0 &&
-              (snapshot?.balances.gasSui ?? 0) > 0
-                ? "Ready"
-                : "Needs funding"}
+            <strong>Maker account {activeMakerAccountId}</strong>
+            <span className={readiness.ready ? "readiness ready" : "readiness"}>
+              {readiness.label}
             </span>
             <button
               type="button"
@@ -1732,33 +1806,24 @@ function DashboardBody() {
           </div>
           <div>
             <span>Equity</span>
-            <strong>{money(snapshot?.balances.equityUsd ?? null)}</strong>
+            <strong>{money(makerEquityUsd)}</strong>
           </div>
           <div>
             <span>Available</span>
-            <strong>
-              {money(snapshot?.portfolio.availableCollateralUsd ?? null)}
-            </strong>
+            <strong>{money(makerAvailableCollateralUsd)}</strong>
           </div>
           <div>
             <span>Allocated</span>
-            <strong>
-              {money(snapshot?.portfolio.allocatedCollateralUsd ?? null)}
-            </strong>
+            <strong>{money(makerAllocatedCollateralUsd)}</strong>
           </div>
           <div>
             <span>Withdrawable by owner</span>
-            <strong>
-              {money(snapshot?.portfolio.withdrawableCollateralUsd ?? null)}
-            </strong>
+            <strong>{money(makerWithdrawableCollateralUsd)}</strong>
           </div>
           <div>
             <span>Agent gas</span>
             <strong>
-              {snapshot?.balances.gasSui === null ||
-              snapshot?.balances.gasSui === undefined
-                ? "-"
-                : `${snapshot.balances.gasSui.toFixed(4)} SUI`}
+              {agentGasSui === null ? "-" : `${agentGasSui.toFixed(4)} SUI`}
             </strong>
           </div>
           <div>
@@ -2483,8 +2548,9 @@ function DashboardBody() {
                         <span>Size $</span>
                         <input
                           type="number"
-                          min="1"
+                          min="0.01"
                           max="1000"
+                          step="0.01"
                           value={
                             market.overrides.quoteSizeUsd ?? config.quoteSizeUsd
                           }
@@ -2517,8 +2583,9 @@ function DashboardBody() {
                         <span>Inventory cap $</span>
                         <input
                           type="number"
-                          min="1"
+                          min="0.01"
                           max={config.maxGrossExposureUsd}
+                          step="0.01"
                           value={
                             market.overrides.maxInventoryUsd ??
                             config.maxInventoryUsd
@@ -2619,9 +2686,9 @@ function DashboardBody() {
                 <b>$</b>
                 <input
                   type="number"
-                  min="1"
+                  min="0.01"
                   max="1000"
-                  step="1"
+                  step="0.01"
                   value={config.quoteSizeUsd}
                   onChange={(event) =>
                     setConfig((current) => ({
@@ -2665,7 +2732,8 @@ function DashboardBody() {
                 <b>$</b>
                 <input
                   type="number"
-                  min="1"
+                  min="0.01"
+                  step="0.01"
                   value={config.maxInventoryUsd}
                   onChange={(event) =>
                     setConfig((current) => ({
@@ -2699,6 +2767,7 @@ function DashboardBody() {
                 <input
                   type="number"
                   min={config.maxInventoryUsd}
+                  step="0.01"
                   value={config.maxGrossExposureUsd}
                   onChange={(event) =>
                     setConfig((current) => ({
@@ -3223,14 +3292,20 @@ function DashboardBody() {
                     <td className="dual-value">
                       <strong>
                         {money(
-                          Math.min(
-                            opportunity.suggestedQuoteSizeUsd,
-                            rewardQuotePreviewCap,
+                          Math.max(
+                            opportunity.minimumQuoteSizeUsd,
+                            Math.min(
+                              opportunity.suggestedQuoteSizeUsd,
+                              rewardQuotePreviewCap,
+                            ),
                           ),
-                          0,
+                          2,
                         )}
                       </strong>
-                      <span>{opportunity.suggestedSpreadBps} bp spread</span>
+                      <span>
+                        {opportunity.suggestedSpreadBps} bp / min{" "}
+                        {money(opportunity.minimumQuoteSizeUsd, 2)}
+                      </span>
                     </td>
                   </tr>
                 ))
