@@ -35,6 +35,7 @@ const baseUrl = option(
 );
 const showFlattenSheet = process.argv.includes("--flatten-sheet");
 const showLiveSheet = process.argv.includes("--live-sheet");
+const showAccountEditor = process.argv.includes("--account-editor");
 const verifyConfigSave = process.argv.includes("--verify-config-save");
 const outputDirectory = path.resolve(
   projectRoot,
@@ -227,6 +228,26 @@ async function capture(browser, stateName, captureConfig, view) {
     const request = route.request();
     const url = new URL(request.url());
     if (
+      request.method() === "PUT" &&
+      /\/api\/accounts\/\d+\/metadata$/.test(url.pathname)
+    ) {
+      const accountId = url.pathname.split("/").at(-2);
+      const body = JSON.parse(request.postData() ?? "{}");
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          metadata: {
+            accountId,
+            label: body.label ?? null,
+            tags: body.tags ?? [],
+            updatedAt: fixedNow,
+          },
+        }),
+      });
+      return;
+    }
+    if (
       verifyConfigSave &&
       request.method() === "POST" &&
       url.pathname.endsWith("/api/config")
@@ -322,6 +343,30 @@ async function capture(browser, stateName, captureConfig, view) {
           const hedgeAccount = page.locator("article").filter({
             hasText: "Account 1746",
           });
+          await hedgeAccount
+            .getByRole("button", {
+              name: "Edit name and tags for account 1746",
+            })
+            .click();
+          await hedgeAccount
+            .getByRole("textbox", { name: "Name for account 1746" })
+            .fill("Canary hedge");
+          await hedgeAccount
+            .getByRole("textbox", {
+              name: "Comma-separated tags for account 1746",
+            })
+            .fill("hedge, canary");
+          await hedgeAccount
+            .getByRole("button", { name: "Save details" })
+            .click();
+          await page
+            .locator(".notice.notice-success")
+            .getByText("Account name and tags saved.")
+            .waitFor();
+          await hedgeAccount
+            .getByText("Canary hedge", { exact: true })
+            .waitFor();
+          await hedgeAccount.getByText("canary", { exact: true }).waitFor();
           await hedgeAccount.getByRole("button", { name: "Maker" }).click();
           await page.getByRole("button", { name: "Save assignments" }).click();
           await page
@@ -371,6 +416,17 @@ async function capture(browser, stateName, captureConfig, view) {
         .locator(`[data-view="${view}"]:not([hidden])`)
         .first()
         .waitFor();
+    }
+    if (
+      showAccountEditor &&
+      view === "accounts" &&
+      fixture.auth.status === 200
+    ) {
+      await page
+        .getByRole("button", { name: /Edit name and tags for account/ })
+        .first()
+        .click();
+      await page.getByRole("button", { name: "Save details" }).waitFor();
     }
     if (
       showFlattenSheet &&

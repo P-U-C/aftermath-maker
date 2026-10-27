@@ -328,6 +328,8 @@ export type FixtureState = {
       allocatedCollateralUsd: number;
       freeMarginUsd: number;
       positionCount: number;
+      label: string | null;
+      tags: string[];
     }>;
   };
   markets: {
@@ -559,6 +561,8 @@ const accountRows: FixtureState["accounts"]["accounts"] = [
     allocatedCollateralUsd: 1.04,
     freeMarginUsd: 6.40246,
     positionCount: 1,
+    label: "Core maker",
+    tags: ["farming", "low-risk"],
   },
   {
     accountId: "1746",
@@ -569,6 +573,8 @@ const accountRows: FixtureState["accounts"]["accounts"] = [
     allocatedCollateralUsd: 0,
     freeMarginUsd: 7.44934,
     positionCount: 0,
+    label: "Neutral hedge",
+    tags: ["hedge", "delta-neutral"],
   },
 ];
 
