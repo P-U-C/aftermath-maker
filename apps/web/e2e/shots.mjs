@@ -88,6 +88,18 @@ const captures = [
   },
 ];
 
+function selectedCaptures() {
+  const requested = option("--capture", null);
+  if (!requested) return captures;
+  const capture = captures.find((candidate) => candidate.name === requested);
+  if (!capture) {
+    throw new Error(
+      `Unknown capture "${requested}". Choose: ${captures.map((candidate) => candidate.name).join(", ")}`,
+    );
+  }
+  return [capture];
+}
+
 function apiResponse(fixture, url) {
   const marker = "/api/control/";
   const routePath = url.pathname.slice(
@@ -283,8 +295,29 @@ async function capture(browser, stateName, captureConfig, view) {
       stateName === "live-running" &&
       (view === null || view === "desk")
     ) {
-      await page.getByRole("button", { name: "Flatten positions…" }).click();
-      await page.getByRole("dialog", { name: "Flatten positions?" }).waitFor();
+      const flattenName =
+        captureConfig.viewport.width <= 390 ? "Flatten…" : "Flatten positions…";
+      await page.getByRole("button", { name: flattenName }).click();
+      const dialog = page.getByRole("dialog", { name: "Flatten positions?" });
+      await dialog.waitFor();
+      if (captureConfig.name === "desktop-light") {
+        await page.waitForTimeout(50);
+        if (
+          !(await dialog.evaluate((node) =>
+            node.contains(document.activeElement),
+          ))
+        ) {
+          throw new Error("Flatten sheet did not move focus inside the dialog");
+        }
+        await page.keyboard.press("Shift+Tab");
+        if (
+          !(await dialog.evaluate((node) =>
+            node.contains(document.activeElement),
+          ))
+        ) {
+          throw new Error("Flatten sheet allowed focus to escape");
+        }
+      }
     }
     if (
       showLiveSheet &&
@@ -335,6 +368,95 @@ async function capture(browser, stateName, captureConfig, view) {
       scrollWidth: document.documentElement.scrollWidth,
       innerWidth: window.innerWidth,
     }));
+    const contrastFailures = await page.evaluate(() => {
+      const style = getComputedStyle(document.documentElement);
+      const rgb = (token) => {
+        const value = style.getPropertyValue(token).trim();
+        const hex = value.match(/^#([0-9a-f]{3}|[0-9a-f]{6})$/i)?.[1];
+        if (hex) {
+          const raw =
+            hex.length === 3
+              ? hex
+                  .split("")
+                  .map((channel) => channel + channel)
+                  .join("")
+              : hex;
+          return [0, 2, 4].map((offset) =>
+            Number.parseInt(raw.slice(offset, offset + 2), 16),
+          );
+        }
+        const functional = value.match(
+          /^rgba?\(\s*([\d.]+)[, ]+\s*([\d.]+)[, ]+\s*([\d.]+)/i,
+        );
+        if (functional) {
+          return functional.slice(1, 4).map(Number);
+        }
+        throw new Error(`Expected a solid color value for ${token}`);
+      };
+      const luminance = (color) => {
+        const channels = color.map((value) => {
+          const normalized = value / 255;
+          return normalized <= 0.04045
+            ? normalized / 12.92
+            : ((normalized + 0.055) / 1.055) ** 2.4;
+        });
+        return (
+          0.2126 * channels[0] + 0.7152 * channels[1] + 0.0722 * channels[2]
+        );
+      };
+      const ratio = (foreground, background) => {
+        const first = luminance(rgb(foreground));
+        const second = luminance(rgb(background));
+        return (
+          (Math.max(first, second) + 0.05) / (Math.min(first, second) + 0.05)
+        );
+      };
+      const pairs = [
+        ["--ink", "--surface"],
+        ["--ink-2", "--surface"],
+        ["--tide-text", "--surface"],
+        ["--ember-text", "--surface"],
+        ["--amber-text", "--surface"],
+        ["--on-primary", "--primary"],
+      ];
+      return pairs
+        .map(([foreground, background]) => ({
+          foreground,
+          background,
+          ratio: ratio(foreground, background),
+        }))
+        .filter((pair) => pair.ratio < 4.5);
+    });
+    if (contrastFailures.length) {
+      throw new Error(
+        `${stateName}/${captureConfig.name} fails token contrast: ${JSON.stringify(contrastFailures)}`,
+      );
+    }
+    if (captureConfig.reducedMotion === "reduce") {
+      const movingElements = await page.evaluate(() =>
+        Array.from(document.querySelectorAll("*"))
+          .filter((element) => {
+            if (!(element instanceof HTMLElement)) return false;
+            const style = getComputedStyle(element);
+            return (
+              style.animationName !== "none" ||
+              style.transitionDuration
+                .split(",")
+                .some((duration) => Number.parseFloat(duration) > 0)
+            );
+          })
+          .slice(0, 10)
+          .map((element) => ({
+            element: element.tagName.toLowerCase(),
+            className: element.className,
+          })),
+      );
+      if (movingElements.length) {
+        throw new Error(
+          `${stateName}/${captureConfig.name} retains motion under reduced-motion: ${JSON.stringify(movingElements)}`,
+        );
+      }
+    }
 
     if (dimensions.scrollWidth > dimensions.innerWidth) {
       throw new Error(
@@ -440,6 +562,34 @@ async function capture(browser, stateName, captureConfig, view) {
       `${stateName}${view ? `/${view}` : ""}/${captureConfig.name}: ${file} (${dimensions.scrollWidth}px wide)\n`,
     );
 
+    if (
+      showFlattenSheet &&
+      captureConfig.name === "desktop-light" &&
+      stateName === "live-running" &&
+      (view === null || view === "desk")
+    ) {
+      await page.keyboard.press("Escape");
+      await page
+        .getByRole("dialog", { name: "Flatten positions?" })
+        .waitFor({ state: "hidden" });
+      const flattenButton = page.getByRole("button", {
+        name:
+          captureConfig.viewport.width <= 390
+            ? "Flatten…"
+            : "Flatten positions…",
+      });
+      if (
+        !(await flattenButton.evaluate(
+          (node) => node === document.activeElement,
+        ))
+      ) {
+        throw new Error("Flatten sheet did not restore focus after Escape");
+      }
+      process.stdout.write(
+        `${stateName}${view ? `/${view}` : ""}/${captureConfig.name}: sheet trapped and restored focus\n`,
+      );
+    }
+
     if (exerciseStop) {
       await page.getByRole("button", { name: "Refresh market" }).click();
       await page.waitForTimeout(50);
@@ -492,7 +642,7 @@ const browser = await chromium.launch({
 try {
   for (const stateName of selectedStates()) {
     for (const view of selectedViews()) {
-      for (const captureConfig of captures) {
+      for (const captureConfig of selectedCaptures()) {
         await capture(browser, stateName, captureConfig, view);
       }
     }

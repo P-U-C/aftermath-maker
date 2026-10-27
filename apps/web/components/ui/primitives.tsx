@@ -3,7 +3,9 @@
 import { X } from "lucide-react";
 import {
   forwardRef,
+  useEffect,
   useId,
+  useRef,
   type ButtonHTMLAttributes,
   type HTMLAttributes,
   type InputHTMLAttributes,
@@ -283,18 +285,94 @@ export function Sheet({
 }: SheetProps) {
   const titleId = useId();
   const descriptionId = useId();
+  const sheetRef = useRef<HTMLElement>(null);
+  const returnFocusRef = useRef<HTMLElement | null>(null);
+  const onCloseRef = useRef(onClose);
+
+  useEffect(() => {
+    onCloseRef.current = onClose;
+  }, [onClose]);
+
+  useEffect(() => {
+    if (!open) return;
+
+    const sheet = sheetRef.current;
+    if (!sheet) return;
+
+    returnFocusRef.current =
+      document.activeElement instanceof HTMLElement
+        ? document.activeElement
+        : null;
+
+    const focusableSelector =
+      'button:not([disabled]), a[href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), summary, [tabindex]:not([tabindex="-1"])';
+    const focusableElements = () =>
+      Array.from(sheet.querySelectorAll<HTMLElement>(focusableSelector)).filter(
+        (element) =>
+          element.getAttribute("aria-hidden") !== "true" &&
+          element.getClientRects().length > 0,
+      );
+
+    const focusFrame = window.requestAnimationFrame(() => {
+      (focusableElements()[0] ?? sheet).focus();
+    });
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        event.stopPropagation();
+        onCloseRef.current();
+        return;
+      }
+      if (event.key !== "Tab") return;
+
+      const focusable = focusableElements();
+      if (!focusable.length) {
+        event.preventDefault();
+        sheet.focus();
+        return;
+      }
+
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (!first || !last) return;
+      const active = document.activeElement;
+      if (event.shiftKey && (active === first || !sheet.contains(active))) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && active === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.cancelAnimationFrame(focusFrame);
+      document.removeEventListener("keydown", handleKeyDown);
+      if (returnFocusRef.current?.isConnected) {
+        returnFocusRef.current.focus();
+      }
+    };
+  }, [open]);
 
   if (!open) return null;
 
   return (
-    <div className="ui-sheet-scrim" onMouseDown={onClose}>
+    <div
+      className="ui-sheet-scrim"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget) onClose();
+      }}
+    >
       <section
+        ref={sheetRef}
         className="ui-sheet"
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}
         aria-describedby={description ? descriptionId : undefined}
-        onMouseDown={(event) => event.stopPropagation()}
+        tabIndex={-1}
       >
         <header className="ui-sheet-header">
           <div>

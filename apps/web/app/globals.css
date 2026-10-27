@@ -5774,6 +5774,10 @@ footer a {
     display: none;
   }
 
+  .desk-hero-actions .ui-button {
+    min-height: 44px;
+  }
+
   .desk-primary-grid,
   .desk-secondary-grid {
     gap: 14px;
@@ -5931,7 +5935,22 @@ footer a {
     font-stretch: 112%;
   }
 
-  .strategy-mobile-sheet-header .ui-button-icon {
+  .strategy-mobile-sheet-header .ui-button-icon,
+  .ui-sheet .ui-button-icon {
+    width: 44px;
+    min-height: 44px;
+    flex: none;
+  }
+
+  .ui-sheet .ui-button {
+    min-height: 44px;
+  }
+
+  .notice {
+    grid-template-columns: 20px minmax(0, 1fr) 44px;
+  }
+
+  .notice button {
     width: 44px;
     min-height: 44px;
   }
@@ -5991,6 +6010,66 @@ footer a {
     min-height: 44px;
   }
 
+  .eyebrow,
+  .panel-copy,
+  .fee-caveat {
+    font-size: 12px;
+  }
+
+  .fee-form input,
+  .fee-form button {
+    min-height: 44px;
+  }
+
+  .rotation-cadence,
+  .market-table :is(th, td, strong, span, abbr, button),
+  .reward-table :is(th, td, strong, span, abbr, button),
+  .board-footnote,
+  .reward-cutoff span,
+  .reward-claim-link,
+  .reward-metrics span,
+  .objective-evidence span,
+  .objective-evidence strong,
+  .reward-leader span,
+  .reward-leader small,
+  .reward-focus > span,
+  .reward-focus button,
+  .reward-count > span,
+  .reward-method summary,
+  .reward-method p {
+    font-size: 12px !important;
+  }
+
+  .coverage-badge,
+  .performance-metrics span,
+  .hedge-performance-strip span,
+  .hedge-performance-strip strong,
+  .fill-table :is(th, td, a),
+  .performance-note span {
+    font-size: 12px !important;
+  }
+
+  .fill-table .tx-link,
+  .market-table .tx-link {
+    min-width: 44px;
+    min-height: 44px;
+    font-size: 12px !important;
+  }
+
+  .market-venue-filters button,
+  .venue-card-actions .ui-button,
+  .reward-claim-link,
+  .reward-focus button,
+  .reward-table th button,
+  .button.reward-stage,
+  .reward-method summary {
+    min-height: 44px;
+  }
+
+  .reward-table th button {
+    min-width: 44px;
+  }
+
   footer,
   footer a {
     font-size: 12px;
@@ -5998,5 +6077,29 @@ footer a {
 
   footer a {
     min-height: 44px;
+  }
+}
+
+/* Step 9: keyboard and motion finish. */
+:where(
+  a[href],
+  button,
+  input,
+  select,
+  textarea,
+  summary,
+  [tabindex]:not([tabindex="-1"])
+):focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    animation: none !important;
+    transition: none !important;
   }
 }
