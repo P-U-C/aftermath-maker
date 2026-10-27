@@ -440,13 +440,30 @@ button:disabled {
   grid-template-columns: 20px 1fr 28px;
   align-items: center;
   gap: 8px;
-  color: var(--ember-text);
-  background: var(--ember-soft);
-  border: 1px solid var(--ember);
+  border: 1px solid;
   font-size: 13px;
 }
 
+.notice-success {
+  color: var(--tide-text);
+  background: var(--tide-soft);
+  border-color: var(--tide);
+}
+
+.notice-warning {
+  color: var(--amber-text);
+  background: var(--amber-soft);
+  border-color: var(--amber);
+}
+
+.notice-error {
+  color: var(--ember-text);
+  background: var(--ember-soft);
+  border-color: var(--ember);
+}
+
 .notice button {
+  color: inherit;
   border: 0;
   background: transparent;
   font-size: 22px;
