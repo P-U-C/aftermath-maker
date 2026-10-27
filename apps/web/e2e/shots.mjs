@@ -34,6 +34,7 @@ const baseUrl = option(
   process.env.MAKER_SHOTS_URL ?? "http://127.0.0.1:8788",
 );
 const showFlattenSheet = process.argv.includes("--flatten-sheet");
+const showLiveSheet = process.argv.includes("--live-sheet");
 const outputDirectory = path.resolve(
   projectRoot,
   option("--output", defaultOutput),
@@ -128,9 +129,17 @@ function apiResponse(fixture, url) {
 }
 
 async function waitForFixture(page, stateName) {
-  if (stateName === "signed-out" || stateName === "not-on-list") {
+  if (stateName === "signed-out") {
     await page
-      .getByRole("heading", { name: "Your wallet is the key." })
+      .getByRole("heading", {
+        name: "Both sides of the market, from your own wallet.",
+      })
+      .waitFor();
+    return;
+  }
+  if (stateName === "not-on-list") {
+    await page
+      .getByRole("heading", { name: "You're not on the list yet." })
       .waitFor();
     return;
   }
@@ -260,6 +269,24 @@ async function capture(browser, stateName, captureConfig, view) {
       await page.getByRole("button", { name: "Flatten positions…" }).click();
       await page.getByRole("dialog", { name: "Flatten positions?" }).waitFor();
     }
+    if (
+      showLiveSheet &&
+      stateName === "stopped" &&
+      (view === null || view === "strategy")
+    ) {
+      if (view === null) {
+        await page.getByRole("link", { name: "Strategy" }).click();
+      }
+      await page.getByRole("button", { name: "Review live setup" }).click();
+      await page.getByRole("dialog", { name: "Use Live mode?" }).waitFor();
+      if (
+        await page.getByRole("button", { name: "Use Live mode" }).isEnabled()
+      ) {
+        throw new Error(
+          "Live mode was selectable while deployment gates were off",
+        );
+      }
+    }
     await page.waitForTimeout(100);
 
     const dimensions = await page.evaluate(() => ({
@@ -285,7 +312,7 @@ async function capture(browser, stateName, captureConfig, view) {
 
     const file = path.join(
       outputDirectory,
-      `${stateName}${view ? `-${view}` : ""}${showFlattenSheet ? "-flatten" : ""}-${captureConfig.name}.png`,
+      `${stateName}${view ? `-${view}` : ""}${showFlattenSheet ? "-flatten" : ""}${showLiveSheet ? "-live" : ""}-${captureConfig.name}.png`,
     );
     await page.screenshot({ path: file, fullPage: false });
     process.stdout.write(

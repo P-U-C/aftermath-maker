@@ -3134,6 +3134,631 @@ footer a {
   }
 }
 
+/* Step 6: access, venue, and Live review surfaces. */
+.access-shell {
+  min-height: 100vh;
+  padding: 0 40px 34px;
+  background: var(--canvas);
+}
+
+.access-header {
+  width: min(1240px, 100%);
+  height: 72px;
+  margin: 0 auto;
+  border: 0;
+}
+
+.access-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 18px;
+}
+
+.access-layout {
+  width: min(1160px, 100%);
+  min-height: calc(100vh - 180px);
+  margin: 0 auto;
+  display: grid;
+  grid-template-columns: minmax(0, 560px) minmax(400px, 1fr);
+  align-items: center;
+  gap: 64px;
+}
+
+.access-copy h1 {
+  max-width: 590px;
+  margin: 0;
+  font-size: 56px;
+  font-stretch: 125%;
+  font-weight: 640;
+  letter-spacing: 0;
+  line-height: 1.03;
+}
+
+.access-lede {
+  max-width: 535px;
+  margin: 24px 0 0;
+  color: var(--ink-2);
+  font-size: 18px;
+  line-height: 1.5;
+}
+
+.access-actions {
+  min-height: 52px;
+  margin-top: 30px;
+  display: flex;
+  align-items: center;
+  gap: 22px;
+}
+
+.access-connect button {
+  min-height: 52px !important;
+  padding: 0 28px !important;
+  color: var(--on-primary) !important;
+  background: var(--primary) !important;
+  border: 0 !important;
+  border-radius: 999px !important;
+  font-size: 16px !important;
+  font-weight: 640 !important;
+}
+
+.access-request-link {
+  color: var(--ink);
+  font-size: 15px;
+  font-weight: 560;
+  text-underline-offset: 3px;
+}
+
+.access-notice {
+  width: min(535px, 100%);
+  margin-top: 14px;
+  padding: 10px 12px;
+  color: var(--ember-text);
+  background: var(--ember-soft);
+  border: 0;
+  border-radius: 10px;
+  font-size: 13px;
+}
+
+.access-trust-list {
+  margin-top: 38px;
+  display: grid;
+  gap: 16px;
+}
+
+.access-trust-list > div {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr);
+  align-items: start;
+  gap: 12px;
+}
+
+.access-trust-icon {
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  background: var(--surface);
+  border-radius: 10px;
+}
+
+.access-trust-list p {
+  margin: 0;
+  display: grid;
+  gap: 1px;
+}
+
+.access-trust-list strong {
+  font-size: 15px;
+  font-weight: 620;
+}
+
+.access-trust-list p span {
+  color: var(--ink-2);
+  font-size: 14px;
+}
+
+.access-venue-line {
+  margin-top: 34px;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  color: var(--ink-2);
+  font-size: 14px;
+}
+
+.access-illustration {
+  min-height: 274px;
+  padding: 52px 40px 30px;
+  position: relative;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  grid-template-rows: 118px 48px 24px;
+  column-gap: 58px;
+  color: var(--ink-2);
+  background: var(--surface);
+  border-radius: 32px;
+}
+
+.access-fair-value {
+  position: absolute;
+  top: 48px;
+  left: 50%;
+  display: grid;
+  justify-items: center;
+  gap: 7px;
+  color: var(--ink-3);
+  font-size: 13px;
+  transform: translateX(-50%);
+}
+
+.access-fair-value i {
+  height: 116px;
+  border-left: 1px dashed var(--ink-3);
+}
+
+.access-spread-line {
+  align-self: end;
+  position: relative;
+  display: grid;
+  justify-items: center;
+  gap: 25px;
+  font-size: 13px;
+}
+
+.access-spread-line::after {
+  content: "";
+  width: calc(100% + 22px);
+  height: 13px;
+  position: absolute;
+  bottom: 9px;
+  border-radius: 999px;
+}
+
+.access-spread-line i {
+  width: 84px;
+  height: 32px;
+  z-index: 1;
+  display: block;
+  border-radius: 999px;
+}
+
+.access-spread-bid::after {
+  right: -22px;
+  background: var(--tide-soft);
+}
+
+.access-spread-bid i {
+  background: var(--tide);
+}
+
+.access-spread-ask::after {
+  left: -22px;
+  background: var(--ember-soft);
+}
+
+.access-spread-ask i {
+  background: var(--ember);
+}
+
+.access-spread-brace {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: start;
+  justify-content: center;
+  gap: 9px;
+  color: var(--ink);
+  font-size: 13px;
+}
+
+.access-spread-brace i {
+  width: 46px;
+  height: 12px;
+  display: block;
+  border-bottom: 1px solid var(--ink-3);
+}
+
+.access-spread-caption {
+  grid-column: 1 / -1;
+  align-self: end;
+  display: flex;
+  justify-content: space-between;
+  color: var(--ink-3);
+  font-size: 13px;
+}
+
+.access-risk-line {
+  width: min(1160px, 100%);
+  margin: -4px auto 0;
+  color: var(--ink-3);
+  font-size: 12.5px;
+}
+
+.venues-board {
+  width: min(1200px, calc(100% - 48px));
+  margin: 0 auto;
+  padding: 44px 0 10px;
+}
+
+.venues-title {
+  margin-bottom: 24px;
+}
+
+.venues-title h1 {
+  margin: 0;
+  font-size: 34px;
+  font-stretch: 122%;
+  font-weight: 640;
+  line-height: 1.1;
+}
+
+.venues-title p {
+  margin: 7px 0 0;
+  color: var(--ink-2);
+  font-size: 15px;
+}
+
+.venues-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  align-items: start;
+  gap: 20px;
+}
+
+.venue-card-heading {
+  margin-bottom: 18px;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.venue-card-glyph {
+  width: 44px;
+  height: 44px;
+  display: grid;
+  place-items: center;
+  background: var(--fill-2);
+  border-radius: 12px;
+  font-size: 18px;
+  font-stretch: 120%;
+  font-weight: 700;
+}
+
+.venue-card-heading h2 {
+  margin: 0;
+  font-size: 20px;
+  font-stretch: 112%;
+}
+
+.venue-state {
+  margin-top: 2px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--amber-text);
+  font-size: 13px;
+  font-weight: 560;
+}
+
+.venue-state i {
+  width: 6px;
+  height: 6px;
+  background: var(--amber);
+  border-radius: 50%;
+}
+
+.venue-state.is-ready {
+  color: var(--tide-text);
+}
+
+.venue-state.is-ready i {
+  background: var(--tide);
+}
+
+.venue-facts {
+  margin: 0;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  border-top: 1px solid var(--hair);
+}
+
+.venue-facts > div {
+  min-width: 0;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--hair);
+}
+
+.venue-facts > div:nth-child(odd) {
+  padding-right: 16px;
+}
+
+.venue-facts dt {
+  color: var(--ink-3);
+  font-size: 12.5px;
+}
+
+.venue-facts dd {
+  margin: 2px 0 0;
+  font-weight: 560;
+}
+
+.venue-accounts {
+  margin-top: 18px;
+}
+
+.venue-account-row {
+  min-height: 52px;
+  padding: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 120px 80px;
+  align-items: center;
+  gap: 16px;
+  border-bottom: 1px solid var(--hair);
+}
+
+.venue-account-row > :nth-child(n + 2) {
+  text-align: right;
+}
+
+.venue-account-row.is-header {
+  min-height: 34px;
+  color: var(--ink-3);
+  font-size: 12.5px;
+}
+
+.venue-account-row strong {
+  font-weight: 620;
+}
+
+.venue-account-row span {
+  font-feature-settings: "tnum" 1;
+}
+
+.venue-card-actions {
+  margin-top: 18px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.venue-add-card {
+  min-height: 306px;
+  background: transparent;
+  border: 1.5px dashed var(--fill-2);
+}
+
+.venue-add-card p {
+  max-width: 440px;
+  margin: 0 0 18px;
+  color: var(--ink-2);
+}
+
+.venue-add-card ol {
+  margin: 0 0 22px;
+  padding: 0;
+  display: grid;
+  gap: 10px;
+  color: var(--ink-2);
+  list-style: none;
+  counter-reset: venue-step;
+}
+
+.venue-add-card li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  counter-increment: venue-step;
+}
+
+.venue-add-card li::before {
+  content: counter(venue-step);
+  width: 22px;
+  height: 22px;
+  flex: none;
+  display: grid;
+  place-items: center;
+  color: var(--ink);
+  background: var(--fill-2);
+  border-radius: 50%;
+  font-size: 12px;
+  font-weight: 620;
+}
+
+.venue-add-card > span {
+  color: var(--ink-3);
+  font-size: 13px;
+}
+
+.venue-exposure-card {
+  margin-top: 20px;
+}
+
+.venue-exposure-table .ui-list-row {
+  padding: 0;
+}
+
+.venue-exposure-table .ui-list-row::after {
+  right: 0;
+  left: 0;
+}
+
+.venue-exposure-table .ui-list-content {
+  display: grid;
+  grid-template-columns: 1.4fr repeat(4, 1fr);
+  align-items: center;
+  gap: 16px;
+}
+
+.venue-exposure-table .ui-list-content > :not(:first-child) {
+  text-align: right;
+  font-feature-settings: "tnum" 1;
+}
+
+.venue-exposure-head {
+  min-height: 38px;
+  color: var(--ink-3);
+  font-size: 12.5px;
+}
+
+.venue-exposure-table .is-loss {
+  color: var(--ember-text);
+}
+
+.venue-exposure-table .is-profit {
+  color: var(--tide-text);
+}
+
+.strategy-mode-fieldset {
+  position: relative;
+}
+
+.strategy-live-review {
+  margin-top: 8px;
+  padding: 0;
+  color: var(--ink-2);
+  background: transparent;
+  border: 0;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.go-live-summary {
+  margin: 0;
+  padding: 2px 16px;
+  background: var(--fill);
+  border-radius: 16px;
+}
+
+.go-live-summary > div {
+  min-height: 46px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(180px, 1.4fr);
+  align-items: center;
+  gap: 18px;
+  border-bottom: 1px solid var(--hair);
+}
+
+.go-live-summary > div:last-child {
+  border-bottom: 0;
+}
+
+.go-live-summary dt {
+  color: var(--ink-2);
+}
+
+.go-live-summary dd {
+  margin: 0;
+  text-align: right;
+  font-weight: 620;
+}
+
+.go-live-blocked {
+  margin: 14px 2px 0;
+  color: var(--amber-text);
+  font-size: 13px;
+}
+
+@media (max-width: 900px) {
+  .access-layout {
+    grid-template-columns: 1fr;
+    gap: 40px;
+    padding: 44px 0;
+  }
+
+  .access-illustration {
+    order: -1;
+  }
+
+  .venues-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 720px) {
+  .access-shell {
+    padding: 0 18px 28px;
+  }
+
+  .access-header {
+    height: 64px;
+  }
+
+  .access-layout {
+    min-height: 0;
+    padding: 28px 0 44px;
+  }
+
+  .access-copy h1 {
+    font-size: 42px;
+  }
+
+  .access-lede {
+    font-size: 16px;
+  }
+
+  .access-actions {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 14px;
+  }
+
+  .access-illustration {
+    min-height: 230px;
+    padding: 40px 22px 24px;
+    column-gap: 28px;
+    border-radius: 24px;
+  }
+
+  .access-fair-value {
+    top: 34px;
+  }
+
+  .access-risk-line {
+    margin: 0;
+  }
+
+  .venues-board {
+    width: calc(100% - 28px);
+    padding-top: 28px;
+  }
+
+  .venues-title h1 {
+    font-size: 30px;
+  }
+
+  .venue-facts {
+    grid-template-columns: 1fr;
+  }
+
+  .venue-facts > div:nth-child(odd) {
+    padding-right: 0;
+  }
+
+  .venue-account-row {
+    grid-template-columns: minmax(0, 1fr) 84px 68px;
+    gap: 8px;
+  }
+
+  .venue-exposure-table {
+    overflow-x: auto;
+  }
+
+  .venue-exposure-table .ui-list-row {
+    min-width: 630px;
+  }
+
+  .go-live-summary > div {
+    grid-template-columns: 1fr;
+    gap: 3px;
+    padding: 10px 0;
+  }
+
+  .go-live-summary dd {
+    text-align: left;
+  }
+}
+
 @media (max-width: 430px) {
   .field-pair {
     grid-template-columns: 1fr;

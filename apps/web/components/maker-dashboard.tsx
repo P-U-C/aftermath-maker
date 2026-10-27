@@ -5,7 +5,6 @@ import {
   useCurrentAccount,
   useDAppKit,
 } from "@mysten/dapp-kit-react";
-import { ConnectButton } from "@mysten/dapp-kit-react/ui";
 import { Transaction } from "@mysten/sui/transactions";
 import {
   assertOwnerTransactionIntent,
@@ -42,14 +41,15 @@ import {
 } from "react";
 import { dAppKit } from "../app/dapp-kit";
 import { primaryVenue } from "../lib/venues";
+import { AccessScreen } from "./access-screen";
 import { MakerShell, useMakerView } from "./maker-shell";
 import { SpreadMark } from "./spread-mark";
 import { VenueChip } from "./venue-chip";
 import { DeskView } from "./views/desk";
 import { MarketsView } from "./views/markets";
 import { PerformanceView } from "./views/performance";
-import { StrategyView } from "./views/strategy";
-import { VenuesView } from "./views/venues";
+import { GoLiveSheet, StrategyView } from "./views/strategy";
+import { VenueBoard, VenuesView } from "./views/venues";
 
 type PreparedOwnerTransactionResponse = {
   transaction: string;
@@ -664,6 +664,7 @@ function DashboardBody() {
   const { activeView, selectView } = useMakerView();
   const [identity, setIdentity] = useState<AccessIdentity | null>(null);
   const [authChecked, setAuthChecked] = useState(false);
+  const [accessDenied, setAccessDenied] = useState(false);
   const [builderCode, setBuilderCode] = useState<BuilderCode | null>(null);
   const [operatorStatus, setOperatorStatus] = useState<OperatorStatus | null>(
     null,
@@ -704,6 +705,7 @@ function DashboardBody() {
   >({});
   const [busy, setBusy] = useState("");
   const [flattenArmed, setFlattenArmed] = useState(false);
+  const [liveSheetOpen, setLiveSheetOpen] = useState(false);
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [accountManagerOpen, setAccountManagerOpen] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
@@ -787,9 +789,16 @@ function DashboardBody() {
     let active = true;
     request<AccessIdentity>("api/auth/me")
       .then((result) => {
-        if (active) setIdentity(result);
+        if (active) {
+          setIdentity(result);
+          setAccessDenied(false);
+        }
       })
       .catch((error) => {
+        if (active && error instanceof RequestError && error.status === 403) {
+          setAccessDenied(true);
+          return;
+        }
         if (
           active &&
           !(error instanceof RequestError && error.status === 401)
@@ -898,9 +907,15 @@ function DashboardBody() {
       });
       const nextIdentity = await request<AccessIdentity>("api/auth/me");
       setIdentity(nextIdentity);
+      setAccessDenied(false);
       setNotice("Wallet verified against the Sui access registry.");
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : String(error));
+      if (error instanceof RequestError && error.status === 403) {
+        setAccessDenied(true);
+        setNotice(null);
+      } else {
+        setNotice(error instanceof Error ? error.message : String(error));
+      }
     } finally {
       setBusy("");
       setAuthChecked(true);
@@ -916,6 +931,7 @@ function DashboardBody() {
     setSavedConfig(undefined);
     setAccountsLoaded(false);
     setIdentity(null);
+    setAccessDenied(false);
     setOperatorStatus(null);
     setSnapshot(null);
   }
@@ -1625,50 +1641,14 @@ function DashboardBody() {
 
   if (!identity) {
     return (
-      <main className="access-shell">
-        <header className="access-header">
-          <div className="brand">
-            <SpreadMark state="stopped" />
-            <div>
-              <strong>Maker</strong>
-              <span>Live on {primaryVenue.name}. More venues on the way.</span>
-            </div>
-          </div>
-          <ConnectButton>Connect wallet</ConnectButton>
-        </header>
-        <section className="access-stage">
-          <div className="access-seal">
-            <LockKeyhole size={26} />
-          </div>
-          <span className="eyebrow">{primaryVenue.network} access</span>
-          <h1>Your wallet is the key.</h1>
-          <p>
-            Connect and sign a readable login message. Membership is checked
-            against the public on-chain registry; signing cannot move funds.
-          </p>
-          <button
-            className="button primary access-button"
-            onClick={() => void signIn()}
-            disabled={!account?.address || Boolean(busy)}
-          >
-            <ShieldCheck size={17} />
-            {busy === "sign-in"
-              ? "Check your wallet..."
-              : account?.address
-                ? "Verify access"
-                : "Connect to continue"}
-          </button>
-          {notice && <div className="access-notice">{notice}</div>}
-          <div className="access-proof">
-            <span>Authentication</span>
-            <strong>Signed message</strong>
-            <span>Membership</span>
-            <strong>Sui object</strong>
-            <span>Trading keys</span>
-            <strong>Per wallet</strong>
-          </div>
-        </section>
-      </main>
+      <AccessScreen
+        venue={primaryVenue}
+        connected={Boolean(account?.address)}
+        denied={accessDenied}
+        busy={busy === "sign-in"}
+        notice={notice}
+        onVerify={() => void signIn()}
+      />
     );
   }
 
@@ -1702,25 +1682,7 @@ function DashboardBody() {
     activeMakerSnapshot?.portfolio.availableCollateralUsd ??
     activeMakerCap?.availableCollateralUsd ??
     null;
-  const makerAllocatedCollateralUsd =
-    activeMakerSnapshot?.portfolio.allocatedCollateralUsd ??
-    activeMakerCap?.allocatedCollateralUsd ??
-    null;
-  const makerWithdrawableCollateralUsd =
-    activeMakerSnapshot?.portfolio.withdrawableCollateralUsd ??
-    activeMakerCap?.availableCollateralUsd ??
-    null;
   const agentGasSui = activeMakerSnapshot?.balances.gasSui ?? null;
-  const readiness =
-    makerEquityUsd === null
-      ? { label: "Checking funds", ready: false }
-      : makerEquityUsd <= 0
-        ? { label: "Needs funding", ready: false }
-        : agentGasSui === null
-          ? { label: "Funded", ready: true }
-          : agentGasSui <= 0
-            ? { label: "Needs gas", ready: false }
-            : { label: "Ready", ready: true };
   const onboardingComplete = Boolean(
     setup.agent && activeMakerAccount?.agentCapId,
   );
@@ -1877,6 +1839,31 @@ function DashboardBody() {
       realizedPnlUsd: fill.realizedPnlUsd,
       txDigest: fill.txDigest,
     })) ?? [];
+  const venueAccountRows = accounts.map((owned) => ({
+    accountId: owned.accountId,
+    equityUsd: owned.equityUsd,
+    role:
+      owned.accountId === activeMakerAccountId
+        ? ("Maker" as const)
+        : owned.accountId === config.hedge.accountId
+          ? ("Hedge" as const)
+          : ("Available" as const),
+  }));
+  const venueEquityUsd = accounts.reduce(
+    (total, owned) => total + owned.equityUsd,
+    0,
+  );
+  const venueGasText =
+    agentGasSui === null
+      ? "Not reported"
+      : `${agentGasSui.toFixed(2)} ${primaryVenue.gasUnit}${
+          snapshot?.execution.gasRunwayTransactions === null ||
+          snapshot?.execution.gasRunwayTransactions === undefined
+            ? ""
+            : `, ${snapshot.execution.gasRunwayTransactions} transactions after reserve`
+        }`;
+  const liveAvailable =
+    liveGates.liveTradingEnabled && liveGates.mainnetAllowed;
 
   const markState = !snapshot?.running
     ? "stopped"
@@ -2040,55 +2027,33 @@ function DashboardBody() {
         )}
 
         {onboardingComplete && (
-          <section className="account-band" aria-label="Account readiness">
-            <div className="account-band-title">
-              <span className="eyebrow">Account readiness</span>
-              <strong>Maker account {activeMakerAccountId}</strong>
-              <span
-                className={readiness.ready ? "readiness ready" : "readiness"}
-              >
-                {readiness.label}
-              </span>
-              <button
-                type="button"
-                className="icon-button account-manager-toggle"
-                onClick={() => setAccountManagerOpen((open) => !open)}
-                aria-expanded={accountManagerOpen}
-                aria-label={`Manage ${primaryVenue.name} accounts`}
-                title={`Manage ${primaryVenue.name} accounts`}
-              >
-                <WalletCards size={16} aria-hidden="true" />
-              </button>
-            </div>
-            <div>
-              <span>Equity</span>
-              <strong>{money(makerEquityUsd)}</strong>
-            </div>
-            <div>
-              <span>Available</span>
-              <strong>{money(makerAvailableCollateralUsd)}</strong>
-            </div>
-            <div>
-              <span>Allocated</span>
-              <strong>{money(makerAllocatedCollateralUsd)}</strong>
-            </div>
-            <div>
-              <span>Withdrawable by owner</span>
-              <strong>{money(makerWithdrawableCollateralUsd)}</strong>
-            </div>
-            <div>
-              <span>Trading key gas</span>
-              <strong>
-                {agentGasSui === null
-                  ? "-"
-                  : `${agentGasSui.toFixed(4)} ${primaryVenue.gasUnit}`}
-              </strong>
-            </div>
-            <div>
-              <span>Trading key authority</span>
-              <strong>Trade / no withdrawals</strong>
-            </div>
-          </section>
+          <VenueBoard
+            venue={primaryVenue}
+            connected
+            quoting={Boolean(snapshot?.running)}
+            tradingKeyReady={Boolean(activeMakerAccount?.agentCapId)}
+            feeText={
+              builderCode
+                ? `${(builderCode.integratorFee * 10_000).toFixed(0)} bp on filled orders`
+                : "Not approved"
+            }
+            gasText={venueGasText}
+            selectedMarkets={config.markets.length}
+            eligibleMarkets={markets.length}
+            accounts={venueAccountRows}
+            totalEquityUsd={venueEquityUsd}
+            grossExposureUsd={snapshot?.portfolio.grossExposureUsd ?? 0}
+            grossExposureLimitUsd={config.maxGrossExposureUsd}
+            unrealizedPnlUsd={snapshot?.portfolio.unrealizedPnlUsd ?? 0}
+            onManage={() => setAccountManagerOpen((open) => !open)}
+            {...(activeMakerAccountId
+              ? {
+                  onRevoke: () => {
+                    void revokeAgent(activeMakerAccountId);
+                  },
+                }
+              : {})}
+          />
         )}
 
         {onboardingComplete && accountManagerOpen && (
@@ -3028,7 +2993,7 @@ function DashboardBody() {
               </div>
             </details>
 
-            <fieldset>
+            <fieldset className="strategy-mode-fieldset">
               <legend>Mode</legend>
               <div className="segments">
                 {(["observe", "paper", "live"] as const).map((mode) => (
@@ -3036,14 +3001,35 @@ function DashboardBody() {
                     key={mode}
                     type="button"
                     className={config.mode === mode ? "selected" : ""}
-                    onClick={() =>
-                      setConfig((current) => ({ ...current, mode }))
+                    aria-pressed={config.mode === mode}
+                    disabled={mode === "live" && !liveAvailable}
+                    title={
+                      mode === "live" && !liveAvailable
+                        ? "Live trading is off on this server"
+                        : undefined
                     }
+                    onClick={() => {
+                      if (mode === "live") {
+                        setLiveSheetOpen(true);
+                      } else {
+                        setConfig((current) => ({ ...current, mode }));
+                      }
+                    }}
                   >
                     {mode}
                   </button>
                 ))}
               </div>
+              {!liveAvailable && (
+                <small>Live trading is off on this server</small>
+              )}
+              <button
+                className="strategy-live-review"
+                type="button"
+                onClick={() => setLiveSheetOpen(true)}
+              >
+                Review live setup
+              </button>
             </fieldset>
 
             <div className="field-pair">
@@ -4138,6 +4124,25 @@ function DashboardBody() {
           </section>
         )}
       </VenuesView>
+
+      <GoLiveSheet
+        open={liveSheetOpen}
+        available={liveAvailable}
+        venue={primaryVenue}
+        marketCount={config.markets.length}
+        rotationMode={config.rotationMode}
+        quoteSizeUsd={config.quoteSizeUsd}
+        maxGrossExposureUsd={config.maxGrossExposureUsd}
+        maxRunDrawdownUsd={config.maxRunDrawdownUsd}
+        hedgeAccountId={config.hedge.enabled ? config.hedge.accountId : null}
+        hedgeSlippageBps={config.hedge.maxSlippageBps}
+        onClose={() => setLiveSheetOpen(false)}
+        onConfirm={() => {
+          if (!liveAvailable) return;
+          setConfig((current) => ({ ...current, mode: "live" }));
+          setLiveSheetOpen(false);
+        }}
+      />
 
       <footer>
         <span>
