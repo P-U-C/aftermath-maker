@@ -1040,7 +1040,9 @@ export class MakerRuntime {
     let selected: MakerMarket | null = null;
     let config: MakerConfig | null = null;
     try {
-      config = makerConfigSchema.parse(this.store.getConfig());
+      const storedConfig = this.store.getConfig();
+      if (!storedConfig) return;
+      config = makerConfigSchema.parse(storedConfig);
       this.syncMarketRows(config);
       selected = config.markets[this.marketIndex % config.markets.length]!;
       const marketConfig = resolveMarketConfig(config, selected);

@@ -462,7 +462,8 @@ app.post("/api/config", async (request) => {
     config.mode === "live" &&
     (!env.LIVE_TRADING_ENABLED || !env.ALLOW_MAINNET)
   ) {
-    throw new Error(
+    throw new AuthError(
+      409,
       "Live mode requires LIVE_TRADING_ENABLED=true and ALLOW_MAINNET=true",
     );
   }

@@ -339,8 +339,7 @@ export function executionGasUsedMist(result: unknown): number {
   if (!gas) return 0;
   const used =
     BigInt(gas.computationCost ?? "0") +
-    BigInt(gas.storageCost ?? "0") +
-    BigInt(gas.nonRefundableStorageFee ?? "0") -
+    BigInt(gas.storageCost ?? "0") -
     BigInt(gas.storageRebate ?? "0");
   return Number(used > 0n ? used : 0n);
 }

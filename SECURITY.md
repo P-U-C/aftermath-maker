@@ -14,7 +14,7 @@ Public access is gated by the `maker_access::access::Registry` shared object on 
 - Membership is re-read from chain at most 30 seconds after a change.
 - Each wallet has separate settings, agent ciphertext, runtime, executions, and audit events.
 
-The operator's `AdminCap` is the authority for membership changes. Keep it in the intended operator wallet. The API refuses to build a transaction that removes the operator's own membership.
+The bootstrap operator wallet must also be the registry deployment signer and the on-chain `AdminCap` owner. Only its signed session can access membership APIs, and only it receives the membership management view. Member wallets receive HTTP 403. Keep the `AdminCap` in that operator wallet. The API also refuses to build a transaction that removes the operator's own membership.
 
 Bootstrap mode accepts the first signed wallet only while no registry is configured. It must remain behind Basic Auth and be disabled immediately after deployment. Never expose bootstrap mode directly to the public internet.
 

@@ -11,7 +11,7 @@ import { makerConfigSchema, setupSchema } from "@puc/core";
 import { MakerRuntime } from "../src/runtime.js";
 import { Store } from "../src/store.js";
 
-function createHarness() {
+function createHarness(options: { configured?: boolean } = {}) {
   const directory = join(
     process.env.TMPDIR ?? "/tmp",
     `aftermath-maker-${randomBytes(8).toString("hex")}`,
@@ -38,7 +38,7 @@ function createHarness() {
   });
 
   store.setSetup(setup);
-  store.setConfig(config);
+  if (options.configured !== false) store.setConfig(config);
   store.createAgent({
     ...agent,
     encryptionContext: "account:42",
@@ -193,6 +193,19 @@ afterEach(() => {
 });
 
 describe("runtime execution boundaries", () => {
+  it("treats a cycle before strategy setup as an idle no-op", async () => {
+    const harness = createHarness({ configured: false });
+
+    await harness.runtime.cycle();
+
+    expect(harness.runtime.snapshot.cycle).toBe(0);
+    expect(harness.runtime.snapshot.lastError).toBeNull();
+    expect(
+      harness.tenant.listEvents().filter((event) => event.action === "cycle"),
+    ).toHaveLength(0);
+    harness.store.close();
+  });
+
   it("keeps a manual live-mode refresh read-only", async () => {
     const harness = createHarness();
 

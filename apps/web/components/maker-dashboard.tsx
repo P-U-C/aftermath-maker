@@ -486,6 +486,9 @@ function DashboardBody() {
   const [markets, setMarkets] = useState<Market[]>([]);
   const [marketQuery, setMarketQuery] = useState("");
   const [config, setConfig] = useState<MakerConfig>(defaultConfig);
+  const [savedConfig, setSavedConfig] = useState<
+    MakerConfig | null | undefined
+  >(undefined);
   const configLoaded = useRef(false);
   const [setup, setSetup] = useState<SetupState>({
     setup: null,
@@ -493,6 +496,7 @@ function DashboardBody() {
     agent: null,
   });
   const [accounts, setAccounts] = useState<AccountCap[]>([]);
+  const [accountsLoaded, setAccountsLoaded] = useState(false);
   const [events, setEvents] = useState<AuditEvent[]>([]);
   const [performance, setPerformance] = useState<Performance | null>(null);
   const [rewards, setRewards] = useState<RewardDashboard | null>(null);
@@ -528,15 +532,21 @@ function DashboardBody() {
     setBuilderCode(statusResult.builderCode);
     setSetup(setupResult);
     setEvents(eventResult.events);
-    if (configResult.config && !configLoaded.current) {
+    if (!configLoaded.current) {
       configLoaded.current = true;
-      setConfig({
-        ...configResult.config,
-        makerAccountId:
-          configResult.config.makerAccountId ??
-          setupResult.setup?.accountId ??
-          null,
-      });
+      if (configResult.config) {
+        const loadedConfig = {
+          ...configResult.config,
+          makerAccountId:
+            configResult.config.makerAccountId ??
+            setupResult.setup?.accountId ??
+            null,
+        };
+        setConfig(loadedConfig);
+        setSavedConfig(loadedConfig);
+      } else {
+        setSavedConfig(null);
+      }
     }
   }, []);
 
@@ -629,8 +639,10 @@ function DashboardBody() {
         account.address.toLowerCase() !== identity.ownerAddress)
     ) {
       setAccounts([]);
+      setAccountsLoaded(false);
       return;
     }
+    setAccountsLoaded(false);
     void request<{ accounts: AccountCap[] }>(
       `api/accounts?collateralCoinType=${encodeURIComponent(USDC)}`,
     )
@@ -645,7 +657,8 @@ function DashboardBody() {
               ""),
         );
       })
-      .catch((error) => setNotice(error.message));
+      .catch((error) => setNotice(error.message))
+      .finally(() => setAccountsLoaded(true));
   }, [account?.address, identity]);
 
   const selectedCap = useMemo(
@@ -694,6 +707,8 @@ function DashboardBody() {
     );
     configLoaded.current = false;
     setConfig(defaultConfig);
+    setSavedConfig(undefined);
+    setAccountsLoaded(false);
     setIdentity(null);
     setOperatorStatus(null);
     setSnapshot(null);
@@ -1182,6 +1197,7 @@ function DashboardBody() {
         method: "POST",
         body: JSON.stringify(config),
       });
+      setSavedConfig(config);
       setNotice(
         snapshot?.running
           ? "Strategy saved. The next market cycle will use it."
@@ -1192,6 +1208,10 @@ function DashboardBody() {
 
   async function toggleRuntime() {
     const action = snapshot?.running ? "stop" : "start";
+    if (action === "start" && configDirty) {
+      setNotice("Save strategy changes before starting the engine.");
+      return;
+    }
     await mutate(action, async () => {
       await request(`api/runtime/${action}`, {
         method: "POST",
@@ -1306,6 +1326,9 @@ function DashboardBody() {
     );
   }
 
+  const configDirty =
+    savedConfig === undefined ||
+    JSON.stringify(config) !== JSON.stringify(savedConfig);
   const selectedMarketIds = new Set(
     config.markets.map((market) => market.marketId),
   );
@@ -1518,7 +1541,11 @@ function DashboardBody() {
                         aria-label="Aftermath account"
                       >
                         {!accounts.length && (
-                          <option value="">No USDC accounts found</option>
+                          <option value="">
+                            {accountsLoaded
+                              ? "No USDC accounts found"
+                              : "Discovering USDC accounts..."}
+                          </option>
                         )}
                         {accounts.map((item) => (
                           <option key={item.accountId} value={item.accountId}>
@@ -1553,8 +1580,10 @@ function DashboardBody() {
                 ) : (
                   <>
                     <p>
-                      Grant trading-only access and seed 0.1 SUI gas in one
-                      owner transaction. The agent cannot withdraw.
+                      Grant trading-only access to account{" "}
+                      {setup.setup?.accountId ?? selectedAccount} and seed 0.1
+                      SUI gas in one owner transaction. The agent cannot
+                      withdraw.
                       {builderCode ? (
                         <>
                           {" "}
@@ -1568,11 +1597,16 @@ function DashboardBody() {
                     </p>
                     <button
                       className="button primary"
-                      onClick={() => void authorizeAgent()}
+                      onClick={() =>
+                        void authorizeAgent(
+                          setup.setup?.accountId ?? selectedAccount,
+                        )
+                      }
                       disabled={!builderCode || Boolean(busy)}
                     >
                       <ShieldCheck size={16} />
-                      {busy === `authorize-${selectedAccount}`
+                      {busy ===
+                      `authorize-${setup.setup?.accountId ?? selectedAccount}`
                         ? "Waiting for wallet..."
                         : builderCode
                           ? "Authorize agent"
@@ -1977,14 +2011,25 @@ function DashboardBody() {
                 {snapshot?.lastError ??
                   (snapshot?.running
                     ? "Quoting selected markets"
-                    : "No live orders scheduled")}
+                    : configDirty
+                      ? "Save strategy changes before starting"
+                      : "No live orders scheduled")}
               </strong>
             </div>
             <div className="engine-buttons">
               <button
                 className={snapshot?.running ? "button danger" : "button start"}
                 onClick={() => void toggleRuntime()}
-                disabled={!config.markets.length || Boolean(busy)}
+                disabled={
+                  !config.markets.length ||
+                  Boolean(busy) ||
+                  (!snapshot?.running && configDirty)
+                }
+                title={
+                  !snapshot?.running && configDirty
+                    ? "Save strategy changes before starting"
+                    : undefined
+                }
               >
                 {snapshot?.running ? (
                   <CircleStop size={17} />

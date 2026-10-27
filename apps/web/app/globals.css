@@ -2783,10 +2783,6 @@ footer a {
 }
 
 @media (max-width: 430px) {
-  .topbar-actions {
-    max-width: 155px;
-  }
-
   .field-pair {
     grid-template-columns: 1fr;
   }

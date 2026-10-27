@@ -30,14 +30,14 @@ Validate Maker from a clean, dedicated owner through account creation, funding, 
 - Accounts: two independently created and authorized Aftermath accounts, assigned distinct Maker and Hedge roles in the interface
 - Markets: one liquid, continuously open market selected from live evidence
 - Quote size: 1 USDC per side
-- Maximum inventory: 5 USDC
-- Maximum gross exposure: 5 USDC
+- Maximum inventory: 3 USDC
+- Maximum gross exposure: 3 USDC
 - Maximum unrealized loss: 1 USDC
 - Maximum run equity drawdown: 1 USDC
 - Maximum book/index divergence: 50 bps
 - Leverage: 1x
 - Spread: conservative and post-only
-- Hedge: disabled only long enough to prove maker-fill attribution, then enabled on the second account with a 1 USDC threshold and a 5 USDC maximum hedge; combined delta is reconciled after every attributed fill
+- Hedge: enabled on the second account with a 1 USDC threshold and a 5 USDC maximum hedge; combined delta is reconciled after every attributed fill
 - Duration: enough cycles to prove replacement and watchdog behavior, not artificial reward farming
 
 ## Evidence
@@ -55,10 +55,6 @@ Store only public or non-secret evidence under this directory:
 
 ## Current status
 
-Static remediation is recorded in [FINDINGS.md](FINDINGS.md) and deployed. Unit, type, build, container-hardening, public-header, proxy, and authenticated desktop/mobile browser checks pass. The dedicated owner remained unfunded and outside the three-member registry at 2026-10-27T02:03:02Z, so no mainnet transaction has been executed and no live claim is yet proven. Both deployment gates remain disabled.
+The dedicated owner is on the on-chain registry and completed the bounded mainnet canary. The public interface created accounts 1745 and 1746, deposited 7.50 USDC into each, granted the same encrypted agent a separate trading capability for each account, ran Observe and Paper, and submitted one Live BTC quote cycle. Manual stop canceled both exact order IDs. There were no fills, no hedge execution, and no open position.
 
-Funding precondition:
-
-- 20 USDC
-- at least 0.25 SUI to cover account creation, owner transaction gas, and the 0.1 SUI agent seed
-- on-chain Maker whitelist membership for the audit owner
+The retained state is stopped in Paper mode with both deployment gates disabled. Account 1745 remains Maker, account 1746 remains Hedge, and both capabilities remain intentionally authorized for the next fill-driven test. Exact transactions and balances are recorded in [EVIDENCE.md](EVIDENCE.md); unresolved verification limits are recorded in [FINDINGS.md](FINDINGS.md).

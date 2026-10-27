@@ -89,13 +89,13 @@ Attribution starts when this release records posted order IDs. Older account act
 
 The default builder fee is **1 bp (0.01%) of filled notional**. That exceeds Aftermath's base 0.5 bp maker rebate before market-share rebates, spread capture, and adverse selection. The dashboard discloses and reports it separately.
 
-Read [the operating model](docs/OPERATING_MODEL.md), [review guide](docs/REVIEW_GUIDE.md), [security model](SECURITY.md), and [current mainnet audit](audits/2026-10-27-mainnet/FINDINGS.md) before using Live.
+Read [the operating model](docs/OPERATING_MODEL.md), [review guide](docs/REVIEW_GUIDE.md), [security model](SECURITY.md), [mainnet findings](audits/2026-10-27-mainnet/FINDINGS.md), and [transaction evidence](audits/2026-10-27-mainnet/EVIDENCE.md) before using Live.
 
 ## Public access
 
 Access membership is stored in the Sui Move package under [`move/maker_access`](move/maker_access). Each approved wallet gets isolated configuration, encrypted signer material, execution records, order attribution, and audit events.
 
-The operator console can deploy the registry and add or remove wallets through signed Sui transactions. Sessions are HTTP-only, expire after 12 hours, and re-check membership on-chain every 30 seconds.
+Only the bootstrap operator wallet that deployed the registry and owns its `AdminCap` can see or call membership management. It can add or remove wallets through signed Sui transactions. Member wallets receive HTTP 403 from operator endpoints. Sessions are HTTP-only, expire after 12 hours, and re-check membership on-chain every 30 seconds.
 
 ## Operations
 

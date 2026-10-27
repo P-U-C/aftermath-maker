@@ -32,7 +32,7 @@ const result = {
 
 describe("gateway execution evidence", () => {
   it("calculates paid gas net of the storage rebate", () => {
-    expect(executionGasUsedMist(result)).toBe(135);
+    expect(executionGasUsedMist(result)).toBe(130);
   });
 
   it("extracts only order IDs emitted by posted-order events", () => {
