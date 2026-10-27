@@ -46,7 +46,19 @@ Completed locally on 2026-10-27:
 - Production dependency audit: 0 vulnerabilities.
 - Live gates remained disabled; no transaction was signed or broadcast during remediation.
 
-The release record must add the final production build, image digest/SBOM, isolated backup/restore and key-rotation drills, browser checks, deployed health result, remediation commit, and immutable remediation tag.
+Release verification completed on 2026-10-27:
+
+- Application source revision: `4170211865460598915f57f9b22a35e41fdac814`.
+- Deployed image: `puc/aftermath-maker@sha256:4571c0f90d2703b0b14079b22d97afd9b78460cc5a1a1635b2a13e1c2f31b603`, labeled with that revision.
+- The image uses a digest-pinned Node base and carries BuildKit provenance plus a generated Syft SBOM attestation.
+- Both production containers run that image; control `/health` and `/ready` return 200, with the public Sui mainnet gRPC endpoint healthy.
+- Public and local web routes return 200. A missing-origin POST returns 403; a canonical same-origin malformed request reaches Fastify and returns 400.
+- The random-session rate-limit reproduction returned 120 responses at 400 and the next 10 at 429 under one trusted client IP.
+- The deployed online backup completed without stopping control. Its mode-`0600` archive restored with `quick_check=ok` and 15 tables.
+- The isolated key-rotation drill preserved the signer address and produced a v2 envelope with the new key ID.
+- Playwright renders at 1440×1100 and 390×844 returned 200 with exact viewport width and no overlap. The expected unauthenticated `/api/auth/me` 401 appears in the browser console.
+- Nginx configuration validation passed before reload.
+- Production `LIVE_TRADING_ENABLED=false` and `ALLOW_MAINNET=false`; no transaction was signed or broadcast during remediation or deployment.
 
 ## Residual Trust
 
