@@ -59,6 +59,7 @@ services:
       NODE_ENV: production
       CONTROL_URL: http://control:8787
       CONTROL_TOKEN: ${CONTROL_TOKEN:?CONTROL_TOKEN is required}
+      PUBLIC_ORIGIN: ${PUBLIC_ORIGIN:?PUBLIC_ORIGIN is required}
       WEB_PORT: 8788
     ports:
       - "${WEB_BIND_ADDRESS:-127.0.0.1}:${WEB_PORT:-8788}:8788"

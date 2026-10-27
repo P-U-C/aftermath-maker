@@ -1,6 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 
 const CONTROL_URL = process.env.CONTROL_URL ?? "http://127.0.0.1:8787";
+const PUBLIC_ORIGIN = new URL(
+  process.env.PUBLIC_ORIGIN ?? "http://localhost:8788",
+).origin;
 const SESSION_COOKIE =
   process.env.NODE_ENV === "production"
     ? "__Host-maker_session"
@@ -34,7 +37,7 @@ async function proxy(
     const origin = request.headers.get("origin");
     const fetchSite = request.headers.get("sec-fetch-site");
     if (
-      origin !== request.nextUrl.origin ||
+      origin !== PUBLIC_ORIGIN ||
       (fetchSite !== null && fetchSite !== "same-origin")
     ) {
       return NextResponse.json(
