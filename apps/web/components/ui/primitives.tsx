@@ -179,8 +179,8 @@ export function Toggle({
   );
 }
 
-type CardProps = HTMLAttributes<HTMLElement> & {
-  title?: string;
+type CardProps = Omit<HTMLAttributes<HTMLElement>, "title"> & {
+  title?: ReactNode;
   subtitle?: string;
   action?: ReactNode;
 };

@@ -13,21 +13,15 @@ import {
   type SerializedOwnerTransactionIntent,
 } from "@puc/aftermath/owner-transaction-intent";
 import {
-  Activity,
   ArrowDownRight,
   ArrowUpRight,
-  CircleStop,
-  Clock3,
   ExternalLink,
   Coins,
   Fuel,
   Gauge,
   KeyRound,
   LockKeyhole,
-  Play,
-  RefreshCw,
   Search,
-  Server,
   Settings2,
   Target,
   TimerReset,
@@ -640,16 +634,6 @@ const compactNumber = (value: number | null) =>
         maximumFractionDigits: 2,
       }).format(value);
 
-const compactDuration = (milliseconds: number | null) => {
-  if (milliseconds === null) return "-";
-  const minutes = milliseconds / 60_000;
-  if (minutes < 60) return `${Math.max(1, Math.floor(minutes))}m`;
-  const hours = minutes / 60;
-  if (hours < 48) return `${hours.toFixed(hours < 10 ? 1 : 0)}h`;
-  const days = hours / 24;
-  return `${days.toFixed(days < 10 ? 1 : 0)}d`;
-};
-
 const percent = (value: number | null, digits = 2) =>
   value === null ? "-" : `${value.toFixed(digits)}%`;
 
@@ -723,6 +707,7 @@ function DashboardBody() {
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [accountManagerOpen, setAccountManagerOpen] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
+  const [stopError, setStopError] = useState<string | null>(null);
   const [integratorId, setIntegratorId] = useState("");
   const [inspection, setInspection] = useState<{
     exists: boolean;
@@ -1493,18 +1478,30 @@ function DashboardBody() {
     });
   }
 
-  async function toggleRuntime() {
-    const action = snapshot?.running ? "stop" : "start";
-    if (action === "start" && configDirty) {
+  async function startRuntime() {
+    if (configDirty) {
       setNotice("Save strategy changes before starting the engine.");
       return;
     }
-    await mutate(action, async () => {
-      await request(`api/runtime/${action}`, {
+    await mutate("start", async () => {
+      await request("api/runtime/start", {
         method: "POST",
         body: "{}",
       });
     });
+  }
+
+  async function stopRuntime() {
+    setStopError(null);
+    try {
+      await request("api/runtime/stop", {
+        method: "POST",
+        body: "{}",
+      });
+      await refresh();
+    } catch (error) {
+      setStopError(error instanceof Error ? error.message : String(error));
+    }
   }
 
   async function runStrategyTrial() {
@@ -1684,7 +1681,6 @@ function DashboardBody() {
   const activeMarket = markets.find(
     (market) => market.id === snapshot?.market.id,
   );
-  const failedChecks = snapshot?.safety.filter((check) => !check.ok) ?? [];
   const authorizedAccounts = setup.accounts.filter(
     (managed) => managed.agentCapId,
   );
@@ -1737,37 +1733,9 @@ function DashboardBody() {
       : config.refreshMs;
   const effectiveRefreshSeconds =
     (marketTurnMs * Math.max(1, config.markets.length)) / 1_000;
-  const paidActionIntervalMs =
-    config.rotationMode === "single-slot"
-      ? Math.min(config.marketDwellMs, config.maxRestingMs)
-      : config.refreshMs;
-  const gasRunwayQuotes = snapshot?.execution.gasRunwayTransactions ?? null;
-  const gasRunwayMs =
-    gasRunwayQuotes === null ? null : gasRunwayQuotes * paidActionIntervalMs;
-  const projectedDailyGasSui =
-    snapshot?.execution.averageGasMist === null ||
-    snapshot?.execution.averageGasMist === undefined
-      ? null
-      : (snapshot.execution.averageGasMist / 1_000_000_000) *
-        (86_400_000 / paidActionIntervalMs);
-  const avoidedTransactions = snapshot?.execution.avoidedTransactions ?? 0;
-  const estimatedGasAvoidedSui =
-    snapshot?.execution.averageGasMist === null ||
-    snapshot?.execution.averageGasMist === undefined
-      ? null
-      : (avoidedTransactions * snapshot.execution.averageGasMist) /
-        1_000_000_000;
   const activeRuntimeMarket = snapshot?.markets.find(
     (market) => market.id === snapshot.market.id,
   );
-  const runMinutes = snapshot?.startedAt
-    ? Math.max(
-        0,
-        Math.floor((Date.now() - Date.parse(snapshot.startedAt)) / 60_000),
-      )
-    : 0;
-  const marginCeilingUsd =
-    config.maxGrossExposureUsd / Math.max(1, config.maxLeverage);
   const makerEquityShare = (value: number) =>
     makerEquityUsd !== null && makerEquityUsd > 0
       ? (value / makerEquityUsd) * 100
@@ -1776,8 +1744,6 @@ function DashboardBody() {
   const grossCapEquityPct = makerEquityShare(config.maxGrossExposureUsd);
   const rebalanceEquityPct = makerEquityShare(config.rebalanceGrossExposureUsd);
   const drawdownEquityPct = makerEquityShare(config.maxRunDrawdownUsd);
-  const builderFeePerFillUsd =
-    config.quoteSizeUsd * (builderCode?.integratorFee ?? 0);
   const rewardOpportunities =
     rewards?.marketModel.opportunities
       .filter((opportunity) => opportunity.eligible)
@@ -1877,6 +1843,41 @@ function DashboardBody() {
     };
   });
 
+  const latestMarketUpdate = rotationRows.reduce<string | null>(
+    (latest, row) => {
+      if (!row.updatedAt) return latest;
+      if (!latest || Date.parse(row.updatedAt) > Date.parse(latest)) {
+        return row.updatedAt;
+      }
+      return latest;
+    },
+    null,
+  );
+  const selectedMarketIndex = config.markets.findIndex(
+    (market) => market.marketId === snapshot?.market.id,
+  );
+  const nextSelectedMarket =
+    config.markets.length > 1
+      ? config.markets[
+          (Math.max(0, selectedMarketIndex) + 1) % config.markets.length
+        ]
+      : null;
+  const worstSideFillUsd =
+    snapshot?.markets
+      .filter((market) => market.status === "healthy")
+      .reduce((total, market) => total + market.effectiveQuoteSizeUsd, 0) ?? 0;
+  const deskFills =
+    performance?.fills.map((fill) => ({
+      id: `${fill.txDigest}:${fill.orderId}`,
+      occurredAt: fill.occurredAt,
+      symbol: fill.symbol,
+      side: fill.side,
+      price: fill.price,
+      notionalUsd: fill.notionalUsd,
+      realizedPnlUsd: fill.realizedPnlUsd,
+      txDigest: fill.txDigest,
+    })) ?? [];
+
   const markState = !snapshot?.running
     ? "stopped"
     : snapshot.mode === "live"
@@ -1901,35 +1902,6 @@ function DashboardBody() {
       onDismissNotice={() => setNotice(null)}
       onLogout={() => void logout()}
     >
-      <DeskView active={displayedView === "desk"}>
-        <section className="system-strip" aria-label="System status">
-          <div>
-            <Server size={16} />
-            <span>Node</span>
-            <strong>{snapshot?.lastError ? "Degraded" : "Connected"}</strong>
-          </div>
-          <div>
-            <Activity size={16} />
-            <span>Engine</span>
-            <strong>{snapshot?.running ? "Quoting" : "Stopped"}</strong>
-          </div>
-          <div>
-            <KeyRound size={16} />
-            <span>Trading key</span>
-            <strong>{compact(setup.agent?.address ?? null)}</strong>
-          </div>
-          <div>
-            <ShieldCheck size={16} />
-            <span>Checks</span>
-            <strong>
-              {snapshot?.safety.length
-                ? `${snapshot.safety.length - failedChecks.length}/${snapshot.safety.length}`
-                : "Pending"}
-            </strong>
-          </div>
-        </section>
-      </DeskView>
-
       <VenuesView active={displayedView === "venues"}>
         {!onboardingComplete && (
           <section className="onboarding">
@@ -2308,208 +2280,77 @@ function DashboardBody() {
         )}
       </VenuesView>
 
-      <DeskView active={displayedView === "desk"}>
-        <section className="workspace workspace-desk">
-          <div className="market-console">
-            <div className="section-heading compact">
-              <div>
-                <span className="eyebrow">Rotation now quoting</span>
-                <div className="market-heading-row">
-                  <h2>
-                    {snapshot?.market.symbol ??
-                      activeMarket?.symbol ??
-                      "Choose markets"}
-                  </h2>
-                  <VenueChip venue={primaryVenue} />
-                </div>
-              </div>
-              <button
-                className="icon-button"
-                onClick={() =>
-                  void mutate("refresh", async () => {
-                    await request("api/runtime/cycle", {
-                      method: "POST",
-                      body: "{}",
-                    });
-                  })
-                }
-                title="Refresh market"
-                aria-label="Refresh market"
-              >
-                <RefreshCw
-                  size={17}
-                  className={busy === "refresh" ? "spin" : ""}
-                />
-              </button>
-            </div>
-
-            <div className="price-line">
-              <strong>{money(snapshot?.market.indexPrice ?? null, 4)}</strong>
-              <span>
-                {snapshot?.market.updatedAt
-                  ? new Date(snapshot.market.updatedAt).toLocaleTimeString()
-                  : "Awaiting first cycle"}
-              </span>
-            </div>
-
-            <div className="book">
-              <div className="book-side bid">
-                <span className="book-label">
-                  <ArrowDownRight size={16} />
-                  Bid
-                </span>
-                <strong>{money(snapshot?.market.bestBid ?? null, 4)}</strong>
-                <span className="our-quote">
-                  ours {money(snapshot?.quote?.bidPrice ?? null, 4)}
-                </span>
-              </div>
-              <div className="book-mid">
-                <span>spread</span>
-                <strong>
-                  {activeRuntimeMarket?.effectiveSpreadBps ?? config.spreadBps}{" "}
-                  bps
-                </strong>
-                <i aria-hidden="true" />
-              </div>
-              <div className="book-side ask">
-                <span className="book-label">
-                  <ArrowUpRight size={16} />
-                  Ask
-                </span>
-                <strong>{money(snapshot?.market.bestAsk ?? null, 4)}</strong>
-                <span className="our-quote">
-                  ours {money(snapshot?.quote?.askPrice ?? null, 4)}
-                </span>
-              </div>
-            </div>
-
-            <div className="metric-grid">
-              <div>
-                <span>Account equity</span>
-                <strong>{money(snapshot?.balances.equityUsd ?? null)}</strong>
-              </div>
-              <div>
-                <span>Gross exposure</span>
-                <strong>
-                  {money(snapshot?.portfolio.grossExposureUsd ?? null)}
-                </strong>
-              </div>
-              <div>
-                <span>Portfolio PnL</span>
-                <strong>
-                  {money(snapshot?.portfolio.unrealizedPnlUsd ?? null)}
-                </strong>
-              </div>
-              <div>
-                <span>Market OI</span>
-                <strong>
-                  {money(
-                    snapshot?.markets.find(
-                      (item) => item.id === snapshot.market.id,
-                    )?.openInterestUsd ?? null,
-                    0,
-                  )}
-                </strong>
-              </div>
-            </div>
-
-            <div className="run-timeline" aria-label="Run timeline">
-              <div>
-                <Clock3 size={15} />
-                <span>Runtime</span>
-                <strong>
-                  {snapshot?.running ? `${runMinutes} min` : "Stopped"}
-                </strong>
-              </div>
-              <div>
-                <Activity size={15} />
-                <span>Last cycle</span>
-                <strong>
-                  {snapshot?.lastSuccessfulCycleAt
-                    ? new Date(
-                        snapshot.lastSuccessfulCycleAt,
-                      ).toLocaleTimeString()
-                    : "Waiting"}
-                </strong>
-              </div>
-              <div>
-                <ShieldCheck size={15} />
-                <span>Watchdog</span>
-                <strong>{snapshot?.watchdog.state ?? "idle"}</strong>
-              </div>
-            </div>
-
-            <div className="engine-action">
-              <div>
-                <span>Cycle {snapshot?.cycle ?? 0}</span>
-                <strong>
-                  {snapshot?.lastError ??
-                    (snapshot?.running
-                      ? "Quoting selected markets"
-                      : configDirty
-                        ? "Save strategy changes before starting"
-                        : "No live orders scheduled")}
-                </strong>
-              </div>
-              <div className="engine-buttons">
-                <button
-                  className={
-                    snapshot?.running ? "button danger" : "button start"
-                  }
-                  onClick={() => void toggleRuntime()}
-                  disabled={
-                    !config.markets.length ||
-                    Boolean(busy) ||
-                    (!snapshot?.running && configDirty)
-                  }
-                  title={
-                    !snapshot?.running && configDirty
-                      ? "Save strategy changes before starting"
-                      : undefined
-                  }
-                >
-                  {snapshot?.running ? (
-                    <CircleStop size={17} />
-                  ) : (
-                    <Play size={17} />
-                  )}
-                  {snapshot?.running ? "Stop quoting" : "Start engine"}
-                </button>
-                <button
-                  className={
-                    flattenArmed ? "button danger" : "button secondary"
-                  }
-                  onClick={() => void flattenPositions()}
-                  disabled={
-                    config.mode !== "live" ||
-                    !onboardingComplete ||
-                    (snapshot?.portfolio.grossExposureUsd ?? 0) <= 0 ||
-                    Boolean(busy)
-                  }
-                  type="button"
-                >
-                  <ArrowDownRight size={17} />
-                  {busy === "flatten"
-                    ? "Flattening..."
-                    : flattenArmed
-                      ? "Confirm flatten"
-                      : "Flatten at market"}
-                </button>
-                {flattenArmed && (
-                  <button
-                    className="button secondary"
-                    onClick={() => setFlattenArmed(false)}
-                    disabled={Boolean(busy)}
-                    type="button"
-                  >
-                    Cancel
-                  </button>
-                )}
-              </div>
-            </div>
-          </div>
-        </section>
-      </DeskView>
+      <DeskView
+        active={displayedView === "desk"}
+        venue={primaryVenue}
+        running={Boolean(snapshot?.running)}
+        configDirty={configDirty}
+        refreshBusy={busy === "refresh"}
+        startBusy={busy === "start"}
+        flattenBusy={busy === "flatten"}
+        startDisabled={!config.markets.length || Boolean(busy) || configDirty}
+        flattenDisabled={
+          config.mode !== "live" ||
+          !onboardingComplete ||
+          (snapshot?.portfolio.grossExposureUsd ?? 0) <= 0 ||
+          Boolean(busy)
+        }
+        flattenArmed={flattenArmed}
+        stopError={stopError}
+        pnlUsd={performance?.combinedNetAfterKnownCostsUsd ?? null}
+        equityUsd={makerEquityUsd}
+        grossExposureUsd={snapshot?.portfolio.grossExposureUsd ?? null}
+        marketCount={config.markets.length}
+        startedAt={snapshot?.startedAt ?? null}
+        lastFill={deskFills[0] ?? null}
+        market={{
+          symbol:
+            snapshot?.market.symbol ?? activeMarket?.symbol ?? "Pick a market",
+          tickSize: activeMarket?.tickSize ?? null,
+          indexPrice: snapshot?.market.indexPrice ?? null,
+          bestBid: snapshot?.market.bestBid ?? null,
+          bestAsk: snapshot?.market.bestAsk ?? null,
+          ourBid: snapshot?.quote?.bidPrice ?? null,
+          ourAsk: snapshot?.quote?.askPrice ?? null,
+          spreadBps:
+            activeRuntimeMarket?.effectiveSpreadBps ?? config.spreadBps,
+          updatedAt: snapshot?.market.updatedAt ?? null,
+          subtitle:
+            config.rotationMode === "single-slot"
+              ? nextSelectedMarket
+                ? `One live pair at a time. ${nextSelectedMarket.symbol} is next.`
+                : "One live pair at a time."
+              : "Quotes remain active across the selected markets.",
+        }}
+        risk={{
+          grossExposureUsd: snapshot?.portfolio.grossExposureUsd ?? 0,
+          grossExposureLimitUsd: config.maxGrossExposureUsd,
+          worstSideFillUsd,
+          runDrawdownUsd: null,
+          runDrawdownLimitUsd: config.maxRunDrawdownUsd,
+          gasRunwayTransactions:
+            snapshot?.execution.gasRunwayTransactions ?? null,
+          updatedAt: snapshot?.lastSuccessfulCycleAt ?? null,
+        }}
+        markets={rotationRows}
+        marketsUpdatedAt={latestMarketUpdate}
+        fills={deskFills}
+        fillsUpdatedAt={performance?.asOf ?? null}
+        events={events}
+        staleAfterMs={config.refreshMs * 2}
+        onRefresh={() =>
+          void mutate("refresh", async () => {
+            await request("api/runtime/cycle", {
+              method: "POST",
+              body: "{}",
+            });
+          })
+        }
+        onStart={() => void startRuntime()}
+        onStop={() => void stopRuntime()}
+        onFlatten={() => void flattenPositions()}
+        onCancelFlatten={() => setFlattenArmed(false)}
+      />
 
       <StrategyView active={displayedView === "strategy"}>
         <section className="workspace workspace-strategy">
@@ -4140,132 +3981,6 @@ function DashboardBody() {
           </div>
         </section>
       </PerformanceView>
-
-      <DeskView active={displayedView === "desk"}>
-        <section className="lower-grid lower-grid-desk">
-          <div className="safety-panel">
-            <div className="section-heading compact">
-              <div>
-                <span className="eyebrow">Preflight</span>
-                <h2>Safety gates</h2>
-              </div>
-              <Gauge size={18} />
-            </div>
-            <div className="preflight-metrics">
-              <div>
-                <span>Margin ceiling</span>
-                <strong>{money(marginCeilingUsd)}</strong>
-              </div>
-              <div>
-                <span>Quote / Maker equity</span>
-                <strong>
-                  {money(config.quoteSizeUsd)} / {percent(quoteEquityPct, 1)}
-                </strong>
-              </div>
-              <div>
-                <span>Gross cap / Maker equity</span>
-                <strong>
-                  {money(config.maxGrossExposureUsd)} /{" "}
-                  {percent(grossCapEquityPct, 1)}
-                </strong>
-              </div>
-              <div>
-                <span>Venue fee / fill</span>
-                <strong>{money(builderFeePerFillUsd, 4)}</strong>
-              </div>
-              <div>
-                <span>Measured gas / quote</span>
-                <strong>
-                  {snapshot?.execution.averageGasMist === null ||
-                  snapshot?.execution.averageGasMist === undefined
-                    ? "Learning"
-                    : `${(
-                        snapshot.execution.averageGasMist / 1_000_000_000
-                      ).toFixed(5)} SUI`}
-                </strong>
-              </div>
-              <div>
-                <span>Gas runway</span>
-                <strong>
-                  {gasRunwayQuotes === null
-                    ? "Learning"
-                    : `~${Math.floor(gasRunwayQuotes)} quotes / ${compactDuration(gasRunwayMs)}`}
-                </strong>
-              </div>
-              <div>
-                <span>Stable gas / 24h</span>
-                <strong>
-                  {projectedDailyGasSui === null
-                    ? "Learning"
-                    : `~${projectedDailyGasSui.toFixed(2)} SUI`}
-                </strong>
-              </div>
-              <div>
-                <span>Paid actions avoided</span>
-                <strong>
-                  {avoidedTransactions}
-                  {estimatedGasAvoidedSui === null
-                    ? ""
-                    : ` / ~${estimatedGasAvoidedSui.toFixed(4)} SUI`}
-                </strong>
-              </div>
-              <div>
-                <span>Last decision</span>
-                <strong>{snapshot?.execution.lastDecision ?? "Waiting"}</strong>
-              </div>
-            </div>
-            <div className="check-list">
-              {(snapshot?.safety.length
-                ? snapshot.safety
-                : [
-                    {
-                      code: "waiting",
-                      label: "First market cycle",
-                      ok: false,
-                      detail: "Start or refresh the engine",
-                    },
-                  ]
-              ).map((check) => (
-                <div className="check-row" key={check.code}>
-                  <span className={check.ok ? "check-dot ok" : "check-dot"} />
-                  <div>
-                    <strong>{check.label}</strong>
-                    <span>{check.detail}</span>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-
-          <div className="audit-panel">
-            <div className="section-heading compact">
-              <div>
-                <span className="eyebrow">Evidence</span>
-                <h2>Control log</h2>
-              </div>
-              <Activity size={18} />
-            </div>
-            <div className="event-list">
-              {events.length ? (
-                events.map((event) => (
-                  <div className="event-row" key={event.id}>
-                    <time>
-                      {new Date(event.occurredAt).toLocaleTimeString()}
-                    </time>
-                    <span>{event.category}</span>
-                    <strong>{event.action}</strong>
-                    <i className={event.outcome === "error" ? "bad" : ""}>
-                      {event.outcome}
-                    </i>
-                  </div>
-                ))
-              ) : (
-                <p className="empty">No control events recorded.</p>
-              )}
-            </div>
-          </div>
-        </section>
-      </DeskView>
 
       <VenuesView active={displayedView === "venues"}>
         <section className="lower-grid lower-grid-venues">

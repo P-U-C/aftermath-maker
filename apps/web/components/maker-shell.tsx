@@ -30,10 +30,21 @@ export function useMakerView() {
     const syncHash = () => setActiveView(viewFromHash(window.location.hash));
     syncHash();
     window.addEventListener("hashchange", syncHash);
-    return () => window.removeEventListener("hashchange", syncHash);
+    window.addEventListener("popstate", syncHash);
+    return () => {
+      window.removeEventListener("hashchange", syncHash);
+      window.removeEventListener("popstate", syncHash);
+    };
   }, []);
 
+  useEffect(() => {
+    window.scrollTo({ top: 0, left: 0, behavior: "auto" });
+  }, [activeView]);
+
   const selectView = useCallback((view: MakerView) => {
+    if (window.location.hash !== `#${view}`) {
+      window.history.pushState(null, "", `#${view}`);
+    }
     setActiveView(view);
   }, []);
 
@@ -82,7 +93,10 @@ export function MakerShell({
         <a
           className="maker-nav-brand"
           href="#desk"
-          onClick={() => selectView("desk")}
+          onClick={(event) => {
+            event.preventDefault();
+            selectView("desk");
+          }}
         >
           <SpreadMark state={markState} label={`Maker is ${displayedMode}`} />
           <strong>Maker</strong>
@@ -95,7 +109,10 @@ export function MakerShell({
               href={`#${view.id}`}
               className={activeView === view.id ? "is-active" : undefined}
               aria-current={activeView === view.id ? "page" : undefined}
-              onClick={() => selectView(view.id)}
+              onClick={(event) => {
+                event.preventDefault();
+                selectView(view.id);
+              }}
             >
               {view.label}
             </a>

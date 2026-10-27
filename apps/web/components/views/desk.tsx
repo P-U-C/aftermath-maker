@@ -1,17 +1,522 @@
-import type { ReactNode } from "react";
+"use client";
 
+import {
+  ArrowDownRight,
+  CircleStop,
+  Clock3,
+  Play,
+  RefreshCw,
+} from "lucide-react";
+
+import {
+  formatMoney,
+  formatPrice,
+  formatSignedMoney,
+  formatTimestamp,
+  moneyTone,
+} from "../../lib/format";
+import type { VenueDescriptor } from "../../lib/venues";
+import { Button, Card, ListRow, Meter, Pill, Sheet } from "../ui/primitives";
+import { VenueChip } from "../venue-chip";
 import { ViewFrame } from "./view-frame";
+
+export type DeskMarketRow = {
+  id: string;
+  symbol: string;
+  status: "queued" | "healthy" | "error";
+  inventoryUsd: number;
+  unrealizedPnlUsd: number;
+  effectiveSpreadBps: number;
+  updatedAt: string | null;
+};
+
+export type DeskFill = {
+  id: string;
+  occurredAt: string;
+  symbol: string;
+  side: "bid" | "ask";
+  price: number;
+  notionalUsd: number;
+  realizedPnlUsd: number;
+  txDigest: string;
+};
+
+export type DeskEvent = {
+  id: number;
+  occurredAt: string;
+  category: string;
+  action: string;
+  outcome: string;
+};
+
+type DeskViewProps = {
+  active: boolean;
+  venue: VenueDescriptor;
+  running: boolean;
+  configDirty: boolean;
+  refreshBusy: boolean;
+  startBusy: boolean;
+  flattenBusy: boolean;
+  startDisabled: boolean;
+  flattenDisabled: boolean;
+  flattenArmed: boolean;
+  stopError: string | null;
+  pnlUsd: number | null;
+  equityUsd: number | null;
+  grossExposureUsd: number | null;
+  marketCount: number;
+  startedAt: string | null;
+  lastFill: DeskFill | null;
+  market: {
+    symbol: string;
+    tickSize: number | null;
+    indexPrice: number | null;
+    bestBid: number | null;
+    bestAsk: number | null;
+    ourBid: number | null;
+    ourAsk: number | null;
+    spreadBps: number;
+    updatedAt: string | null;
+    subtitle: string;
+  };
+  risk: {
+    grossExposureUsd: number;
+    grossExposureLimitUsd: number;
+    worstSideFillUsd: number;
+    runDrawdownUsd: number | null;
+    runDrawdownLimitUsd: number;
+    gasRunwayTransactions: number | null;
+    updatedAt: string | null;
+  };
+  markets: DeskMarketRow[];
+  marketsUpdatedAt: string | null;
+  fills: DeskFill[];
+  fillsUpdatedAt: string | null;
+  events: DeskEvent[];
+  staleAfterMs: number;
+  onRefresh: () => void;
+  onStart: () => void;
+  onStop: () => void;
+  onFlatten: () => void;
+  onCancelFlatten: () => void;
+};
+
+function Freshness({
+  timestamp,
+  staleAfterMs,
+}: {
+  timestamp: string | null;
+  staleAfterMs: number;
+}) {
+  const parsed = timestamp ? Date.parse(timestamp) : Number.NaN;
+  const stale =
+    Number.isFinite(parsed) && Date.now() - parsed > Math.max(1, staleAfterMs);
+
+  return (
+    <span className={stale ? "desk-freshness is-stale" : "desk-freshness"}>
+      {formatTimestamp(timestamp)}
+    </span>
+  );
+}
+
+function PricePoint({
+  className,
+  label,
+  value,
+  tickSize,
+}: {
+  className?: string;
+  label: string;
+  value: number | null;
+  tickSize: number | null;
+}) {
+  return (
+    <div className={className}>
+      <span>{label}</span>
+      <strong>{formatPrice(value, tickSize)}</strong>
+      <i aria-hidden="true" />
+    </div>
+  );
+}
 
 export function DeskView({
   active,
-  children,
-}: {
-  active: boolean;
-  children: ReactNode;
-}) {
+  venue,
+  running,
+  configDirty,
+  refreshBusy,
+  startBusy,
+  flattenBusy,
+  startDisabled,
+  flattenDisabled,
+  flattenArmed,
+  stopError,
+  pnlUsd,
+  equityUsd,
+  grossExposureUsd,
+  marketCount,
+  startedAt,
+  lastFill,
+  market,
+  risk,
+  markets,
+  marketsUpdatedAt,
+  fills,
+  fillsUpdatedAt,
+  events,
+  staleAfterMs,
+  onRefresh,
+  onStart,
+  onStop,
+  onFlatten,
+  onCancelFlatten,
+}: DeskViewProps) {
+  const gasShortfall =
+    risk.gasRunwayTransactions === null
+      ? 0
+      : Math.max(0, 3 - risk.gasRunwayTransactions);
+  const ladderLabel = `Your bid ${formatPrice(market.ourBid, market.tickSize)}, ask ${formatPrice(market.ourAsk, market.tickSize)}, spread ${market.spreadBps} bps`;
+
   return (
     <ViewFrame active={active} name="desk">
-      {children}
+      <div className="desk-page">
+        <section className="desk-hero">
+          <div>
+            <span>Net known result, last 24 hours</span>
+            <strong className={`desk-pnl is-${moneyTone(pnlUsd)}`}>
+              {formatSignedMoney(pnlUsd)}
+            </strong>
+            <div className="desk-facts">
+              <span>
+                Maker equity <b>{formatMoney(equityUsd)}</b>
+              </span>
+              <span>
+                Maker exposure <b>{formatMoney(grossExposureUsd)}</b>
+              </span>
+              <span>
+                Markets <b>{marketCount}</b>
+              </span>
+              <span>
+                {running ? "Running since" : "Engine"}{" "}
+                <b>
+                  {running && startedAt
+                    ? new Date(startedAt).toLocaleTimeString([], {
+                        hour: "numeric",
+                        minute: "2-digit",
+                      })
+                    : "Stopped"}
+                </b>
+              </span>
+              <span>
+                Last fill{" "}
+                <b>
+                  {lastFill
+                    ? `${formatMoney(lastFill.notionalUsd)} ${lastFill.side}`
+                    : "Waiting"}
+                </b>
+              </span>
+            </div>
+          </div>
+
+          <div className="desk-hero-actions">
+            <Button
+              variant="quiet"
+              onClick={onFlatten}
+              disabled={flattenDisabled}
+            >
+              Flatten positions…
+            </Button>
+            {running ? (
+              <Button variant="stop" onClick={onStop}>
+                <CircleStop size={17} aria-hidden="true" />
+                Stop
+              </Button>
+            ) : (
+              <Button onClick={onStart} disabled={startDisabled}>
+                <Play size={17} aria-hidden="true" />
+                {startBusy ? "Starting…" : "Start"}
+              </Button>
+            )}
+            {configDirty && !running && (
+              <span className="desk-action-note">
+                Save Strategy changes before starting.
+              </span>
+            )}
+            {stopError && (
+              <span className="desk-stop-error" role="alert">
+                Stop failed: {stopError}. Try Stop again.
+              </span>
+            )}
+          </div>
+        </section>
+
+        <div className="desk-primary-grid">
+          <Card
+            className="desk-ladder-card"
+            title={
+              <span className="desk-card-title">
+                Quoting {market.symbol}
+                <VenueChip venue={venue} />
+              </span>
+            }
+            subtitle={market.subtitle}
+            action={
+              <div className="desk-card-action">
+                <Freshness
+                  timestamp={market.updatedAt}
+                  staleAfterMs={staleAfterMs}
+                />
+                <Button
+                  size="icon"
+                  variant="quiet"
+                  onClick={onRefresh}
+                  aria-label="Refresh market"
+                >
+                  <RefreshCw
+                    size={17}
+                    className={refreshBusy ? "spin" : undefined}
+                    aria-hidden="true"
+                  />
+                </Button>
+              </div>
+            }
+          >
+            <div className="desk-ladder" role="img" aria-label={ladderLabel}>
+              <span className="desk-ladder-line" aria-hidden="true" />
+              <PricePoint
+                className="desk-price-point is-our is-bid"
+                label="Your bid"
+                value={market.ourBid}
+                tickSize={market.tickSize}
+              />
+              <PricePoint
+                className="desk-price-point is-best is-bid"
+                label="Best bid"
+                value={market.bestBid}
+                tickSize={market.tickSize}
+              />
+              <PricePoint
+                className="desk-price-point is-index"
+                label="Index"
+                value={market.indexPrice}
+                tickSize={market.tickSize}
+              />
+              <PricePoint
+                className="desk-price-point is-best is-ask"
+                label="Best ask"
+                value={market.bestAsk}
+                tickSize={market.tickSize}
+              />
+              <PricePoint
+                className="desk-price-point is-our is-ask"
+                label="Your ask"
+                value={market.ourAsk}
+                tickSize={market.tickSize}
+              />
+              <span className="desk-spread-pill">
+                {market.spreadBps} bps spread
+              </span>
+            </div>
+          </Card>
+
+          <Card
+            className="desk-risk-card"
+            title="Risk"
+            subtitle="Current exposure against configured limits."
+            action={
+              <Freshness
+                timestamp={risk.updatedAt}
+                staleAfterMs={staleAfterMs}
+              />
+            }
+          >
+            <div className="desk-risk-stack">
+              <Meter
+                label="Gross exposure"
+                value={risk.grossExposureUsd}
+                max={risk.grossExposureLimitUsd}
+                valueText={`${formatMoney(risk.grossExposureUsd)} of ${formatMoney(risk.grossExposureLimitUsd)}`}
+              />
+              <Meter
+                label="Worst-side fills"
+                value={risk.worstSideFillUsd}
+                max={risk.grossExposureLimitUsd}
+                valueText={`${formatMoney(risk.worstSideFillUsd)} of ${formatMoney(risk.grossExposureLimitUsd)}`}
+              />
+              <Meter
+                label="Run drawdown"
+                value={risk.runDrawdownUsd ?? 0}
+                max={risk.runDrawdownLimitUsd}
+                valueText={
+                  risk.runDrawdownUsd === null
+                    ? `Not reported / ${formatMoney(risk.runDrawdownLimitUsd)} limit`
+                    : `${formatMoney(risk.runDrawdownUsd)} of ${formatMoney(risk.runDrawdownLimitUsd)}`
+                }
+              />
+              <Meter
+                label="Gas runway"
+                value={gasShortfall}
+                max={3}
+                valueText={
+                  risk.gasRunwayTransactions === null
+                    ? "Learning"
+                    : `${risk.gasRunwayTransactions.toLocaleString()} paid actions after reserve`
+                }
+              />
+            </div>
+          </Card>
+        </div>
+
+        <div className="desk-secondary-grid">
+          <Card
+            className="desk-markets-card"
+            title="Markets"
+            subtitle="Inventory and unrealized result by selected market."
+            action={
+              <Freshness
+                timestamp={marketsUpdatedAt}
+                staleAfterMs={staleAfterMs}
+              />
+            }
+          >
+            <div className="desk-list">
+              {markets.length ? (
+                markets.map((row) => (
+                  <ListRow
+                    key={row.id}
+                    leading={<VenueChip venue={venue} compact />}
+                    trailing={
+                      <span
+                        className={`desk-row-pnl is-${moneyTone(row.unrealizedPnlUsd)}`}
+                      >
+                        {formatSignedMoney(row.unrealizedPnlUsd)}
+                      </span>
+                    }
+                  >
+                    <span className="desk-market-row">
+                      <strong>{row.symbol}</strong>
+                      <span className={`desk-market-state is-${row.status}`}>
+                        {row.status}
+                      </span>
+                      <span>
+                        {formatSignedMoney(row.inventoryUsd)} inventory
+                      </span>
+                      <span>{row.effectiveSpreadBps} bps</span>
+                    </span>
+                  </ListRow>
+                ))
+              ) : (
+                <div className="desk-empty">Pick markets to start.</div>
+              )}
+            </div>
+          </Card>
+
+          <Card
+            className="desk-fills-card"
+            title="Fills"
+            subtitle="Confirmed fills from Maker-tagged orders."
+            action={
+              <Freshness
+                timestamp={fillsUpdatedAt}
+                staleAfterMs={staleAfterMs}
+              />
+            }
+          >
+            <div className="desk-list">
+              {fills.length ? (
+                fills.slice(0, 8).map((fill) => (
+                  <ListRow
+                    key={fill.id}
+                    leading={<VenueChip venue={venue} compact />}
+                    trailing={
+                      <span
+                        className={`desk-row-pnl is-${moneyTone(fill.realizedPnlUsd)}`}
+                      >
+                        {formatSignedMoney(fill.realizedPnlUsd)}
+                      </span>
+                    }
+                  >
+                    <span className="desk-fill-row">
+                      <strong>{fill.symbol}</strong>
+                      <span className={`desk-fill-side is-${fill.side}`}>
+                        {fill.side}
+                      </span>
+                      <span>{formatMoney(fill.notionalUsd)}</span>
+                      <span>{formatTimestamp(fill.occurredAt)}</span>
+                    </span>
+                  </ListRow>
+                ))
+              ) : (
+                <div className="desk-empty">
+                  Confirmed fills will appear here.
+                </div>
+              )}
+            </div>
+          </Card>
+        </div>
+
+        <Card
+          className="desk-log-card"
+          title="Control log"
+          subtitle="Recent engine and risk events."
+        >
+          <div className="desk-event-list">
+            {events.length ? (
+              events.map((event) => (
+                <ListRow
+                  key={event.id}
+                  leading={<Clock3 size={15} aria-hidden="true" />}
+                  trailing={event.outcome}
+                >
+                  <span className="desk-event-row">
+                    <time>{formatTimestamp(event.occurredAt)}</time>
+                    <strong>{event.action}</strong>
+                    <span>{event.category}</span>
+                  </span>
+                </ListRow>
+              ))
+            ) : (
+              <div className="desk-empty">No control events recorded.</div>
+            )}
+          </div>
+        </Card>
+      </div>
+
+      <Sheet
+        open={flattenArmed}
+        title="Flatten positions?"
+        description="This cancels Maker orders, then uses reduce-only market orders across the Maker and hedge accounts."
+        onClose={() => {
+          if (!flattenBusy) onCancelFlatten();
+        }}
+        footer={
+          <>
+            <Button
+              variant="quiet"
+              onClick={onCancelFlatten}
+              disabled={flattenBusy}
+            >
+              Cancel
+            </Button>
+            <Button variant="stop" onClick={onFlatten} disabled={flattenBusy}>
+              <ArrowDownRight size={17} aria-hidden="true" />
+              {flattenBusy ? "Flattening…" : "Confirm flatten"}
+            </Button>
+          </>
+        }
+      >
+        <div className="desk-flatten-summary">
+          <ListRow trailing={venue.name}>Venue</ListRow>
+          <ListRow trailing={formatMoney(grossExposureUsd)}>
+            Current gross exposure
+          </ListRow>
+          <ListRow trailing="Up to 1%">Maximum slippage</ListRow>
+          <p>
+            Residual positions may remain when a thin market cannot fill within
+            the slippage limit. Review the Desk after completion.
+          </p>
+        </div>
+      </Sheet>
     </ViewFrame>
   );
 }

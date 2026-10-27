@@ -33,6 +33,7 @@ const baseUrl = option(
   "--base-url",
   process.env.MAKER_SHOTS_URL ?? "http://127.0.0.1:8788",
 );
+const showFlattenSheet = process.argv.includes("--flatten-sheet");
 const outputDirectory = path.resolve(
   projectRoot,
   option("--output", defaultOutput),
@@ -155,6 +156,11 @@ async function capture(browser, stateName, captureConfig, view) {
   const page = await context.newPage();
   const browserErrors = [];
   const remoteRequests = [];
+  const exerciseStop =
+    stateName === "live-running" &&
+    captureConfig.name === "desktop-light" &&
+    (view === null || view === "desk") &&
+    !showFlattenSheet;
 
   page.on("pageerror", (error) => browserErrors.push(error.message));
   page.on("console", (message) => {
@@ -173,7 +179,37 @@ async function capture(browser, stateName, captureConfig, view) {
   }, fixedNow);
 
   await page.route("**/api/control/**", async (route) => {
-    const response = apiResponse(fixture, new URL(route.request().url()));
+    const request = route.request();
+    const url = new URL(request.url());
+    if (
+      exerciseStop &&
+      request.method() === "POST" &&
+      url.pathname.endsWith("/api/runtime/cycle")
+    ) {
+      await new Promise((resolve) => setTimeout(resolve, 600));
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: "{}",
+      });
+      return;
+    }
+    if (
+      exerciseStop &&
+      request.method() === "POST" &&
+      url.pathname.endsWith("/api/runtime/stop")
+    ) {
+      await route.fulfill({
+        status: 409,
+        contentType: "application/json",
+        body: JSON.stringify({
+          error: "Stop is already reconciling orders",
+        }),
+      });
+      return;
+    }
+
+    const response = apiResponse(fixture, url);
     await route.fulfill({
       status: response.status,
       contentType: "application/json",
@@ -216,6 +252,14 @@ async function capture(browser, stateName, captureConfig, view) {
         .first()
         .waitFor();
     }
+    if (
+      showFlattenSheet &&
+      stateName === "live-running" &&
+      (view === null || view === "desk")
+    ) {
+      await page.getByRole("button", { name: "Flatten positions…" }).click();
+      await page.getByRole("dialog", { name: "Flatten positions?" }).waitFor();
+    }
     await page.waitForTimeout(100);
 
     const dimensions = await page.evaluate(() => ({
@@ -241,12 +285,33 @@ async function capture(browser, stateName, captureConfig, view) {
 
     const file = path.join(
       outputDirectory,
-      `${stateName}${view ? `-${view}` : ""}-${captureConfig.name}.png`,
+      `${stateName}${view ? `-${view}` : ""}${showFlattenSheet ? "-flatten" : ""}-${captureConfig.name}.png`,
     );
     await page.screenshot({ path: file, fullPage: false });
     process.stdout.write(
       `${stateName}${view ? `/${view}` : ""}/${captureConfig.name}: ${file} (${dimensions.scrollWidth}px wide)\n`,
     );
+
+    if (exerciseStop) {
+      await page.getByRole("button", { name: "Refresh market" }).click();
+      await page.waitForTimeout(50);
+      const stop = page.getByRole("button", { name: "Stop", exact: true });
+      if (!(await stop.isEnabled())) {
+        throw new Error("Stop became disabled while a refresh was in flight");
+      }
+      await stop.click();
+      await page
+        .getByText(
+          "Stop failed: Stop is already reconciling orders. Try Stop again.",
+        )
+        .waitFor();
+      if (!(await stop.isEnabled())) {
+        throw new Error("Stop became disabled after a server error");
+      }
+      process.stdout.write(
+        `${stateName}${view ? `/${view}` : ""}/${captureConfig.name}: Stop stayed enabled during busy and after error\n`,
+      );
+    }
   } finally {
     await context.close();
   }
