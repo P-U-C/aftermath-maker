@@ -9,10 +9,11 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@puc/aftermath": "0.1.0",
+    "@fontsource-variable/mona-sans": "^5.3.0",
     "@mysten/dapp-kit-core": "1.6.40",
     "@mysten/dapp-kit-react": "2.1.42",
     "@mysten/sui": "2.38.0",
+    "@puc/aftermath": "0.1.0",
     "@tanstack/react-query": "5.105.0",
     "lucide-react": "1.61.0",
     "next": "16.4.3",

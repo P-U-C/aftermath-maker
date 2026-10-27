@@ -49,6 +49,7 @@ import {
   useState,
 } from "react";
 import { dAppKit } from "../app/dapp-kit";
+import { SpreadMark } from "./spread-mark";
 
 type PreparedOwnerTransactionResponse = {
   transaction: string;
@@ -1606,7 +1607,7 @@ function DashboardBody() {
   if (!authChecked) {
     return (
       <main className="loading-shell">
-        <div className="loading-mark">M</div>
+        <SpreadMark state="stopped" size={48} />
         <span>Checking wallet access...</span>
       </main>
     );
@@ -1617,9 +1618,7 @@ function DashboardBody() {
       <main className="access-shell">
         <header className="access-header">
           <div className="brand">
-            <span className="brand-mark" aria-hidden="true">
-              M
-            </span>
+            <SpreadMark state="stopped" />
             <div>
               <strong>Maker</strong>
               <span>Aftermath / autonomous liquidity</span>
@@ -1865,13 +1864,20 @@ function DashboardBody() {
     };
   });
 
+  const markState = !snapshot?.running
+    ? "stopped"
+    : snapshot.mode === "live"
+      ? "live"
+      : "paper";
+
   return (
     <main className="shell">
       <header className="topbar">
         <div className="brand">
-          <span className="brand-mark" aria-hidden="true">
-            M
-          </span>
+          <SpreadMark
+            state={markState}
+            label={`Maker is ${snapshot?.running ? snapshot.mode : "stopped"}`}
+          />
           <div>
             <strong>Maker</strong>
             <span>Aftermath / autonomous liquidity</span>
