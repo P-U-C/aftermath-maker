@@ -8,6 +8,7 @@ import {
   type PortfolioSnapshot,
 } from "@puc/aftermath";
 import {
+  aggregatePortfolioQuoteRisk,
   assertSafe,
   buildQuoteIntent,
   evaluateQuoteSafety,
@@ -58,8 +59,11 @@ export type FlattenResult = {
   transactions: Array<{
     accountId: string;
     digest: string;
+    digests?: string[];
     flattenedMarketIds: string[];
+    residualMarketIds?: string[];
   }>;
+  residualMarketIds?: string[];
 };
 
 export type StrategyTrialRoundResult = {
@@ -215,6 +219,7 @@ const initialSnapshot = (): RuntimeSnapshot => ({
 });
 
 const emptyPortfolio = (): PortfolioSnapshot => ({
+  markedAt: new Date(0).toISOString(),
   equityUsd: 0,
   availableCollateralUsd: 0,
   allocatedCollateralUsd: 0,
@@ -264,6 +269,60 @@ const hedgeFillKey = (order: PerformanceOrder) =>
 const signedFillNotional = (order: PerformanceOrder) =>
   Math.abs(order.price * order.size) * (order.side === "bid" ? 1 : -1);
 
+const MIN_ACCOUNT_MARGIN_RATIO = 0.12;
+const MIN_LIQUIDATION_DISTANCE_BPS = 1_000;
+
+function accountRiskChecks(label: string, portfolio: PortfolioSnapshot | null) {
+  const positions = portfolio?.positions.filter(
+    (position) => position.hasPosition,
+  );
+  const marginRatios =
+    positions?.map((position) => position.marginRatio ?? Number.NaN) ?? [];
+  const liquidationDistances =
+    positions?.map(
+      (position) => position.liquidationDistanceBps ?? Number.NaN,
+    ) ?? [];
+  return [
+    {
+      code: `${label.toLowerCase()}-margin`,
+      label: `${label} margin`,
+      ok:
+        portfolio !== null &&
+        marginRatios.every(
+          (ratio) =>
+            Number.isFinite(ratio) && ratio >= MIN_ACCOUNT_MARGIN_RATIO,
+        ),
+      detail:
+        portfolio === null
+          ? `${label} account risk is unavailable`
+          : positions?.length === 0
+            ? "No open positions"
+            : `Minimum ${label.toLowerCase()} margin ratio ${(
+                Math.min(...marginRatios) * 100
+              ).toFixed(1)}%; 12.0% required`,
+    },
+    {
+      code: `${label.toLowerCase()}-liquidation`,
+      label: `${label} liquidation distance`,
+      ok:
+        portfolio !== null &&
+        liquidationDistances.every(
+          (distance) =>
+            Number.isFinite(distance) &&
+            distance >= MIN_LIQUIDATION_DISTANCE_BPS,
+        ),
+      detail:
+        portfolio === null
+          ? `${label} account risk is unavailable`
+          : positions?.length === 0
+            ? "No open positions"
+            : `Nearest liquidation ${(
+                Math.min(...liquidationDistances) / 100
+              ).toFixed(1)}% away; 10.0% required`,
+    },
+  ];
+}
+
 export class MakerRuntime {
   private snapshotValue = initialSnapshot();
   private timer: NodeJS.Timeout | null = null;
@@ -271,6 +330,7 @@ export class MakerRuntime {
   private watchdogTripping = false;
   private generation = 0;
   private cyclePromise: Promise<void> | null = null;
+  private flattenPromise: Promise<FlattenResult> | null = null;
   private markets: MarketSummary[] = [];
   private marketIndex = 0;
   private runPeakEquityUsd: number | null = null;
@@ -289,7 +349,7 @@ export class MakerRuntime {
 
   constructor(
     private readonly store: TenantStore,
-    private readonly gateway: AftermathGateway,
+    private gateway: AftermathGateway,
     private readonly options: RuntimeOptions,
   ) {
     const config = this.store.getConfig();
@@ -337,7 +397,7 @@ export class MakerRuntime {
         : Math.max(
             0,
             snapshot.balances.gasSui * 1_000_000_000 -
-              (config?.maxGasMist ?? 0),
+              (config?.maxGasMist ?? 0) * 2,
           );
     snapshot.execution = {
       ...execution,
@@ -361,6 +421,28 @@ export class MakerRuntime {
 
   requireGateway(): AftermathGateway {
     return this.gateway;
+  }
+
+  replaceGateway(gateway: AftermathGateway): boolean {
+    if (
+      this.snapshotValue.running ||
+      this.cyclePromise ||
+      this.flattenPromise
+    ) {
+      return false;
+    }
+    const previousEndpoint = this.gateway.endpoint;
+    this.gateway = gateway;
+    this.store.logEvent({
+      category: "system",
+      action: "gateway.replace",
+      outcome: "success",
+      detail: {
+        previousEndpoint,
+        endpoint: gateway.endpoint,
+      },
+    });
+    return true;
   }
 
   private clearActiveQuoteState(): void {
@@ -446,7 +528,7 @@ export class MakerRuntime {
     this.autoRebalancedOrderIds.clear();
     this.snapshotValue.execution.avoidedTransactions = 0;
     this.snapshotValue.execution.lastDecision = null;
-    this.singleSlotSwept = config.rotationMode !== "single-slot";
+    this.singleSlotSwept = config.mode !== "live";
     this.snapshotValue.markets = config.markets.map((market) =>
       emptyRuntimeMarket(market, config),
     );
@@ -544,8 +626,8 @@ export class MakerRuntime {
       },
     });
     const activeCycle = this.cyclePromise;
-    const wasRunning = this.stopScheduling("watchdog");
-    if (wasRunning) {
+    this.stopScheduling("watchdog");
+    if (config) {
       await this.cancelOpenOrders(config, {
         attempts: 3,
         retryDelayMs: 2_000,
@@ -604,8 +686,6 @@ export class MakerRuntime {
       marketIds?: string[];
     } = {},
   ): Promise<boolean> {
-    if (config.mode !== "live") return true;
-
     const setup = this.store.getSetup();
     const account = setup ? this.store.getAccountSetup(setup.accountId) : null;
     const agent = this.store.getAgent();
@@ -665,7 +745,7 @@ export class MakerRuntime {
   async stop(): Promise<void> {
     const config = this.store.getConfig();
     const activeCycle = this.cyclePromise;
-    const wasRunning = this.stopScheduling();
+    this.stopScheduling();
     let cycleSettled = !activeCycle;
     if (activeCycle) {
       cycleSettled = await Promise.race([
@@ -675,7 +755,7 @@ export class MakerRuntime {
         ),
       ]);
     }
-    if (wasRunning && config) {
+    if (config) {
       const cancelled = await this.cancelOpenOrders(config, {
         attempts: 3,
         retryDelayMs: 2_000,
@@ -697,6 +777,20 @@ export class MakerRuntime {
   async flatten(
     maxSlippage: number,
     options: { refreshSnapshot?: boolean } = {},
+  ): Promise<FlattenResult> {
+    if (this.flattenPromise) return this.flattenPromise;
+    const task = this.flattenOnce(maxSlippage, options);
+    this.flattenPromise = task;
+    try {
+      return await task;
+    } finally {
+      if (this.flattenPromise === task) this.flattenPromise = null;
+    }
+  }
+
+  private async flattenOnce(
+    maxSlippage: number,
+    options: { refreshSnapshot?: boolean },
   ): Promise<FlattenResult> {
     const config = makerConfigSchema.parse(this.store.getConfig());
     if (
@@ -733,7 +827,22 @@ export class MakerRuntime {
 
     const activeCycle = this.cyclePromise;
     this.stopScheduling();
-    if (activeCycle) await activeCycle;
+    if (activeCycle) {
+      try {
+        await withTimeout(
+          activeCycle,
+          10_000,
+          "Flatten continued after waiting 10 seconds for the active cycle",
+        );
+      } catch (error) {
+        this.store.logEvent({
+          category: "risk",
+          action: "flatten-cycle-wait",
+          outcome: "timeout",
+          detail: { error: message(error) },
+        });
+      }
+    }
     const cancelled = await this.cancelOpenOrders(config, {
       attempts: 3,
       retryDelayMs: 750,
@@ -749,11 +858,7 @@ export class MakerRuntime {
       context: agent.encryptionContext,
       encryptedSecret: agent.encryptedSecret,
     });
-    const transactions: Array<{
-      accountId: string;
-      digest: string;
-      flattenedMarketIds: string[];
-    }> = [];
+    const transactions: FlattenResult["transactions"] = [];
     for (const account of accounts) {
       const receipt = await this.gateway.flattenPositions({
         setup: account,
@@ -763,10 +868,14 @@ export class MakerRuntime {
         maxSlippage,
       });
       if (!receipt) continue;
+      const receiptDigests = receipt.digests ?? [receipt.digest];
+      const residualMarketIds = receipt.residualMarketIds ?? [];
       transactions.push({
         accountId: account.accountId,
         digest: receipt.digest,
+        ...(receiptDigests.length > 1 ? { digests: receiptDigests } : {}),
         flattenedMarketIds: receipt.flattenedMarketIds,
+        ...(residualMarketIds.length ? { residualMarketIds } : {}),
       });
       this.store.logExecution({
         mode: "live",
@@ -776,18 +885,29 @@ export class MakerRuntime {
         bidPrice: 0,
         askPrice: 0,
         sizeUsd: 0,
-        outcome: "flattened",
+        outcome: residualMarketIds.length ? "flattened-partial" : "flattened",
         gasUsedMist: receipt.gasUsedMist,
       });
     }
+    const residualMarketIds = [
+      ...new Set(
+        transactions.flatMap(
+          (transaction) => transaction.residualMarketIds ?? [],
+        ),
+      ),
+    ];
     this.store.logEvent({
       category: "risk",
       action: "reduce-only-flatten",
-      outcome: transactions.length ? "confirmed" : "clear",
+      outcome: residualMarketIds.length
+        ? "partial"
+        : transactions.length
+          ? "confirmed"
+          : "clear",
       detail: transactions.length
-        ? { transactions }
+        ? { transactions, residualMarketIds }
         : {
-            reason: "No positions in selected markets",
+            reason: "No open positions",
             accountIds: accounts.map((account) => account.accountId),
           },
     });
@@ -797,12 +917,15 @@ export class MakerRuntime {
         transactions.flatMap((transaction) => transaction.flattenedMarketIds),
       ),
     ];
-    const digests = transactions.map((transaction) => transaction.digest);
+    const digests = transactions.flatMap(
+      (transaction) => transaction.digests ?? [transaction.digest],
+    );
     return {
       digest: digests[0] ?? null,
       digests,
       flattenedMarketIds,
       transactions,
+      ...(residualMarketIds.length ? { residualMarketIds } : {}),
     };
   }
 
@@ -1037,6 +1160,7 @@ export class MakerRuntime {
     agentAddress: string;
     signer: ReturnType<typeof loadAgentKeypair>;
     makerPortfolio: PortfolioSnapshot;
+    hedgePortfolio: PortfolioSnapshot | null;
   }): Promise<boolean> {
     if (!inputs.config.autoRebalanceEnabled) return false;
     const nextQuoteUsd = Math.max(
@@ -1044,9 +1168,12 @@ export class MakerRuntime {
         (market) => resolveMarketConfig(inputs.config, market).quoteSizeUsd,
       ),
     );
+    const combinedGrossExposureUsd =
+      inputs.makerPortfolio.grossExposureUsd +
+      (inputs.hedgePortfolio?.grossExposureUsd ?? 0);
     if (
-      inputs.makerPortfolio.grossExposureUsd <= 0 ||
-      inputs.makerPortfolio.grossExposureUsd + nextQuoteUsd <
+      combinedGrossExposureUsd <= 0 ||
+      combinedGrossExposureUsd + nextQuoteUsd <
         inputs.config.rebalanceGrossExposureUsd
     ) {
       return false;
@@ -1092,7 +1219,13 @@ export class MakerRuntime {
         transactions.push({
           accountId: account.accountId,
           digest: receipt.digest,
+          ...((receipt.digests?.length ?? 0) > 1
+            ? { digests: receipt.digests }
+            : {}),
           flattenedMarketIds: receipt.flattenedMarketIds,
+          ...(receipt.residualMarketIds?.length
+            ? { residualMarketIds: receipt.residualMarketIds }
+            : {}),
         });
         this.store.logExecution({
           mode: "live",
@@ -1190,7 +1323,7 @@ export class MakerRuntime {
       action: "automatic-paired-rebalance",
       outcome: "confirmed",
       detail: {
-        triggerGrossExposureUsd: inputs.makerPortfolio.grossExposureUsd,
+        triggerGrossExposureUsd: combinedGrossExposureUsd,
         thresholdUsd: inputs.config.rebalanceGrossExposureUsd,
         transactions,
         flatReads,
@@ -1653,11 +1786,7 @@ export class MakerRuntime {
       const executionIsCurrent = () =>
         this.snapshotValue.running && this.generation === inputs.generation;
 
-      if (
-        config.mode === "live" &&
-        inputs.executeLive &&
-        config.rotationMode === "single-slot"
-      ) {
+      if (config.mode === "live" && inputs.executeLive) {
         if (!this.singleSlotSwept) {
           const swept = await this.cancelOpenOrders(config, {
             attempts: 3,
@@ -1672,6 +1801,7 @@ export class MakerRuntime {
           this.clearActiveQuoteState();
         }
         if (
+          config.rotationMode === "single-slot" &&
           this.activeQuoteMarketId &&
           this.activeQuoteMarketId !== selected.marketId
         ) {
@@ -1689,22 +1819,45 @@ export class MakerRuntime {
       }
 
       let portfolio = emptyPortfolio();
+      let hedgeRiskPortfolio: PortfolioSnapshot | null = config.hedge.enabled
+        ? null
+        : emptyPortfolio();
       if (setup && account?.agentCapId && agent) {
         portfolio = await this.gateway.getAgentPortfolioSnapshot({
           setup,
           agentAddress: agent.address,
           marketIds: config.markets.map((item) => item.marketId),
         });
+        if (config.hedge.enabled && config.hedge.accountId) {
+          const hedgeAccount = this.store.getAccountSetup(
+            config.hedge.accountId,
+          );
+          if (hedgeAccount?.agentCapId) {
+            hedgeRiskPortfolio = await this.gateway.getAgentPortfolioSnapshot({
+              setup: hedgeAccount,
+              agentAddress: agent.address,
+              marketIds: config.markets.map((item) => item.marketId),
+            });
+          }
+        }
       }
+      const combinedEquityUsd =
+        portfolio.equityUsd + (hedgeRiskPortfolio?.equityUsd ?? 0);
+      const combinedGrossExposureUsd =
+        portfolio.grossExposureUsd +
+        (hedgeRiskPortfolio?.grossExposureUsd ?? 0);
+      const combinedUnrealizedPnlUsd =
+        portfolio.unrealizedPnlUsd +
+        (hedgeRiskPortfolio?.unrealizedPnlUsd ?? 0);
       if (setup && account?.agentCapId && agent) {
         this.runPeakEquityUsd = Math.max(
-          this.runPeakEquityUsd ?? portfolio.equityUsd,
-          portfolio.equityUsd,
+          this.runPeakEquityUsd ?? combinedEquityUsd,
+          combinedEquityUsd,
         );
       }
       const runDrawdownUsd = Math.max(
         0,
-        (this.runPeakEquityUsd ?? portfolio.equityUsd) - portfolio.equityUsd,
+        (this.runPeakEquityUsd ?? combinedEquityUsd) - combinedEquityUsd,
       );
 
       if (
@@ -1769,6 +1922,7 @@ export class MakerRuntime {
           agentAddress: agent.address,
           signer,
           makerPortfolio: portfolio,
+          hedgePortfolio: hedgeRiskPortfolio,
         });
         if (rebalanced) {
           this.snapshotValue.lastSuccessfulCycleAt = new Date().toISOString();
@@ -1823,8 +1977,36 @@ export class MakerRuntime {
           observedAt,
         },
         inventoryUsd,
-        unrealizedPnlUsd: portfolio.unrealizedPnlUsd,
+        unrealizedPnlUsd: combinedUnrealizedPnlUsd,
       });
+      const activeConfig = config;
+      const portfolioQuoteRisk = aggregatePortfolioQuoteRisk(
+        activeConfig.markets.map((configuredMarket) => {
+          const configuredPosition = portfolio.positions.find(
+            (item) => item.marketId === configuredMarket.marketId,
+          );
+          const effective = resolveMarketConfig(activeConfig, configuredMarket);
+          return {
+            inventoryUsd: configuredPosition?.inventoryUsd ?? 0,
+            restingQuoteSizeUsd:
+              configuredMarket.marketId === selected!.marketId ||
+              activeConfig.rotationMode === "portfolio"
+                ? configuredMarket.marketId === selected!.marketId
+                  ? quote.sizeUsd
+                  : effective.quoteSizeUsd
+                : configuredPosition?.makerOrderIds.length
+                  ? effective.quoteSizeUsd
+                  : 0,
+            maxLeverage: effective.maxLeverage,
+          };
+        }),
+      );
+      const configuredMarketIds = new Set(
+        activeConfig.markets.map((market) => market.marketId),
+      );
+      const unselectedGrossExposureUsd = portfolio.positions
+        .filter((item) => !configuredMarketIds.has(item.marketId))
+        .reduce((sum, item) => sum + Math.abs(item.inventoryUsd), 0);
       const safety = evaluateQuoteSafety({
         config: marketConfig,
         quote,
@@ -1833,11 +2015,21 @@ export class MakerRuntime {
         hasAgentKey: Boolean(agent && this.options.masterKey),
         liveEnabled: this.options.liveEnabled,
         mainnetAllowed: this.options.mainnetAllowed,
-        portfolioGrossExposureUsd: portfolio.grossExposureUsd,
+        portfolioGrossExposureUsd: combinedGrossExposureUsd,
+        portfolioWorstCaseExposureUsd:
+          portfolioQuoteRisk.worstCaseGrossExposureUsd +
+          unselectedGrossExposureUsd +
+          (hedgeRiskPortfolio?.grossExposureUsd ?? 0),
         portfolioAvailableCollateralUsd: portfolio.availableCollateralUsd,
+        portfolioRequiredQuoteCollateralUsd:
+          portfolioQuoteRisk.requiredQuoteCollateralUsd,
         agentGasSui: portfolio.gasSui,
         runDrawdownUsd,
       });
+      safety.push(...accountRiskChecks("Maker", portfolio));
+      if (config.hedge.enabled) {
+        safety.push(...accountRiskChecks("Hedge", hedgeRiskPortfolio));
+      }
       const summary = this.markets.find(
         (item) => item.id === selected!.marketId,
       );
@@ -1901,8 +2093,8 @@ export class MakerRuntime {
         }),
         portfolio: {
           selectedMarkets: config.markets.length,
-          grossExposureUsd: portfolio.grossExposureUsd,
-          unrealizedPnlUsd: portfolio.unrealizedPnlUsd,
+          grossExposureUsd: combinedGrossExposureUsd,
+          unrealizedPnlUsd: combinedUnrealizedPnlUsd,
           availableCollateralUsd: setup
             ? portfolio.availableCollateralUsd
             : null,
@@ -1916,9 +2108,9 @@ export class MakerRuntime {
         },
         balances: {
           ...this.snapshotValue.balances,
-          equityUsd: setup ? portfolio.equityUsd : null,
+          equityUsd: setup ? combinedEquityUsd : null,
           inventoryUsd,
-          unrealizedPnlUsd: portfolio.unrealizedPnlUsd,
+          unrealizedPnlUsd: combinedUnrealizedPnlUsd,
           gasSui: setup ? portfolio.gasSui : null,
         },
         hedge: {
@@ -2345,10 +2537,9 @@ export class MakerRuntime {
         );
         this.syncMarketRows(round.config);
         this.snapshotValue.watchdog = {
-          state: round.config.mode === "live" ? "armed" : "idle",
-          checkedAt: new Date().toISOString(),
-          maxQuoteAgeMs:
-            round.config.mode === "live" ? round.config.maxQuoteAgeMs : null,
+          state: "idle",
+          checkedAt: null,
+          maxQuoteAgeMs: null,
         };
 
         const roundStartedAt = new Date().toISOString();

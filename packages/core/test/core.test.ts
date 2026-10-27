@@ -1,17 +1,23 @@
 import { describe, expect, it } from "vitest";
 import {
+  aggregatePortfolioQuoteRisk,
   assertBuilderFeePolicy,
   assertNoBuilderFee,
   buildQuoteIntent,
   evaluateQuoteSafety,
   makerConfigSchema,
   MutationLock,
+  PriorityMutationQueue,
   resolveMarketConfig,
 } from "../src/index.js";
 
 const config = makerConfigSchema.parse({
   markets: [{ marketId: "0x1234", symbol: "SUI-PERP" }],
 });
+const safetyDefaults = {
+  portfolioAvailableCollateralUsd: 1_000,
+  agentGasSui: 1,
+};
 
 describe("quote strategy", () => {
   it("stays post-only and skews away from a long inventory", () => {
@@ -125,6 +131,7 @@ describe("risk gates", () => {
       unrealizedPnlUsd: 0,
     });
     const checks = evaluateQuoteSafety({
+      ...safetyDefaults,
       config: { ...config, mode: "live" },
       quote,
       now: new Date("2026-10-26T12:00:01Z"),
@@ -155,6 +162,7 @@ describe("risk gates", () => {
       unrealizedPnlUsd: 0,
     });
     const checks = evaluateQuoteSafety({
+      ...safetyDefaults,
       config: bounded,
       quote,
       now: new Date("2026-10-26T12:00:01Z"),
@@ -164,7 +172,9 @@ describe("risk gates", () => {
       mainnetAllowed: true,
     });
 
-    expect(checks.find((check) => check.code === "fair-value")?.ok).toBe(false);
+    const fairValue = checks.find((check) => check.code === "fair-value");
+    expect(fairValue?.ok).toBe(false);
+    expect(fairValue?.detail).toContain("limit 15.0 bps");
     expect(quote.bidPrice).toBeLessThan(10);
   });
 
@@ -189,6 +199,7 @@ describe("risk gates", () => {
       unrealizedPnlUsd: 0,
     });
     const checks = evaluateQuoteSafety({
+      ...safetyDefaults,
       config: bounded,
       quote,
       now: new Date("2026-10-26T12:00:01Z"),
@@ -223,6 +234,7 @@ describe("risk gates", () => {
       unrealizedPnlUsd: 0,
     });
     const checks = evaluateQuoteSafety({
+      ...safetyDefaults,
       config: bounded,
       quote,
       now: new Date("2026-10-26T12:00:01Z"),
@@ -238,7 +250,59 @@ describe("risk gates", () => {
     );
   });
 
-  it("requires collateral for both sides and one full gas ceiling", () => {
+  it("rejects aggregate simultaneous fills across resting markets", () => {
+    const bounded = makerConfigSchema.parse({
+      markets: Array.from({ length: 10 }, (_, index) => ({
+        marketId: `0x${index + 1}`,
+        symbol: `M${index + 1}`,
+      })),
+      quoteSizeUsd: 10,
+      maxInventoryUsd: 30,
+      maxGrossExposureUsd: 150,
+    });
+    const quote = buildQuoteIntent({
+      config: bounded,
+      observation: {
+        marketId: bounded.markets[0]!.marketId,
+        bestBid: 9.99,
+        bestAsk: 10.01,
+        indexPrice: 10,
+        tickSize: 0.01,
+        observedAt: new Date("2026-10-26T12:00:00Z"),
+      },
+      inventoryUsd: 10,
+      unrealizedPnlUsd: 0,
+    });
+    const aggregate = aggregatePortfolioQuoteRisk(
+      Array.from({ length: 10 }, () => ({
+        inventoryUsd: 10,
+        restingQuoteSizeUsd: 10,
+        maxLeverage: 1,
+      })),
+    );
+    const checks = evaluateQuoteSafety({
+      ...safetyDefaults,
+      config: bounded,
+      quote,
+      now: new Date("2026-10-26T12:00:01Z"),
+      setupComplete: true,
+      hasAgentKey: true,
+      liveEnabled: true,
+      mainnetAllowed: true,
+      portfolioGrossExposureUsd: 100,
+      portfolioWorstCaseExposureUsd: aggregate.worstCaseGrossExposureUsd,
+      portfolioAvailableCollateralUsd: 1_000,
+      portfolioRequiredQuoteCollateralUsd: aggregate.requiredQuoteCollateralUsd,
+      agentGasSui: 1,
+    });
+
+    expect(aggregate.worstCaseGrossExposureUsd).toBe(200);
+    expect(checks.find((check) => check.code === "gross-exposure")?.ok).toBe(
+      false,
+    );
+  });
+
+  it("requires aggregate collateral and three gas ceilings", () => {
     const bounded = makerConfigSchema.parse({
       markets: [{ marketId: "0x1234", symbol: "SUI-PERP" }],
       quoteSizeUsd: 10,
@@ -259,6 +323,7 @@ describe("risk gates", () => {
       unrealizedPnlUsd: 0,
     });
     const checks = evaluateQuoteSafety({
+      ...safetyDefaults,
       config: bounded,
       quote,
       now: new Date("2026-10-26T12:00:01Z"),
@@ -267,7 +332,7 @@ describe("risk gates", () => {
       liveEnabled: true,
       mainnetAllowed: true,
       portfolioAvailableCollateralUsd: 9.99,
-      agentGasSui: 0.049,
+      agentGasSui: 0.149,
     });
 
     expect(checks.find((check) => check.code === "collateral")?.ok).toBe(false);
@@ -293,6 +358,7 @@ describe("risk gates", () => {
       unrealizedPnlUsd: 0,
     });
     const checks = evaluateQuoteSafety({
+      ...safetyDefaults,
       config: bounded,
       quote,
       now: new Date("2026-10-26T12:00:01Z"),
@@ -323,6 +389,7 @@ describe("risk gates", () => {
       unrealizedPnlUsd: -(config.maxUnrealizedLossUsd + 1),
     });
     const checks = evaluateQuoteSafety({
+      ...safetyDefaults,
       config,
       quote,
       now: new Date("2026-10-26T12:00:01Z"),
@@ -538,6 +605,29 @@ describe("transaction policy", () => {
         },
       ),
     ).toThrow("misplaced");
+  });
+
+  it("runs urgent cancellation work before queued normal mutations", async () => {
+    const queue = new PriorityMutationQueue();
+    const order: string[] = [];
+    let release!: () => void;
+    const blocked = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const first = queue.run(async () => {
+      order.push("active");
+      await blocked;
+    });
+    const normal = queue.run(async () => {
+      order.push("normal");
+    });
+    const urgent = queue.run(async () => {
+      order.push("cancel");
+    }, "urgent");
+    await Promise.resolve();
+    release();
+    await Promise.all([first, normal, urgent]);
+    expect(order).toEqual(["active", "cancel", "normal"]);
   });
 
   it("serializes mutations", async () => {

@@ -59,8 +59,16 @@ export class OnchainAllowlist {
       objectId,
       include: { json: true },
     });
-    if (!response.object.type.endsWith("::access::Registry")) {
-      throw new Error("Configured whitelist object is not a Maker registry");
+    const packageId = this.store.getSystemValue<string>("whitelist_package_id");
+    if (!packageId) {
+      throw new Error("Whitelist package ID is not configured");
+    }
+    const expectedType =
+      `${normalizeAddress(packageId)}::access::Registry`.toLowerCase();
+    if (response.object.type.toLowerCase() !== expectedType) {
+      throw new Error(
+        "Configured whitelist object is not the pinned Maker registry",
+      );
     }
     if (!response.object.json) {
       throw new Error("Whitelist registry did not return structured content");
@@ -115,8 +123,18 @@ export class OnchainAllowlist {
       types?.[object.objectId]?.endsWith("::access::AdminCap"),
     );
     const registryType = registry ? types?.[registry.objectId] : undefined;
-    if (!registry || !adminCap || !registryType) {
+    const adminCapType = adminCap ? types?.[adminCap.objectId] : undefined;
+    if (!registry || !adminCap || !registryType || !adminCapType) {
       throw new Error("Deployment did not create the expected access objects");
+    }
+    const packageId = normalizeAddress(registryType.split("::")[0] ?? "");
+    if (
+      registryType.toLowerCase() !==
+        `${packageId}::access::Registry`.toLowerCase() ||
+      adminCapType.toLowerCase() !==
+        `${packageId}::access::AdminCap`.toLowerCase()
+    ) {
+      throw new Error("Access objects were not created by one exact package");
     }
     if (
       adminCap.outputOwner?.$kind !== "AddressOwner" ||
@@ -125,8 +143,6 @@ export class OnchainAllowlist {
       throw new Error("Whitelist AdminCap was not assigned to the operator");
     }
 
-    const packageId = registryType.split("::")[0];
-    if (!packageId) throw new Error("Registry package ID was not found");
     const deployment = {
       packageId,
       registryObjectId: registry.objectId,

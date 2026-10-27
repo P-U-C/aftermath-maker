@@ -3,7 +3,12 @@ import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import Database from "better-sqlite3";
 import { describe, expect, it } from "vitest";
-import { createEncryptedAgent, loadAgentKeypair } from "@puc/aftermath";
+import {
+  agentEncryptionContext,
+  createEncryptedAgent,
+  encryptSecret,
+  loadAgentKeypair,
+} from "@puc/aftermath";
 import { makerConfigSchema, setupSchema } from "@puc/core";
 import { Store } from "../src/store.js";
 
@@ -60,6 +65,87 @@ describe("persistent control store", () => {
     expect(other.getConfig()).toBeNull();
     expect(other.getAgent()).toBeNull();
     expect(other.listEvents()).toEqual([]);
+    expect(databaseStore.listTenantOwners()).toEqual([setup.ownerAddress]);
+    databaseStore.close();
+  });
+
+  it("does not coerce user strings that look like legacy bigint values", () => {
+    const directory = join(
+      process.env.TMPDIR ?? "/tmp",
+      `aftermath-maker-${randomBytes(8).toString("hex")}`,
+    );
+    mkdirSync(directory, { recursive: true });
+    const databaseStore = new Store(join(directory, "maker.db"));
+    const tenant = databaseStore.forTenant(`0x${"9".repeat(64)}`);
+    tenant.setConfig(
+      makerConfigSchema.parse({
+        markets: [{ marketId: "0x100", symbol: "100n" }],
+      }),
+    );
+
+    expect(tenant.getConfig()?.markets[0]?.symbol).toBe("100n");
+    databaseStore.close();
+  });
+
+  it("atomically re-encrypts stored agents under a new key and bound context", () => {
+    const directory = join(
+      process.env.TMPDIR ?? "/tmp",
+      `aftermath-maker-${randomBytes(8).toString("hex")}`,
+    );
+    mkdirSync(directory, { recursive: true });
+    const databaseStore = new Store(join(directory, "maker.db"));
+    const ownerAddress = `0x${"8".repeat(64)}`;
+    const oldMasterKey = randomBytes(32).toString("base64");
+    const newMasterKey = randomBytes(32).toString("base64");
+    const generated = createEncryptedAgent({
+      masterKey: oldMasterKey,
+      context: "account:42",
+    });
+    const tenant = databaseStore.forTenant(ownerAddress);
+    tenant.createAgent({
+      ...generated,
+      encryptionContext: "account:42",
+    });
+    const oldKeypair = loadAgentKeypair({
+      masterKey: oldMasterKey,
+      context: "account:42",
+      encryptedSecret: generated.encryptedSecret,
+    });
+    const encryptionContext = agentEncryptionContext({
+      ownerAddress,
+      agentAddress: generated.address,
+      accountId: "42",
+    });
+
+    databaseStore.rotateAgentEncryptions([
+      {
+        ownerAddress,
+        address: generated.address,
+        encryptionContext,
+        encryptedSecret: encryptSecret(
+          oldKeypair.getSecretKey(),
+          newMasterKey,
+          encryptionContext,
+        ),
+      },
+    ]);
+
+    const rotated = tenant.getAgent()!;
+    expect(rotated.encryptionContext).toBe(encryptionContext);
+    expect(
+      loadAgentKeypair({
+        masterKey: newMasterKey,
+        context: rotated.encryptionContext,
+        encryptedSecret: rotated.encryptedSecret,
+      }).toSuiAddress(),
+    ).toBe(generated.address);
+    expect(() =>
+      loadAgentKeypair({
+        masterKey: oldMasterKey,
+        context: rotated.encryptionContext,
+        encryptedSecret: rotated.encryptedSecret,
+      }),
+    ).toThrow("not the supplied master key");
     databaseStore.close();
   });
 
@@ -197,6 +283,73 @@ describe("persistent control store", () => {
       requestedNotionalUsd: 25,
     });
     expect(second.listHedgeExecutions()).toEqual([]);
+    databaseStore.close();
+  });
+
+  it("enforces documented per-tenant retention without crossing tenants", () => {
+    const directory = join(
+      process.env.TMPDIR ?? "/tmp",
+      `aftermath-maker-${randomBytes(8).toString("hex")}`,
+    );
+    mkdirSync(directory, { recursive: true });
+    const databaseStore = new Store(join(directory, "maker.db"));
+    const first = databaseStore.forTenant(`0x${"3".repeat(64)}`);
+    const second = databaseStore.forTenant(`0x${"4".repeat(64)}`);
+
+    for (let index = 1; index <= 3; index += 1) {
+      first.logEvent({
+        category: "retention",
+        action: `event-${index}`,
+        outcome: "success",
+      });
+      first.logExecution({
+        mode: "live",
+        marketId: `market-${index}`,
+        bidPrice: index,
+        askPrice: index + 1,
+        sizeUsd: 10,
+        outcome: "confirmed",
+        gasUsedMist: index,
+      });
+      first.trackMakerOrders({
+        accountId: "42",
+        marketId: `market-${index}`,
+        quoteDigest: `quote-${index}`,
+        orderIds: [`order-${index}`],
+      });
+      first.markHedgeFillsProcessed({
+        makerAccountId: "42",
+        fillKeys: [`fill-${index}`],
+        hedgeDigest: `hedge-${index}`,
+      });
+    }
+    second.logEvent({
+      category: "retention",
+      action: "other-tenant",
+      outcome: "success",
+    });
+
+    first.enforceRetention({
+      auditEvents: 2,
+      executions: 2,
+      makerOrders: 2,
+      hedgedFills: 2,
+    });
+
+    expect(first.listEvents().map((event) => event.action)).toEqual([
+      "event-3",
+      "event-2",
+    ]);
+    expect(first.getExecutionStats().confirmedLiveQuotes).toBe(2);
+    expect(
+      first
+        .listTrackedMakerOrders()
+        .map((order) => order.orderId)
+        .sort(),
+    ).toEqual(["order-2", "order-3"]);
+    expect(first.isHedgeFillProcessed("42", "fill-1")).toBe(false);
+    expect(first.isHedgeFillProcessed("42", "fill-3")).toBe(true);
+    expect(second.listEvents()[0]?.action).toBe("other-tenant");
     databaseStore.close();
   });
 

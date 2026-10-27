@@ -135,6 +135,7 @@ function createHarness(options: { configured?: boolean } = {}) {
     setup: { accountId: string };
     marketIds: string[];
   }): PortfolioSnapshot => ({
+    markedAt: new Date().toISOString(),
     equityUsd: 100,
     availableCollateralUsd: 80,
     allocatedCollateralUsd: 20,
@@ -142,7 +143,7 @@ function createHarness(options: { configured?: boolean } = {}) {
     withdrawableCollateralUsd: 75,
     grossExposureUsd: 0,
     unrealizedPnlUsd: 0,
-    gasSui: 0.1,
+    gasSui: 1,
     positions: inputs.marketIds.map((marketId) => ({
       marketId,
       baseAssetAmount: 0,
@@ -175,7 +176,27 @@ function createHarness(options: { configured?: boolean } = {}) {
     getAgentPortfolioSnapshot: async (inputs: {
       setup: { accountId: string };
       marketIds: string[];
-    }) => portfolioResolver(inputs),
+    }) => {
+      const snapshot = portfolioResolver(inputs);
+      return {
+        ...snapshot,
+        positions: snapshot.positions.map((position) => ({
+          ...position,
+          marginRatio:
+            position.marginRatio === undefined
+              ? position.hasPosition
+                ? 0.5
+                : null
+              : position.marginRatio,
+          liquidationDistanceBps:
+            position.liquidationDistanceBps === undefined
+              ? position.hasPosition
+                ? 5_000
+                : null
+              : position.liquidationDistanceBps,
+        })),
+      };
+    },
     cancelMakerOrders: async (inputs: { marketIds: string[] }) => {
       cancellationCount += 1;
       cancelledMarketSets.push([...inputs.marketIds]);
@@ -309,6 +330,27 @@ describe("runtime execution boundaries", () => {
         maxGasMist: 50_000_000,
       }),
     );
+    harness.setPortfolioResolver((inputs) => ({
+      equityUsd: 100,
+      availableCollateralUsd: 80,
+      allocatedCollateralUsd: 20,
+      freeMarginUsd: 70,
+      withdrawableCollateralUsd: 75,
+      grossExposureUsd: 0,
+      unrealizedPnlUsd: 0,
+      gasSui: 0.15,
+      positions: inputs.marketIds.map((marketId) => ({
+        marketId,
+        baseAssetAmount: 0,
+        pendingOrderCount: 0,
+        inventoryUsd: 0,
+        unrealizedPnlUsd: 0,
+        collateralUsd: 0,
+        freeMarginUsd: 0,
+        makerOrderIds: [],
+        hasPosition: false,
+      })),
+    }));
     await harness.runtime.cycle();
     harness.tenant.logExecution({
       mode: "live",
@@ -487,7 +529,8 @@ describe("runtime execution boundaries", () => {
     await harness.runtime.cycle();
 
     expect(harness.hedgeExecutions()).toBe(0);
-    expect(harness.cancellations()).toBe(0);
+    expect(harness.cancellations()).toBe(1);
+    expect(harness.executionSequence.slice(0, 2)).toEqual(["cancel", "quote"]);
     expect(harness.executions()).toBe(1);
     await harness.runtime.stop();
     harness.store.close();
@@ -539,7 +582,7 @@ describe("runtime execution boundaries", () => {
         withdrawableCollateralUsd: 75,
         grossExposureUsd: Math.abs(inventoryUsd),
         unrealizedPnlUsd: 0,
-        gasSui: 0.1,
+        gasSui: 1,
         positions: inputs.marketIds.map((marketId) => ({
           marketId,
           baseAssetAmount: inventoryUsd / 10,
@@ -665,7 +708,7 @@ describe("runtime execution boundaries", () => {
         withdrawableCollateralUsd: 75,
         grossExposureUsd: Math.abs(inventoryUsd),
         unrealizedPnlUsd: 0,
-        gasSui: 0.1,
+        gasSui: 1,
         positions: inputs.marketIds.map((marketId) => ({
           marketId,
           baseAssetAmount: inventoryUsd / 10,
@@ -768,7 +811,7 @@ describe("runtime execution boundaries", () => {
         withdrawableCollateralUsd: 75,
         grossExposureUsd: Math.abs(maker ? makerInventoryUsd : 0),
         unrealizedPnlUsd: 0,
-        gasSui: 0.1,
+        gasSui: 1,
         positions: inputs.marketIds.map((marketId) => {
           const inventoryUsd =
             marketId === "0x1111"
@@ -824,6 +867,173 @@ describe("runtime execution boundaries", () => {
     );
 
     await harness.runtime.stop();
+    harness.store.close();
+  });
+
+  it("blocks portfolio quoting against every resting pair's simultaneous-fill exposure", async () => {
+    const harness = createHarness();
+    const markets = Array.from({ length: 10 }, (_, index) => ({
+      marketId: `0x${(index + 1).toString(16).padStart(4, "0")}`,
+      symbol: `M${index}`,
+    }));
+    harness.tenant.setConfig(
+      makerConfigSchema.parse({
+        ...harness.tenant.getConfig()!,
+        markets,
+        mode: "live",
+        rotationMode: "portfolio",
+        quoteSizeUsd: 10,
+        maxInventoryUsd: 100,
+        maxGrossExposureUsd: 150,
+      }),
+    );
+    harness.setPortfolioResolver((inputs) => ({
+      equityUsd: 1_000,
+      availableCollateralUsd: 1_000,
+      allocatedCollateralUsd: 0,
+      freeMarginUsd: 1_000,
+      withdrawableCollateralUsd: 1_000,
+      grossExposureUsd: 100,
+      unrealizedPnlUsd: 0,
+      gasSui: 1,
+      positions: inputs.marketIds.map((marketId) => ({
+        marketId,
+        baseAssetAmount: 1,
+        pendingOrderCount: 2,
+        inventoryUsd: 10,
+        unrealizedPnlUsd: 0,
+        collateralUsd: 0,
+        freeMarginUsd: 1_000,
+        makerOrderIds: ["101", "102"],
+        hasPosition: true,
+      })),
+    }));
+
+    harness.runtime.start();
+    await harness.runtime.cycle();
+
+    expect(harness.executions()).toBe(0);
+    expect(harness.runtime.snapshot.running).toBe(false);
+    expect(harness.runtime.snapshot.lastError).toContain("gross-exposure");
+    harness.store.close();
+  });
+
+  it("keeps deselected positions inside the account-wide gross exposure gate", async () => {
+    const harness = createHarness();
+    harness.tenant.setConfig(
+      makerConfigSchema.parse({
+        ...harness.tenant.getConfig()!,
+        markets: [{ marketId: "0x5678", symbol: "SUI" }],
+        mode: "live",
+        maxInventoryUsd: 50,
+        maxGrossExposureUsd: 50,
+      }),
+    );
+    harness.setPortfolioResolver((inputs) => ({
+      equityUsd: 100,
+      availableCollateralUsd: 80,
+      allocatedCollateralUsd: 20,
+      freeMarginUsd: 70,
+      withdrawableCollateralUsd: 75,
+      grossExposureUsd: 60,
+      unrealizedPnlUsd: 0,
+      gasSui: 1,
+      positions: [
+        ...inputs.marketIds.map((marketId) => ({
+          marketId,
+          baseAssetAmount: 0,
+          pendingOrderCount: 0,
+          inventoryUsd: 0,
+          unrealizedPnlUsd: 0,
+          collateralUsd: 0,
+          freeMarginUsd: 70,
+          makerOrderIds: [],
+          hasPosition: false,
+        })),
+        {
+          marketId: "0x9999",
+          baseAssetAmount: 6,
+          pendingOrderCount: 0,
+          inventoryUsd: 60,
+          unrealizedPnlUsd: 0,
+          collateralUsd: 20,
+          freeMarginUsd: 70,
+          makerOrderIds: [],
+          hasPosition: true,
+        },
+      ],
+    }));
+
+    harness.runtime.start();
+    await harness.runtime.cycle();
+
+    expect(harness.executions()).toBe(0);
+    expect(harness.runtime.snapshot.lastError).toContain("gross-exposure");
+    harness.store.close();
+  });
+
+  it("fails closed when the dedicated hedge account nears margin or liquidation limits", async () => {
+    const harness = createHarness();
+    harness.tenant.setSetup(
+      setupSchema.parse({
+        ownerAddress: `0x${"1".repeat(64)}`,
+        accountId: "43",
+        accountCapId: "0x4321",
+      }),
+    );
+    harness.tenant.confirmAgentGrant({
+      accountId: "43",
+      digest: "B".repeat(32),
+      agentCapId: "0x8765",
+    });
+    harness.tenant.setConfig(
+      makerConfigSchema.parse({
+        ...harness.tenant.getConfig()!,
+        markets: [{ marketId: "0x5678", symbol: "SUI" }],
+        mode: "live",
+        makerAccountId: "42",
+        hedge: {
+          enabled: true,
+          accountId: "43",
+          thresholdUsd: 25,
+          maxOrderUsd: 100,
+          maxSlippageBps: 75,
+        },
+      }),
+    );
+    harness.setPortfolioResolver((inputs) => {
+      const unsafe = inputs.setup.accountId === "43";
+      return {
+        equityUsd: 100,
+        availableCollateralUsd: 80,
+        allocatedCollateralUsd: unsafe ? 20 : 0,
+        freeMarginUsd: 70,
+        withdrawableCollateralUsd: 75,
+        grossExposureUsd: 0,
+        unrealizedPnlUsd: 0,
+        gasSui: 1,
+        positions: inputs.marketIds.map((marketId) => ({
+          marketId,
+          baseAssetAmount: unsafe ? 1 : 0,
+          pendingOrderCount: 0,
+          inventoryUsd: 0,
+          unrealizedPnlUsd: 0,
+          collateralUsd: unsafe ? 20 : 0,
+          freeMarginUsd: 70,
+          marginRatio: unsafe ? 0.05 : null,
+          liquidationDistanceBps: unsafe ? 500 : null,
+          makerOrderIds: [],
+          hasPosition: unsafe,
+        })),
+      };
+    });
+
+    harness.runtime.start();
+    await harness.runtime.cycle();
+
+    expect(harness.executions()).toBe(0);
+    expect(harness.runtime.snapshot.lastError).toContain("hedge-margin");
+    expect(harness.runtime.snapshot.lastError).toContain("hedge-liquidation");
     harness.store.close();
   });
 
@@ -901,7 +1111,7 @@ describe("runtime execution boundaries", () => {
         withdrawableCollateralUsd: 75,
         grossExposureUsd: Math.abs(inventoryUsd),
         unrealizedPnlUsd: 0,
-        gasSui: 0.1,
+        gasSui: 1,
         positions: inputs.marketIds.map((marketId) => ({
           marketId,
           baseAssetAmount: inventoryUsd / 10,
@@ -992,7 +1202,7 @@ describe("runtime execution boundaries", () => {
       ],
       marginHistory: [],
     });
-    let stalePostCancelReads = 1;
+    let stalePostCancelReads = 2;
     let stalePostHedgeReads = 1;
     harness.setPortfolioResolver((inputs) => {
       const maker = inputs.setup.accountId === "42";
@@ -1014,7 +1224,7 @@ describe("runtime execution boundaries", () => {
         withdrawableCollateralUsd: 75,
         grossExposureUsd: Math.abs(inventoryUsd),
         unrealizedPnlUsd: 0,
-        gasSui: 0.1,
+        gasSui: 1,
         positions: inputs.marketIds.map((marketId) => ({
           marketId,
           baseAssetAmount: inventoryUsd / 10,
@@ -1033,7 +1243,8 @@ describe("runtime execution boundaries", () => {
     await harness.runtime.cycle();
 
     expect(harness.hedgeExecutions()).toBe(1);
-    expect(harness.executionSequence.slice(0, 3)).toEqual([
+    expect(harness.executionSequence.slice(0, 4)).toEqual([
+      "cancel",
       "cancel",
       "hedge",
       "quote",
@@ -1133,7 +1344,7 @@ describe("runtime execution boundaries", () => {
         withdrawableCollateralUsd: 75,
         grossExposureUsd: Math.abs(inventoryUsd),
         unrealizedPnlUsd: 0,
-        gasSui: 0.1,
+        gasSui: 1,
         positions: inputs.marketIds.map((marketId) => ({
           marketId,
           baseAssetAmount: inventoryUsd / 10,
@@ -1241,7 +1452,7 @@ describe("runtime execution boundaries", () => {
         withdrawableCollateralUsd: 75,
         grossExposureUsd: Math.abs(inventoryUsd),
         unrealizedPnlUsd: 0,
-        gasSui: 0.1,
+        gasSui: 1,
         positions: inputs.marketIds.map((marketId) => ({
           marketId,
           baseAssetAmount: inventoryUsd / 10,
@@ -1261,7 +1472,11 @@ describe("runtime execution boundaries", () => {
 
     expect(harness.hedgeExecutions()).toBe(1);
     expect(harness.executions()).toBe(0);
-    expect(harness.executionSequence.slice(0, 2)).toEqual(["cancel", "hedge"]);
+    expect(harness.executionSequence.slice(0, 3)).toEqual([
+      "cancel",
+      "cancel",
+      "hedge",
+    ]);
     expect(harness.runtime.snapshot.running).toBe(false);
     expect(harness.runtime.snapshot.lastError).toContain("inventory");
     expect(harness.runtime.snapshot.hedge).toMatchObject({
@@ -1333,7 +1548,7 @@ describe("runtime execution boundaries", () => {
         withdrawableCollateralUsd: 75,
         grossExposureUsd: maker ? 30 : 0,
         unrealizedPnlUsd: 0,
-        gasSui: 0.1,
+        gasSui: 1,
         positions: inputs.marketIds.map((marketId) => ({
           marketId,
           baseAssetAmount: maker ? 3 : 0,
@@ -1361,6 +1576,23 @@ describe("runtime execution boundaries", () => {
     harness.store.close();
   });
 
+  it("sweeps Maker orders when Stop is called after restart or outside Live mode", async () => {
+    const harness = createHarness();
+    const config = harness.tenant.getConfig()!;
+    harness.tenant.setConfig(
+      makerConfigSchema.parse({
+        ...config,
+        mode: "paper",
+      }),
+    );
+
+    await harness.runtime.stop();
+
+    expect(harness.cancellations()).toBe(1);
+    expect(harness.cancelledMarketSets()).toEqual([["0x5678", "0x9999"]]);
+    harness.store.close();
+  });
+
   it("cancels once before a separate reduce-only flatten", async () => {
     const harness = createHarness();
 
@@ -1381,6 +1613,20 @@ describe("runtime execution boundaries", () => {
       ],
     });
     expect(harness.runtime.snapshot.running).toBe(false);
+    harness.store.close();
+  });
+
+  it("deduplicates concurrent flatten requests", async () => {
+    const harness = createHarness();
+
+    const [first, second] = await Promise.all([
+      harness.runtime.flatten(0.01),
+      harness.runtime.flatten(0.01),
+    ]);
+
+    expect(first).toEqual(second);
+    expect(harness.cancellations()).toBe(1);
+    expect(harness.flattens()).toBe(1);
     harness.store.close();
   });
 
@@ -1518,7 +1764,7 @@ describe("runtime execution boundaries", () => {
       withdrawableCollateralUsd: 75,
       grossExposureUsd: 0,
       unrealizedPnlUsd: 0,
-      gasSui: 0.1,
+      gasSui: 1,
       positions: inputs.marketIds.map((marketId) => ({
         marketId,
         baseAssetAmount: 0,
@@ -1672,7 +1918,7 @@ describe("runtime execution boundaries", () => {
     harness.runtime.start();
     await vi.advanceTimersByTimeAsync(4_100);
 
-    expect(cancellationAttempts).toBe(3);
+    expect(cancellationAttempts).toBe(4);
     expect(harness.runtime.snapshot.running).toBe(false);
     expect(harness.tenant.listEvents(10)).toContainEqual(
       expect.objectContaining({
@@ -1696,7 +1942,7 @@ describe("runtime execution boundaries", () => {
     await vi.advanceTimersByTimeAsync(5_100);
     await stopping;
 
-    expect(harness.cancellations()).toBe(1);
+    expect(harness.cancellations()).toBe(2);
     expect(harness.runtime.snapshot.running).toBe(false);
     harness.store.close();
   });
@@ -1908,7 +2154,7 @@ describe("runtime execution boundaries", () => {
     await stopping;
 
     expect(harness.executions()).toBe(0);
-    expect(harness.cancellations()).toBe(1);
+    expect(harness.cancellations()).toBe(2);
     expect(harness.runtime.snapshot.running).toBe(false);
     expect(harness.runtime.snapshot.lastError).toBeNull();
     harness.store.close();

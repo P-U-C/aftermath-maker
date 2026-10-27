@@ -83,3 +83,41 @@ export class MutationLock {
     }
   }
 }
+
+type QueuedMutation<T> = {
+  operation: () => Promise<T>;
+  resolve: (value: T) => void;
+  reject: (reason: unknown) => void;
+};
+
+export class PriorityMutationQueue {
+  private active = false;
+  private readonly urgent: Array<QueuedMutation<unknown>> = [];
+  private readonly normal: Array<QueuedMutation<unknown>> = [];
+
+  run<T>(
+    operation: () => Promise<T>,
+    priority: "urgent" | "normal" = "normal",
+  ): Promise<T> {
+    return new Promise<T>((resolve, reject) => {
+      const entry: QueuedMutation<T> = { operation, resolve, reject };
+      const queue = priority === "urgent" ? this.urgent : this.normal;
+      queue.push(entry as QueuedMutation<unknown>);
+      this.drain();
+    });
+  }
+
+  private drain(): void {
+    if (this.active) return;
+    const next = this.urgent.shift() ?? this.normal.shift();
+    if (!next) return;
+    this.active = true;
+    void next
+      .operation()
+      .then(next.resolve, next.reject)
+      .finally(() => {
+        this.active = false;
+        this.drain();
+      });
+  }
+}

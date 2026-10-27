@@ -1,10 +1,10 @@
-import { createHash } from "node:crypto";
+import { createHash, timingSafeEqual } from "node:crypto";
 import cors from "@fastify/cors";
 import rateLimit from "@fastify/rate-limit";
 import { SuiGrpcClient } from "@mysten/sui/grpc";
 import Fastify, { type FastifyRequest } from "fastify";
 import { z } from "zod";
-import { createEncryptedAgent } from "@puc/aftermath";
+import { agentEncryptionContext, createEncryptedAgent } from "@puc/aftermath";
 import {
   decimalToBaseUnits,
   integratorInspectionSchema,
@@ -15,6 +15,7 @@ import {
 } from "@puc/core";
 import { OnchainAllowlist } from "./allowlist.js";
 import { AuthError, WalletAuth } from "./auth.js";
+import { classifyHttpError } from "./http-error.js";
 import { RuntimeManager } from "./runtime-manager.js";
 import { Store } from "./store.js";
 
@@ -64,6 +65,17 @@ const envSchema = z.object({
 });
 
 const env = envSchema.parse(process.env);
+
+function secretMatches(actual: string | undefined, expected: string): boolean {
+  if (!actual) return false;
+  const actualBytes = Buffer.from(actual);
+  const expectedBytes = Buffer.from(expected);
+  return (
+    actualBytes.length === expectedBytes.length &&
+    timingSafeEqual(actualBytes, expectedBytes)
+  );
+}
+
 const store = new Store(env.DATABASE_PATH);
 if (env.SUI_WHITELIST_OBJECT_ID && !store.getRegistryObjectId()) {
   store.setRegistryObjectId(env.SUI_WHITELIST_OBJECT_ID);
@@ -122,6 +134,16 @@ const auth = new WalletAuth(
   allowlist,
   env.PUBLIC_ORIGIN,
   env.WALLET_AUTH_BOOTSTRAP,
+  12,
+  30_000,
+  async (ownerAddress) => {
+    await runtimeManager.stopTenant(ownerAddress);
+    store.forTenant(ownerAddress).logEvent({
+      category: "access",
+      action: "membership-revoked-stop",
+      outcome: "completed",
+    });
+  },
 );
 
 type RequestAuth = {
@@ -152,9 +174,14 @@ await app.register(rateLimit, {
   keyGenerator: (request) => {
     const header = request.headers["x-maker-session"];
     const session = Array.isArray(header) ? header[0] : header;
-    return session
-      ? `session:${createHash("sha256").update(session).digest("hex")}`
-      : `unauthenticated:${request.ip}`;
+    if (session) {
+      const tokenHash = createHash("sha256").update(session).digest("hex");
+      const stored = store.getSession(tokenHash);
+      if (stored) return `owner:${stored.ownerAddress}`;
+    }
+    const forwarded = request.headers["x-maker-client-ip"];
+    const clientIp = Array.isArray(forwarded) ? forwarded[0] : forwarded;
+    return `unauthenticated:${clientIp ?? request.ip}`;
   },
 });
 
@@ -173,7 +200,11 @@ app.addHook("onRequest", async (request, reply) => {
         error: "CONTROL_TOKEN is not configured; API access is disabled",
       });
     }
-    if (request.headers["x-control-token"] !== env.CONTROL_TOKEN) {
+    const controlHeader = request.headers["x-control-token"];
+    const controlToken = Array.isArray(controlHeader)
+      ? controlHeader[0]
+      : controlHeader;
+    if (!secretMatches(controlToken, env.CONTROL_TOKEN)) {
       return reply.code(401).send({ error: "Invalid control token" });
     }
   }
@@ -182,33 +213,29 @@ app.addHook("onRequest", async (request, reply) => {
   if (path.startsWith("/api/")) {
     const token = request.headers["x-maker-session"];
     const value = Array.isArray(token) ? token[0] : token;
-    (request as AuthenticatedRequest).makerAuth =
-      await auth.authenticate(value);
+    (request as AuthenticatedRequest).makerAuth = await auth.authenticate(
+      value,
+      {
+        allowStaleOnChainError:
+          path === "/api/runtime/stop" ||
+          path === "/api/runtime/flatten" ||
+          path.startsWith("/api/operator/runtime/"),
+      },
+    );
   }
 });
 
 app.setErrorHandler((error, request, reply) => {
-  const errorText =
-    error && typeof error === "object" && "message" in error
-      ? String(error.message)
-      : String(error);
-  const status =
-    error instanceof AuthError
-      ? error.statusCode
-      : error && typeof error === "object" && "name" in error
-        ? String(error.name) === "ZodError"
-          ? 400
-          : errorText.includes("not configured")
-            ? 503
-            : 500
-        : 500;
-
-  if (status >= 500) {
+  const response = classifyHttpError(error);
+  if (response.status >= 500) {
     request.log.error({ err: error }, "request failed");
   } else {
-    request.log.info({ status, error: errorText }, "request rejected");
+    request.log.info(
+      { status: response.status, error: response.internalMessage },
+      "request rejected",
+    );
   }
-  reply.code(status).send({ error: errorText });
+  reply.code(response.status).send({ error: response.publicMessage });
 });
 
 function requestAuth(request: FastifyRequest): RequestAuth {
@@ -381,7 +408,7 @@ app.post("/api/accounts/create-transaction", async (request) => {
     })
     .strict()
     .parse(request.body ?? {});
-  const transaction = await runtime(request)
+  const prepared = await runtime(request)
     .requireGateway()
     .buildCreateAccountTransaction({
       ownerAddress: identity.ownerAddress,
@@ -393,7 +420,7 @@ app.post("/api/accounts/create-transaction", async (request) => {
     outcome: "prepared",
     detail: { collateralCoinType: body.collateralCoinType },
   });
-  return { transaction };
+  return prepared;
 });
 
 const collateralMutationSchema = z
@@ -416,7 +443,7 @@ app.post("/api/accounts/deposit-transaction", async (request) => {
   }
   const amount = decimalToBaseUnits(body.amountUsdc, 6);
   if (amount <= 0n) throw new AuthError(400, "Deposit amount must be positive");
-  const transaction = await active
+  const prepared = await active
     .requireGateway()
     .buildDepositCollateralTransaction({
       ownerAddress: identity.ownerAddress,
@@ -430,7 +457,7 @@ app.post("/api/accounts/deposit-transaction", async (request) => {
     outcome: "prepared",
     detail: { accountId: body.accountId, amountUsdc: body.amountUsdc },
   });
-  return { transaction };
+  return prepared;
 });
 
 app.post("/api/accounts/withdraw-transaction", async (request) => {
@@ -444,7 +471,7 @@ app.post("/api/accounts/withdraw-transaction", async (request) => {
   if (amount <= 0n) {
     throw new AuthError(400, "Withdrawal amount must be positive");
   }
-  const transaction = await active
+  const prepared = await active
     .requireGateway()
     .buildWithdrawCollateralTransaction({
       ownerAddress: identity.ownerAddress,
@@ -458,7 +485,7 @@ app.post("/api/accounts/withdraw-transaction", async (request) => {
     outcome: "prepared",
     detail: { accountId: body.accountId, amountUsdc: body.amountUsdc },
   });
-  return { transaction };
+  return prepared;
 });
 
 app.post("/api/config", async (request) => {
@@ -514,15 +541,16 @@ app.post("/api/setup/provision", async (request) => {
     throw new AuthError(403, "Setup owner must be the signed-in wallet");
   }
   scoped.setSetup(setup);
-  const encryptionContext = `account:${setup.accountId}`;
   const created = createEncryptedAgent({
     masterKey: env.MAKER_MASTER_KEY,
-    context: encryptionContext,
+    context: (agentAddress) =>
+      agentEncryptionContext({
+        ownerAddress: identity.ownerAddress,
+        agentAddress,
+        accountId: setup.accountId,
+      }),
   });
-  const agent = scoped.createAgent({
-    ...created,
-    encryptionContext,
-  });
+  const agent = scoped.createAgent(created);
   scoped.logEvent({
     category: "onboarding",
     action: "agent.provision",
@@ -560,7 +588,7 @@ app.post("/api/setup/grant-transaction", async (request) => {
   if (!fee) {
     throw new Error("Builder-code registration is not complete");
   }
-  const transaction = await runtime(request)
+  const prepared = await runtime(request)
     .requireGateway()
     .buildGrantAgentTransaction({
       setup,
@@ -569,7 +597,7 @@ app.post("/api/setup/grant-transaction", async (request) => {
       builderCode: fee,
     });
   return {
-    transaction,
+    ...prepared,
     agentAddress: agent.address,
     gasMist: body.gasMist.toString(),
     builderCode: fee,
@@ -659,12 +687,13 @@ app.post("/api/setup/revoke-transaction", async (request) => {
     );
   }
 
+  const prepared = await gateway.buildRevokeAgentTransaction({
+    setup,
+    agentCapId: setup.agentCapId,
+    builderCode: builderCode(),
+  });
   return {
-    transaction: await gateway.buildRevokeAgentTransaction({
-      setup,
-      agentCapId: setup.agentCapId,
-      builderCode: builderCode(),
-    }),
+    ...prepared,
     agentCapId: setup.agentCapId,
   };
 });
@@ -857,7 +886,47 @@ app.post("/api/operator/whitelist/confirm-member", async (request) => {
   if (allowed !== body.expected) {
     throw new Error("On-chain membership does not match the requested state");
   }
-  return { address: body.address.toLowerCase(), allowed };
+  const address = body.address.toLowerCase();
+  const runtimeStopped = !allowed
+    ? await runtimeManager.stopTenant(address)
+    : false;
+  return { address, allowed, runtimeStopped };
+});
+
+app.post("/api/operator/runtime/stop-tenant", async (request) => {
+  const identity = operatorAuth(request);
+  const body = z
+    .object({
+      ownerAddress: z.string().regex(/^0x[0-9a-fA-F]{64}$/),
+    })
+    .strict()
+    .parse(request.body);
+  const ownerAddress = body.ownerAddress.toLowerCase();
+  const stopped = await runtimeManager.stopTenant(ownerAddress);
+  store.forTenant(identity.ownerAddress).logEvent({
+    category: "operator",
+    action: "runtime.stop-tenant",
+    outcome: stopped ? "completed" : "not-found",
+    detail: { ownerAddress },
+  });
+  return { ownerAddress, stopped };
+});
+
+app.post("/api/operator/runtime/stop-all", async (request) => {
+  const identity = operatorAuth(request);
+  z.object({ confirmation: z.literal("STOP ALL") })
+    .strict()
+    .parse(request.body);
+  const results = await runtimeManager.stopAll();
+  store.forTenant(identity.ownerAddress).logEvent({
+    category: "operator",
+    action: "runtime.stop-all",
+    outcome: results.every((result) => result.stopped)
+      ? "completed"
+      : "partial",
+    detail: { results },
+  });
+  return { results };
 });
 
 app.post("/api/operator/builder/registration-transaction", async (request) => {
@@ -900,6 +969,7 @@ app.post("/api/operator/builder/confirm-registration", async (request) => {
 const shutdown = async (signal: string) => {
   app.log.info({ signal }, "shutting down");
   await runtimeManager.stopAll();
+  runtimeManager.close();
   await app.close();
   store.close();
   process.exit(0);

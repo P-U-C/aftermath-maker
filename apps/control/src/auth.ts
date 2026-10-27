@@ -33,6 +33,7 @@ export class WalletAuth {
     private readonly bootstrapEnabled: boolean,
     private readonly sessionHours = 12,
     private readonly chainRefreshMs = 30_000,
+    private readonly onAccessRevoked?: (ownerAddress: string) => Promise<void>,
   ) {}
 
   begin(address: string): {
@@ -41,6 +42,12 @@ export class WalletAuth {
     expiresAt: string;
   } {
     const ownerAddress = normalizeAddress(address);
+    if (this.store.countOpenChallenges(ownerAddress) >= 5) {
+      throw new AuthError(
+        429,
+        "Too many open sign-in challenges for this wallet",
+      );
+    }
     const challengeId = randomUUID();
     const issuedAt = new Date();
     const expiresAt = new Date(issuedAt.getTime() + 5 * 60_000);
@@ -135,7 +142,10 @@ export class WalletAuth {
     };
   }
 
-  async authenticate(token: string | undefined): Promise<{
+  async authenticate(
+    token: string | undefined,
+    options: { allowStaleOnChainError?: boolean } = {},
+  ): Promise<{
     ownerAddress: string;
     operator: boolean;
   }> {
@@ -148,11 +158,21 @@ export class WalletAuth {
       ? Date.parse(session.chainCheckedAt)
       : 0;
     if (Date.now() - lastCheck >= this.chainRefreshMs) {
-      const allowed = this.allowlist.configured
-        ? await this.allowlist.isAllowed(session.ownerAddress)
-        : this.bootstrapEnabled && this.isOperator(session.ownerAddress);
+      let allowed: boolean;
+      try {
+        allowed = this.allowlist.configured
+          ? await this.allowlist.isAllowed(session.ownerAddress)
+          : this.bootstrapEnabled && this.isOperator(session.ownerAddress);
+      } catch (error) {
+        if (!options.allowStaleOnChainError) throw error;
+        return {
+          ownerAddress: session.ownerAddress,
+          operator: this.isOperator(session.ownerAddress),
+        };
+      }
       if (!allowed) {
         this.store.revokeSession(tokenHash);
+        await this.onAccessRevoked?.(session.ownerAddress);
         throw new AuthError(403, "Wallet is no longer on the access list");
       }
       this.store.markSessionChainChecked(tokenHash, new Date().toISOString());

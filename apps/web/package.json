@@ -9,6 +9,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@puc/aftermath": "0.1.0",
     "@mysten/dapp-kit-core": "1.6.40",
     "@mysten/dapp-kit-react": "2.1.42",
     "@mysten/sui": "2.38.0",

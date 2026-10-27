@@ -9,6 +9,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./owner-transaction-intent": {
+      "types": "./dist/owner-transaction-intent.d.ts",
+      "import": "./dist/owner-transaction-intent.js"
     }
   },
   "scripts": {

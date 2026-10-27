@@ -11,7 +11,12 @@ const packageId = `0x${"a".repeat(64)}`;
 const registryId = `0x${"b".repeat(64)}`;
 const adminCapId = `0x${"c".repeat(64)}`;
 
-function harness(sender = operator, adminOwner = operator) {
+function harness(
+  sender = operator,
+  adminOwner = operator,
+  registryPackageId = packageId,
+  adminPackageId = registryPackageId,
+) {
   const directory = join(
     process.env.TMPDIR ?? "/tmp",
     `aftermath-maker-allowlist-${randomBytes(8).toString("hex")}`,
@@ -43,14 +48,14 @@ function harness(sender = operator, adminOwner = operator) {
           ],
         },
         objectTypes: {
-          [registryId]: `${packageId}::access::Registry`,
-          [adminCapId]: `${packageId}::access::AdminCap`,
+          [registryId]: `${registryPackageId}::access::Registry`,
+          [adminCapId]: `${adminPackageId}::access::AdminCap`,
         },
       },
     }),
     getObject: async () => ({
       object: {
-        type: `${packageId}::access::Registry`,
+        type: `${registryPackageId}::access::Registry`,
         version: "1",
         json: { members: [operator] },
       },
@@ -94,6 +99,32 @@ describe("on-chain allowlist confirmation", () => {
       allowlist.confirmDeployment("digest", operator),
     ).rejects.toThrow("AdminCap was not assigned to the operator");
     expect(store.getRegistryObjectId()).toBeNull();
+    store.close();
+  });
+
+  it("rejects access objects that come from different packages", async () => {
+    const { store, allowlist } = harness(
+      operator,
+      operator,
+      packageId,
+      attacker,
+    );
+
+    await expect(
+      allowlist.confirmDeployment("digest", operator),
+    ).rejects.toThrow("one exact package");
+    expect(store.getRegistryObjectId()).toBeNull();
+    store.close();
+  });
+
+  it("checks the configured registry against the pinned package ID", async () => {
+    const { store, allowlist } = harness();
+    await allowlist.confirmDeployment("digest", operator);
+    store.setSystemSetting("whitelist_package_id", attacker);
+
+    await expect(allowlist.isAllowed(operator, true)).rejects.toThrow(
+      "pinned Maker registry",
+    );
     store.close();
   });
 });

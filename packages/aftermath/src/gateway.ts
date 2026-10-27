@@ -11,8 +11,21 @@ import { SuiGrpcClient } from "@mysten/sui/grpc";
 import type { Ed25519Keypair } from "@mysten/sui/keypairs/ed25519";
 import { Transaction } from "@mysten/sui/transactions";
 import {
+  assertOwnerSimulationEffects,
+  assertOwnerTransactionIntent,
+  serializeOwnerTransactionIntent,
+  type OwnerTransactionIntent,
+  type PreparedOwnerTransaction,
+} from "./owner-transaction-intent.js";
+import {
+  assertAgentSimulationEffects,
+  assertAgentTransactionIntent,
+  type AgentTransactionIntent,
+} from "./transaction-intent.js";
+import {
   assertBuilderFeePolicy,
   assertNoBuilderFee,
+  PriorityMutationQueue,
   rankRewardMarkets,
   rewardEpochWindow,
   type BuilderFeePolicy,
@@ -97,11 +110,16 @@ export type PositionSnapshot = {
   unrealizedPnlUsd: number;
   collateralUsd: number;
   freeMarginUsd: number;
+  marginRatio?: number | null;
+  liquidationPrice?: number | null;
+  markPrice?: number | null;
+  liquidationDistanceBps?: number | null;
   makerOrderIds: bigint[];
   hasPosition: boolean;
 };
 
 export type PortfolioSnapshot = {
+  markedAt: string;
   equityUsd: number;
   availableCollateralUsd: number;
   allocatedCollateralUsd: number;
@@ -166,6 +184,8 @@ export type ExecutionReceipt = {
 
 export type FlattenReceipt = ExecutionReceipt & {
   flattenedMarketIds: string[];
+  digests?: string[];
+  residualMarketIds?: string[];
 };
 
 export type HedgeReceipt = ExecutionReceipt & {
@@ -175,10 +195,65 @@ export type HedgeReceipt = ExecutionReceipt & {
 
 const PUBLIC_MAINNET_GRPC = "https://fullnode.mainnet.sui.io:443";
 const AFTERMATH_API = "https://aftermath.finance/api";
+const AFTERMATH_MAINNET_REGISTRY =
+  "0xda0bd7a60182efd662b70e0de99218bbd2b6c4bbe9de23c0bb5a87ec52b37c37";
+const AFTERMATH_MAINNET_PACKAGE =
+  "0x3ec740df8428aa9c93aaef7f8cc1542ac3194fd014826b51bfe245346d64efc7";
 const REWARD_MARKET_CACHE_MS = 60_000;
 
 export const totalSuiBalance = (balance: { balance: string }) =>
   Number(BigInt(balance.balance)) / 1_000_000_000;
+
+export function markPositionInventoryUsd(
+  baseAssetAmount: number,
+  indexPrice: number,
+): number {
+  if (
+    !Number.isFinite(baseAssetAmount) ||
+    !Number.isFinite(indexPrice) ||
+    indexPrice <= 0
+  ) {
+    throw new Error(
+      "Position cannot be valued without a positive current index",
+    );
+  }
+  return baseAssetAmount * indexPrice;
+}
+
+type GasCoin = {
+  objectId: string;
+  version: string;
+  digest: string;
+  balance: string;
+};
+
+export function selectGasPaymentCoins(
+  coins: GasCoin[],
+  budgetMist: bigint,
+): Array<{ objectId: string; version: string; digest: string }> {
+  const eligible = [...coins].sort((left, right) => {
+    const a = BigInt(left.balance);
+    const b = BigInt(right.balance);
+    return a === b ? 0 : a > b ? -1 : 1;
+  });
+  const selected: GasCoin[] = [];
+  let balance = 0n;
+  for (const coin of eligible) {
+    selected.push(coin);
+    balance += BigInt(coin.balance);
+    if (balance >= budgetMist) break;
+  }
+  if (balance < budgetMist) {
+    throw new Error(
+      `Agent has ${balance} MIST across gas coins; ${budgetMist} MIST is required`,
+    );
+  }
+  return selected.map(({ objectId, version, digest }) => ({
+    objectId,
+    version,
+    digest,
+  }));
+}
 
 type RewardOrderbook = {
   marketId: string;
@@ -374,6 +449,48 @@ export function decodeIntegratorId(bytes: Uint8Array): number {
   ).getUint32(0, true);
 }
 
+export function assertIntegratorRegistrationIntent(
+  tx: { getData(): unknown },
+  ownerAddress: string,
+): void {
+  const data = tx.getData() as {
+    sender?: string | null;
+    inputs?: Array<{
+      Object?: {
+        SharedObject?: { objectId?: string; mutable?: boolean };
+      };
+    }>;
+    commands?: Array<{
+      MoveCall?: {
+        package?: string;
+        module?: string;
+        function?: string;
+        typeArguments?: string[];
+        arguments?: Array<{ Input?: number }>;
+      };
+    }>;
+  };
+  const input = data.inputs?.[0]?.Object?.SharedObject;
+  const call = data.commands?.[0]?.MoveCall;
+  if (
+    data.sender?.toLowerCase() !== ownerAddress.toLowerCase() ||
+    data.inputs?.length !== 1 ||
+    input?.objectId?.toLowerCase() !== AFTERMATH_MAINNET_REGISTRY ||
+    input.mutable !== true ||
+    data.commands?.length !== 1 ||
+    call?.package?.toLowerCase() !== AFTERMATH_MAINNET_PACKAGE ||
+    call.module !== "registry" ||
+    call.function !== "register_integrator" ||
+    call.typeArguments?.length !== 0 ||
+    call.arguments?.length !== 1 ||
+    call.arguments[0]?.Input !== 0
+  ) {
+    throw new Error(
+      "Integrator registration transaction does not match the pinned Aftermath registry intent",
+    );
+  }
+}
+
 function successfulTransaction(result: unknown): Record<string, unknown> {
   if (!result || typeof result !== "object") {
     throw new Error("Sui returned an invalid execution result");
@@ -452,6 +569,19 @@ export class AftermathGateway {
         value: Promise<RewardMarketEvidence[]>;
       }
     | undefined;
+  private ownerTrustPromise:
+    | Promise<{ protocolPackageId: string; registryObjectId: string }>
+    | undefined;
+  private readonly mutationQueues = new Map<string, PriorityMutationQueue>();
+
+  private mutationQueue(address: string): PriorityMutationQueue {
+    const key = address.toLowerCase();
+    const current = this.mutationQueues.get(key);
+    if (current) return current;
+    const queue = new PriorityMutationQueue();
+    this.mutationQueues.set(key, queue);
+    return queue;
+  }
 
   private constructor(
     private readonly sdk: Aftermath,
@@ -537,10 +667,16 @@ export class AftermathGateway {
         .catch(() => ({ marketsStats: [] })),
     ]);
 
-    return markets.map((market, index) => {
+    const statsByMarketId = new Map(
+      marketIds.map((marketId, index) => [
+        marketId.toLowerCase(),
+        statsResult.marketsStats[index],
+      ]),
+    );
+    return markets.map((market) => {
       const openInterestBase = Math.abs(market.marketState.openInterest);
       const maxOpenInterestBase = market.marketParams.maxOpenInterest;
-      const stats = statsResult.marketsStats[index];
+      const stats = statsByMarketId.get(market.marketId.toLowerCase());
       const metadata = market.metadata as
         | (NonNullable<typeof market.metadata> & {
             session?: {
@@ -808,9 +944,42 @@ export class AftermathGateway {
     };
   }
 
+  private async ownerTransactionTrust(): Promise<{
+    protocolPackageId: string;
+    registryObjectId: string;
+  }> {
+    this.ownerTrustPromise ??= this.client
+      .getObject({
+        objectId: AFTERMATH_MAINNET_REGISTRY,
+        include: { content: true },
+      })
+      .then((result) => {
+        const expectedType = `${AFTERMATH_MAINNET_PACKAGE}::registry::Registry`;
+        if (result.object?.type !== expectedType) {
+          throw new Error(
+            "Pinned Aftermath registry does not match the expected mainnet package",
+          );
+        }
+        return {
+          protocolPackageId: AFTERMATH_MAINNET_PACKAGE,
+          registryObjectId: AFTERMATH_MAINNET_REGISTRY,
+        };
+      });
+    return this.ownerTrustPromise;
+  }
+
   async getMarket(marketId: string): Promise<PerpetualsMarket> {
     const { market } = await this.sdk.Perpetuals().getMarket({ marketId });
     if (!market) throw new Error(`Market ${marketId} was not found`);
+    if (market.marketId.toLowerCase() !== marketId.toLowerCase()) {
+      throw new Error("Aftermath returned a different market than requested");
+    }
+    if (
+      market.marketData.packageId.toLowerCase() !==
+      AFTERMATH_MAINNET_PACKAGE.toLowerCase()
+    ) {
+      throw new Error("Market is not owned by the pinned Aftermath package");
+    }
     return market;
   }
 
@@ -871,12 +1040,18 @@ export class AftermathGateway {
   async buildCreateAccountTransaction(inputs: {
     ownerAddress: string;
     collateralCoinType: string;
-  }): Promise<string> {
+  }): Promise<PreparedOwnerTransaction> {
     const { tx } = await this.sdk.Perpetuals().getCreateAccountTx({
       walletAddress: inputs.ownerAddress,
       collateralCoinType: inputs.collateralCoinType,
     });
-    return this.prepareOwnerTransaction(tx, inputs.ownerAddress);
+    const trust = await this.ownerTransactionTrust();
+    return this.prepareOwnerTransaction(tx, inputs.ownerAddress, {
+      kind: "create-account",
+      sender: inputs.ownerAddress,
+      collateralCoinType: inputs.collateralCoinType,
+      ...trust,
+    });
   }
 
   async buildDepositCollateralTransaction(inputs: {
@@ -884,7 +1059,7 @@ export class AftermathGateway {
     accountId: string;
     collateralCoinType: string;
     amount: bigint;
-  }): Promise<string> {
+  }): Promise<PreparedOwnerTransaction> {
     if (inputs.amount <= 0n) throw new Error("Deposit amount must be positive");
     const cap = await this.findAccountCap({
       walletAddress: inputs.ownerAddress,
@@ -898,7 +1073,19 @@ export class AftermathGateway {
     const { tx } = await account.getDepositCollateralTx({
       depositAmount: inputs.amount,
     });
-    return this.prepareOwnerTransaction(tx, inputs.ownerAddress);
+    const trust = await this.ownerTransactionTrust();
+    return this.prepareOwnerTransaction(tx, inputs.ownerAddress, {
+      kind: "deposit",
+      sender: inputs.ownerAddress,
+      collateralCoinType: inputs.collateralCoinType,
+      accountCapId: cap.objectId,
+      accountObjectId: cap.accountObjectId,
+      allowedMarketIds: account.account.positions.map(
+        (position) => position.marketId,
+      ),
+      amount: inputs.amount,
+      ...trust,
+    });
   }
 
   async buildWithdrawCollateralTransaction(inputs: {
@@ -906,7 +1093,7 @@ export class AftermathGateway {
     accountId: string;
     collateralCoinType: string;
     amount: bigint;
-  }): Promise<string> {
+  }): Promise<PreparedOwnerTransaction> {
     if (inputs.amount <= 0n)
       throw new Error("Withdrawal amount must be positive");
     const cap = await this.findAccountCap({
@@ -922,14 +1109,29 @@ export class AftermathGateway {
       withdrawAmount: inputs.amount,
       recipientAddress: inputs.ownerAddress,
     });
-    return this.prepareOwnerTransaction(tx, inputs.ownerAddress);
+    const trust = await this.ownerTransactionTrust();
+    return this.prepareOwnerTransaction(tx, inputs.ownerAddress, {
+      kind: "withdraw",
+      sender: inputs.ownerAddress,
+      collateralCoinType: inputs.collateralCoinType,
+      accountCapId: cap.objectId,
+      accountObjectId: cap.accountObjectId,
+      allowedMarketIds: account.account.positions.map(
+        (position) => position.marketId,
+      ),
+      amount: inputs.amount,
+      recipient: inputs.ownerAddress,
+      ...trust,
+    });
   }
 
   private async prepareOwnerTransaction(
     tx: Transaction,
     ownerAddress: string,
-  ): Promise<string> {
+    intent: OwnerTransactionIntent,
+  ): Promise<PreparedOwnerTransaction> {
     tx.setSender(ownerAddress);
+    assertOwnerTransactionIntent(tx, intent);
     tx.setGasBudget(100_000_000n);
     const simulation = await this.client.simulateTransaction({
       transaction: tx,
@@ -941,7 +1143,11 @@ export class AftermathGateway {
           "Owner transaction simulation failed",
       );
     }
-    return tx.toJSON();
+    assertOwnerSimulationEffects(simulation, intent);
+    return {
+      transaction: await tx.toJSON(),
+      intent: serializeOwnerTransactionIntent(intent),
+    };
   }
 
   private async findAccountCap(inputs: {
@@ -979,11 +1185,27 @@ export class AftermathGateway {
       collateralCoinType: inputs.setup.collateralCoinType,
       requireAgent: true,
     });
-    const { account } = await this.sdk.Perpetuals().getAccount({
+    const perps = this.sdk.Perpetuals();
+    const { account } = await perps.getAccount({
       accountCap: cap,
-      marketIds: inputs.marketIds,
     });
-    const positions = inputs.marketIds.map((marketId) => {
+    const allMarketIds = [
+      ...new Set([
+        ...inputs.marketIds,
+        ...account.account.positions.map((position) => position.marketId),
+      ]),
+    ];
+    const markedAt = new Date().toISOString();
+    const markedMarkets = allMarketIds.length
+      ? (await perps.getMarkets({ marketIds: allMarketIds })).markets
+      : [];
+    const indexByMarketId = new Map(
+      markedMarkets.map((market) => [
+        market.marketId.toLowerCase(),
+        market.indexPrice,
+      ]),
+    );
+    const positions = allMarketIds.map((marketId) => {
       const position = account.account.positions.find(
         (candidate) => candidate.marketId === marketId,
       );
@@ -991,23 +1213,48 @@ export class AftermathGateway {
         position?.pendingOrders
           .filter((order) => isMakerClientOrderId(order.clientOrderId))
           .map((order) => order.orderId) ?? [];
+      const hasPosition = Boolean(position && position.baseAssetAmount !== 0);
+      const markPrice = hasPosition
+        ? (indexByMarketId.get(marketId.toLowerCase()) ?? null)
+        : null;
+      if (hasPosition && (!markPrice || !Number.isFinite(markPrice))) {
+        throw new Error(
+          `Current index is unavailable for open position ${marketId}`,
+        );
+      }
+      const liquidationPrice =
+        hasPosition && position && position.liquidationPrice > 0
+          ? position.liquidationPrice
+          : null;
       return {
         marketId,
         baseAssetAmount: position?.baseAssetAmount ?? 0,
         pendingOrderCount: position?.pendingOrders.length ?? 0,
-        inventoryUsd: position?.quoteAssetNotionalAmount ?? 0,
+        inventoryUsd:
+          hasPosition && position && markPrice
+            ? markPositionInventoryUsd(position.baseAssetAmount, markPrice)
+            : 0,
         unrealizedPnlUsd:
           (position?.unrealizedPnlUsd ?? 0) +
           (position?.unrealizedFundingsUsd ?? 0),
         collateralUsd: position?.collateralUsd ?? 0,
         freeMarginUsd: position?.freeMarginUsd ?? 0,
+        marginRatio: hasPosition ? (position?.marginRatio ?? null) : null,
+        liquidationPrice,
+        markPrice,
+        liquidationDistanceBps: hasPosition
+          ? markPrice && liquidationPrice
+            ? (Math.abs(markPrice - liquidationPrice) / markPrice) * 10_000
+            : 1_000_000_000
+          : null,
         makerOrderIds,
-        hasPosition: Boolean(position && position.baseAssetAmount !== 0),
+        hasPosition,
       };
     });
     const gas = await this.client.getBalance({ owner: inputs.agentAddress });
 
     return {
+      markedAt,
       equityUsd: account.account.totalEquityUsd,
       availableCollateralUsd: account.account.availableCollateralUsd,
       allocatedCollateralUsd: positions.reduce(
@@ -1097,7 +1344,7 @@ export class AftermathGateway {
     agentAddress: string;
     gasMist: bigint;
     builderCode: BuilderFeePolicy | null;
-  }): Promise<string> {
+  }): Promise<PreparedOwnerTransaction> {
     const cap = await this.findAccountCap({
       walletAddress: inputs.setup.ownerAddress,
       accountId: inputs.setup.accountId,
@@ -1125,7 +1372,21 @@ export class AftermathGateway {
     }
     const [gasCoin] = tx.splitCoins(tx.gas, [inputs.gasMist]);
     tx.transferObjects([gasCoin], inputs.agentAddress);
-    return this.prepareOwnerTransaction(tx, inputs.setup.ownerAddress);
+    const trust = await this.ownerTransactionTrust();
+    return this.prepareOwnerTransaction(tx, inputs.setup.ownerAddress, {
+      kind: "grant-agent",
+      sender: inputs.setup.ownerAddress,
+      collateralCoinType: inputs.setup.collateralCoinType,
+      accountCapId: cap.objectId,
+      accountObjectId: cap.accountObjectId,
+      allowedMarketIds: account.account.positions.map(
+        (position) => position.marketId,
+      ),
+      agentAddress: inputs.agentAddress,
+      gasMist: inputs.gasMist,
+      builderCode: inputs.builderCode,
+      ...trust,
+    });
   }
 
   async verifyAgentGrant(inputs: {
@@ -1191,7 +1452,7 @@ export class AftermathGateway {
     setup: Setup;
     agentCapId: string;
     builderCode: BuilderFeePolicy | null;
-  }): Promise<string> {
+  }): Promise<PreparedOwnerTransaction> {
     const cap = await this.findAccountCap({
       walletAddress: inputs.setup.ownerAddress,
       accountId: inputs.setup.accountId,
@@ -1212,7 +1473,20 @@ export class AftermathGateway {
         tx,
       }));
     }
-    return this.prepareOwnerTransaction(tx, inputs.setup.ownerAddress);
+    const trust = await this.ownerTransactionTrust();
+    return this.prepareOwnerTransaction(tx, inputs.setup.ownerAddress, {
+      kind: "revoke-agent",
+      sender: inputs.setup.ownerAddress,
+      collateralCoinType: inputs.setup.collateralCoinType,
+      accountCapId: cap.objectId,
+      accountObjectId: cap.accountObjectId,
+      allowedMarketIds: account.account.positions.map(
+        (position) => position.marketId,
+      ),
+      agentCapId: inputs.agentCapId,
+      builderCode: inputs.builderCode,
+      ...trust,
+    });
   }
 
   async verifyAgentRevocation(inputs: {
@@ -1301,6 +1575,7 @@ export class AftermathGateway {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: "{}",
+        signal: AbortSignal.timeout(15_000),
       },
     );
     const body = (await response.json()) as {
@@ -1314,9 +1589,15 @@ export class AftermathGateway {
     }
     const tx = Transaction.fromKind(body.txKind);
     tx.setSender(ownerAddress);
+    assertIntegratorRegistrationIntent(tx, ownerAddress);
+    tx.setGasBudget(100_000_000n);
     const simulation = await this.client.simulateTransaction({
       transaction: tx,
-      include: { commandResults: true },
+      include: {
+        commandResults: true,
+        effects: true,
+        balanceChanges: true,
+      },
     });
     if (simulation.$kind === "FailedTransaction") {
       throw new Error(
@@ -1324,6 +1605,7 @@ export class AftermathGateway {
           "Integrator registration simulation failed",
       );
     }
+    assertAgentSimulationEffects(simulation, ownerAddress);
     const bytes = simulation.commandResults?.[0]?.returnValues[0]?.bcs;
     if (!bytes) {
       throw new Error("Aftermath did not return the next integrator ID");
@@ -1369,6 +1651,7 @@ export class AftermathGateway {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ integratorId }),
+          signal: AbortSignal.timeout(10_000),
         },
       );
       if (!response.ok) continue;
@@ -1384,7 +1667,7 @@ export class AftermathGateway {
     }
 
     throw new Error(
-      "Registration succeeded, but its integrator ID could not be verified",
+      "Registration confirmed on-chain, but its integrator ID could not be resolved",
     );
   }
 
@@ -1426,25 +1709,86 @@ export class AftermathGateway {
 
     const { tx } = await account.getCancelOrdersTx({ marketIdsToData });
     tx.setSender(signerAddress);
-    await this.inspectTransaction({ tx, config: inputs.config });
-    const result = await this.client.signAndExecuteTransaction({
-      transaction: tx,
-      signer: inputs.signer,
-      include: { effects: true, events: true },
-    });
-    return {
-      digest: transactionDigest(result),
-      endpoint: this.endpoint,
-      gasUsedMist: executionGasUsedMist(result),
-      postedOrderIds: [],
-    };
+    const authorities = await Promise.all(
+      Object.keys(marketIdsToData).map(async (marketId) => {
+        const market = await this.getMarket(marketId);
+        return { marketId, packageId: market.marketData.packageId };
+      }),
+    );
+    return this.mutationQueue(signerAddress).run(async () => {
+      await this.inspectTransaction({
+        tx,
+        config: inputs.config,
+        intent: {
+          kind: "cancel",
+          sender: signerAddress,
+          accountCapId: cap.objectId,
+          accountObjectId: cap.accountObjectId,
+          collateralCoinType: inputs.setup.collateralCoinType,
+          markets: authorities,
+          builderCode: null,
+          orderIdsByMarket: Object.fromEntries(
+            Object.entries(marketIdsToData).map(([marketId, data]) => [
+              marketId,
+              data.orderIds,
+            ]),
+          ),
+        },
+      });
+      const result = await this.client.signAndExecuteTransaction({
+        transaction: tx,
+        signer: inputs.signer,
+        include: { effects: true, events: true },
+      });
+      return {
+        digest: transactionDigest(result),
+        endpoint: this.endpoint,
+        gasUsedMist: executionGasUsedMist(result),
+        postedOrderIds: [],
+      };
+    }, "urgent");
+  }
+
+  private async setAgentGasPayment(
+    tx: Transaction,
+    signerAddress: string,
+    budgetMist: bigint,
+  ): Promise<void> {
+    const coins: GasCoin[] = [];
+    let cursor: string | null = null;
+    do {
+      const page = await this.client.listCoins({
+        owner: signerAddress,
+        limit: 50,
+        ...(cursor ? { cursor } : {}),
+      });
+      coins.push(...page.objects);
+      if (
+        coins.reduce((total, coin) => total + BigInt(coin.balance), 0n) >=
+          budgetMist ||
+        !page.hasNextPage
+      ) {
+        break;
+      }
+      cursor = page.cursor;
+    } while (cursor);
+
+    tx.setGasPayment(selectGasPaymentCoins(coins, budgetMist));
   }
 
   private async inspectTransaction(inputs: {
     tx: Transaction;
     config: MakerConfig;
+    intent: AgentTransactionIntent;
   }): Promise<void> {
-    inputs.tx.setGasBudget(BigInt(inputs.config.maxGasMist));
+    assertAgentTransactionIntent(inputs.tx, inputs.intent);
+    const gasBudgetMist = BigInt(inputs.config.maxGasMist);
+    inputs.tx.setGasBudget(gasBudgetMist);
+    await this.setAgentGasPayment(
+      inputs.tx,
+      inputs.intent.sender,
+      gasBudgetMist,
+    );
 
     const simulation = await this.client.simulateTransaction({
       transaction: inputs.tx,
@@ -1461,6 +1805,7 @@ export class AftermathGateway {
         ),
       );
     }
+    assertAgentSimulationEffects(simulation, inputs.intent.sender);
   }
 
   async flattenPositions(inputs: {
@@ -1469,6 +1814,7 @@ export class AftermathGateway {
     signer: Ed25519Keypair;
     marketIds: string[];
     maxSlippage: number;
+    fallbackMarketIds?: string[];
   }): Promise<FlattenReceipt | null> {
     const signerAddress = inputs.signer.toSuiAddress();
     const cap = await this.findAccountCap({
@@ -1479,17 +1825,22 @@ export class AftermathGateway {
     });
     const { account } = await this.sdk.Perpetuals().getAccount({
       accountCap: cap,
-      marketIds: inputs.marketIds,
     });
     const positions = account.account.positions.filter(
       (position) =>
-        inputs.marketIds.includes(position.marketId) &&
-        position.baseAssetAmount !== 0,
+        position.baseAssetAmount !== 0 &&
+        (!inputs.fallbackMarketIds ||
+          inputs.fallbackMarketIds.includes(position.marketId)),
     );
     if (!positions.length) return null;
 
     let tx: Transaction | undefined;
     const flattenedMarketIds: string[] = [];
+    const intendedOrders: Array<{
+      marketId: string;
+      side: "bid" | "ask";
+      size: bigint;
+    }> = [];
     for (const position of positions) {
       const market = await this.getMarket(position.marketId);
       const size = market.roundToValidSizeBigInt({
@@ -1517,23 +1868,127 @@ export class AftermathGateway {
         ...(tx ? { tx } : {}),
       }));
       flattenedMarketIds.push(position.marketId);
+      intendedOrders.push({
+        marketId: position.marketId,
+        side: order.side === PerpetualsOrderSide.Bid ? "bid" : "ask",
+        size,
+      });
     }
     if (!tx || !flattenedMarketIds.length) return null;
 
     tx.setSender(signerAddress);
-    await this.inspectTransaction({ tx, config: inputs.config });
-    const result = await this.client.signAndExecuteTransaction({
-      transaction: tx,
-      signer: inputs.signer,
-      include: { effects: true, events: true, balanceChanges: true },
-    });
-    return {
-      digest: transactionDigest(result),
-      endpoint: this.endpoint,
-      gasUsedMist: executionGasUsedMist(result),
-      postedOrderIds: [],
-      flattenedMarketIds,
-    };
+    const verifiedOrders = await Promise.all(
+      intendedOrders.map(async (order) => {
+        const market = await this.getMarket(order.marketId);
+        const tick = BigInt(market.marketParams.tickSize);
+        return {
+          authority: {
+            marketId: order.marketId,
+            packageId: market.marketData.packageId,
+          },
+          order: {
+            ...order,
+            ...(order.side === "ask"
+              ? {
+                  minPrice:
+                    market.roundToValidPriceBigInt({
+                      price: market.indexPrice * (1 - inputs.maxSlippage),
+                      floor: true,
+                    }) -
+                    tick * 2n,
+                }
+              : {
+                  maxPrice:
+                    market.roundToValidPriceBigInt({
+                      price: market.indexPrice * (1 + inputs.maxSlippage),
+                      ceil: true,
+                    }) +
+                    tick * 2n,
+                }),
+          },
+        };
+      }),
+    );
+    try {
+      return await this.mutationQueue(signerAddress).run(async () => {
+        await this.inspectTransaction({
+          tx,
+          config: inputs.config,
+          intent: {
+            kind: "market",
+            sender: signerAddress,
+            accountCapId: cap.objectId,
+            accountObjectId: cap.accountObjectId,
+            collateralCoinType: inputs.setup.collateralCoinType,
+            markets: verifiedOrders.map((item) => item.authority),
+            builderCode: null,
+            orders: verifiedOrders.map((item) => item.order),
+          },
+        });
+        const result = await this.client.signAndExecuteTransaction({
+          transaction: tx,
+          signer: inputs.signer,
+          include: { effects: true, events: true, balanceChanges: true },
+        });
+        const digest = transactionDigest(result);
+        return {
+          digest,
+          digests: [digest],
+          endpoint: this.endpoint,
+          gasUsedMist: executionGasUsedMist(result),
+          postedOrderIds: [],
+          flattenedMarketIds,
+          residualMarketIds: [],
+        };
+      }, "urgent");
+    } catch (error) {
+      const detail = errorMessage(error);
+      if (
+        inputs.fallbackMarketIds ||
+        positions.length === 1 ||
+        (!detail.includes("abort code: 46") &&
+          !detail.includes("configured slippage cap"))
+      ) {
+        throw error;
+      }
+
+      const receipts: FlattenReceipt[] = [];
+      const residualMarketIds: string[] = [];
+      for (const position of positions) {
+        try {
+          const receipt = await this.flattenPositions({
+            ...inputs,
+            fallbackMarketIds: [position.marketId],
+          });
+          if (receipt) receipts.push(receipt);
+        } catch {
+          residualMarketIds.push(position.marketId);
+        }
+      }
+      if (!receipts.length && residualMarketIds.length) {
+        throw new Error(
+          `Per-market flatten failed for ${residualMarketIds.join(", ")} after the portfolio transaction hit its slippage cap`,
+        );
+      }
+      if (!receipts.length) return null;
+      const digests = receipts.flatMap(
+        (receipt) => receipt.digests ?? [receipt.digest],
+      );
+      return {
+        digest: digests[0]!,
+        digests,
+        endpoint: this.endpoint,
+        gasUsedMist: receipts.reduce(
+          (sum, receipt) => sum + receipt.gasUsedMist,
+          0,
+        ),
+        postedOrderIds: [],
+        flattenedMarketIds: receipts.flatMap(
+          (receipt) => receipt.flattenedMarketIds,
+        ),
+        residualMarketIds,
+      };
+    }
   }
 
   async executeHedge(inputs: {
@@ -1594,24 +2049,74 @@ export class AftermathGateway {
     }
     const { tx } = await account.getPlaceMarketOrderTx(order);
     tx.setSender(signerAddress);
-    await this.inspectTransaction({ tx, config: inputs.config });
-    if (!inputs.shouldContinue()) {
-      throw new Error("Hedge execution cancelled before signing");
-    }
+    const verifiedMarket = await this.getMarket(inputs.marketId);
+    const tick = BigInt(verifiedMarket.marketParams.tickSize);
+    return this.mutationQueue(signerAddress).run(async () => {
+      if (!inputs.shouldContinue()) {
+        throw new Error("Hedge execution cancelled before signing");
+      }
+      await this.inspectTransaction({
+        tx,
+        config: inputs.config,
+        intent: {
+          kind: "market",
+          sender: signerAddress,
+          accountCapId: cap.objectId,
+          accountObjectId: cap.accountObjectId,
+          collateralCoinType: inputs.setup.collateralCoinType,
+          markets: [
+            {
+              marketId: inputs.marketId,
+              packageId: verifiedMarket.marketData.packageId,
+            },
+          ],
+          builderCode: inputs.builderCode,
+          orders: [
+            {
+              marketId: inputs.marketId,
+              side: side === PerpetualsOrderSide.Bid ? "bid" : "ask",
+              size,
+              ...(side === PerpetualsOrderSide.Ask
+                ? {
+                    minPrice:
+                      verifiedMarket.roundToValidPriceBigInt({
+                        price:
+                          verifiedMarket.indexPrice * (1 - inputs.maxSlippage),
+                        floor: true,
+                      }) -
+                      tick * 2n,
+                  }
+                : {
+                    maxPrice:
+                      verifiedMarket.roundToValidPriceBigInt({
+                        price:
+                          verifiedMarket.indexPrice * (1 + inputs.maxSlippage),
+                        ceil: true,
+                      }) +
+                      tick * 2n,
+                  }),
+            },
+          ],
+        },
+      });
+      if (!inputs.shouldContinue()) {
+        throw new Error("Hedge execution cancelled before signing");
+      }
 
-    const result = await this.client.signAndExecuteTransaction({
-      transaction: tx,
-      signer: inputs.signer,
-      include: { effects: true, events: true, balanceChanges: true },
+      const result = await this.client.signAndExecuteTransaction({
+        transaction: tx,
+        signer: inputs.signer,
+        include: { effects: true, events: true, balanceChanges: true },
+      });
+      return {
+        digest: transactionDigest(result),
+        endpoint: this.endpoint,
+        gasUsedMist: executionGasUsedMist(result),
+        postedOrderIds: [],
+        side: side === PerpetualsOrderSide.Bid ? "bid" : "ask",
+        requestedNotionalUsd,
+      };
     });
-    return {
-      digest: transactionDigest(result),
-      endpoint: this.endpoint,
-      gasUsedMist: executionGasUsedMist(result),
-      postedOrderIds: [],
-      side: side === PerpetualsOrderSide.Bid ? "bid" : "ask",
-      requestedNotionalUsd,
-    };
   }
 
   async executeQuote(inputs: {
@@ -1731,22 +2236,26 @@ export class AftermathGateway {
       }));
     }
 
+    const clientOrderIds = nextMakerClientOrderIds();
+    const bidPrice = market.roundToValidPriceBigInt({
+      price: roundedBidPrice,
+    });
+    const askPrice = market.roundToValidPriceBigInt({
+      price: roundedAskPrice,
+    });
+    const size = market.roundToValidSizeBigInt({
+      size: roundedSizeBase,
+    });
     const request = buildQuoteReplacementRequest({
       marketId: inputs.quote.marketId,
-      bidPrice: market.roundToValidPriceBigInt({
-        price: roundedBidPrice,
-      }),
-      askPrice: market.roundToValidPriceBigInt({
-        price: roundedAskPrice,
-      }),
-      size: market.roundToValidSizeBigInt({
-        size: roundedSizeBase,
-      }),
+      bidPrice,
+      askPrice,
+      size,
       leverage: inputs.config.maxLeverage,
       hasPosition: Boolean(position),
       activeMakerOrderIds,
       activeMakerClientOrderIds,
-      clientOrderIds: nextMakerClientOrderIds(),
+      clientOrderIds,
       ...(inputs.builderCode ? { builderCode: inputs.builderCode } : {}),
     });
 
@@ -1759,26 +2268,72 @@ export class AftermathGateway {
       ...(switchTx ? { tx: switchTx } : {}),
     });
     tx.setSender(signerAddress);
-    await this.inspectTransaction({ tx, config: inputs.config });
-    if (!inputs.shouldContinue()) {
-      throw new Error("Live execution cancelled before signing");
+    const intentMarketIds = [
+      inputs.quote.marketId,
+      ...Object.keys(crossMarketCancellations),
+    ];
+    const authorities = await Promise.all(
+      intentMarketIds.map(async (marketId) => {
+        const verifiedMarket = await this.getMarket(marketId);
+        return {
+          marketId,
+          packageId: verifiedMarket.marketData.packageId,
+        };
+      }),
+    );
+    const orderIdsByMarket: Record<string, bigint[]> = Object.fromEntries(
+      Object.entries(crossMarketCancellations).map(([marketId, data]) => [
+        marketId,
+        data.orderIds,
+      ]),
+    );
+    if (activeMakerOrderIds.length) {
+      orderIdsByMarket[inputs.quote.marketId] = activeMakerOrderIds;
     }
+    return this.mutationQueue(signerAddress).run(async () => {
+      if (!inputs.shouldContinue()) {
+        throw new Error("Live execution cancelled before signing");
+      }
+      await this.inspectTransaction({
+        tx,
+        config: inputs.config,
+        intent: {
+          kind: "quote",
+          sender: signerAddress,
+          accountCapId: cap.objectId,
+          accountObjectId: cap.accountObjectId,
+          collateralCoinType: inputs.setup.collateralCoinType,
+          markets: authorities,
+          builderCode: inputs.builderCode,
+          marketId: inputs.quote.marketId,
+          size,
+          bidPrice,
+          askPrice,
+          bidClientOrderId: clientOrderIds.bid,
+          askClientOrderId: clientOrderIds.ask,
+          orderIdsByMarket,
+        },
+      });
+      if (!inputs.shouldContinue()) {
+        throw new Error("Live execution cancelled before signing");
+      }
 
-    const result = await this.client.signAndExecuteTransaction({
-      transaction: tx,
-      signer: inputs.signer,
-      include: {
-        effects: true,
-        events: true,
-        balanceChanges: true,
-      },
+      const result = await this.client.signAndExecuteTransaction({
+        transaction: tx,
+        signer: inputs.signer,
+        include: {
+          effects: true,
+          events: true,
+          balanceChanges: true,
+        },
+      });
+
+      return {
+        digest: transactionDigest(result),
+        endpoint: this.endpoint,
+        gasUsedMist: executionGasUsedMist(result),
+        postedOrderIds: postedOrderIds(result),
+      };
     });
-
-    return {
-      digest: transactionDigest(result),
-      endpoint: this.endpoint,
-      gasUsedMist: executionGasUsedMist(result),
-      postedOrderIds: postedOrderIds(result),
-    };
   }
 }

@@ -1,5 +1,39 @@
 import type { MakerConfig, QuoteIntent, SafetyCheck } from "./schema.js";
 
+export function aggregatePortfolioQuoteRisk(
+  markets: Array<{
+    inventoryUsd: number;
+    restingQuoteSizeUsd: number;
+    maxLeverage: number;
+  }>,
+): {
+  worstCaseGrossExposureUsd: number;
+  requiredQuoteCollateralUsd: number;
+} {
+  return markets.reduce(
+    (risk, market) => {
+      const quoteSizeUsd = Math.max(0, market.restingQuoteSizeUsd);
+      const inventoryUsd = market.inventoryUsd;
+      risk.worstCaseGrossExposureUsd +=
+        quoteSizeUsd > 0
+          ? Math.max(
+              Math.abs(inventoryUsd + quoteSizeUsd),
+              Math.abs(inventoryUsd - quoteSizeUsd),
+            )
+          : Math.abs(inventoryUsd);
+      risk.requiredQuoteCollateralUsd +=
+        quoteSizeUsd > 0
+          ? (quoteSizeUsd * 2) / Math.max(1, market.maxLeverage)
+          : 0;
+      return risk;
+    },
+    {
+      worstCaseGrossExposureUsd: 0,
+      requiredQuoteCollateralUsd: 0,
+    },
+  );
+}
+
 export function evaluateQuoteSafety(inputs: {
   config: MakerConfig;
   quote: QuoteIntent | null;
@@ -9,8 +43,10 @@ export function evaluateQuoteSafety(inputs: {
   liveEnabled: boolean;
   mainnetAllowed: boolean;
   portfolioGrossExposureUsd?: number;
-  portfolioAvailableCollateralUsd?: number;
-  agentGasSui?: number;
+  portfolioWorstCaseExposureUsd?: number;
+  portfolioAvailableCollateralUsd: number;
+  portfolioRequiredQuoteCollateralUsd?: number;
+  agentGasSui: number;
   runDrawdownUsd?: number;
 }): SafetyCheck[] {
   const {
@@ -21,8 +57,10 @@ export function evaluateQuoteSafety(inputs: {
     liveEnabled,
     mainnetAllowed,
     portfolioGrossExposureUsd = Math.abs(quote?.inventoryUsd ?? 0),
-    portfolioAvailableCollateralUsd = Number.POSITIVE_INFINITY,
-    agentGasSui = Number.POSITIVE_INFINITY,
+    portfolioWorstCaseExposureUsd,
+    portfolioAvailableCollateralUsd,
+    portfolioRequiredQuoteCollateralUsd,
+    agentGasSui,
     runDrawdownUsd = 0,
   } = inputs;
   const now = inputs.now ?? new Date();
@@ -75,13 +113,20 @@ export function evaluateQuoteSafety(inputs: {
     Math.abs(quote.inventoryUsd - quote.sizeUsd),
   );
   const projectedGrossExposureUsd =
+    portfolioWorstCaseExposureUsd ??
     Math.max(0, portfolioGrossExposureUsd - Math.abs(quote.inventoryUsd)) +
-    worstMarketInventoryUsd;
-  const requiredQuoteCollateralUsd = (quote.sizeUsd * 2) / config.maxLeverage;
-  const requiredGasSui = config.maxGasMist / 1_000_000_000;
+      worstMarketInventoryUsd;
+  const requiredQuoteCollateralUsd =
+    portfolioRequiredQuoteCollateralUsd ??
+    (quote.sizeUsd * 2) / config.maxLeverage;
+  const requiredGasSui = (config.maxGasMist * 3) / 1_000_000_000;
   const bookMid = (quote.bestBid + quote.bestAsk) / 2;
   const bookDivergenceBps =
     (Math.abs(bookMid - quote.indexPrice) / quote.indexPrice) * 10_000;
+  const fairValueDivergenceLimitBps = Math.min(
+    config.maxBookDivergenceBps,
+    config.spreadBps / 2,
+  );
   checks.push(
     {
       code: "freshness",
@@ -101,8 +146,8 @@ export function evaluateQuoteSafety(inputs: {
     {
       code: "fair-value",
       label: "Book / index divergence",
-      ok: bookDivergenceBps <= config.maxBookDivergenceBps,
-      detail: `${bookDivergenceBps.toFixed(1)} bps; limit ${config.maxBookDivergenceBps.toFixed(1)} bps`,
+      ok: bookDivergenceBps <= fairValueDivergenceLimitBps,
+      detail: `${bookDivergenceBps.toFixed(1)} bps; limit ${fairValueDivergenceLimitBps.toFixed(1)} bps (no wider than half-spread)`,
     },
     {
       code: "notional",
@@ -132,7 +177,7 @@ export function evaluateQuoteSafety(inputs: {
       code: "gas",
       label: "Agent gas",
       ok: agentGasSui >= requiredGasSui,
-      detail: `${agentGasSui.toFixed(4)} SUI available; ${requiredGasSui.toFixed(4)} SUI transaction ceiling`,
+      detail: `${agentGasSui.toFixed(4)} SUI available; ${requiredGasSui.toFixed(4)} SUI reserves quote, cancel, and incident margin`,
     },
     {
       code: "unrealized-loss",

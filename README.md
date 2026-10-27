@@ -10,9 +10,9 @@ Hosted service: [maker.permanentupperclass.com](https://maker.permanentupperclas
 
 ## External review
 
-The repository is public for independent review. Start with the [external audit guide](docs/REVIEW_GUIDE.md), then inspect the [security model](SECURITY.md), [mainnet evidence](audits/2026-10-27-mainnet/EVIDENCE.md), and [latest live-testing iteration](audits/2026-10-27-mainnet/ITERATION-5.md). The fixed review target is the `external-audit-v1` tag.
+The repository is public for independent review. Start with the [external audit guide](docs/REVIEW_GUIDE.md), then inspect the [October 27 remediation ledger](audits/2026-10-27-external/REMEDIATION.md), [security model](SECURITY.md), [mainnet evidence](audits/2026-10-27-mainnet/EVIDENCE.md), and [latest live-testing iteration](audits/2026-10-27-mainnet/ITERATION-5.md). The immutable audited baseline is the `external-audit-v1` tag.
 
-The reproduced baseline is 98 passing TypeScript application tests, one passing Move test, successful production builds, zero vulnerabilities reported by `npm audit --omit=dev`, and authenticated browser checks at desktop and mobile widths. The mainnet evidence includes failed-closed defects found during testing as well as corrected runs. This is not a claim that the system has already been independently audited.
+The remediation branch currently has 138 passing TypeScript application tests, three passing Move tests, successful production builds, zero vulnerabilities reported by `npm audit --omit=dev`, and authenticated browser checks at desktop and mobile widths. The mainnet evidence includes failed-closed defects found during testing as well as corrected runs. An independent source audit was completed against `external-audit-v1`; remediation still requires an independent retest before capital increases.
 
 ## Run locally
 
@@ -66,9 +66,9 @@ When paired-account hedging is enabled, Maker reacts only to independently fille
 
 Optional **Auto-rebalance** bounds the gross positions that same-venue hedging leaves on the two dedicated accounts. Before the configured threshold, Maker cancels every tracked quote, submits reduce-only market orders on both accounts, and requires three consecutive flat reads before quoting again. Because account indexing can expose positions in stages, it makes up to three bounded reduce-only sweeps and records each retry. This control spends spread, slippage, and gas; it limits accumulated exposure but does not make the strategy profitable.
 
-Live mode fails closed on setup, signer, mainnet, freshness, book/index divergence, quote size, worst post-fill inventory and gross exposure, two-sided collateral, agent gas, unrealized loss, run equity drawdown, transaction simulation, and gas limits. An independent watchdog cancels Maker orders when an actively quoted market stops being observed, even when its market RPC is stalled. Portfolio mode watches every selected market because every pair remains live.
+Live mode fails closed on setup, signer, mainnet, freshness, book/index divergence, quote size, worst post-fill inventory and aggregate gross exposure, two-sided collateral, agent gas, unrealized loss, combined-account run equity drawdown, per-account margin/liquidation distance, returned transaction intent, simulation effects, and gas limits. Portfolio exposure includes every resting pair's worst side plus every position on both dedicated accounts, including deselected markets. Position inventory is marked as signed base size times a timestamped current index. An independent watchdog cancels Maker orders when an actively quoted market stops being observed, even when its market RPC is stalled. Portfolio mode watches every selected market because every pair remains live.
 
-Flattening is separate from stopping. It first stops scheduling and confirms Maker-tagged order cancellation, then submits reduce-only market orders for positions in the selected markets. The UI requires a second confirmation and states the slippage ceiling.
+Flattening is separate from stopping. It first stops scheduling and confirms Maker-tagged order cancellation, then submits reduce-only market orders for every open position on each configured account, including deselected markets. If one multi-market transaction hits the venue slippage abort, Maker retries each market independently and reports any residual position. The UI requires a second confirmation and states the slippage ceiling.
 
 The **3-cycle canary** runs Farming, Profit, and Both on one currently eligible saved market for two seconds each. Paper signs nothing. Live requires an exact second confirmation, never raises saved quote or exposure limits, cancels before each policy change, stops after the third round, and flattens both configured accounts before restoring the saved strategy. Three rounds validate mechanics; they do not establish profitability.
 
@@ -135,7 +135,22 @@ docker compose logs -f web
 docker compose down
 ```
 
-`docker compose down` preserves the named volume. Never use `down -v` without a verified backup of the database and master key.
+`./scripts/backup.sh` uses SQLite's online backup API and verifies the snapshot without stopping any runtime. It writes a mode-`0600` archive containing `maker.db`. Keep the independent `.env`/master-key copy offline; the database alone cannot recover agent signers. Test a restore by extracting into a fresh directory, running `PRAGMA quick_check`, and starting with both Live gates disabled. `docker compose down` preserves the named volume. Never use `down -v` without a verified database and master-key backup.
+
+Master-key rotation is an offline control-plane operation:
+
+```bash
+# 1. Disable both Live gates, stop the control service, and take a backup.
+docker compose stop control
+# 2. Supply old/new keys without writing them to shell history.
+sudo -n docker compose run --rm \
+  -e OLD_MAKER_MASTER_KEY -e NEW_MAKER_MASTER_KEY \
+  control node apps/control/dist/rotate-master-key.js
+# 3. Replace MAKER_MASTER_KEY in .env, clear the temporary variables, and restart.
+docker compose up -d control web
+```
+
+The command verifies every decrypted address and rotates all ciphertext plus bound context in one database transaction. If any signer fails, no row is changed. Runtime retention is per tenant: 10,000 audit events, 50,000 quote executions, 2,000 tracked Maker orders, 10,000 hedge executions, and 20,000 processed hedge fills.
 
 ## Development
 

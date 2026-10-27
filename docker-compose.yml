@@ -4,6 +4,8 @@ services:
   control:
     build:
       context: .
+      sbom: true
+      provenance: mode=max
     image: puc/aftermath-maker:internal
     command: ["npm", "run", "start", "-w", "@puc/control"]
     restart: unless-stopped

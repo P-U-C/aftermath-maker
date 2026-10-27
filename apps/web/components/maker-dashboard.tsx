@@ -8,6 +8,11 @@ import {
 import { ConnectButton } from "@mysten/dapp-kit-react/ui";
 import { Transaction } from "@mysten/sui/transactions";
 import {
+  assertOwnerTransactionIntent,
+  deserializeOwnerTransactionIntent,
+  type SerializedOwnerTransactionIntent,
+} from "@puc/aftermath/owner-transaction-intent";
+import {
   Activity,
   AlertTriangle,
   ArrowDownRight,
@@ -44,6 +49,76 @@ import {
   useState,
 } from "react";
 import { dAppKit } from "../app/dapp-kit";
+
+type PreparedOwnerTransactionResponse = {
+  transaction: string;
+  intent: SerializedOwnerTransactionIntent;
+};
+
+type ExpectedOwnerIntent = {
+  kind: SerializedOwnerTransactionIntent["kind"];
+  sender: string;
+  amount?: bigint;
+  recipient?: string;
+  agentAddress?: string;
+  gasMist?: bigint;
+  agentCapId?: string;
+};
+
+function verifiedOwnerTransaction(
+  prepared: PreparedOwnerTransactionResponse,
+  expected: ExpectedOwnerIntent,
+): Transaction {
+  const intent = deserializeOwnerTransactionIntent(prepared.intent);
+  if (
+    intent.kind !== expected.kind ||
+    intent.sender.toLowerCase() !== expected.sender.toLowerCase()
+  ) {
+    throw new Error("Prepared wallet transaction does not match this action");
+  }
+  if (
+    expected.amount !== undefined &&
+    (!("amount" in intent) || intent.amount !== expected.amount)
+  ) {
+    throw new Error("Prepared collateral amount does not match this action");
+  }
+  if (
+    expected.recipient &&
+    (!("recipient" in intent) ||
+      intent.recipient.toLowerCase() !== expected.recipient.toLowerCase())
+  ) {
+    throw new Error("Prepared withdrawal recipient does not match this wallet");
+  }
+  if (
+    expected.agentAddress &&
+    (!("agentAddress" in intent) ||
+      intent.agentAddress.toLowerCase() !== expected.agentAddress.toLowerCase())
+  ) {
+    throw new Error("Prepared agent recipient does not match this account");
+  }
+  if (
+    expected.gasMist !== undefined &&
+    (!("gasMist" in intent) || intent.gasMist !== expected.gasMist)
+  ) {
+    throw new Error("Prepared agent gas grant does not match this action");
+  }
+  if (
+    expected.agentCapId &&
+    (!("agentCapId" in intent) ||
+      intent.agentCapId.toLowerCase() !== expected.agentCapId.toLowerCase())
+  ) {
+    throw new Error("Prepared revocation does not match this capability");
+  }
+
+  const transaction = Transaction.from(prepared.transaction);
+  assertOwnerTransactionIntent(transaction, intent);
+  return transaction;
+}
+
+function usdcBaseUnits(value: string): bigint {
+  const [whole = "0", fraction = ""] = value.split(".");
+  return BigInt(whole) * 1_000_000n + BigInt(fraction.padEnd(6, "0"));
+}
 
 type Mode = "observe" | "paper" | "live";
 type StrategyObjective = "farming" | "profit" | "both";
@@ -974,16 +1049,18 @@ function DashboardBody() {
   async function createAftermathAccount() {
     if (!account?.address) return;
     await mutate("create-account", async () => {
-      const built = await request<{ transaction: string }>(
+      const built = await request<PreparedOwnerTransactionResponse>(
         "api/accounts/create-transaction",
         {
           method: "POST",
           body: JSON.stringify({ collateralCoinType: USDC }),
         },
       );
-      const result = await wallet.signAndExecuteTransaction({
-        transaction: Transaction.from(built.transaction),
+      const transaction = verifiedOwnerTransaction(built, {
+        kind: "create-account",
+        sender: account.address,
       });
+      const result = await wallet.signAndExecuteTransaction({ transaction });
       if (result.$kind === "FailedTransaction") {
         throw new Error(
           result.FailedTransaction.status.error?.message ??
@@ -1026,16 +1103,21 @@ function DashboardBody() {
     }
 
     await mutate(`${direction}-${accountId}`, async () => {
-      const built = await request<{ transaction: string }>(
+      const built = await request<PreparedOwnerTransactionResponse>(
         `api/accounts/${direction}-transaction`,
         {
           method: "POST",
           body: JSON.stringify({ accountId, amountUsdc }),
         },
       );
-      const result = await wallet.signAndExecuteTransaction({
-        transaction: Transaction.from(built.transaction),
+      const amount = usdcBaseUnits(amountUsdc);
+      const transaction = verifiedOwnerTransaction(built, {
+        kind: direction,
+        sender: account.address,
+        amount,
+        ...(direction === "withdraw" ? { recipient: account.address } : {}),
       });
+      const result = await wallet.signAndExecuteTransaction({ transaction });
       if (result.$kind === "FailedTransaction") {
         throw new Error(
           result.FailedTransaction.status.error?.message ??
@@ -1075,21 +1157,26 @@ function DashboardBody() {
   }
 
   async function authorizeAgent(accountId = selectedAccount) {
-    if (!accountId) return;
+    if (!account?.address || !accountId) return;
     await mutate(`authorize-${accountId}`, async () => {
-      const built = await request<{
-        transaction: string;
-        agentAddress: string;
-      }>("api/setup/grant-transaction", {
+      const built = await request<
+        PreparedOwnerTransactionResponse & {
+          agentAddress: string;
+        }
+      >("api/setup/grant-transaction", {
         method: "POST",
         body: JSON.stringify({
           accountId,
           gasMist: "100000000",
         }),
       });
-      const result = await wallet.signAndExecuteTransaction({
-        transaction: Transaction.from(built.transaction),
+      const transaction = verifiedOwnerTransaction(built, {
+        kind: "grant-agent",
+        sender: account.address,
+        agentAddress: built.agentAddress,
+        gasMist: 100_000_000n,
       });
+      const result = await wallet.signAndExecuteTransaction({ transaction });
       if (result.$kind === "FailedTransaction") {
         throw new Error(
           result.FailedTransaction.status.error?.message ??
@@ -1114,17 +1201,20 @@ function DashboardBody() {
   }
 
   async function revokeAgent(accountId: string) {
+    if (!account?.address) return;
     await mutate(`revoke-${accountId}`, async () => {
-      const built = await request<{ transaction: string }>(
-        "api/setup/revoke-transaction",
-        {
-          method: "POST",
-          body: JSON.stringify({ accountId }),
-        },
-      );
-      const result = await wallet.signAndExecuteTransaction({
-        transaction: Transaction.from(built.transaction),
+      const built = await request<
+        PreparedOwnerTransactionResponse & { agentCapId: string }
+      >("api/setup/revoke-transaction", {
+        method: "POST",
+        body: JSON.stringify({ accountId }),
       });
+      const transaction = verifiedOwnerTransaction(built, {
+        kind: "revoke-agent",
+        sender: account.address,
+        agentCapId: built.agentCapId,
+      });
+      const result = await wallet.signAndExecuteTransaction({ transaction });
       if (result.$kind === "FailedTransaction") {
         throw new Error(
           result.FailedTransaction.status.error?.message ??
@@ -1462,7 +1552,7 @@ function DashboardBody() {
     if (!flattenArmed) {
       setFlattenArmed(true);
       setNotice(
-        "Flatten uses reduce-only market orders across selected markets on both the Maker and hedge accounts, with up to 1% slippage. Review, then confirm.",
+        "Flatten uses reduce-only market orders across every open position on both the Maker and hedge accounts, with up to 1% slippage. Review, then confirm.",
       );
       return;
     }

@@ -6,7 +6,7 @@ Maker is an execution and measurement system, not a promise that one spread sett
 
 ### Account readiness
 
-The account desk discovers every Aftermath USDC account held by the signed-in wallet. It shows equity, available collateral, positions, agent authorization, and the assigned Maker or hedge role. It can create an account, deposit or withdraw USDC, and revoke the agent plus Maker fee approval. One locally encrypted agent signer can hold a separate trading capability for each authorized account; every account, collateral, capability, and revocation transaction remains owner-signed and is simulated before signing.
+The account desk discovers every Aftermath USDC account held by the signed-in wallet. It shows equity, available collateral, positions, agent authorization, and the assigned Maker or hedge role. It can create an account, deposit or withdraw USDC, and revoke the agent plus Maker fee approval. One locally encrypted agent signer can hold a separate trading capability for each authorized account. Every account, collateral, capability, and revocation transaction remains owner-signed; returned commands, arguments, objects, recipient, amounts, and simulated effects are checked by the control service and again in the browser before signing.
 
 Collateral changes are blocked while an engine is running. Revocation first stops the engine, checks every listed market for remaining Maker-tagged orders, and refuses to proceed until they are clear.
 
@@ -34,7 +34,7 @@ One-live-pair mode reduces simultaneous collateral demand; it does not create N-
 
 ### Quote lifecycle
 
-Maker uses Aftermath's protocol index as fair value and the live best bid and ask as execution constraints. It refuses to quote when book midpoint diverges from the index beyond policy, creates a post-only bid and ask around the index, rounds against the venue tick while reserving one tick behind the opposite side, skews both around the configured inventory target, and uses Aftermath's atomic cancel-and-place transaction to replace its prior quote pair.
+Maker uses Aftermath's protocol index as fair value and the live best bid and ask as execution constraints. It refuses to quote when book midpoint divergence exceeds the smaller of the configured ceiling and half the quoted spread, so a lagging index cannot place one side one tick behind an adverse touch. It creates a post-only bid and ask around the index, rounds against the venue tick while reserving one tick behind the opposite side, skews both around the configured inventory target, and uses Aftermath's atomic cancel-and-place transaction to replace its prior quote pair. Open-position inventory is signed base size times the timestamped current index, not cost basis.
 
 Every quote receives fresh client order IDs in Maker's reserved namespace. Portfolio cancellation recognizes that namespace and uses the exact IDs recorded from confirmed transactions and live account state. It does not cancel manual orders or orders created by another client. If simulation reports that a post-only quote would cross a book that moved after observation, the atomic transaction has no effect. A same-market requote keeps its prior pair; a cross-market switch explicitly cancels the prior pair, then rebuilds from a fresh book on the next poll. Other transaction failures remain fail-closed.
 
@@ -82,7 +82,7 @@ Paper records three simulated rounds. Live requires both deployment gates and an
 
 **Stop quoting** stops scheduling and cancels Maker-tagged open orders. It does not change an existing position.
 
-**Flatten at market** is a separate, confirmed action. It stops the engine, cancels Maker orders, and submits reduce-only market orders for positions in selected markets. It does not attach a builder fee. The user sees the slippage ceiling before confirmation.
+**Flatten at market** is a separate, confirmed action. It stops the engine, cancels Maker orders, and submits reduce-only market orders for every open position on the configured account pair, including deselected markets. It does not attach a builder fee. If one thin market causes a multi-market slippage abort, each market is retried separately and residuals are reported. The user sees the slippage ceiling before confirmation.
 
 ### Fill attribution
 

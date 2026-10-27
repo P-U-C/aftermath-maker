@@ -29,6 +29,21 @@ async function proxy(
     );
   }
   const route = path.join("/");
+  const hasBody = !["GET", "HEAD"].includes(request.method);
+  if (hasBody) {
+    const origin = request.headers.get("origin");
+    const fetchSite = request.headers.get("sec-fetch-site");
+    if (
+      origin !== request.nextUrl.origin ||
+      (fetchSite !== null && fetchSite !== "same-origin")
+    ) {
+      return NextResponse.json(
+        { error: "Cross-origin control request rejected" },
+        { status: 403, headers: { "cache-control": "no-store" } },
+      );
+    }
+  }
+
   const target = new URL(CONTROL_URL);
   target.pathname = `/${path
     .map((segment) => encodeURIComponent(segment))
@@ -41,8 +56,13 @@ async function proxy(
   if (controlToken) headers.set("x-control-token", controlToken);
   const session = request.cookies.get(SESSION_COOKIE)?.value;
   if (session) headers.set("x-maker-session", session);
+  const clientIp =
+    request.headers.get("x-real-ip") ??
+    request.headers.get("x-forwarded-for")?.split(",")[0]?.trim();
+  if (clientIp && clientIp.length <= 64 && /^[0-9a-fA-F:.]+$/.test(clientIp)) {
+    headers.set("x-maker-client-ip", clientIp);
+  }
 
-  const hasBody = !["GET", "HEAD"].includes(request.method);
   if (hasBody) headers.set("content-type", "application/json");
 
   const upstream = await fetch(target, {

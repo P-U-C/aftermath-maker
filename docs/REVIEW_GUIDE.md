@@ -1,6 +1,6 @@
 # External audit guide
 
-This is the reviewer entry point for Maker. Review the tagged release `external-audit-v1`, not a moving branch.
+This is the reviewer entry point for Maker. The immutable `external-audit-v1` tag is the audited baseline. The October 27 findings and current fix evidence are tracked in [the remediation ledger](../audits/2026-10-27-external/REMEDIATION.md); reviewers should compare that ledger's remediation commit with the baseline tag.
 
 Maker controls real perpetuals positions. It is not represented as audited, profitable, delta-neutral across venues, or safe to operate without independent review. The repository includes bounded Sui mainnet evidence because passing unit tests alone does not establish live protocol behavior.
 
@@ -95,7 +95,7 @@ Stop and flatten are deliberately separate:
 - SQLite, the encrypted signer record, and the independent master key must be backed up together. Losing either key material or state can make recovery impossible.
 - Live does not auto-resume after a process restart or hard host failure.
 
-## Automated tests reproduced for this audit target
+## Automated verification
 
 Run:
 
@@ -108,19 +108,19 @@ sudo docker run --rm \
   -w /workspace mysten/sui-tools:mainnet sui move test
 ```
 
-Reproduced on 2026-10-27:
+Current remediation verification on 2026-10-27:
 
-| Suite                       |                          Result | Coverage emphasis                                                                                                                                        |
-| --------------------------- | ------------------------------: | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `packages/core`             |                      38 passing | Schemas, policy invariants, units, objective ranking, rewards, builder-field inspection, and risk limits.                                                |
-| `packages/aftermath`        |                      15 passing | Key encryption, gas accounting, unique order IDs, post-only construction, cancellation ownership, fills, and account normalization.                      |
-| `apps/control`              |                      45 passing | Authentication, allowlist, tenant isolation, runtime concurrency, rotation, watchdog, hedging, delayed indexing, auto-rebalance, canaries, and recovery. |
-| Move package                |                       1 passing | Only the `AdminCap` operator can add/remove members and membership changes are reflected on-chain.                                                       |
-| Production dependency audit |      0 vulnerabilities reported | `npm audit --omit=dev`.                                                                                                                                  |
-| Production build            |                          Passed | Core, adapter, control service, and Next.js application.                                                                                                 |
-| Browser checks              | Passed at 1440x1100 and 390x844 | Authenticated render, no page-level horizontal overflow, required controls present, and no console/page errors.                                          |
+| Suite                       |                          Result | Coverage emphasis                                                                                                                                       |
+| --------------------------- | ------------------------------: | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `packages/core`             |                      40 passing | Schemas, required risk inputs, aggregate portfolio exposure, priority mutation queues, rewards, transaction policy, and safety limits.                  |
+| `packages/aftermath`        |                      36 passing | Returned transaction intent/effects, owner intent serialization, exact gas selection, key envelopes, mark valuation, cancellation, fills, and failures. |
+| `apps/control`              |                      62 passing | Authentication, rate/challenge bounds, allowlist identity, retention, key rotation, endpoint recovery, runtime concurrency, risk, stop, and flatten.    |
+| Move package                |                       3 passing | Operator add/remove plus duplicate-add and remove-nonmember failures; `AdminCap` is not publicly transferable.                                          |
+| Production dependency audit |      0 vulnerabilities reported | `npm audit --omit=dev`.                                                                                                                                 |
+| Production build            |                          Passed | Core, adapter, control service, and Next.js application.                                                                                                |
+| Browser checks              | Passed at 1440x1100 and 390x844 | Authenticated render, no page-level horizontal overflow, required controls present, and no console/page errors.                                         |
 
-Total TypeScript application tests: **98**.
+Total TypeScript application tests: **138**.
 
 These are regression tests, not formal verification. The single Move test is intentionally called out as narrow coverage.
 
@@ -229,7 +229,7 @@ The fixes and transaction evidence are recorded chronologically in [ITERATION-2.
 
 ## Known limits and unproven claims
 
-- No independent security audit has been completed yet.
+- The October 27 independent source audit is complete; the remediation commit still requires independent retesting before capital increases.
 - Profitability and reward efficiency are unproven.
 - Fair value uses Aftermath's protocol index checked against the local book; there is no independent multi-venue price source.
 - Both hedge legs use Aftermath, so venue and liquidation risk remain concentrated.
@@ -237,7 +237,7 @@ The fixes and transaction evidence are recorded chronologically in [ITERATION-2.
 - Fill ingestion reads the latest 200 records and needs cursor-based ingestion before high-volume operation.
 - A deliberate restart resets run drawdown; daily and lifetime loss limits are not implemented.
 - Live does not auto-resume after a hard host failure.
-- Withdrawal, final capability revocation, and full backup restoration have not been exercised in the retained mainnet setup.
+- Withdrawal and final capability revocation have not been exercised in the retained mainnet setup. Backup/restore and key-rotation drills use isolated databases, not retained mainnet signer state.
 - Public gRPC is the default. A private validator endpoint is supported but has not been used in this audit.
 - Strategy rankings are transparent heuristics, not predictions of rewards or profit.
 - Auto-rebalance can cross the spread, incur slippage and gas, and realize losses.

@@ -7,25 +7,58 @@ type GatewayOptions = {
   fallbackEndpoint?: string;
 };
 
+type GatewayFactory = (options: GatewayOptions) => Promise<AftermathGateway>;
+
+const ENDPOINT_REPROBE_MS = 5 * 60_000;
+
 export class RuntimeManager {
   private gateway: AftermathGateway | null = null;
   private gatewayError: string | null = null;
   private readonly runtimes = new Map<string, MakerRuntime>();
+  private endpointTimer: NodeJS.Timeout | null = null;
+  private refreshPromise: Promise<void> | null = null;
 
   constructor(
     private readonly store: Store,
     private readonly runtimeOptions: RuntimeOptions,
     private readonly gatewayOptions: GatewayOptions,
+    private readonly gatewayFactory: GatewayFactory = AftermathGateway.create,
   ) {}
 
   async initialize(): Promise<void> {
+    await this.refreshEndpoints();
+    this.endpointTimer = setInterval(
+      () => void this.refreshEndpoints(),
+      ENDPOINT_REPROBE_MS,
+    );
+    this.endpointTimer.unref();
+  }
+
+  async refreshEndpoints(): Promise<void> {
+    if (this.refreshPromise) return this.refreshPromise;
+    this.refreshPromise = this.performEndpointRefresh().finally(() => {
+      this.refreshPromise = null;
+    });
+    return this.refreshPromise;
+  }
+
+  private async performEndpointRefresh(): Promise<void> {
     try {
-      this.gateway = await AftermathGateway.create(this.gatewayOptions);
+      const gateway = await this.gatewayFactory(this.gatewayOptions);
+      this.gateway = gateway;
       this.gatewayError = null;
+      for (const runtime of this.runtimes.values()) {
+        runtime.replaceGateway(gateway);
+      }
     } catch (error) {
       this.gatewayError =
         error instanceof Error ? error.message : String(error);
     }
+  }
+
+  close(): void {
+    if (this.endpointTimer) clearInterval(this.endpointTimer);
+    this.endpointTimer = null;
   }
 
   get(ownerAddress: string): MakerRuntime {
@@ -56,9 +89,40 @@ export class RuntimeManager {
     return this.gatewayError;
   }
 
-  async stopAll(): Promise<void> {
-    await Promise.all(
-      [...this.runtimes.values()].map((runtime) => runtime.stop()),
+  async stopTenant(ownerAddress: string): Promise<boolean> {
+    const key = ownerAddress.toLowerCase();
+    let runtime = this.runtimes.get(key);
+    if (!runtime) {
+      if (!this.store.listTenantOwners().includes(key)) return false;
+      runtime = this.get(key);
+    }
+    await runtime.stop();
+    if (this.gateway) runtime.replaceGateway(this.gateway);
+    return true;
+  }
+
+  async stopAll(): Promise<
+    Array<{ ownerAddress: string; stopped: boolean; error?: string }>
+  > {
+    const owners = new Set([
+      ...this.store.listTenantOwners(),
+      ...this.runtimes.keys(),
+    ]);
+    return Promise.all(
+      [...owners].map(async (ownerAddress) => {
+        try {
+          return {
+            ownerAddress,
+            stopped: await this.stopTenant(ownerAddress),
+          };
+        } catch (error) {
+          return {
+            ownerAddress,
+            stopped: false,
+            error: error instanceof Error ? error.message : String(error),
+          };
+        }
+      }),
     );
   }
 }

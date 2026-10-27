@@ -1,6 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import {
+  agentEncryptionContext,
   assertRoundedQuoteOrderValue,
   buildQuoteReplacementRequest,
   createEncryptedAgent,
@@ -9,6 +10,7 @@ import {
   encryptSecret,
   isMakerClientOrderId,
   loadAgentKeypair,
+  masterKeyId,
   MAKER_ASK_CLIENT_ORDER_ID,
   MAKER_BID_CLIENT_ORDER_ID,
   nextMakerClientOrderIds,
@@ -142,17 +144,38 @@ describe("encrypted agent keystore", () => {
     expect(() => decryptSecret(envelope, masterKey, "account:43")).toThrow();
   });
 
-  it("creates a restorable key without exposing it in the envelope", () => {
+  it("creates a restorable key with a key ID and owner-bound context", () => {
+    const ownerAddress = `0x${"1".repeat(64)}`;
     const generated = createEncryptedAgent({
       masterKey,
-      context: "account:42",
+      context: (agentAddress) =>
+        agentEncryptionContext({
+          ownerAddress,
+          agentAddress,
+          accountId: "42",
+        }),
     });
     const restored = loadAgentKeypair({
       masterKey,
-      context: "account:42",
+      context: generated.encryptionContext,
       encryptedSecret: generated.encryptedSecret,
     });
     expect(restored.toSuiAddress()).toBe(generated.address);
+    expect(generated.encryptedSecret).toMatchObject({
+      version: 2,
+      keyId: masterKeyId(masterKey),
+    });
+    expect(() =>
+      loadAgentKeypair({
+        masterKey,
+        context: agentEncryptionContext({
+          ownerAddress: `0x${"2".repeat(64)}`,
+          agentAddress: generated.address,
+          accountId: "42",
+        }),
+        encryptedSecret: generated.encryptedSecret,
+      }),
+    ).toThrow();
     expect(JSON.stringify(generated.encryptedSecret)).not.toContain(
       "suiprivkey",
     );

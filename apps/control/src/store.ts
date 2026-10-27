@@ -4,15 +4,24 @@ import Database from "better-sqlite3";
 import type { EncryptedSecret } from "@puc/aftermath";
 import { makerConfigSchema, type MakerConfig, type Setup } from "@puc/core";
 
+const BIGINT_TAG = "__maker_bigint__";
+
 const stringify = (value: unknown) =>
   JSON.stringify(value, (_key, item) =>
-    typeof item === "bigint" ? `${item.toString()}n` : item,
+    typeof item === "bigint" ? { [BIGINT_TAG]: item.toString() } : item,
   );
 
 const parse = <T>(value: string): T =>
   JSON.parse(value, (_key, item) => {
-    if (typeof item === "string" && /^\d+n$/.test(item)) {
-      return BigInt(item.slice(0, -1));
+    if (
+      item &&
+      typeof item === "object" &&
+      !Array.isArray(item) &&
+      Object.keys(item).length === 1 &&
+      typeof item[BIGINT_TAG] === "string" &&
+      /^-?\d+$/.test(item[BIGINT_TAG])
+    ) {
+      return BigInt(item[BIGINT_TAG]);
     }
     return item;
   }) as T;
@@ -79,6 +88,21 @@ export type HedgeExecution = {
   requestedNotionalUsd: number;
   gasUsedMist: number;
 };
+
+export const RETENTION_LIMITS = {
+  auditEvents: 10_000,
+  executions: 50_000,
+  makerOrders: 2_000,
+  hedgeExecutions: 10_000,
+  hedgedFills: 20_000,
+} as const;
+
+type RetentionTable =
+  | "tenant_audit_events"
+  | "tenant_executions"
+  | "tenant_maker_orders"
+  | "tenant_hedge_executions"
+  | "tenant_hedged_fills";
 
 export class Store {
   private readonly db: Database.Database;
@@ -239,6 +263,8 @@ export class Store {
         ON tenant_maker_orders(owner_address, posted_at DESC);
       CREATE INDEX IF NOT EXISTS tenant_hedge_executions_owner_time
         ON tenant_hedge_executions(owner_address, occurred_at DESC);
+      CREATE INDEX IF NOT EXISTS tenant_hedged_fills_owner_time
+        ON tenant_hedged_fills(owner_address, processed_at DESC);
       CREATE INDEX IF NOT EXISTS auth_sessions_owner
         ON auth_sessions(owner_address);
       CREATE INDEX IF NOT EXISTS auth_sessions_expiry
@@ -407,6 +433,79 @@ export class Store {
     return new TenantStore(this.db, normalizeAddress(ownerAddress));
   }
 
+  listTenantOwners(): string[] {
+    const rows = this.db
+      .prepare(
+        `SELECT owner_address FROM tenant_settings
+         UNION
+         SELECT owner_address FROM tenant_agents
+         ORDER BY owner_address`,
+      )
+      .all() as Array<{ owner_address: string }>;
+    return rows.map((row) => row.owner_address);
+  }
+
+  rotateAgentEncryptions(
+    updates: Array<{
+      ownerAddress: string;
+      address: string;
+      encryptedSecret: EncryptedSecret;
+      encryptionContext: string;
+    }>,
+  ): void {
+    const rotate = this.db.transaction(() => {
+      for (const update of updates) {
+        const ownerAddress = normalizeAddress(update.ownerAddress);
+        const result = this.db
+          .prepare(
+            `UPDATE tenant_agents
+             SET encrypted_secret = ?
+             WHERE owner_address = ? AND address = ?`,
+          )
+          .run(
+            stringify(update.encryptedSecret),
+            ownerAddress,
+            normalizeAddress(update.address),
+          );
+        if (result.changes !== 1) {
+          throw new Error(
+            `Stored agent changed during key rotation for ${ownerAddress}`,
+          );
+        }
+        this.db
+          .prepare(
+            `INSERT INTO tenant_settings
+              (owner_address, key, value, updated_at)
+             VALUES (?, 'agent_encryption_context', ?, ?)
+             ON CONFLICT(owner_address, key) DO UPDATE SET
+               value = excluded.value,
+               updated_at = excluded.updated_at`,
+          )
+          .run(
+            ownerAddress,
+            stringify(update.encryptionContext),
+            new Date().toISOString(),
+          );
+      }
+    });
+    rotate();
+  }
+
+  countOpenChallenges(ownerAddress: string): number {
+    const row = this.db
+      .prepare(
+        `SELECT COUNT(*) AS count
+         FROM auth_challenges
+         WHERE owner_address = ?
+           AND consumed_at IS NULL
+           AND expires_at > ?`,
+      )
+      .get(normalizeAddress(ownerAddress), new Date().toISOString()) as {
+      count: number;
+    };
+    return row.count;
+  }
+
   createChallenge(inputs: StoredChallenge): void {
     const now = new Date().toISOString();
     this.db.transaction(() => {
@@ -553,6 +652,37 @@ export class TenantStore {
     private readonly db: Database.Database,
     public readonly ownerAddress: string,
   ) {}
+
+  private pruneTable(table: RetentionTable, limit: number): void {
+    if (!Number.isInteger(limit) || limit < 1) {
+      throw new Error("Retention limit must be a positive integer");
+    }
+    this.db
+      .prepare(
+        `DELETE FROM ${table}
+         WHERE owner_address = ?
+           AND rowid IN (
+             SELECT rowid FROM ${table}
+             WHERE owner_address = ?
+             ORDER BY rowid DESC
+             LIMIT -1 OFFSET ?
+           )`,
+      )
+      .run(this.ownerAddress, this.ownerAddress, limit);
+  }
+
+  enforceRetention(
+    limits: Partial<typeof RETENTION_LIMITS> = RETENTION_LIMITS,
+  ): void {
+    const applied = { ...RETENTION_LIMITS, ...limits };
+    this.db.transaction(() => {
+      this.pruneTable("tenant_audit_events", applied.auditEvents);
+      this.pruneTable("tenant_executions", applied.executions);
+      this.pruneTable("tenant_maker_orders", applied.makerOrders);
+      this.pruneTable("tenant_hedge_executions", applied.hedgeExecutions);
+      this.pruneTable("tenant_hedged_fills", applied.hedgedFills);
+    })();
+  }
 
   private getSetting<T>(key: string): T | null {
     const row = this.db
@@ -839,6 +969,7 @@ export class TenantStore {
         inputs.outcome,
         stringify(inputs.detail ?? {}),
       );
+    this.pruneTable("tenant_audit_events", RETENTION_LIMITS.auditEvents);
   }
 
   listEvents(limit = 50): AuditEvent[] {
@@ -900,6 +1031,7 @@ export class TenantStore {
         inputs.error ?? null,
         inputs.gasUsedMist ?? null,
       );
+    this.pruneTable("tenant_executions", RETENTION_LIMITS.executions);
   }
 
   trackMakerOrders(inputs: {
@@ -925,13 +1057,17 @@ export class TenantStore {
           postedAt,
         );
       }
+      this.pruneTable("tenant_maker_orders", RETENTION_LIMITS.makerOrders);
     })();
   }
 
   listTrackedMakerOrders(
     inputs: { accountId?: string; limit?: number } = {},
   ): TrackedMakerOrder[] {
-    const limit = inputs.limit ?? 2_000;
+    const limit = Math.min(
+      RETENTION_LIMITS.makerOrders,
+      Math.max(1, inputs.limit ?? RETENTION_LIMITS.makerOrders),
+    );
     const rows = this.db
       .prepare(
         `SELECT account_id, order_id, market_id, quote_digest, posted_at
@@ -994,6 +1130,7 @@ export class TenantStore {
           processedAt,
         );
       }
+      this.pruneTable("tenant_hedged_fills", RETENTION_LIMITS.hedgedFills);
     })();
   }
 
@@ -1041,6 +1178,11 @@ export class TenantStore {
           occurredAt,
         );
       }
+      this.pruneTable(
+        "tenant_hedge_executions",
+        RETENTION_LIMITS.hedgeExecutions,
+      );
+      this.pruneTable("tenant_hedged_fills", RETENTION_LIMITS.hedgedFills);
     })();
   }
 

@@ -7,7 +7,7 @@ use sui::tx_context::{Self, TxContext};
 const E_ALREADY_MEMBER: u64 = 0;
 const E_NOT_MEMBER: u64 = 1;
 
-public struct AdminCap has key, store {
+public struct AdminCap has key {
     id: UID,
 }
 

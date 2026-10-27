@@ -18,7 +18,7 @@ Public access is gated by the `maker_access::access::Registry` shared object on 
 - Membership is re-read from chain at most 30 seconds after a change.
 - Each wallet has separate settings, agent ciphertext, runtime, executions, and audit events.
 
-The bootstrap operator wallet must also be the registry deployment signer and the on-chain `AdminCap` owner. Only its signed session can access membership APIs, and only it receives the membership management view. Member wallets receive HTTP 403. Keep the `AdminCap` in that operator wallet. The API also refuses to build a transaction that removes the operator's own membership.
+The bootstrap operator wallet must also be the registry deployment signer and the on-chain `AdminCap` owner. Only its signed session can access membership APIs, and only it receives the membership management view. Member wallets receive HTTP 403. The deployed registry type is checked against the exact pinned package ID. `AdminCap` has `key` but not `store`, so arbitrary wallets cannot transfer it through public transfer functions. The package `UpgradeCap` remains with the operator and is a separate upgrade authority; custody it with the same controls as the owner wallet and publish every package upgrade. The API also refuses to build a transaction that removes the operator's own membership.
 
 Bootstrap mode accepts the first signed wallet only while no registry is configured. It must remain behind Basic Auth and be disabled immediately after deployment. Never expose bootstrap mode directly to the public internet.
 
@@ -35,7 +35,8 @@ Keep enough SUI in the owner wallet for emergency revocation.
 ## Secret handling
 
 - `MAKER_MASTER_KEY` encrypts agent private keys with AES-256-GCM.
-- A unique salt, IV, and authenticated account context are stored with each ciphertext.
+- New envelopes carry a master-key ID. A unique salt and IV are authenticated with context binding the owner, agent address, and anchor account.
+- `apps/control/dist/rotate-master-key.js` decrypts and verifies every stored signer before one atomic database re-encryption. Rotation requires a stopped control service, an online database backup, an updated `.env`, and a restart drill.
 - Plaintext agent keys are never returned by the API or dashboard.
 - Only the internal control container receives `MAKER_MASTER_KEY`. The public web container receives one internal control token and cannot decrypt signers.
 - `.env`, SQLite, and backups are separate required assets. The master key plus database can recover every tenant agent.
@@ -84,9 +85,11 @@ Stopping and flattening are separate. Stop only cancels Maker-tagged orders. Fla
 
 Automatic rebalance is opt-in and intended only for a dedicated Maker/hedge account pair. It converts passive positions into taker orders and can realize adverse selection, cross the spread, consume gas, or fail at the user's slippage ceiling. Its threshold must remain below the hard gross-exposure cap, but neither limit prevents losses that occur inside one transaction or during a venue, network, or oracle failure.
 
-Owner account creation, deposit, withdrawal, agent grant, agent revocation, fee approval, and whitelist membership transactions are simulated before being returned to the wallet. Grant and revoke confirmation verifies the supplied digest, sender, and exact capability-object effect before local authority state changes. Revocation removes the configured builder-fee approval in the same transaction.
+Every agent transaction is inspected after the Aftermath API/SDK returns it and before signing. The verifier allowlists exact deployed package IDs and Move functions, exact account/cap/market objects, command counts and result flow, order side/size/price flags, client IDs, builder fields, sender, and gas-only simulated balance effects. Transfers, coin mutations outside the expected gas payment, publishing, and unknown commands are rejected. One priority signing queue exists per agent; cancellation and flattening jump quote work.
 
-Transactions are built by the official Aftermath SDK/API. That is an external trust dependency. Simulation detects execution failures but is not a semantic proof of every Move call. Pin and review SDK upgrades, especially changes to agent permissions, order builders, order event shapes, or builder-code fields.
+Owner account creation, deposit, withdrawal, agent grant, agent revocation, and fee approval receive the same returned-transaction inspection and effect checks before being sent to the browser. The response carries a bigint-safe intent envelope; browser code independently decodes the transaction and checks it against the action, signed-in wallet, amount, recipient, agent gas grant, or revoked capability before invoking the wallet. Grant and revoke confirmation verifies the supplied digest, sender, and exact capability-object effect before local authority state changes. Revocation removes the configured builder-fee approval in the same transaction.
+
+The official Aftermath API/SDK remains an external availability dependency, not trusted transaction authority. A compromised host remains fully trusted because it can serve altered browser JavaScript and decrypt local agent signers; client-side verification does not remove that boundary. Review the pinned SDK and reproducible container digest on every upgrade. Builder registration is exact-intent checked and derives the expected ID from Sui simulation, but Aftermath emits no registration event; the final address-to-ID lookup still depends on its API after transaction confirmation.
 
 ## Performance evidence
 
@@ -98,15 +101,17 @@ Maker records order IDs emitted by confirmed quote transactions and attributes f
 
 The control API is reachable only on the internal Docker network. The web service binds to `127.0.0.1` by default and is published through Cloudflare Tunnel and Nginx. Both containers run as a non-root user with a read-only root filesystem, all Linux capabilities dropped, and no-new-privileges.
 
-During bootstrap, Nginx uses Basic Auth. After the registry is confirmed, deploy `deploy/nginx-public.conf`; wallet authentication and on-chain membership then become the public gate.
+During bootstrap, Nginx uses Basic Auth. After the registry is confirmed, deploy `deploy/nginx-public.conf`; wallet authentication and on-chain membership then become the public gate. State-changing proxy requests require exact same-origin browser headers. Login traffic is limited by trusted client IP at Nginx and by validated session owner or trusted proxy IP in the control service; each wallet can hold at most five unconsumed challenges. The internal control token uses constant-time comparison.
 
 ## Incident response
 
 1. Stop the affected engine in the dashboard.
 2. Revoke that agent capability with the owner wallet.
 3. Remove the wallet from the on-chain registry if access is compromised.
-4. Preserve control logs and a database backup.
-5. Rotate `CONTROL_TOKEN` and `MAKER_MASTER_KEY` when exposure is possible.
+4. Preserve control logs and run the online database backup.
+5. Rotate `CONTROL_TOKEN` and use the documented atomic re-encryption command for `MAKER_MASTER_KEY`.
 6. Provision a new agent only after reconciling on-chain state.
+
+The operator API can stop one tenant or every tenant. A membership failure stops and cancels that tenant automatically. Stop and flatten remain available to a recently valid session during a registry RPC outage.
 
 Never delete an encrypted signer during an uncertain broadcast. Reconcile the transaction digest and capability state first.
