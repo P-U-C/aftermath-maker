@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Maker brand sheet</title>
+<link rel="stylesheet" href="maker2.css">
+<script src="mark.js"></script>
+<style>
+  body { padding: 48px 56px 56px; }
+  h1 { margin: 0 0 6px; font-size: 30px; font-weight: 640; font-stretch: 122%; letter-spacing: -0.03em; }
+  .lead { margin: 0 0 30px; color: var(--ink-2); }
+  .row { display: grid; gap: 20px; margin-bottom: 20px; }
+  .r3 { grid-template-columns: repeat(3, 1fr); }
+  .r4 { grid-template-columns: repeat(4, 1fr); }
+  .state { display: flex; gap: 20px; align-items: center; }
+  .icon { width: 96px; height: 96px; border-radius: 26px; background: var(--icon-bg); display: grid; place-items: center; flex: none; }
+  .state b { display: block; font-size: 17px; font-weight: 640; font-stretch: 112%; }
+  .state span { color: var(--ink-2); font-size: 14px; }
+  .sw { height: 96px; border-radius: 16px; margin-bottom: 14px; }
+  .sw-name { font-weight: 640; font-stretch: 112%; }
+  .sw-meta { color: var(--ink-2); font-size: 13.5px; margin-top: 2px; }
+  .spec { display: grid; grid-template-columns: 1.2fr 1fr; gap: 20px; }
+  .big { font-size: 88px; font-weight: 640; font-stretch: 125%; letter-spacing: -0.035em; line-height: 1; }
+  .lab { font-size: 12.5px; color: var(--ink-3); margin-bottom: 8px; }
+  .line { margin-top: 22px; }
+  .datarow { display: grid; grid-template-columns: 1fr 1fr 1fr; padding: 12px 0; border-top: 1px solid var(--hair); font-feature-settings: "tnum" 1; }
+</style>
+</head>
+<body>
+<script>applyTheme();</script>
+<h1>The spread is the identity</h1>
+<p class="lead">One mark, two colors, one type family. Every piece comes from what a market maker does: stand on both sides.</p>
+
+<div class="row r3">
+  <div class="card state"><span class="icon" id="m1"></span><div><b>Stopped</b><span>The two sides close. No orders rest anywhere.</span></div></div>
+  <div class="card state"><span class="icon" id="m2"></span><div><b>Paper</b><span>The spread opens in outline. Nothing is real yet.</span></div></div>
+  <div class="card state"><span class="icon" id="m3"></span><div><b>Live</b><span>Tide below, Ember above. Real orders are resting.</span></div></div>
+</div>
+
+<div class="row r4">
+  <div class="card"><div class="sw" style="background:var(--tide)"></div><div class="sw-name">Tide</div><div class="sw-meta">#0FA39A, text #0A7C75. Bids, buys, gains.</div></div>
+  <div class="card"><div class="sw" style="background:var(--ember)"></div><div class="sw-name">Ember</div><div class="sw-meta">#F2483B, text #C42A20. Asks, sells, losses, Live, Stop.</div></div>
+  <div class="card"><div class="sw" style="background:var(--ink)"></div><div class="sw-name">Graphite</div><div class="sw-meta">#16181D. Text and every primary button.</div></div>
+  <div class="card"><div class="sw" style="background:var(--amber)"></div><div class="sw-name">Amber</div><div class="sw-meta">#E8A200, text #9A5B00. Close to a limit.</div></div>
+</div>
+
+<div class="spec">
+  <div class="card">
+    <div class="lab">Mona Sans, expanded 125%, 640</div>
+    <div class="big loss">−$0.01</div>
+    <div class="line lab">Mona Sans, 112%, 640</div>
+    <div style="font-size:24px;font-weight:640;font-stretch:112%;letter-spacing:-0.015em">Quoting MON-PERP on Aftermath</div>
+    <div class="line lab">Mona Sans, 100%, 400</div>
+    <div style="font-size:15px;max-width:520px">One live pair at a time. Limits stop the engine before they are crossed, on every venue.</div>
+  </div>
+  <div class="card">
+    <div class="lab">Tabular figures in data columns; the dotted zero tells 0 from O</div>
+    <div class="datarow i3" style="font-size:12px;font-feature-settings:normal"><span>Market</span><span style="text-align:right">Your bid</span><span style="text-align:right">Inventory</span></div>
+    <div class="datarow"><span class="sym">MON-PERP</span><span style="text-align:right">0.021393</span><span style="text-align:right" class="gain">+$1.04</span></div>
+    <div class="datarow"><span class="sym">NEAR-PERP</span><span style="text-align:right">4.5991</span><span style="text-align:right">$0.00</span></div>
+    <div class="datarow"><span class="sym">BTC-PERP</span><span style="text-align:right">80,403.8</span><span style="text-align:right">$0.00</span></div>
+    <div class="line lab">Live rail</div>
+    <div style="height:2px;background:var(--ember);border-radius:1px"></div>
+    <div style="font-size:13px;color:var(--ink-2);margin-top:8px">A 2 px Ember line across the top of every screen while anything is live.</div>
+  </div>
+</div>
+<script>
+  document.getElementById("m1").innerHTML = markSVG("stopped", 56);
+  document.getElementById("m2").innerHTML = markSVG("paper", 56);
+  document.getElementById("m3").innerHTML = markSVG("live", 56);
+</script>
+</body>
+</html>

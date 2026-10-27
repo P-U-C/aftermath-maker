@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Maker venues</title>
+<link rel="stylesheet" href="maker2.css">
+<script src="mark.js"></script>
+<style>
+  .title { display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 24px; }
+  .title h1 { margin: 0; font-size: 34px; font-weight: 640; font-stretch: 122%; letter-spacing: -0.03em; }
+  .title p { margin: 6px 0 0; color: var(--ink-2); }
+  .vgrid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+  .vhead { display: flex; align-items: center; gap: 14px; margin-bottom: 18px; }
+  .vlogo { width: 44px; height: 44px; border-radius: 12px; background: var(--fill-2); display: grid; place-items: center; font-weight: 700; font-size: 18px; font-stretch: 120%; }
+  .vhead h2 { font-size: 20px; }
+  .ok { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 560; color: var(--tide-text); }
+  .ok .dot { background: var(--tide); }
+  .kv { display: grid; grid-template-columns: 1fr 1fr; border-top: 1px solid var(--hair); }
+  .kv > div { padding: 12px 0; border-bottom: 1px solid var(--hair); }
+  .kv > div:nth-child(odd) { padding-right: 16px; }
+  .kv .k { font-size: 12.5px; color: var(--ink-3); }
+  .kv .v { margin-top: 2px; font-weight: 560; }
+  .acc { margin-top: 18px; }
+  .acc .lr { grid-template-columns: 1fr auto auto; gap: 18px; }
+  .vact { margin-top: 18px; display: flex; gap: 10px; }
+  .vact .btn { height: 36px; font-size: 14px; padding: 0 16px; }
+  .add { border: 1.5px dashed var(--fill-2); background: transparent; display: flex; flex-direction: column; justify-content: flex-start; align-items: flex-start; align-self: start; padding-top: 30px; padding-bottom: 30px; }
+  .add h2 { margin-bottom: 8px; }
+  .add p { color: var(--ink-2); margin: 0 0 18px; max-width: 420px; }
+  .steps { display: grid; gap: 10px; margin-bottom: 22px; }
+  .steps span { display: flex; gap: 10px; align-items: center; color: var(--ink-2); font-size: 14px; }
+  .steps i { width: 22px; height: 22px; border-radius: 50%; background: var(--fill-2); color: var(--ink); font-style: normal; font-size: 12px; font-weight: 620; display: grid; place-items: center; }
+  .expo { margin-top: 20px; }
+  .expo .lr { grid-template-columns: 1.4fr 1fr 1fr 1fr 1fr; }
+</style>
+</head>
+<body>
+<script>applyTheme();</script>
+<div class="rail"></div>
+<header class="nav">
+  <div class="brand"><span class="mark" id="mark"></span>Maker</div>
+  <div class="tabs"><span>Desk</span><span>Strategy</span><span>Markets</span><span>Performance</span><span class="on">Venues</span></div>
+  <div class="nav-right"><span class="pill live"><span class="dot"></span>Live</span><span class="acct"><span class="ava"></span>0x00a4…7060</span></div>
+</header>
+<main class="page">
+  <div class="title"><div><h1>Venues</h1><p>Each venue keeps its own accounts, trading key, and fees. Risk limits apply across all of them.</p></div><button class="btn primary">Add venue</button></div>
+  <div class="vgrid">
+    <section class="card">
+      <div class="vhead"><span class="vlogo">A</span><div><h2>Aftermath</h2><span class="ok"><span class="dot"></span>Connected, quoting</span></div></div>
+      <div class="kv">
+        <div><div class="k">Network</div><div class="v">Sui mainnet</div></div>
+        <div><div class="k">Collateral</div><div class="v">USDC</div></div>
+        <div><div class="k">Trading key</div><div class="v">Trade only, no withdrawals</div></div>
+        <div><div class="k">Builder fee you approved</div><div class="v">1 bp on filled orders</div></div>
+        <div><div class="k">Gas</div><div class="v">2.99 SUI, about 2 days</div></div>
+        <div><div class="k">Markets selected</div><div class="v">15 of 49 eligible</div></div>
+      </div>
+      <div class="list acc">
+        <div class="lr lh"><span>Account</span><span class="r">Equity</span><span class="r">Role</span></div>
+        <div class="lr"><span class="sym">1745</span><span class="r">$7.44</span><span class="r i2">Maker</span></div>
+        <div class="lr"><span class="sym">1746</span><span class="r">$7.50</span><span class="r i2">Hedge</span></div>
+      </div>
+      <div class="vact"><button class="btn quiet">Manage accounts</button><button class="btn quiet">Revoke trading key</button></div>
+    </section>
+    <section class="card add">
+      <h2>Add another venue</h2>
+      <p>Maker treats every venue the same way. Connecting one takes three steps, and its markets join the same desk, limits, and Stop button.</p>
+      <div class="steps">
+        <span><i>1</i>Connect the wallet that owns your account there</span>
+        <span><i>2</i>Grant Maker a trade-only key and fund its gas</span>
+        <span><i>3</i>Pick markets and run a Paper pass first</span>
+      </div>
+      <span class="i3" style="font-size:13px">New integrations appear here as they ship.</span>
+    </section>
+  </div>
+  <section class="card expo">
+    <div class="head"><div><h2>Exposure by venue</h2><div class="sub">Gross limits are shared across venues; equity counts Maker and hedge accounts.</div></div></div>
+    <div class="list">
+      <div class="lr lh"><span>Venue</span><span class="r">Equity</span><span class="r">Gross exposure</span><span class="r">Unrealized</span><span class="r">Accounts</span></div>
+      <div class="lr"><span><span class="venue"><i>A</i>Aftermath</span></span><span class="r">$14.94</span><span class="r">$1.04</span><span class="r loss">−$0.01</span><span class="r">2</span></div>
+      <div class="lr"><span class="sym">All venues</span><span class="r">$14.94</span><span class="r">$1.04 of $3.00</span><span class="r loss">−$0.01</span><span class="r">2</span></div>
+    </div>
+  </section>
+</main>
+<script>document.getElementById("mark").innerHTML = markSVG("live", 18);</script>
+</body>
+</html>
