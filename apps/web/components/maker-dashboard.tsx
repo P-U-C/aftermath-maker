@@ -21,6 +21,7 @@ import {
   KeyRound,
   LockKeyhole,
   Search,
+  Tag,
   Target,
   TimerReset,
   Trophy,
@@ -302,6 +303,20 @@ type AccountCap = {
   allocatedCollateralUsd: number;
   freeMarginUsd: number;
   positionCount: number;
+  label: string | null;
+  tags: string[];
+};
+
+type AccountMetadata = {
+  accountId: string;
+  label: string | null;
+  tags: string[];
+  updatedAt: string;
+};
+
+type AccountMetadataDraft = {
+  label: string;
+  tags: string;
 };
 
 type ManagedAccount = {
@@ -764,6 +779,9 @@ function DashboardBody() {
     "rank" | "score" | "volume" | "depth"
   >("rank");
   const [selectedAccount, setSelectedAccount] = useState("");
+  const [editingAccountId, setEditingAccountId] = useState<string | null>(null);
+  const [accountMetadataDraft, setAccountMetadataDraft] =
+    useState<AccountMetadataDraft>({ label: "", tags: "" });
   const [collateralAmounts, setCollateralAmounts] = useState<
     Record<string, string>
   >({});
@@ -1180,6 +1198,58 @@ function DashboardBody() {
     }
   }
 
+  function editAccountMetadata(owned: AccountCap) {
+    setEditingAccountId(owned.accountId);
+    setAccountMetadataDraft({
+      label: owned.label ?? "",
+      tags: owned.tags.join(", "),
+    });
+  }
+
+  async function saveAccountMetadata(accountId: string) {
+    const label = accountMetadataDraft.label.trim();
+    const tags = Array.from(
+      new Map(
+        accountMetadataDraft.tags
+          .split(",")
+          .map((tag) => tag.trim())
+          .filter(Boolean)
+          .map((tag) => [tag.toLowerCase(), tag]),
+      ).values(),
+    );
+    if (label.length > 40) {
+      setNotice("Account names can be up to 40 characters.");
+      return;
+    }
+    if (tags.length > 8 || tags.some((tag) => tag.length > 20)) {
+      setNotice("Use up to eight tags, with 20 characters per tag.");
+      return;
+    }
+
+    await mutate(`metadata-${accountId}`, async () => {
+      const result = await request<{ metadata: AccountMetadata }>(
+        `api/accounts/${accountId}/metadata`,
+        {
+          method: "PUT",
+          body: JSON.stringify({ label: label || null, tags }),
+        },
+      );
+      setAccounts((current) =>
+        current.map((owned) =>
+          owned.accountId === accountId
+            ? {
+                ...owned,
+                label: result.metadata.label,
+                tags: result.metadata.tags,
+              }
+            : owned,
+        ),
+      );
+      setEditingAccountId(null);
+      setNotice("Account name and tags saved.", "success");
+    });
+  }
+
   async function createVenueAccount() {
     if (!account?.address) return;
     await mutate("create-account", async () => {
@@ -1202,6 +1272,9 @@ function DashboardBody() {
         );
       }
 
+      const existingAccountIds = new Set(
+        accounts.map((owned) => owned.accountId),
+      );
       let discovered: AccountCap[] = [];
       for (let attempt = 0; attempt < 6; attempt += 1) {
         await new Promise((resolve) => setTimeout(resolve, 1_000));
@@ -1211,11 +1284,15 @@ function DashboardBody() {
         discovered = response.accounts;
         if (discovered.length > accounts.length) break;
       }
+      const created = discovered.find(
+        (owned) => !existingAccountIds.has(owned.accountId),
+      );
       setAccounts(discovered);
-      setSelectedAccount(discovered.at(-1)?.accountId ?? "");
+      setSelectedAccount(created?.accountId ?? discovered[0]?.accountId ?? "");
+      if (created) editAccountMetadata(created);
       setNotice(
-        discovered.length
-          ? `${primaryVenue.name} account created. Select it and create the trading key.`
+        created
+          ? `${primaryVenue.name} account created. Name or tag it, then add its trading key.`
           : "Account transaction confirmed; refresh account discovery shortly.",
         "success",
       );
@@ -1829,6 +1906,14 @@ function DashboardBody() {
   const activeMakerCap = accounts.find(
     (candidate) => candidate.accountId === activeMakerAccountId,
   );
+  const accountReference = (accountId: string) => {
+    const owned = accounts.find(
+      (candidate) => candidate.accountId === accountId,
+    );
+    return owned?.label
+      ? `${owned.label} / #${accountId}`
+      : `Account ${accountId}`;
+  };
   const activeMakerSnapshot =
     snapshot?.accountId === activeMakerAccountId ? snapshot : null;
   const makerEquityUsd =
@@ -2008,6 +2093,7 @@ function DashboardBody() {
     })) ?? [];
   const venueAccountRows = accounts.map((owned) => ({
     accountId: owned.accountId,
+    label: owned.label,
     equityUsd: owned.equityUsd,
     role:
       owned.accountId === activeMakerAccountId
@@ -2051,7 +2137,7 @@ function DashboardBody() {
       walletLabel={compact(identity.ownerAddress)}
       accountLabel={
         activeMakerAccountId
-          ? `Account ${activeMakerAccountId}`
+          ? accountReference(activeMakerAccountId)
           : "Not assigned"
       }
       operator={identity.operator}
@@ -2142,7 +2228,7 @@ function DashboardBody() {
                           )}
                           {accounts.map((item) => (
                             <option key={item.accountId} value={item.accountId}>
-                              Account {item.accountId} /{" "}
+                              {accountReference(item.accountId)} /{" "}
                               {item.equityUsd.toFixed(2)} equity /{" "}
                               {item.availableCollateralUsd.toFixed(2)} available
                             </option>
@@ -2241,10 +2327,36 @@ function DashboardBody() {
                 return (
                   <article className="account-row" key={owned.accountId}>
                     <div className="account-row-id">
-                      <strong>Account {owned.accountId}</strong>
-                      <span>
-                        {isMaker ? "Maker" : isHedge ? "Hedge" : "Available"}
-                      </span>
+                      <div className="account-row-heading">
+                        <strong>
+                          {owned.label ?? `Account ${owned.accountId}`}
+                        </strong>
+                        <button
+                          className="icon-button account-metadata-toggle"
+                          type="button"
+                          onClick={() => editAccountMetadata(owned)}
+                          aria-label={`Edit name and tags for account ${owned.accountId}`}
+                          title="Edit name and tags"
+                        >
+                          <Tag size={14} aria-hidden="true" />
+                        </button>
+                      </div>
+                      <div className="account-identity-line">
+                        <span>
+                          {isMaker ? "Maker" : isHedge ? "Hedge" : "Available"}
+                        </span>
+                        <small>Account {owned.accountId}</small>
+                      </div>
+                      <div
+                        className="account-tag-list"
+                        aria-label={`Tags for account ${owned.accountId}`}
+                      >
+                        {owned.tags.length ? (
+                          owned.tags.map((tag) => <em key={tag}>{tag}</em>)
+                        ) : (
+                          <em className="empty">No tags</em>
+                        )}
+                      </div>
                     </div>
                     <div>
                       <span>Equity</span>
@@ -2392,6 +2504,65 @@ function DashboardBody() {
                         )}
                       </div>
                     </div>
+                    {editingAccountId === owned.accountId && (
+                      <form
+                        className="account-metadata-editor"
+                        onSubmit={(event) => {
+                          event.preventDefault();
+                          void saveAccountMetadata(owned.accountId);
+                        }}
+                      >
+                        <label>
+                          <span>Name</span>
+                          <input
+                            autoFocus
+                            value={accountMetadataDraft.label}
+                            maxLength={40}
+                            onChange={(event) =>
+                              setAccountMetadataDraft((current) => ({
+                                ...current,
+                                label: event.target.value,
+                              }))
+                            }
+                            placeholder={`Account ${owned.accountId}`}
+                            aria-label={`Name for account ${owned.accountId}`}
+                          />
+                        </label>
+                        <label>
+                          <span>Tags</span>
+                          <input
+                            value={accountMetadataDraft.tags}
+                            onChange={(event) =>
+                              setAccountMetadataDraft((current) => ({
+                                ...current,
+                                tags: event.target.value,
+                              }))
+                            }
+                            placeholder="farming, profit, low-risk"
+                            aria-label={`Comma-separated tags for account ${owned.accountId}`}
+                          />
+                        </label>
+                        <div className="account-metadata-actions">
+                          <button
+                            className="button secondary"
+                            type="button"
+                            onClick={() => setEditingAccountId(null)}
+                            disabled={Boolean(busy)}
+                          >
+                            Cancel
+                          </button>
+                          <button
+                            className="button primary"
+                            type="submit"
+                            disabled={Boolean(busy)}
+                          >
+                            {busy === `metadata-${owned.accountId}`
+                              ? "Saving..."
+                              : "Save details"}
+                          </button>
+                        </div>
+                      </form>
+                    )}
                   </article>
                 );
               })}
@@ -2507,7 +2678,7 @@ function DashboardBody() {
                 <span>Maker path</span>
                 <strong>
                   {activeMakerAccountId
-                    ? `Account ${activeMakerAccountId}`
+                    ? accountReference(activeMakerAccountId)
                     : "Select account"}
                 </strong>
               </div>
@@ -2517,7 +2688,7 @@ function DashboardBody() {
                   className={config.hedge.enabled ? "available" : "unavailable"}
                 >
                   {config.hedge.enabled && activeHedgeAccount
-                    ? `Account ${activeHedgeAccount.accountId} / ${snapshot?.hedge.state ?? "waiting"}`
+                    ? `${accountReference(activeHedgeAccount.accountId)} / ${snapshot?.hedge.state ?? "waiting"}`
                     : "Off"}
                 </strong>
               </div>
@@ -2744,7 +2915,7 @@ function DashboardBody() {
                     <option value="">Select account</option>
                     {authorizedAccounts.map((managed) => (
                       <option key={managed.accountId} value={managed.accountId}>
-                        Account {managed.accountId}
+                        {accountReference(managed.accountId)}
                       </option>
                     ))}
                   </select>
@@ -2774,7 +2945,7 @@ function DashboardBody() {
                           key={managed.accountId}
                           value={managed.accountId}
                         >
-                          Account {managed.accountId}
+                          {accountReference(managed.accountId)}
                         </option>
                       ))}
                   </select>
@@ -4257,7 +4428,7 @@ function DashboardBody() {
               <span>Hedge account</span>
               <strong>
                 {performance?.hedge.accountId
-                  ? `Account ${performance.hedge.accountId}`
+                  ? accountReference(performance.hedge.accountId)
                   : "Off"}
               </strong>
             </div>

@@ -69,6 +69,36 @@ describe("persistent control store", () => {
     databaseStore.close();
   });
 
+  it("keeps account labels and tags isolated by wallet", () => {
+    const directory = join(
+      process.env.TMPDIR ?? "/tmp",
+      `aftermath-maker-${randomBytes(8).toString("hex")}`,
+    );
+    mkdirSync(directory, { recursive: true });
+    const databaseStore = new Store(join(directory, "maker.db"));
+    const first = databaseStore.forTenant(`0x${"3".repeat(64)}`);
+    const second = databaseStore.forTenant(`0x${"4".repeat(64)}`);
+
+    first.setAccountMetadata({
+      accountId: "1745",
+      label: "Primary maker",
+      tags: ["farming", "low-risk"],
+    });
+    first.setAccountMetadata({
+      accountId: "1745",
+      label: "Core maker",
+      tags: ["profit"],
+    });
+
+    expect(first.listAccountMetadata()).toHaveLength(1);
+    expect(first.getAccountMetadata("1745")).toMatchObject({
+      label: "Core maker",
+      tags: ["profit"],
+    });
+    expect(second.listAccountMetadata()).toEqual([]);
+    databaseStore.close();
+  });
+
   it("does not coerce user strings that look like legacy bigint values", () => {
     const directory = join(
       process.env.TMPDIR ?? "/tmp",

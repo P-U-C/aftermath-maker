@@ -22,6 +22,7 @@ export function VenuesView({
 
 export type VenueAccountRow = {
   accountId: string;
+  label: string | null;
   equityUsd: number;
   role: "Maker" | "Hedge" | "Available";
 };
@@ -151,7 +152,9 @@ export function VenueBoard({
                 role="row"
                 key={account.accountId}
               >
-                <strong role="cell">{account.accountId}</strong>
+                <strong role="cell">
+                  {account.label ?? `Account ${account.accountId}`}
+                </strong>
                 <span role="cell">{formatMoney(account.equityUsd)}</span>
                 <span role="cell">{account.role}</span>
               </div>

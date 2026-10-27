@@ -404,15 +404,70 @@ app.get("/api/setup", async (request) => {
 
 app.get("/api/accounts", async (request) => {
   const identity = requestAuth(request);
+  const scoped = tenant(request);
   const query = z
     .object({ collateralCoinType: z.string().default(USDC_COIN_TYPE) })
     .parse(request.query);
+  const metadata = new Map(
+    scoped.listAccountMetadata().map((item) => [item.accountId, item]),
+  );
+  const accounts = await runtime(request).requireGateway().listOwnerAccounts({
+    walletAddress: identity.ownerAddress,
+    collateralCoinType: query.collateralCoinType,
+  });
   return {
-    accounts: await runtime(request).requireGateway().listOwnerAccounts({
-      walletAddress: identity.ownerAddress,
-      collateralCoinType: query.collateralCoinType,
+    accounts: accounts.map((account) => {
+      const saved = metadata.get(account.accountId);
+      return {
+        ...account,
+        label: saved?.label ?? null,
+        tags: saved?.tags ?? [],
+      };
     }),
   };
+});
+
+const accountMetadataSchema = z
+  .object({
+    label: z.union([z.string().trim().min(1).max(40), z.null()]),
+    tags: z.array(z.string().trim().min(1).max(20)).max(8),
+  })
+  .strict();
+
+app.put("/api/accounts/:accountId/metadata", async (request) => {
+  const identity = requestAuth(request);
+  const params = z
+    .object({ accountId: z.string().regex(/^\d+$/) })
+    .parse(request.params);
+  const body = accountMetadataSchema.parse(request.body);
+  const accounts = await runtime(request).requireGateway().listOwnerAccounts({
+    walletAddress: identity.ownerAddress,
+    collateralCoinType: USDC_COIN_TYPE,
+  });
+  if (!accounts.some((account) => account.accountId === params.accountId)) {
+    throw new AuthError(404, "Account was not found in the connected wallet");
+  }
+
+  const tags = Array.from(
+    new Map(body.tags.map((tag) => [tag.toLowerCase(), tag])).values(),
+  );
+  const scoped = tenant(request);
+  const metadata = scoped.setAccountMetadata({
+    accountId: params.accountId,
+    label: body.label,
+    tags,
+  });
+  scoped.logEvent({
+    category: "accounts",
+    action: "metadata.update",
+    outcome: "success",
+    detail: {
+      accountId: params.accountId,
+      label: metadata.label,
+      tags: metadata.tags,
+    },
+  });
+  return { metadata };
 });
 
 app.post("/api/accounts/create-transaction", async (request) => {

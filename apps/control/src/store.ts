@@ -41,6 +41,13 @@ export type StoredAccountSetup = Setup & {
   agentCapId: string | null;
 };
 
+export type StoredAccountMetadata = {
+  accountId: string;
+  label: string | null;
+  tags: string[];
+  updatedAt: string;
+};
+
 export type AuditEvent = {
   id: number;
   occurredAt: string;
@@ -847,6 +854,35 @@ export class TenantStore {
     };
     this.setSetting("account_setups", [
       ...accounts.filter((account) => account.accountId !== setup.accountId),
+      next,
+    ]);
+    return next;
+  }
+
+  listAccountMetadata(): StoredAccountMetadata[] {
+    return this.getSetting<StoredAccountMetadata[]>("account_metadata") ?? [];
+  }
+
+  getAccountMetadata(accountId: string): StoredAccountMetadata | null {
+    return (
+      this.listAccountMetadata().find(
+        (metadata) => metadata.accountId === accountId,
+      ) ?? null
+    );
+  }
+
+  setAccountMetadata(inputs: {
+    accountId: string;
+    label: string | null;
+    tags: string[];
+  }): StoredAccountMetadata {
+    const metadata = this.listAccountMetadata();
+    const next: StoredAccountMetadata = {
+      ...inputs,
+      updatedAt: new Date().toISOString(),
+    };
+    this.setSetting("account_metadata", [
+      ...metadata.filter((item) => item.accountId !== inputs.accountId),
       next,
     ]);
     return next;
