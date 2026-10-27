@@ -493,6 +493,454 @@ describe("runtime execution boundaries", () => {
     harness.store.close();
   });
 
+  it("pauses quoting until a material account delta has attributable fill history", async () => {
+    const harness = createHarness();
+    const hedgeSetup = setupSchema.parse({
+      ownerAddress: `0x${"1".repeat(64)}`,
+      accountId: "43",
+      accountCapId: "0x1243",
+    });
+    harness.tenant.setSetup(hedgeSetup);
+    harness.tenant.confirmAgentGrant({
+      accountId: "43",
+      digest: "H".repeat(32),
+      agentCapId: "0xhedge",
+    });
+    harness.tenant.setConfig(
+      makerConfigSchema.parse({
+        markets: [{ marketId: "0x5678", symbol: "SUI" }],
+        mode: "live",
+        makerAccountId: "42",
+        hedge: {
+          enabled: true,
+          accountId: "43",
+          thresholdUsd: 25,
+          maxOrderUsd: 100,
+          maxSlippageBps: 75,
+        },
+      }),
+    );
+    harness.tenant.trackMakerOrders({
+      accountId: "42",
+      marketId: "0x5678",
+      quoteDigest: "quote-digest",
+      orderIds: ["delayed-fill"],
+    });
+    harness.setPortfolioResolver((inputs) => {
+      const maker = inputs.setup.accountId === "42";
+      const inventoryUsd = maker
+        ? 30
+        : -30 * Math.min(1, harness.hedgeExecutions());
+      return {
+        equityUsd: 100,
+        availableCollateralUsd: 80,
+        allocatedCollateralUsd: 20,
+        freeMarginUsd: 70,
+        withdrawableCollateralUsd: 75,
+        grossExposureUsd: Math.abs(inventoryUsd),
+        unrealizedPnlUsd: 0,
+        gasSui: 0.1,
+        positions: inputs.marketIds.map((marketId) => ({
+          marketId,
+          baseAssetAmount: inventoryUsd / 10,
+          pendingOrderCount: 0,
+          inventoryUsd,
+          unrealizedPnlUsd: 0,
+          collateralUsd: 20,
+          freeMarginUsd: 70,
+          makerOrderIds: [],
+          hasPosition: inventoryUsd !== 0,
+        })),
+      };
+    });
+
+    harness.runtime.start();
+    await harness.runtime.cycle();
+
+    expect(harness.executions()).toBe(0);
+    expect(harness.hedgeExecutions()).toBe(0);
+    expect(harness.runtime.snapshot.running).toBe(true);
+    expect(harness.tenant.listEvents(10)).toContainEqual(
+      expect.objectContaining({
+        action: "fill-attribution-reconciliation",
+        outcome: "waiting",
+      }),
+    );
+
+    harness.setPerformanceHistory({
+      orders: [
+        {
+          timestampMs: Date.parse("2026-10-26T12:00:00Z"),
+          txDigest: "delayed-fill-digest",
+          marketId: "0x5678",
+          eventType: "FilledMakerOrder",
+          side: "bid",
+          price: 10,
+          size: 3,
+          orderId: "delayed-fill",
+          realizedPnlUsd: 0,
+          feesUsd: 0,
+          maker: true,
+        },
+      ],
+      marginHistory: [],
+    });
+    await harness.runtime.cycle({ executeLive: true });
+
+    expect(harness.hedgeExecutions()).toBe(1);
+    expect(harness.executions()).toBe(1);
+    expect(harness.tenant.listEvents(10)).toContainEqual(
+      expect.objectContaining({
+        action: "fill-attribution-reconciliation",
+        outcome: "confirmed",
+      }),
+    );
+
+    await harness.runtime.stop();
+    harness.store.close();
+  });
+
+  it("pauses quoting until attributed fill history appears in account positions", async () => {
+    const harness = createHarness();
+    const hedgeSetup = setupSchema.parse({
+      ownerAddress: `0x${"1".repeat(64)}`,
+      accountId: "43",
+      accountCapId: "0x1243",
+    });
+    harness.tenant.setSetup(hedgeSetup);
+    harness.tenant.confirmAgentGrant({
+      accountId: "43",
+      digest: "H".repeat(32),
+      agentCapId: "0xhedge",
+    });
+    harness.tenant.setConfig(
+      makerConfigSchema.parse({
+        markets: [{ marketId: "0x5678", symbol: "SUI" }],
+        mode: "live",
+        makerAccountId: "42",
+        hedge: {
+          enabled: true,
+          accountId: "43",
+          thresholdUsd: 25,
+          maxOrderUsd: 100,
+          maxSlippageBps: 75,
+        },
+      }),
+    );
+    harness.tenant.trackMakerOrders({
+      accountId: "42",
+      marketId: "0x5678",
+      quoteDigest: "quote-digest",
+      orderIds: ["history-first-fill"],
+    });
+    harness.setPerformanceHistory({
+      orders: [
+        {
+          timestampMs: Date.now(),
+          txDigest: "history-first-digest",
+          marketId: "0x5678",
+          eventType: "FilledMakerOrder",
+          side: "bid",
+          price: 10,
+          size: 3,
+          orderId: "history-first-fill",
+          realizedPnlUsd: 0,
+          feesUsd: 0,
+          maker: true,
+        },
+      ],
+      marginHistory: [],
+    });
+    let makerInventoryUsd = 0;
+    harness.setPortfolioResolver((inputs) => {
+      const maker = inputs.setup.accountId === "42";
+      const inventoryUsd = maker
+        ? makerInventoryUsd
+        : -makerInventoryUsd * Math.min(1, harness.hedgeExecutions());
+      return {
+        equityUsd: 100,
+        availableCollateralUsd: 80,
+        allocatedCollateralUsd: 20,
+        freeMarginUsd: 70,
+        withdrawableCollateralUsd: 75,
+        grossExposureUsd: Math.abs(inventoryUsd),
+        unrealizedPnlUsd: 0,
+        gasSui: 0.1,
+        positions: inputs.marketIds.map((marketId) => ({
+          marketId,
+          baseAssetAmount: inventoryUsd / 10,
+          pendingOrderCount: 0,
+          inventoryUsd,
+          unrealizedPnlUsd: 0,
+          collateralUsd: 20,
+          freeMarginUsd: 70,
+          makerOrderIds: [],
+          hasPosition: inventoryUsd !== 0,
+        })),
+      };
+    });
+
+    harness.runtime.start();
+    await harness.runtime.cycle();
+
+    expect(harness.executions()).toBe(0);
+    expect(harness.hedgeExecutions()).toBe(0);
+    expect(harness.tenant.listEvents(10)).toContainEqual(
+      expect.objectContaining({
+        action: "position-attribution-reconciliation",
+        outcome: "waiting",
+      }),
+    );
+
+    makerInventoryUsd = 30;
+    await harness.runtime.cycle({ executeLive: true });
+
+    expect(harness.hedgeExecutions()).toBe(1);
+    expect(harness.executions()).toBe(1);
+    expect(harness.tenant.listEvents(10)).toContainEqual(
+      expect.objectContaining({
+        action: "position-attribution-reconciliation",
+        outcome: "confirmed",
+      }),
+    );
+
+    await harness.runtime.stop();
+    harness.store.close();
+  });
+
+  it("reconciles a delayed fill from a retired market before rotating again", async () => {
+    vi.useFakeTimers();
+    const harness = createHarness();
+    const hedgeSetup = setupSchema.parse({
+      ownerAddress: `0x${"1".repeat(64)}`,
+      accountId: "43",
+      accountCapId: "0x1243",
+    });
+    harness.tenant.setSetup(hedgeSetup);
+    harness.tenant.confirmAgentGrant({
+      accountId: "43",
+      digest: "H".repeat(32),
+      agentCapId: "0xhedge",
+    });
+    harness.tenant.setConfig(
+      makerConfigSchema.parse({
+        markets: [
+          { marketId: "0x1111", symbol: "ONE" },
+          { marketId: "0x2222", symbol: "TWO" },
+          { marketId: "0x3333", symbol: "THREE" },
+        ],
+        mode: "live",
+        rotationMode: "single-slot",
+        refreshMs: 2_000,
+        marketDwellMs: 2_000,
+        maxRestingMs: 10_000,
+        maxQuoteAgeMs: 40_000,
+        makerAccountId: "42",
+        hedge: {
+          enabled: true,
+          accountId: "43",
+          thresholdUsd: 25,
+          maxOrderUsd: 100,
+          maxSlippageBps: 75,
+        },
+      }),
+    );
+    let quoteAttempt = 0;
+    harness.gateway.executeQuote = async (inputs) => {
+      if (!inputs.shouldContinue()) throw new Error("cancelled");
+      quoteAttempt += 1;
+      harness.executionSequence.push("quote");
+      return {
+        digest: `rotation-${quoteAttempt}`,
+        endpoint: "test",
+        gasUsedMist: 20,
+        postedOrderIds: [`order-${quoteAttempt}-a`, `order-${quoteAttempt}-b`],
+      };
+    };
+    let makerInventoryUsd = 0;
+    harness.setPortfolioResolver((inputs) => {
+      const maker = inputs.setup.accountId === "42";
+      return {
+        equityUsd: 100,
+        availableCollateralUsd: 80,
+        allocatedCollateralUsd: 20,
+        freeMarginUsd: 70,
+        withdrawableCollateralUsd: 75,
+        grossExposureUsd: Math.abs(maker ? makerInventoryUsd : 0),
+        unrealizedPnlUsd: 0,
+        gasSui: 0.1,
+        positions: inputs.marketIds.map((marketId) => {
+          const inventoryUsd =
+            marketId === "0x1111"
+              ? maker
+                ? makerInventoryUsd
+                : -makerInventoryUsd * Math.min(1, harness.hedgeExecutions())
+              : 0;
+          return {
+            marketId,
+            baseAssetAmount: inventoryUsd / 10,
+            pendingOrderCount: 0,
+            inventoryUsd,
+            unrealizedPnlUsd: 0,
+            collateralUsd: 20,
+            freeMarginUsd: 70,
+            makerOrderIds: [],
+            hasPosition: inventoryUsd !== 0,
+          };
+        }),
+      };
+    });
+
+    harness.runtime.start();
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(2_100);
+    expect(quoteAttempt).toBe(2);
+
+    makerInventoryUsd = 30;
+    harness.setPerformanceHistory({
+      orders: [
+        {
+          timestampMs: Date.now(),
+          txDigest: "retired-fill-digest",
+          marketId: "0x1111",
+          eventType: "FilledMakerOrder",
+          side: "bid",
+          price: 10,
+          size: 3,
+          orderId: "order-1-a",
+          realizedPnlUsd: 0,
+          feesUsd: 0,
+          maker: true,
+        },
+      ],
+      marginHistory: [],
+    });
+    await vi.advanceTimersByTimeAsync(2_100);
+
+    expect(harness.hedgeExecutions()).toBe(1);
+    expect(quoteAttempt).toBe(3);
+    expect(harness.executionSequence.indexOf("hedge")).toBeLessThan(
+      harness.executionSequence.lastIndexOf("quote"),
+    );
+
+    await harness.runtime.stop();
+    harness.store.close();
+  });
+
+  it("automatically flattens both dedicated accounts before the gross limit", async () => {
+    const harness = createHarness();
+    const hedgeSetup = setupSchema.parse({
+      ownerAddress: `0x${"1".repeat(64)}`,
+      accountId: "43",
+      accountCapId: "0x1243",
+    });
+    harness.tenant.setSetup(hedgeSetup);
+    harness.tenant.confirmAgentGrant({
+      accountId: "43",
+      digest: "H".repeat(32),
+      agentCapId: "0xhedge",
+    });
+    harness.tenant.setConfig(
+      makerConfigSchema.parse({
+        markets: [{ marketId: "0x5678", symbol: "SUI" }],
+        mode: "live",
+        makerAccountId: "42",
+        hedge: {
+          enabled: true,
+          accountId: "43",
+          thresholdUsd: 25,
+          maxOrderUsd: 100,
+          maxSlippageBps: 75,
+        },
+        quoteSizeUsd: 10,
+        maxInventoryUsd: 50,
+        maxGrossExposureUsd: 100,
+        autoRebalanceEnabled: true,
+        rebalanceGrossExposureUsd: 35,
+      }),
+    );
+    harness.tenant.trackMakerOrders({
+      accountId: "42",
+      marketId: "0x5678",
+      quoteDigest: "quote-digest",
+      orderIds: ["rebalance-fill"],
+    });
+    harness.setPerformanceHistory({
+      orders: [
+        {
+          timestampMs: Date.now(),
+          txDigest: "rebalance-fill-digest",
+          marketId: "0x5678",
+          eventType: "FilledMakerOrder",
+          side: "bid",
+          price: 10,
+          size: 3,
+          orderId: "rebalance-fill",
+          realizedPnlUsd: 0,
+          feesUsd: 0,
+          maker: true,
+        },
+      ],
+      marginHistory: [],
+    });
+    harness.setPortfolioResolver((inputs) => {
+      // The first paired sweep leaves a delayed position visible, matching
+      // mainnet account-index reconciliation observed during the canary.
+      const flattened = harness.flattens() >= 4;
+      const maker = inputs.setup.accountId === "42";
+      const inventoryUsd = flattened
+        ? 0
+        : maker
+          ? 30
+          : -30 * Math.min(1, harness.hedgeExecutions());
+      return {
+        equityUsd: 100,
+        availableCollateralUsd: 80,
+        allocatedCollateralUsd: 20,
+        freeMarginUsd: 70,
+        withdrawableCollateralUsd: 75,
+        grossExposureUsd: Math.abs(inventoryUsd),
+        unrealizedPnlUsd: 0,
+        gasSui: 0.1,
+        positions: inputs.marketIds.map((marketId) => ({
+          marketId,
+          baseAssetAmount: inventoryUsd / 10,
+          pendingOrderCount: 0,
+          inventoryUsd,
+          unrealizedPnlUsd: 0,
+          collateralUsd: 20,
+          freeMarginUsd: 70,
+          makerOrderIds: [],
+          hasPosition: inventoryUsd !== 0,
+        })),
+      };
+    });
+
+    harness.runtime.start();
+    await harness.runtime.cycle({ executeLive: true });
+
+    expect(harness.hedgeExecutions()).toBe(1);
+    expect(harness.flattens()).toBe(4);
+    expect(harness.flattenedAccountIds()).toEqual(["42", "43", "42", "43"]);
+    expect(harness.executions()).toBe(0);
+    expect(harness.runtime.snapshot.execution.lastDecision).toBe("rebalanced");
+    expect(harness.tenant.listEvents(10)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          action: "automatic-paired-rebalance",
+          outcome: "retry",
+        }),
+        expect.objectContaining({
+          action: "automatic-paired-rebalance",
+          outcome: "confirmed",
+        }),
+      ]),
+    );
+
+    await harness.runtime.stop();
+    harness.store.close();
+  });
+
   it("hedges only after an attributed Maker fill and cancels quotes first", async () => {
     const harness = createHarness();
     const hedgeSetup = setupSchema.parse({
@@ -545,11 +993,12 @@ describe("runtime execution boundaries", () => {
       marginHistory: [],
     });
     let stalePostCancelReads = 1;
+    let stalePostHedgeReads = 1;
     harness.setPortfolioResolver((inputs) => {
       const maker = inputs.setup.accountId === "42";
-      const inventoryUsd = maker
-        ? 30
-        : -30 * Math.min(1, harness.hedgeExecutions());
+      const hedgeVisible =
+        !maker && harness.hedgeExecutions() > 0 && stalePostHedgeReads-- <= 0;
+      const inventoryUsd = maker ? 30 : hedgeVisible ? -30 : 0;
       const pendingOrderCount = maker
         ? harness.cancellations() === 0
           ? 2
@@ -595,6 +1044,15 @@ describe("runtime execution boundaries", () => {
         .find(
           (event) =>
             event.action === "post-cancel-reconciliation" &&
+            event.outcome === "confirmed",
+        ),
+    ).toMatchObject({ detail: expect.objectContaining({ attempt: 2 }) });
+    expect(
+      harness.tenant
+        .listEvents()
+        .find(
+          (event) =>
+            event.action === "post-hedge-reconciliation" &&
             event.outcome === "confirmed",
         ),
     ).toMatchObject({ detail: expect.objectContaining({ attempt: 2 }) });
@@ -1008,6 +1466,38 @@ describe("runtime execution boundaries", () => {
     harness.store.close();
   });
 
+  it("does not age a single-slot quote before the transaction is confirmed", async () => {
+    vi.useFakeTimers();
+    const harness = createHarness();
+    const executeQuote = harness.gateway.executeQuote.bind(harness.gateway);
+    harness.gateway.executeQuote = async (inputs) => {
+      await new Promise((resolve) => setTimeout(resolve, 40_000));
+      return executeQuote(inputs);
+    };
+    harness.tenant.setConfig(
+      makerConfigSchema.parse({
+        ...harness.tenant.getConfig()!,
+        markets: [{ marketId: "0x5678", symbol: "SUI" }],
+        mode: "live",
+        rotationMode: "single-slot",
+        refreshMs: 2_000,
+        marketDwellMs: 60_000,
+        maxRestingMs: 5_000,
+        maxQuoteAgeMs: 35_000,
+      }),
+    );
+
+    harness.runtime.start();
+    await vi.advanceTimersByTimeAsync(40_100);
+
+    expect(harness.executions()).toBe(1);
+    expect(harness.runtime.snapshot.running).toBe(true);
+    expect(harness.runtime.snapshot.watchdog.state).toBe("armed");
+
+    await harness.runtime.stop();
+    harness.store.close();
+  });
+
   it("stops live quoting after equity breaches the run drawdown limit", async () => {
     const harness = createHarness();
     harness.tenant.setConfig(
@@ -1046,6 +1536,117 @@ describe("runtime execution boundaries", () => {
     expect(harness.runtime.snapshot.running).toBe(false);
     expect(harness.runtime.snapshot.lastError).toContain("run-drawdown");
     expect(harness.cancellations()).toBeGreaterThanOrEqual(1);
+    harness.store.close();
+  });
+
+  it("cancels the prior pair before retrying a crossed market switch", async () => {
+    vi.useFakeTimers();
+    const harness = createHarness();
+    let attempts = 0;
+    harness.gateway.executeQuote = async (inputs) => {
+      if (!inputs.shouldContinue()) throw new Error("cancelled");
+      attempts += 1;
+      if (attempts === 2) {
+        throw new Error(
+          "Post-only quote would cross the changed book; retrying from a fresh observation. Venue error: MoveAbort in 8th command, abort code: 47, in '0x1::clearing_house::execute_limit_order'",
+        );
+      }
+      return {
+        digest: `switch-attempt-${attempts}`,
+        endpoint: "test",
+        gasUsedMist: 20,
+        postedOrderIds: ["101", "102"],
+      };
+    };
+    harness.tenant.setConfig(
+      makerConfigSchema.parse({
+        ...harness.tenant.getConfig()!,
+        rotationMode: "single-slot",
+        refreshMs: 2_000,
+        marketDwellMs: 10_000,
+        requoteThresholdBps: 5,
+        maxRestingMs: 20_000,
+        maxQuoteAgeMs: 50_000,
+      }),
+    );
+
+    harness.runtime.start();
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(10_100);
+
+    expect(attempts).toBe(2);
+    expect(harness.cancellations()).toBe(2);
+    expect(harness.runtime.snapshot.running).toBe(true);
+    expect(harness.runtime.snapshot.lastError).toBeNull();
+    expect(harness.tenant.listEvents(10)).toContainEqual(
+      expect.objectContaining({
+        action: "post-only-retry",
+        outcome: "retry",
+        detail: expect.objectContaining({
+          cancelledPriorMarketId: "0x5678",
+        }),
+      }),
+    );
+
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(attempts).toBe(3);
+    expect(harness.runtime.snapshot.execution.lastDecision).toBe("quoted");
+
+    await harness.runtime.stop();
+    harness.store.close();
+  });
+
+  it("retries an atomic post-only crossing race without stopping", async () => {
+    vi.useFakeTimers();
+    const harness = createHarness();
+    let attempts = 0;
+    harness.gateway.executeQuote = async (inputs) => {
+      if (!inputs.shouldContinue()) throw new Error("cancelled");
+      attempts += 1;
+      if (attempts === 1) {
+        throw new Error(
+          "Post-only quote would cross the changed book; retrying from a fresh observation. Venue error: MoveAbort in 8th command, abort code: 47, in '0x1::clearing_house::execute_limit_order'",
+        );
+      }
+      return {
+        digest: "retry-success",
+        endpoint: "test",
+        gasUsedMist: 20,
+        postedOrderIds: ["101", "102"],
+      };
+    };
+    harness.tenant.setConfig(
+      makerConfigSchema.parse({
+        ...harness.tenant.getConfig()!,
+        markets: [{ marketId: "0x5678", symbol: "SUI" }],
+        rotationMode: "single-slot",
+        refreshMs: 2_000,
+        marketDwellMs: 20_000,
+        maxRestingMs: 20_000,
+        maxQuoteAgeMs: 50_000,
+      }),
+    );
+
+    harness.runtime.start();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(attempts).toBe(1);
+    expect(harness.runtime.snapshot.running).toBe(true);
+    expect(harness.runtime.snapshot.lastError).toBeNull();
+    expect(harness.cancellations()).toBe(1);
+    expect(harness.tenant.listEvents(10)).toContainEqual(
+      expect.objectContaining({
+        action: "post-only-retry",
+        outcome: "retry",
+      }),
+    );
+
+    await vi.advanceTimersByTimeAsync(2_100);
+    expect(attempts).toBe(2);
+    expect(harness.runtime.snapshot.running).toBe(true);
+    expect(harness.runtime.snapshot.execution.lastDecision).toBe("quoted");
+
+    await harness.runtime.stop();
     harness.store.close();
   });
 
@@ -1100,25 +1701,105 @@ describe("runtime execution boundaries", () => {
     harness.store.close();
   });
 
-  it("atomically switches the active market in single-slot rotation", async () => {
+  it("atomically switches the active market after its dwell interval", async () => {
+    vi.useFakeTimers();
     const harness = createHarness();
     harness.tenant.setConfig(
       makerConfigSchema.parse({
         ...harness.tenant.getConfig()!,
         rotationMode: "single-slot",
         refreshMs: 2_000,
-        maxQuoteAgeMs: 10_000,
+        marketDwellMs: 2_000,
+        maxRestingMs: 10_000,
+        maxQuoteAgeMs: 40_000,
       }),
     );
 
     harness.runtime.start();
-    await harness.runtime.cycle({ executeLive: true });
-    await harness.runtime.cycle({ executeLive: true });
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(2_100);
 
     expect(harness.executions()).toBe(2);
     expect(harness.quoteInputs()[0]?.cancelMarketIds).toBeUndefined();
     expect(harness.quoteInputs()[1]?.cancelMarketIds).toEqual(["0x5678"]);
+    expect(harness.runtime.snapshot.execution.lastDecision).toBe("switched");
     expect(harness.cancellations()).toBe(1);
+    await harness.runtime.stop();
+    harness.store.close();
+  });
+
+  it("polls without paying for an unchanged resting quote", async () => {
+    vi.useFakeTimers();
+    const harness = createHarness();
+    harness.tenant.setConfig(
+      makerConfigSchema.parse({
+        ...harness.tenant.getConfig()!,
+        markets: [{ marketId: "0x5678", symbol: "SUI" }],
+        rotationMode: "single-slot",
+        refreshMs: 2_000,
+        marketDwellMs: 20_000,
+        requoteThresholdBps: 5,
+        maxRestingMs: 10_000,
+        maxQuoteAgeMs: 40_000,
+      }),
+    );
+
+    harness.runtime.start();
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(2_100);
+
+    expect(harness.executions()).toBe(1);
+    expect(harness.runtime.snapshot.execution.avoidedTransactions).toBe(1);
+    expect(harness.runtime.snapshot.execution.lastDecision).toBe("held");
+
+    await vi.advanceTimersByTimeAsync(8_000);
+    expect(harness.executions()).toBe(2);
+    expect(harness.runtime.snapshot.execution.lastDecision).toBe("quoted");
+
+    await harness.runtime.stop();
+    harness.store.close();
+  });
+
+  it("requotes before maximum age when fair value moves materially", async () => {
+    vi.useFakeTimers();
+    const harness = createHarness();
+    let indexPrice = 10;
+    harness.gateway.getOrderbook = async () => ({
+      market: {
+        metadata: { symbol: "SUI" },
+        indexPrice,
+        marketState: { openInterest: 1_000 },
+        marketParams: { maxOpenInterest: 10_000 },
+        estimatedFundingRate: () => 0.0001,
+        tickSize: () => 0.01,
+      },
+      orderbook: {
+        bestBidPrice: indexPrice - 0.01,
+        bestAskPrice: indexPrice + 0.01,
+      },
+    });
+    harness.tenant.setConfig(
+      makerConfigSchema.parse({
+        ...harness.tenant.getConfig()!,
+        markets: [{ marketId: "0x5678", symbol: "SUI" }],
+        rotationMode: "single-slot",
+        refreshMs: 2_000,
+        marketDwellMs: 20_000,
+        requoteThresholdBps: 5,
+        maxRestingMs: 20_000,
+        maxQuoteAgeMs: 50_000,
+      }),
+    );
+
+    harness.runtime.start();
+    await vi.advanceTimersByTimeAsync(0);
+    indexPrice = 10.1;
+    await vi.advanceTimersByTimeAsync(2_100);
+
+    expect(harness.executions()).toBe(2);
+    expect(harness.runtime.snapshot.execution.avoidedTransactions).toBe(0);
+    expect(harness.runtime.snapshot.execution.lastDecision).toBe("quoted");
+
     await harness.runtime.stop();
     harness.store.close();
   });

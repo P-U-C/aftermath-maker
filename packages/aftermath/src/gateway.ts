@@ -177,6 +177,9 @@ const PUBLIC_MAINNET_GRPC = "https://fullnode.mainnet.sui.io:443";
 const AFTERMATH_API = "https://aftermath.finance/api";
 const REWARD_MARKET_CACHE_MS = 60_000;
 
+export const totalSuiBalance = (balance: { balance: string }) =>
+  Number(BigInt(balance.balance)) / 1_000_000_000;
+
 type RewardOrderbook = {
   marketId: string;
   bids: Array<{ price: number; size: number }>;
@@ -335,12 +338,22 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+export function isPostOnlyWouldMatch(message: string): boolean {
+  return (
+    message.includes("abort code: 47") &&
+    message.includes("::clearing_house::execute_limit_order")
+  );
+}
+
 export function explainTransactionFailure(message: string): string {
   if (
     message.includes("abort code: 46") &&
     message.includes("::clearing_house::execute_limit_order")
   ) {
     return `Market order could not execute within the configured slippage cap. Increase the hedge or flatten slippage only after reviewing this market's depth. Venue error: ${message}`;
+  }
+  if (isPostOnlyWouldMatch(message)) {
+    return `Post-only quote would cross the changed book; retrying from a fresh observation. Venue error: ${message}`;
   }
   return message;
 }
@@ -1014,7 +1027,7 @@ export class AftermathGateway {
         (sum, position) => sum + position.unrealizedPnlUsd,
         0,
       ),
-      gasSui: Number(BigInt(gas.balance.coinBalance)) / 1_000_000_000,
+      gasSui: totalSuiBalance(gas.balance),
       positions,
     };
   }

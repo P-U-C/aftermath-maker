@@ -1,5 +1,6 @@
 import {
   AftermathGateway,
+  isPostOnlyWouldMatch,
   loadAgentKeypair,
   type EndpointHealth,
   type MarketSummary,
@@ -15,6 +16,7 @@ import {
   type BuilderFeePolicy,
   type MakerConfig,
   type MakerMarket,
+  type QuoteIntent,
   type RuntimeMarketSnapshot,
   type RuntimeSnapshot,
   type Setup,
@@ -195,6 +197,8 @@ const initialSnapshot = (): RuntimeSnapshot => ({
     confirmedLiveQuotes: 0,
     averageGasMist: null,
     gasRunwayTransactions: null,
+    avoidedTransactions: 0,
+    lastDecision: null,
     lastExecutionAt: null,
   },
   hedge: {
@@ -271,6 +275,15 @@ export class MakerRuntime {
   private marketIndex = 0;
   private runPeakEquityUsd: number | null = null;
   private activeQuoteMarketId: string | null = null;
+  private activeQuote: {
+    marketId: string;
+    quote: QuoteIntent;
+    placedAt: number;
+  } | null = null;
+  private marketSelectedAt: number | null = null;
+  private awaitingFillAttribution = new Map<string, number>();
+  private awaitingPositionAttribution = new Map<string, number>();
+  private autoRebalancedOrderIds = new Set<string>();
   private singleSlotSwept = false;
   private strategyTrialActive = false;
 
@@ -332,6 +345,8 @@ export class MakerRuntime {
         execution.averageGasMist && executableGasMist !== null
           ? Math.floor(executableGasMist / execution.averageGasMist)
           : null,
+      avoidedTransactions: this.snapshotValue.execution.avoidedTransactions,
+      lastDecision: this.snapshotValue.execution.lastDecision,
     };
     return snapshot;
   }
@@ -346,6 +361,11 @@ export class MakerRuntime {
 
   requireGateway(): AftermathGateway {
     return this.gateway;
+  }
+
+  private clearActiveQuoteState(): void {
+    this.activeQuoteMarketId = null;
+    this.activeQuote = null;
   }
 
   async listMarkets(collateralCoinType: string): Promise<MarketSummary[]> {
@@ -419,7 +439,13 @@ export class MakerRuntime {
     this.snapshotValue.startedAt = startedAt;
     this.snapshotValue.lastError = null;
     this.runPeakEquityUsd = null;
-    this.activeQuoteMarketId = null;
+    this.clearActiveQuoteState();
+    this.marketSelectedAt = null;
+    this.awaitingFillAttribution.clear();
+    this.awaitingPositionAttribution.clear();
+    this.autoRebalancedOrderIds.clear();
+    this.snapshotValue.execution.avoidedTransactions = 0;
+    this.snapshotValue.execution.lastDecision = null;
     this.singleSlotSwept = config.rotationMode !== "single-slot";
     this.snapshotValue.markets = config.markets.map((market) =>
       emptyRuntimeMarket(market, config),
@@ -454,7 +480,17 @@ export class MakerRuntime {
       detail: {
         mode: config.mode,
         marketIds: config.markets.map((market) => market.marketId),
-        effectiveMarketRefreshMs: config.refreshMs * config.markets.length,
+        pollIntervalMs: config.refreshMs,
+        marketDwellMs:
+          config.rotationMode === "single-slot"
+            ? config.marketDwellMs
+            : config.refreshMs,
+        effectiveMarketRefreshMs:
+          (config.rotationMode === "single-slot"
+            ? config.marketDwellMs
+            : config.refreshMs) * config.markets.length,
+        requoteThresholdBps: config.requoteThresholdBps,
+        maxRestingMs: config.maxRestingMs,
         maxQuoteAgeMs: config.maxQuoteAgeMs,
       },
     });
@@ -471,10 +507,20 @@ export class MakerRuntime {
     const now = Date.now();
     this.snapshotValue.watchdog.checkedAt = new Date(now).toISOString();
     const startedAt = Date.parse(this.snapshotValue.startedAt ?? "");
-    const stale = this.snapshotValue.markets.find((market) => {
-      const observedAt = market.updatedAt
-        ? Date.parse(market.updatedAt)
-        : startedAt;
+    const activeQuote =
+      config.rotationMode === "single-slot" ? this.activeQuote : null;
+    if (config.rotationMode === "single-slot" && !activeQuote) return;
+    const watchedMarkets = activeQuote
+      ? this.snapshotValue.markets.filter(
+          (market) => market.id === activeQuote.marketId,
+        )
+      : this.snapshotValue.markets;
+    const stale = watchedMarkets.find((market) => {
+      const observedAt = activeQuote
+        ? activeQuote.placedAt
+        : market.updatedAt
+          ? Date.parse(market.updatedAt)
+          : startedAt;
       return (
         Number.isFinite(observedAt) && now - observedAt > config.maxQuoteAgeMs
       );
@@ -490,7 +536,10 @@ export class MakerRuntime {
       outcome: "tripped",
       detail: {
         marketId: stale.id,
-        updatedAt: stale.updatedAt,
+        ageSource: activeQuote ? "quote-placement" : "market-observation",
+        observedAt: activeQuote
+          ? new Date(activeQuote.placedAt).toISOString()
+          : stale.updatedAt,
         maxQuoteAgeMs: config.maxQuoteAgeMs,
       },
     });
@@ -631,7 +680,7 @@ export class MakerRuntime {
         attempts: 3,
         retryDelayMs: 2_000,
       });
-      if (cancelled) this.activeQuoteMarketId = null;
+      if (cancelled) this.clearActiveQuoteState();
     }
     if (!cycleSettled && activeCycle && config) {
       void activeCycle
@@ -694,7 +743,7 @@ export class MakerRuntime {
         "Flatten blocked because Maker quote cancellation could not be confirmed",
       );
     }
-    this.activeQuoteMarketId = null;
+    this.clearActiveQuoteState();
     const signer = loadAgentKeypair({
       masterKey: this.options.masterKey,
       context: agent.encryptionContext,
@@ -940,6 +989,219 @@ export class MakerRuntime {
     };
   }
 
+  private async pendingHedgeFills(inputs: {
+    makerSetup: Setup;
+    agentAddress: string;
+  }): Promise<PerformanceOrder[]> {
+    const startedAt = Date.parse(this.snapshotValue.startedAt ?? "");
+    if (!Number.isFinite(startedAt)) return [];
+    const trackedOrderIds = new Set(
+      this.store
+        .listTrackedMakerOrders({ accountId: inputs.makerSetup.accountId })
+        .filter((order) => Date.parse(order.postedAt) >= startedAt - 1_000)
+        .map((order) => order.orderId),
+    );
+    if (!trackedOrderIds.size) return [];
+    const history = await this.gateway.getAccountPerformanceHistory({
+      setup: inputs.makerSetup,
+      agentAddress: inputs.agentAddress,
+      limit: 200,
+    });
+    return history.orders.filter(
+      (order) =>
+        order.maker &&
+        Boolean(order.orderId) &&
+        trackedOrderIds.has(order.orderId!) &&
+        !this.autoRebalancedOrderIds.has(order.orderId!) &&
+        !this.store.isHedgeFillProcessed(
+          inputs.makerSetup.accountId,
+          hedgeFillKey(order),
+        ),
+    );
+  }
+
+  private async pendingHedgeMarketIds(inputs: {
+    makerSetup: Setup;
+    agentAddress: string;
+  }): Promise<string[]> {
+    return [
+      ...new Set(
+        (await this.pendingHedgeFills(inputs)).map((order) => order.marketId),
+      ),
+    ];
+  }
+
+  private async autoRebalanceIfNeeded(inputs: {
+    config: MakerConfig;
+    makerSetup: Setup;
+    agentAddress: string;
+    signer: ReturnType<typeof loadAgentKeypair>;
+    makerPortfolio: PortfolioSnapshot;
+  }): Promise<boolean> {
+    if (!inputs.config.autoRebalanceEnabled) return false;
+    const nextQuoteUsd = Math.max(
+      ...inputs.config.markets.map(
+        (market) => resolveMarketConfig(inputs.config, market).quoteSizeUsd,
+      ),
+    );
+    if (
+      inputs.makerPortfolio.grossExposureUsd <= 0 ||
+      inputs.makerPortfolio.grossExposureUsd + nextQuoteUsd <
+        inputs.config.rebalanceGrossExposureUsd
+    ) {
+      return false;
+    }
+    const hedgeAccountId = inputs.config.hedge.accountId;
+    const hedgeAccount = hedgeAccountId
+      ? this.store.getAccountSetup(hedgeAccountId)
+      : null;
+    if (!inputs.config.hedge.enabled || !hedgeAccount?.agentCapId) {
+      throw new Error(
+        "Automatic rebalancing requires an authorized hedge account",
+      );
+    }
+    const cancelled = await this.cancelOpenOrders(inputs.config, {
+      attempts: 3,
+      retryDelayMs: 750,
+    });
+    if (!cancelled) {
+      throw new Error(
+        "Automatic rebalancing could not confirm Maker order cancellation",
+      );
+    }
+    this.clearActiveQuoteState();
+    const accounts = [inputs.makerSetup, hedgeAccount];
+    const marketIds = inputs.config.markets.map((market) => market.marketId);
+    const transactions: FlattenResult["transactions"] = [];
+    let flatReads = 0;
+    let verifiedFlat = false;
+    let lastPortfolios: PortfolioSnapshot[] = [];
+
+    // Account indexing can expose positions in stages after confirmed fills. Retry
+    // the reduce-only sweep rather than treating the first indexed view as final.
+    for (let pass = 1; pass <= 3; pass += 1) {
+      for (const account of accounts) {
+        const receipt = await this.gateway.flattenPositions({
+          setup: account,
+          config: inputs.config,
+          signer: inputs.signer,
+          marketIds,
+          maxSlippage: inputs.config.hedge.maxSlippageBps / 10_000,
+        });
+        if (!receipt) continue;
+        transactions.push({
+          accountId: account.accountId,
+          digest: receipt.digest,
+          flattenedMarketIds: receipt.flattenedMarketIds,
+        });
+        this.store.logExecution({
+          mode: "live",
+          marketId: `portfolio:${account.accountId}`,
+          digest: receipt.digest,
+          endpoint: receipt.endpoint,
+          bidPrice: 0,
+          askPrice: 0,
+          sizeUsd: 0,
+          outcome: "flattened",
+          gasUsedMist: receipt.gasUsedMist,
+        });
+      }
+
+      flatReads = 0;
+      for (let attempt = 1; attempt <= 12; attempt += 1) {
+        lastPortfolios = await Promise.all(
+          accounts.map((setup) =>
+            this.gateway.getAgentPortfolioSnapshot({
+              setup,
+              agentAddress: inputs.agentAddress,
+              marketIds,
+            }),
+          ),
+        );
+        const flat = lastPortfolios.every((portfolio) =>
+          portfolio.positions.every(
+            (position) =>
+              Math.abs(position.inventoryUsd) < 0.01 &&
+              position.pendingOrderCount === 0,
+          ),
+        );
+        flatReads = flat ? flatReads + 1 : 0;
+        if (flatReads >= 3) {
+          verifiedFlat = true;
+          break;
+        }
+        if (attempt < 12) {
+          await (this.options.sleep
+            ? this.options.sleep(750)
+            : new Promise((resolve) => setTimeout(resolve, 750)));
+        }
+      }
+      if (verifiedFlat) break;
+      if (pass < 3) {
+        this.store.logEvent({
+          category: "risk",
+          action: "automatic-paired-rebalance",
+          outcome: "retry",
+          detail: {
+            completedPass: pass,
+            residualAccounts: lastPortfolios.map((portfolio, index) => ({
+              accountId: accounts[index]?.accountId,
+              positions: portfolio.positions
+                .filter(
+                  (position) =>
+                    Math.abs(position.inventoryUsd) >= 0.01 ||
+                    position.pendingOrderCount > 0,
+                )
+                .map((position) => ({
+                  marketId: position.marketId,
+                  inventoryUsd: position.inventoryUsd,
+                  pendingOrderCount: position.pendingOrderCount,
+                })),
+            })),
+          },
+        });
+      }
+    }
+    if (!verifiedFlat) {
+      throw new Error(
+        "Automatic rebalancing could not verify three consecutive flat account reads after three reduce-only passes",
+      );
+    }
+
+    const pendingFills = await this.pendingHedgeFills({
+      makerSetup: inputs.makerSetup,
+      agentAddress: inputs.agentAddress,
+    });
+    const runStartedAt = Date.parse(this.snapshotValue.startedAt ?? "");
+    for (const order of this.store
+      .listTrackedMakerOrders({ accountId: inputs.makerSetup.accountId })
+      .filter((order) => Date.parse(order.postedAt) >= runStartedAt - 1_000)) {
+      this.autoRebalancedOrderIds.add(order.orderId);
+    }
+    if (pendingFills.length) {
+      this.store.markHedgeFillsProcessed({
+        makerAccountId: inputs.makerSetup.accountId,
+        fillKeys: pendingFills.map(hedgeFillKey),
+        hedgeDigest: `auto-rebalance:${transactions.map((item) => item.digest).join(",")}`,
+      });
+    }
+    this.store.logEvent({
+      category: "risk",
+      action: "automatic-paired-rebalance",
+      outcome: "confirmed",
+      detail: {
+        triggerGrossExposureUsd: inputs.makerPortfolio.grossExposureUsd,
+        thresholdUsd: inputs.config.rebalanceGrossExposureUsd,
+        transactions,
+        flatReads,
+      },
+    });
+    this.snapshotValue.execution.lastDecision = "rebalanced";
+    this.snapshotValue.hedge.state = "ready";
+    this.snapshotValue.hedge.combinedDeltaUsd = 0;
+    return true;
+  }
+
   private async reconcileHedge(inputs: {
     config: MakerConfig;
     marketConfig: MakerConfig;
@@ -997,10 +1259,15 @@ export class MakerRuntime {
       agentAddress: inputs.agentAddress,
       limit: 200,
     });
+    const runStartedAt = Date.parse(this.snapshotValue.startedAt ?? "");
     const trackedOrderIds = new Set(
       this.store
         .listTrackedMakerOrders({ accountId: inputs.makerSetup.accountId })
-        .filter((order) => order.marketId === inputs.selected.marketId)
+        .filter(
+          (order) =>
+            order.marketId === inputs.selected.marketId &&
+            Date.parse(order.postedAt) >= runStartedAt - 1_000,
+        )
         .map((order) => order.orderId),
     );
     const pendingFills = history.orders.filter(
@@ -1009,17 +1276,61 @@ export class MakerRuntime {
         order.marketId === inputs.selected.marketId &&
         Boolean(order.orderId) &&
         trackedOrderIds.has(order.orderId!) &&
+        !this.autoRebalancedOrderIds.has(order.orderId!) &&
         !this.store.isHedgeFillProcessed(
           inputs.makerSetup.accountId,
           hedgeFillKey(order),
         ),
     );
-    if (!pendingFills.length) return true;
-
     const pendingDeltaUsd = pendingFills.reduce(
       (total, fill) => total + signedFillNotional(fill),
       0,
     );
+    const attributionKey = `${inputs.makerSetup.accountId}:${inputs.selected.marketId}`;
+    if (
+      Math.abs(combinedDeltaUsd) >= hedgeConfig.thresholdUsd &&
+      Math.abs(pendingDeltaUsd) < hedgeConfig.thresholdUsd
+    ) {
+      const now = Date.now();
+      const waitingSince = this.awaitingFillAttribution.get(attributionKey);
+      if (waitingSince === undefined) {
+        this.awaitingFillAttribution.set(attributionKey, now);
+        this.store.logEvent({
+          category: "hedge",
+          action: "fill-attribution-reconciliation",
+          outcome: "waiting",
+          detail: {
+            marketId: inputs.selected.marketId,
+            combinedDeltaUsd,
+            attributedDeltaUsd: pendingDeltaUsd,
+          },
+        });
+      } else if (now - waitingSince >= 10_000) {
+        throw new Error(
+          `Hedge blocked: $${Math.abs(combinedDeltaUsd).toFixed(4)} of account delta has no attributable Maker fill history`,
+        );
+      }
+      this.snapshotValue.hedge.state = "waiting";
+      return false;
+    }
+    const waitingSince = this.awaitingFillAttribution.get(attributionKey);
+    if (waitingSince !== undefined) {
+      this.awaitingFillAttribution.delete(attributionKey);
+      if (pendingFills.length) {
+        this.store.logEvent({
+          category: "hedge",
+          action: "fill-attribution-reconciliation",
+          outcome: "confirmed",
+          detail: {
+            marketId: inputs.selected.marketId,
+            waitedMs: Date.now() - waitingSince,
+            pendingFillCount: pendingFills.length,
+          },
+        });
+      }
+    }
+    if (!pendingFills.length) return true;
+
     const fillKeys = pendingFills.map(hedgeFillKey);
     const completionToleranceUsd = Math.min(
       hedgeConfig.thresholdUsd,
@@ -1031,13 +1342,45 @@ export class MakerRuntime {
     }
 
     if (Math.abs(combinedDeltaUsd) < completionToleranceUsd) {
-      this.store.markHedgeFillsProcessed({
-        makerAccountId: inputs.makerSetup.accountId,
-        fillKeys,
-        hedgeDigest: "already-offset",
-      });
-      return true;
+      const now = Date.now();
+      const positionWaitingSince =
+        this.awaitingPositionAttribution.get(attributionKey);
+      if (positionWaitingSince === undefined) {
+        this.awaitingPositionAttribution.set(attributionKey, now);
+        this.store.logEvent({
+          category: "hedge",
+          action: "position-attribution-reconciliation",
+          outcome: "waiting",
+          detail: {
+            marketId: inputs.selected.marketId,
+            combinedDeltaUsd,
+            attributedDeltaUsd: pendingDeltaUsd,
+          },
+        });
+      } else if (now - positionWaitingSince >= 10_000) {
+        throw new Error(
+          `Hedge blocked: $${Math.abs(pendingDeltaUsd).toFixed(4)} of attributed fills is not visible in account positions`,
+        );
+      }
+      this.snapshotValue.hedge.state = "waiting";
+      return false;
     }
+    const positionWaitingSince =
+      this.awaitingPositionAttribution.get(attributionKey);
+    if (positionWaitingSince !== undefined) {
+      this.awaitingPositionAttribution.delete(attributionKey);
+      this.store.logEvent({
+        category: "hedge",
+        action: "position-attribution-reconciliation",
+        outcome: "confirmed",
+        detail: {
+          marketId: inputs.selected.marketId,
+          waitedMs: Date.now() - positionWaitingSince,
+          combinedDeltaUsd,
+        },
+      });
+    }
+
     if (Math.sign(combinedDeltaUsd) !== Math.sign(pendingDeltaUsd)) {
       throw new Error(
         "Hedge account over-offsets the attributed Maker fills; flatten both accounts before restarting",
@@ -1051,7 +1394,7 @@ export class MakerRuntime {
       config: inputs.marketConfig,
     });
     if (this.activeQuoteMarketId === inputs.selected.marketId) {
-      this.activeQuoteMarketId = null;
+      this.clearActiveQuoteState();
     }
     this.store.logEvent({
       category: "hedge",
@@ -1155,21 +1498,60 @@ export class MakerRuntime {
       builderCode: this.options.builderCode(),
       shouldContinue: inputs.executionIsCurrent,
     });
-    const [makerAfterHedge, hedgeAfterHedge] = await Promise.all([
-      this.gateway.getAgentPortfolioSnapshot({
-        setup: inputs.makerSetup,
-        agentAddress: inputs.agentAddress,
-        marketIds: [inputs.selected.marketId],
-      }),
-      this.gateway.getAgentPortfolioSnapshot({
-        setup: hedgeAccount,
-        agentAddress: inputs.agentAddress,
-        marketIds: [inputs.selected.marketId],
-      }),
-    ]);
-    const actualCombinedDeltaUsd =
-      (makerAfterHedge.positions[0]?.inventoryUsd ?? 0) +
-      (hedgeAfterHedge.positions[0]?.inventoryUsd ?? 0);
+    let actualCombinedDeltaUsd = currentCombinedDeltaUsd;
+    let hedgeStateObserved = false;
+    for (let attempt = 1; attempt <= 10; attempt += 1) {
+      const [makerAfterHedge, hedgeAfterHedge] = await Promise.all([
+        this.gateway.getAgentPortfolioSnapshot({
+          setup: inputs.makerSetup,
+          agentAddress: inputs.agentAddress,
+          marketIds: [inputs.selected.marketId],
+        }),
+        this.gateway.getAgentPortfolioSnapshot({
+          setup: hedgeAccount,
+          agentAddress: inputs.agentAddress,
+          marketIds: [inputs.selected.marketId],
+        }),
+      ]);
+      actualCombinedDeltaUsd =
+        (makerAfterHedge.positions[0]?.inventoryUsd ?? 0) +
+        (hedgeAfterHedge.positions[0]?.inventoryUsd ?? 0);
+      const progressUsd =
+        Math.abs(currentCombinedDeltaUsd) - Math.abs(actualCombinedDeltaUsd);
+      hedgeStateObserved =
+        Math.abs(actualCombinedDeltaUsd) < completionToleranceUsd ||
+        progressUsd > 0.001 ||
+        Math.sign(actualCombinedDeltaUsd) !==
+          Math.sign(currentCombinedDeltaUsd);
+      if (hedgeStateObserved) {
+        if (attempt > 1) {
+          this.store.logEvent({
+            category: "hedge",
+            action: "post-hedge-reconciliation",
+            outcome: "confirmed",
+            detail: { attempt, actualCombinedDeltaUsd },
+          });
+        }
+        break;
+      }
+      if (attempt === 1) {
+        this.store.logEvent({
+          category: "hedge",
+          action: "post-hedge-reconciliation",
+          outcome: "waiting",
+          detail: { attempt, actualCombinedDeltaUsd },
+        });
+      }
+      if (attempt === 10) break;
+      if (!inputs.executionIsCurrent()) {
+        throw new Error(
+          "Hedge reconciliation cancelled while confirming execution",
+        );
+      }
+      await (this.options.sleep
+        ? this.options.sleep(750)
+        : new Promise((resolve) => setTimeout(resolve, 750)));
+    }
     const resolved = Math.abs(actualCombinedDeltaUsd) < completionToleranceUsd;
     const progressUsd =
       Math.abs(currentCombinedDeltaUsd) - Math.abs(actualCombinedDeltaUsd);
@@ -1242,11 +1624,25 @@ export class MakerRuntime {
     let config: MakerConfig | null = null;
     let hedgeReconciliationCompleted = false;
     let switchFromMarketId: string | null = null;
+    let usesDwellScheduler = false;
     try {
       const storedConfig = this.store.getConfig();
       if (!storedConfig) return;
       config = makerConfigSchema.parse(storedConfig);
       this.syncMarketRows(config);
+      usesDwellScheduler =
+        inputs.executeLive &&
+        this.snapshotValue.running &&
+        config.rotationMode === "single-slot";
+      if (usesDwellScheduler) {
+        const now = Date.now();
+        if (this.marketSelectedAt === null) {
+          this.marketSelectedAt = now;
+        } else if (now - this.marketSelectedAt >= config.marketDwellMs) {
+          this.marketIndex = (this.marketIndex + 1) % config.markets.length;
+          this.marketSelectedAt = now;
+        }
+      }
       selected = config.markets[this.marketIndex % config.markets.length]!;
       const marketConfig = resolveMarketConfig(config, selected);
       const setup = this.store.getSetup();
@@ -1273,7 +1669,7 @@ export class MakerRuntime {
             );
           }
           this.singleSlotSwept = true;
-          this.activeQuoteMarketId = null;
+          this.clearActiveQuoteState();
         }
         if (
           this.activeQuoteMarketId &&
@@ -1310,6 +1706,75 @@ export class MakerRuntime {
         0,
         (this.runPeakEquityUsd ?? portfolio.equityUsd) - portfolio.equityUsd,
       );
+
+      if (
+        inputs.executeLive &&
+        config.hedge.enabled &&
+        setup &&
+        account?.agentCapId &&
+        agent &&
+        this.options.masterKey
+      ) {
+        const pendingMarketIds = await this.pendingHedgeMarketIds({
+          makerSetup: setup,
+          agentAddress: agent.address,
+        });
+        if (pendingMarketIds.length) {
+          const signer = loadAgentKeypair({
+            masterKey: this.options.masterKey,
+            context: agent.encryptionContext,
+            encryptedSecret: agent.encryptedSecret,
+          });
+          for (const marketId of pendingMarketIds) {
+            const pendingMarket = config.markets.find(
+              (candidate) => candidate.marketId === marketId,
+            );
+            if (!pendingMarket) continue;
+            const hedgeReady = await this.reconcileHedge({
+              config,
+              marketConfig: resolveMarketConfig(config, pendingMarket),
+              selected: pendingMarket,
+              makerSetup: setup,
+              agentAddress: agent.address,
+              signer,
+              makerPortfolio: portfolio,
+              executionIsCurrent,
+            });
+            hedgeReconciliationCompleted = true;
+            if (!hedgeReady) {
+              this.snapshotValue.lastSuccessfulCycleAt =
+                new Date().toISOString();
+              return;
+            }
+          }
+        }
+      }
+
+      if (
+        inputs.executeLive &&
+        config.autoRebalanceEnabled &&
+        setup &&
+        account?.agentCapId &&
+        agent &&
+        this.options.masterKey
+      ) {
+        const signer = loadAgentKeypair({
+          masterKey: this.options.masterKey,
+          context: agent.encryptionContext,
+          encryptedSecret: agent.encryptedSecret,
+        });
+        const rebalanced = await this.autoRebalanceIfNeeded({
+          config,
+          makerSetup: setup,
+          agentAddress: agent.address,
+          signer,
+          makerPortfolio: portfolio,
+        });
+        if (rebalanced) {
+          this.snapshotValue.lastSuccessfulCycleAt = new Date().toISOString();
+          return;
+        }
+      }
 
       if (switchFromMarketId) {
         const priorMarket = config.markets.find(
@@ -1379,6 +1844,8 @@ export class MakerRuntime {
       const openInterestBase = Math.abs(market.marketState.openInterest);
       const maxOpenInterestBase = market.marketParams.maxOpenInterest;
       const updatedAt = observedAt.toISOString();
+
+      if (inputs.executeLive && !executionIsCurrent()) return;
 
       this.snapshotValue = {
         ...this.snapshotValue,
@@ -1523,6 +1990,45 @@ export class MakerRuntime {
       }
       assertSafe(safety);
 
+      const activeQuote = this.activeQuote;
+      const sameActiveMarket =
+        config.rotationMode === "single-slot" &&
+        activeQuote?.marketId === selected.marketId &&
+        this.activeQuoteMarketId === selected.marketId;
+      if (sameActiveMarket) {
+        const bidMoveBps =
+          (Math.abs(quote.bidPrice - activeQuote.quote.bidPrice) /
+            activeQuote.quote.bidPrice) *
+          10_000;
+        const askMoveBps =
+          (Math.abs(quote.askPrice - activeQuote.quote.askPrice) /
+            activeQuote.quote.askPrice) *
+          10_000;
+        const sizeChanged =
+          Math.abs(quote.sizeUsd - activeQuote.quote.sizeUsd) > 0.000_001;
+        const restingAgeMs = Date.now() - activeQuote.placedAt;
+        if (
+          !sizeChanged &&
+          Math.max(bidMoveBps, askMoveBps) < config.requoteThresholdBps &&
+          restingAgeMs < config.maxRestingMs
+        ) {
+          this.snapshotValue.quote = activeQuote.quote;
+          this.snapshotValue.markets = this.snapshotValue.markets.map((row) =>
+            row.id === selected!.marketId
+              ? {
+                  ...row,
+                  bidPrice: activeQuote.quote.bidPrice,
+                  askPrice: activeQuote.quote.askPrice,
+                }
+              : row,
+          );
+          this.snapshotValue.execution.avoidedTransactions += 1;
+          this.snapshotValue.execution.lastDecision = "held";
+          this.snapshotValue.lastSuccessfulCycleAt = updatedAt;
+          return;
+        }
+      }
+
       const trackedMakerOrders = this.store
         .listTrackedMakerOrders({ accountId: setup.accountId })
         .filter((order) => order.marketId === selected!.marketId);
@@ -1584,7 +2090,15 @@ export class MakerRuntime {
       });
       if (config.rotationMode === "single-slot") {
         this.activeQuoteMarketId = selected.marketId;
+        this.activeQuote = {
+          marketId: selected.marketId,
+          quote,
+          placedAt: Date.now(),
+        };
       }
+      this.snapshotValue.execution.lastDecision = switchFromMarketId
+        ? "switched"
+        : "quoted";
       this.snapshotValue.lastSuccessfulCycleAt = new Date().toISOString();
       this.snapshotValue.markets = this.snapshotValue.markets.map((row) =>
         row.id === selected!.marketId
@@ -1594,6 +2108,56 @@ export class MakerRuntime {
     } catch (error) {
       const errorText = message(error);
       const cancelled = inputs.generation !== this.generation;
+      const retryablePostOnlyRace =
+        !cancelled &&
+        config?.mode === "live" &&
+        isPostOnlyWouldMatch(errorText);
+      if (retryablePostOnlyRace && config) {
+        const retainedQuote = this.activeQuote;
+        const cancelledPriorMarket = switchFromMarketId
+          ? await this.cancelOpenOrders(config, {
+              attempts: 3,
+              retryDelayMs: 750,
+              marketIds: [switchFromMarketId],
+            })
+          : true;
+        if (cancelledPriorMarket) {
+          if (switchFromMarketId) {
+            this.clearActiveQuoteState();
+            this.marketSelectedAt = Date.now();
+            this.snapshotValue.quote = null;
+          } else if (
+            retainedQuote &&
+            retainedQuote.marketId === selected?.marketId
+          ) {
+            this.snapshotValue.quote = retainedQuote.quote;
+          } else {
+            this.snapshotValue.quote = null;
+          }
+          this.snapshotValue.lastError = null;
+          if (selected) {
+            this.snapshotValue.markets = this.snapshotValue.markets.map(
+              (row) =>
+                row.id === selected!.marketId
+                  ? { ...row, status: "healthy", error: null }
+                  : row,
+            );
+          }
+          this.store.logEvent({
+            category: "runtime",
+            action: "post-only-retry",
+            outcome: "retry",
+            detail: {
+              error: errorText,
+              ...(selected ? { marketId: selected.marketId } : {}),
+              ...(switchFromMarketId
+                ? { cancelledPriorMarketId: switchFromMarketId }
+                : {}),
+            },
+          });
+          return;
+        }
+      }
       if (!cancelled) {
         this.snapshotValue.lastError = errorText;
         if (config?.hedge.enabled && !hedgeReconciliationCompleted) {
@@ -1627,11 +2191,11 @@ export class MakerRuntime {
             attempts: 3,
             retryDelayMs: 2_000,
           });
-          if (cancelledOrders) this.activeQuoteMarketId = null;
+          if (cancelledOrders) this.clearActiveQuoteState();
         }
       }
     } finally {
-      if (config?.markets.length) {
+      if (config?.markets.length && !usesDwellScheduler) {
         this.marketIndex = (this.marketIndex + 1) % config.markets.length;
       }
     }
@@ -1733,7 +2297,11 @@ export class MakerRuntime {
     this.snapshotValue.startedAt = startedAt;
     this.snapshotValue.lastError = null;
     this.runPeakEquityUsd = null;
-    this.activeQuoteMarketId = null;
+    this.clearActiveQuoteState();
+    this.marketSelectedAt = null;
+    this.awaitingFillAttribution.clear();
+    this.awaitingPositionAttribution.clear();
+    this.autoRebalancedOrderIds.clear();
     this.singleSlotSwept = true;
     this.store.logEvent({
       category: "runtime",
@@ -1765,7 +2333,7 @@ export class MakerRuntime {
               "Strategy trial could not confirm cancellation before changing policy",
             );
           }
-          this.activeQuoteMarketId = null;
+          this.clearActiveQuoteState();
         }
 
         activeConfig = round.config;
@@ -1828,7 +2396,8 @@ export class MakerRuntime {
 
       this.store.setConfig(originalConfig);
       this.marketIndex = 0;
-      this.activeQuoteMarketId = null;
+      this.clearActiveQuoteState();
+      this.marketSelectedAt = null;
       this.singleSlotSwept = false;
       this.snapshotValue.mode = originalConfig.mode;
       this.syncMarketRows(originalConfig);
@@ -1871,7 +2440,8 @@ export class MakerRuntime {
       if (recoveryCompleted) {
         this.store.setConfig(originalConfig);
         this.marketIndex = 0;
-        this.activeQuoteMarketId = null;
+        this.clearActiveQuoteState();
+        this.marketSelectedAt = null;
         this.singleSlotSwept = false;
         this.snapshotValue.mode = originalConfig.mode;
         this.syncMarketRows(originalConfig);
@@ -1906,7 +2476,8 @@ export class MakerRuntime {
     await this.stop();
     if (nextConfig) this.store.setConfig(nextConfig);
     this.marketIndex = 0;
-    this.activeQuoteMarketId = null;
+    this.clearActiveQuoteState();
+    this.marketSelectedAt = null;
     this.singleSlotSwept = false;
     const config = this.store.getConfig();
     if (config) {

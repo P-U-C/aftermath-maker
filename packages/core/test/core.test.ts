@@ -339,23 +339,23 @@ describe("risk gates", () => {
 });
 
 describe("portfolio configuration", () => {
-  it("supports a fifteen-market universe with an explicit rotation mode", () => {
+  it("supports an N-market universe up to the explicit server cap", () => {
     const config = makerConfigSchema.parse({
-      markets: Array.from({ length: 15 }, (_, index) => ({
+      markets: Array.from({ length: 64 }, (_, index) => ({
         marketId: `0x${(index + 1).toString(16)}`,
         symbol: `M${index + 1}`,
       })),
       rotationMode: "single-slot",
       refreshMs: 2_000,
-      maxQuoteAgeMs: 40_000,
+      maxQuoteAgeMs: 90_000,
     });
 
-    expect(config.markets).toHaveLength(15);
+    expect(config.markets).toHaveLength(64);
     expect(config.rotationMode).toBe("single-slot");
     expect(() =>
       makerConfigSchema.parse({
         ...config,
-        markets: [...config.markets, { marketId: "0x100", symbol: "M16" }],
+        markets: [...config.markets, { marketId: "0x100", symbol: "M65" }],
       }),
     ).toThrow();
   });
@@ -381,7 +381,7 @@ describe("portfolio configuration", () => {
     ).toThrow("Gross exposure");
   });
 
-  it("requires the quote watchdog to cover a full market rotation", () => {
+  it("requires the quote watchdog to cover its observation window", () => {
     expect(() =>
       makerConfigSchema.parse({
         markets: [
@@ -391,7 +391,30 @@ describe("portfolio configuration", () => {
         refreshMs: 10_000,
         maxQuoteAgeMs: 15_000,
       }),
-    ).toThrow("full rotation");
+    ).toThrow("observation window");
+  });
+
+  it("requires single-slot watchdog headroom above forced refresh", () => {
+    expect(() =>
+      makerConfigSchema.parse({
+        markets: [{ marketId: "0x1234", symbol: "SUI" }],
+        rotationMode: "single-slot",
+        refreshMs: 2_000,
+        maxRestingMs: 60_000,
+        maxQuoteAgeMs: 60_000,
+      }),
+    ).toThrow("observation window");
+  });
+
+  it("requires paired hedging and a pre-limit threshold for auto-rebalance", () => {
+    expect(() =>
+      makerConfigSchema.parse({
+        markets: [{ marketId: "0x1234", symbol: "SUI" }],
+        autoRebalanceEnabled: true,
+        rebalanceGrossExposureUsd: 100,
+        maxGrossExposureUsd: 50,
+      }),
+    ).toThrow("Automatic rebalancing");
   });
 
   it("requires distinct account roles for same-venue hedging", () => {

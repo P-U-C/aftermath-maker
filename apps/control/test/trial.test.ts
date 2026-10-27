@@ -146,7 +146,7 @@ describe("strategy trial planning", () => {
       expect(round.quoteSizeUsd).toBe(1.04);
       expect(round.config.mode).toBe("live");
       expect(round.config.refreshMs).toBe(2_000);
-      expect(round.config.maxQuoteAgeMs).toBe(10_000);
+      expect(round.config.maxQuoteAgeMs).toBe(35_000);
       expect(round.config.staleBookMs).toBe(3_000);
       expect(round.config.maxInventoryUsd).toBe(1.05);
       expect(round.config.maxGrossExposureUsd).toBe(3);

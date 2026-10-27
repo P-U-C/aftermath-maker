@@ -124,6 +124,8 @@ type Snapshot = {
     confirmedLiveQuotes: number;
     averageGasMist: number | null;
     gasRunwayTransactions: number | null;
+    avoidedTransactions: number;
+    lastDecision: "quoted" | "switched" | "held" | "rebalanced" | null;
     lastExecutionAt: string | null;
   };
   hedge: {
@@ -192,6 +194,11 @@ type MakerConfig = {
   quoteSizeUsd: number;
   spreadBps: number;
   refreshMs: number;
+  marketDwellMs: number;
+  requoteThresholdBps: number;
+  maxRestingMs: number;
+  autoRebalanceEnabled: boolean;
+  rebalanceGrossExposureUsd: number;
   maxQuoteAgeMs: number;
   maxInventoryUsd: number;
   inventoryTargetUsd: number;
@@ -415,6 +422,21 @@ type OperatorStatus = {
 
 const USDC =
   "0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC";
+const MAX_SELECTED_MARKETS = 64;
+
+function minimumObservationWindowMs(
+  refreshMs: number,
+  marketCount: number,
+  rotationMode: MakerConfig["rotationMode"],
+  maxRestingMs = refreshMs,
+) {
+  return rotationMode === "single-slot"
+    ? Math.max(
+        refreshMs * 2 + Math.min(10_000, refreshMs),
+        maxRestingMs + 30_000,
+      )
+    : refreshMs * Math.max(1, marketCount) + Math.min(10_000, refreshMs);
+}
 
 const strategyObjectives = [
   {
@@ -455,6 +477,11 @@ const defaultConfig: MakerConfig = {
   quoteSizeUsd: 10,
   spreadBps: 30,
   refreshMs: 8_000,
+  marketDwellMs: 60_000,
+  requoteThresholdBps: 5,
+  maxRestingMs: 60_000,
+  autoRebalanceEnabled: false,
+  rebalanceGrossExposureUsd: 100,
   maxQuoteAgeMs: 120_000,
   maxInventoryUsd: 50,
   inventoryTargetUsd: 0,
@@ -1127,15 +1154,18 @@ function DashboardBody() {
           (item) => item.marketId !== market.id,
         );
       } else {
-        if (current.markets.length >= 15) return current;
+        if (current.markets.length >= MAX_SELECTED_MARKETS) return current;
         nextMarkets = [
           ...current.markets,
           { marketId: market.id, symbol: market.symbol },
         ];
       }
-      const minimumQuoteAge =
-        current.refreshMs * nextMarkets.length +
-        Math.min(10_000, current.refreshMs);
+      const minimumQuoteAge = minimumObservationWindowMs(
+        current.refreshMs,
+        nextMarkets.length,
+        current.rotationMode,
+        current.maxRestingMs,
+      );
       return {
         ...current,
         markets: nextMarkets,
@@ -1172,10 +1202,16 @@ function DashboardBody() {
       ...current,
       ...values,
       strategyProfile: profile,
+      marketDwellMs: Math.max(current.marketDwellMs, values.refreshMs),
+      maxRestingMs: Math.max(current.maxRestingMs, values.refreshMs),
       maxQuoteAgeMs: Math.max(
         current.maxQuoteAgeMs,
-        values.refreshMs * Math.max(1, current.markets.length) +
-          Math.min(10_000, values.refreshMs),
+        minimumObservationWindowMs(
+          values.refreshMs,
+          current.markets.length,
+          current.rotationMode,
+          Math.max(current.maxRestingMs, values.refreshMs),
+        ),
       ),
     }));
   }
@@ -1316,9 +1352,12 @@ function DashboardBody() {
       const stagedMaxInventory = Math.max(
         ...plannedMarkets.map((market) => market.overrides.maxInventoryUsd),
       );
-      const minimumQuoteAge =
-        current.refreshMs * plannedMarkets.length +
-        Math.min(10_000, current.refreshMs);
+      const minimumQuoteAge = minimumObservationWindowMs(
+        current.refreshMs,
+        plannedMarkets.length,
+        current.rotationMode,
+        current.maxRestingMs,
+      );
       return {
         ...current,
         mode: "observe",
@@ -1590,17 +1629,32 @@ function DashboardBody() {
   const activeHedgeAccount = setup.accounts.find(
     (managed) => managed.accountId === config.hedge.accountId,
   );
+  const marketTurnMs =
+    config.rotationMode === "single-slot"
+      ? config.marketDwellMs
+      : config.refreshMs;
   const effectiveRefreshSeconds =
-    (config.refreshMs * Math.max(1, config.markets.length)) / 1_000;
+    (marketTurnMs * Math.max(1, config.markets.length)) / 1_000;
+  const paidActionIntervalMs =
+    config.rotationMode === "single-slot"
+      ? Math.min(config.marketDwellMs, config.maxRestingMs)
+      : config.refreshMs;
   const gasRunwayQuotes = snapshot?.execution.gasRunwayTransactions ?? null;
   const gasRunwayMs =
-    gasRunwayQuotes === null ? null : gasRunwayQuotes * config.refreshMs;
+    gasRunwayQuotes === null ? null : gasRunwayQuotes * paidActionIntervalMs;
   const projectedDailyGasSui =
     snapshot?.execution.averageGasMist === null ||
     snapshot?.execution.averageGasMist === undefined
       ? null
       : (snapshot.execution.averageGasMist / 1_000_000_000) *
-        (86_400_000 / config.refreshMs);
+        (86_400_000 / paidActionIntervalMs);
+  const avoidedTransactions = snapshot?.execution.avoidedTransactions ?? 0;
+  const estimatedGasAvoidedSui =
+    snapshot?.execution.averageGasMist === null ||
+    snapshot?.execution.averageGasMist === undefined
+      ? null
+      : (avoidedTransactions * snapshot.execution.averageGasMist) /
+        1_000_000_000;
   const activeRuntimeMarket = snapshot?.markets.find(
     (market) => market.id === snapshot.market.id,
   );
@@ -1612,19 +1666,25 @@ function DashboardBody() {
     : 0;
   const marginCeilingUsd =
     config.maxGrossExposureUsd / Math.max(1, config.maxLeverage);
+  const makerEquityShare = (value: number) =>
+    makerEquityUsd !== null && makerEquityUsd > 0
+      ? (value / makerEquityUsd) * 100
+      : null;
+  const quoteEquityPct = makerEquityShare(config.quoteSizeUsd);
+  const grossCapEquityPct = makerEquityShare(config.maxGrossExposureUsd);
+  const rebalanceEquityPct = makerEquityShare(config.rebalanceGrossExposureUsd);
+  const drawdownEquityPct = makerEquityShare(config.maxRunDrawdownUsd);
   const builderFeePerFillUsd =
     config.quoteSizeUsd * (builderCode?.integratorFee ?? 0);
   const rewardOpportunities =
     rewards?.marketModel.opportunities
       .filter((opportunity) => opportunity.eligible)
-      .slice(0, 30) ?? [];
-  const focusedRewardOpportunities = rewardOpportunities
-    .filter(
-      (opportunity) =>
-        opportunity.objectiveEligible &&
-        (rewardFocus === "all" || opportunity.thinActive),
-    )
-    .slice(0, 15);
+      .slice(0, MAX_SELECTED_MARKETS) ?? [];
+  const focusedRewardOpportunities = rewardOpportunities.filter(
+    (opportunity) =>
+      opportunity.objectiveEligible &&
+      (rewardFocus === "all" || opportunity.thinActive),
+  );
   const topRewardOpportunity = focusedRewardOpportunities[0] ?? null;
   const rewardQuotePreviewCap =
     makerAvailableCollateralUsd !== null
@@ -2441,6 +2501,14 @@ function DashboardBody() {
                   setConfig((current) => ({
                     ...current,
                     rotationMode: "portfolio",
+                    maxQuoteAgeMs: Math.max(
+                      current.maxQuoteAgeMs,
+                      minimumObservationWindowMs(
+                        current.refreshMs,
+                        current.markets.length,
+                        "portfolio",
+                      ),
+                    ),
                   }))
                 }
               >
@@ -2456,6 +2524,23 @@ function DashboardBody() {
                   setConfig((current) => ({
                     ...current,
                     rotationMode: "single-slot",
+                    marketDwellMs: Math.max(
+                      current.marketDwellMs,
+                      current.refreshMs,
+                    ),
+                    maxRestingMs: Math.max(
+                      current.maxRestingMs,
+                      current.refreshMs,
+                    ),
+                    maxQuoteAgeMs: Math.max(
+                      current.maxQuoteAgeMs,
+                      minimumObservationWindowMs(
+                        current.refreshMs,
+                        current.markets.length,
+                        "single-slot",
+                        Math.max(current.maxRestingMs, current.refreshMs),
+                      ),
+                    ),
                   }))
                 }
               >
@@ -2626,6 +2711,9 @@ function DashboardBody() {
                     ...current,
                     makerAccountId:
                       current.makerAccountId ?? activeMakerAccountId,
+                    autoRebalanceEnabled: enabled
+                      ? current.autoRebalanceEnabled
+                      : false,
                     hedge: {
                       ...current.hedge,
                       enabled,
@@ -2642,71 +2730,119 @@ function DashboardBody() {
               <strong>Fill-driven same-venue delta hedge</strong>
             </label>
             {config.hedge.enabled && (
-              <div className="hedge-limit-grid">
-                <label>
-                  <span>Trigger</span>
-                  <div className="input-unit">
-                    <b>$</b>
-                    <input
-                      type="number"
-                      min="1"
-                      max="10000"
-                      value={config.hedge.thresholdUsd}
-                      onChange={(event) =>
-                        setConfig((current) => ({
-                          ...current,
-                          hedge: {
-                            ...current.hedge,
-                            thresholdUsd: Number(event.target.value),
-                          },
-                        }))
-                      }
-                    />
-                  </div>
+              <>
+                <div className="hedge-limit-grid">
+                  <label>
+                    <span>Trigger</span>
+                    <div className="input-unit">
+                      <b>$</b>
+                      <input
+                        type="number"
+                        min="1"
+                        max="10000"
+                        value={config.hedge.thresholdUsd}
+                        onChange={(event) =>
+                          setConfig((current) => ({
+                            ...current,
+                            hedge: {
+                              ...current.hedge,
+                              thresholdUsd: Number(event.target.value),
+                            },
+                          }))
+                        }
+                      />
+                    </div>
+                  </label>
+                  <label>
+                    <span>Max order</span>
+                    <div className="input-unit">
+                      <b>$</b>
+                      <input
+                        type="number"
+                        min={config.hedge.thresholdUsd}
+                        max="10000"
+                        value={config.hedge.maxOrderUsd}
+                        onChange={(event) =>
+                          setConfig((current) => ({
+                            ...current,
+                            hedge: {
+                              ...current.hedge,
+                              maxOrderUsd: Number(event.target.value),
+                            },
+                          }))
+                        }
+                      />
+                    </div>
+                  </label>
+                  <label>
+                    <span>Slippage</span>
+                    <div className="input-unit suffix">
+                      <input
+                        type="number"
+                        min="5"
+                        max="500"
+                        value={config.hedge.maxSlippageBps}
+                        onChange={(event) =>
+                          setConfig((current) => ({
+                            ...current,
+                            hedge: {
+                              ...current.hedge,
+                              maxSlippageBps: Number(event.target.value),
+                            },
+                          }))
+                        }
+                      />
+                      <b>bps</b>
+                    </div>
+                  </label>
+                </div>
+                <label className="switch-row">
+                  <input
+                    type="checkbox"
+                    checked={config.autoRebalanceEnabled}
+                    onChange={(event) =>
+                      setConfig((current) => ({
+                        ...current,
+                        autoRebalanceEnabled: event.target.checked,
+                        rebalanceGrossExposureUsd: Math.min(
+                          current.rebalanceGrossExposureUsd,
+                          current.maxGrossExposureUsd,
+                        ),
+                      }))
+                    }
+                  />
+                  <span aria-hidden="true" />
+                  <strong>Auto-rebalance dedicated accounts</strong>
                 </label>
-                <label>
-                  <span>Max order</span>
-                  <div className="input-unit">
-                    <b>$</b>
-                    <input
-                      type="number"
-                      min={config.hedge.thresholdUsd}
-                      max="10000"
-                      value={config.hedge.maxOrderUsd}
-                      onChange={(event) =>
-                        setConfig((current) => ({
-                          ...current,
-                          hedge: {
-                            ...current.hedge,
-                            maxOrderUsd: Number(event.target.value),
-                          },
-                        }))
-                      }
-                    />
-                  </div>
-                </label>
-                <label>
-                  <span>Slippage</span>
-                  <div className="input-unit suffix">
-                    <input
-                      type="number"
-                      min="5"
-                      max="500"
-                      value={config.hedge.maxSlippageBps}
-                      onChange={(event) =>
-                        setConfig((current) => ({
-                          ...current,
-                          hedge: {
-                            ...current.hedge,
-                            maxSlippageBps: Number(event.target.value),
-                          },
-                        }))
-                      }
-                    />
-                    <b>bps</b>
-                  </div>
-                </label>
-              </div>
+                {config.autoRebalanceEnabled && (
+                  <label>
+                    <span>Rebalance before gross exposure reaches</span>
+                    <div className="input-unit">
+                      <b>$</b>
+                      <input
+                        type="number"
+                        min="1"
+                        max={config.maxGrossExposureUsd}
+                        step="0.1"
+                        value={config.rebalanceGrossExposureUsd}
+                        onChange={(event) =>
+                          setConfig((current) => ({
+                            ...current,
+                            rebalanceGrossExposureUsd: Number(
+                              event.target.value,
+                            ),
+                          }))
+                        }
+                      />
+                    </div>
+                    <small>
+                      {percent(rebalanceEquityPct, 1)} of Maker equity. Cancels
+                      quotes and uses reduce-only market orders on both
+                      dedicated accounts.
+                    </small>
+                  </label>
+                )}
+              </>
             )}
           </fieldset>
 
@@ -2761,7 +2897,11 @@ function DashboardBody() {
                       type="checkbox"
                       checked={selected}
                       onChange={() => toggleMarket(item)}
-                      disabled={selected && config.markets.length === 1}
+                      disabled={
+                        (selected && config.markets.length === 1) ||
+                        (!selected &&
+                          config.markets.length >= MAX_SELECTED_MARKETS)
+                      }
                     />
                     <span>
                       <strong>{item.symbol}</strong>
@@ -2954,6 +3094,7 @@ function DashboardBody() {
                   }
                 />
               </div>
+              <small>{percent(quoteEquityPct, 1)} of Maker equity</small>
             </label>
             <label>
               <span>Spread</span>
@@ -3025,14 +3166,20 @@ function DashboardBody() {
                   min={config.maxInventoryUsd}
                   step="0.01"
                   value={config.maxGrossExposureUsd}
-                  onChange={(event) =>
+                  onChange={(event) => {
+                    const maxGrossExposureUsd = Number(event.target.value);
                     setConfig((current) => ({
                       ...current,
-                      maxGrossExposureUsd: Number(event.target.value),
-                    }))
-                  }
+                      maxGrossExposureUsd,
+                      rebalanceGrossExposureUsd: Math.min(
+                        current.rebalanceGrossExposureUsd,
+                        maxGrossExposureUsd,
+                      ),
+                    }));
+                  }}
                 />
               </div>
+              <small>{percent(grossCapEquityPct, 1)} of Maker equity</small>
             </label>
             <label>
               <span>Unrealized loss</span>
@@ -3067,6 +3214,7 @@ function DashboardBody() {
                   }
                 />
               </div>
+              <small>{percent(drawdownEquityPct, 1)} of Maker equity</small>
             </label>
             <label>
               <span>Book / index limit</span>
@@ -3133,7 +3281,7 @@ function DashboardBody() {
             }
           >
             <label>
-              <span>Refresh interval</span>
+              <span>Poll interval</span>
               <input
                 type="range"
                 min="2000"
@@ -3142,35 +3290,118 @@ function DashboardBody() {
                 value={config.refreshMs}
                 onChange={(event) => {
                   const refreshMs = Number(event.target.value);
-                  const minimumQuoteAge =
-                    refreshMs * Math.max(1, config.markets.length) +
-                    Math.min(10_000, refreshMs);
                   setConfig((current) => ({
                     ...current,
                     refreshMs,
+                    marketDwellMs: Math.max(current.marketDwellMs, refreshMs),
+                    maxRestingMs: Math.max(current.maxRestingMs, refreshMs),
                     maxQuoteAgeMs: Math.max(
                       current.maxQuoteAgeMs,
-                      minimumQuoteAge,
+                      minimumObservationWindowMs(
+                        refreshMs,
+                        current.markets.length,
+                        current.rotationMode,
+                        Math.max(current.maxRestingMs, refreshMs),
+                      ),
                     ),
                   }));
                 }}
               />
-              <small>
-                {config.refreshMs / 1000}s turn / {effectiveRefreshSeconds}s
-                full lap
-              </small>
+              <small>{config.refreshMs / 1000}s risk and price checks</small>
             </label>
             <label>
-              <span>Stale-quote cutoff</span>
+              <span>Market dwell</span>
+              <div className="input-unit suffix">
+                <input
+                  type="number"
+                  min={Math.ceil(config.refreshMs / 1_000)}
+                  max="3600"
+                  step="1"
+                  value={config.marketDwellMs / 1_000}
+                  onChange={(event) =>
+                    setConfig((current) => ({
+                      ...current,
+                      marketDwellMs: Math.max(
+                        current.refreshMs,
+                        Number(event.target.value) * 1_000,
+                      ),
+                    }))
+                  }
+                />
+                <b>sec</b>
+              </div>
+              <small>Switches the one live pair.</small>
+            </label>
+            <label>
+              <span>Requote movement</span>
+              <div className="input-unit suffix">
+                <input
+                  type="number"
+                  min="0"
+                  max="500"
+                  step="0.5"
+                  value={config.requoteThresholdBps}
+                  onChange={(event) =>
+                    setConfig((current) => ({
+                      ...current,
+                      requoteThresholdBps: Number(event.target.value),
+                    }))
+                  }
+                />
+                <b>bps</b>
+              </div>
+              <small>Smaller moves keep the resting quote.</small>
+            </label>
+            <label>
+              <span>Forced refresh</span>
+              <div className="input-unit suffix">
+                <input
+                  type="number"
+                  min={Math.ceil(config.refreshMs / 1_000)}
+                  max="3600"
+                  step="1"
+                  value={config.maxRestingMs / 1_000}
+                  onChange={(event) => {
+                    const requestedMs = Number(event.target.value) * 1_000;
+                    setConfig((current) => {
+                      const maxRestingMs = Math.max(
+                        current.refreshMs,
+                        requestedMs,
+                      );
+                      return {
+                        ...current,
+                        maxRestingMs,
+                        maxQuoteAgeMs: Math.max(
+                          current.maxQuoteAgeMs,
+                          minimumObservationWindowMs(
+                            current.refreshMs,
+                            current.markets.length,
+                            current.rotationMode,
+                            maxRestingMs,
+                          ),
+                        ),
+                      };
+                    });
+                  }}
+                />
+                <b>sec</b>
+              </div>
+              <small>Maximum time before a paid requote.</small>
+            </label>
+            <label>
+              <span>Stale-observation cutoff</span>
               <div className="input-unit suffix">
                 <input
                   type="number"
                   min={Math.ceil(
-                    (config.refreshMs * Math.max(1, config.markets.length) +
-                      Math.min(10_000, config.refreshMs)) /
-                      1_000,
+                    minimumObservationWindowMs(
+                      config.refreshMs,
+                      config.markets.length,
+                      config.rotationMode,
+                      config.maxRestingMs,
+                    ) / 1_000,
                   )}
-                  max="3900"
+                  max="86400"
                   value={config.maxQuoteAgeMs / 1_000}
                   onChange={(event) =>
                     setConfig((current) => ({
@@ -3181,7 +3412,7 @@ function DashboardBody() {
                 />
                 <b>sec</b>
               </div>
-              <small>Independent watchdog cancels every Maker order.</small>
+              <small>Watchdog cancels on missing market observations.</small>
             </label>
           </div>
 
@@ -3432,20 +3663,20 @@ function DashboardBody() {
           </div>
           <label className="reward-count">
             <span>Markets</span>
-            <select
+            <input
+              type="number"
+              min="1"
+              max={Math.max(1, focusedRewardOpportunities.length)}
               value={rewardMarketCount}
               onChange={(event) =>
-                setRewardMarketCount(Number(event.target.value))
+                setRewardMarketCount(
+                  Math.min(
+                    MAX_SELECTED_MARKETS,
+                    Math.max(1, Number(event.target.value) || 1),
+                  ),
+                )
               }
-            >
-              {Array.from({ length: 15 }, (_, index) => index + 1).map(
-                (count) => (
-                  <option key={count} value={count}>
-                    {count}
-                  </option>
-                ),
-              )}
-            </select>
+            />
           </label>
           <button
             className="button reward-stage"
@@ -3779,6 +4010,19 @@ function DashboardBody() {
               <strong>{money(marginCeilingUsd)}</strong>
             </div>
             <div>
+              <span>Quote / Maker equity</span>
+              <strong>
+                {money(config.quoteSizeUsd)} / {percent(quoteEquityPct, 1)}
+              </strong>
+            </div>
+            <div>
+              <span>Gross cap / Maker equity</span>
+              <strong>
+                {money(config.maxGrossExposureUsd)} /{" "}
+                {percent(grossCapEquityPct, 1)}
+              </strong>
+            </div>
+            <div>
               <span>Builder fee / fill</span>
               <strong>{money(builderFeePerFillUsd, 4)}</strong>
             </div>
@@ -3802,12 +4046,25 @@ function DashboardBody() {
               </strong>
             </div>
             <div>
-              <span>Gas / 24h</span>
+              <span>Stable gas / 24h</span>
               <strong>
                 {projectedDailyGasSui === null
                   ? "Learning"
                   : `~${projectedDailyGasSui.toFixed(2)} SUI`}
               </strong>
+            </div>
+            <div>
+              <span>Paid actions avoided</span>
+              <strong>
+                {avoidedTransactions}
+                {estimatedGasAvoidedSui === null
+                  ? ""
+                  : ` / ~${estimatedGasAvoidedSui.toFixed(4)} SUI`}
+              </strong>
+            </div>
+            <div>
+              <span>Last decision</span>
+              <strong>{snapshot?.execution.lastDecision ?? "Waiting"}</strong>
             </div>
           </div>
           <div className="check-list">

@@ -12,6 +12,8 @@ export type StrategyObjective = z.infer<typeof strategyObjectiveSchema>;
 export const rotationModeSchema = z.enum(["portfolio", "single-slot"]);
 export type RotationMode = z.infer<typeof rotationModeSchema>;
 
+export const MAX_SELECTED_MARKETS = 64;
+
 export const hedgeConfigSchema = z
   .object({
     enabled: z.boolean().default(false),
@@ -49,7 +51,7 @@ export type MakerMarket = z.infer<typeof makerMarketSchema>;
 
 export const makerConfigSchema = z
   .object({
-    markets: z.array(makerMarketSchema).min(1).max(15),
+    markets: z.array(makerMarketSchema).min(1).max(MAX_SELECTED_MARKETS),
     collateralCoinType: z.string().min(8).default(USDC_COIN_TYPE),
     mode: runtimeModeSchema.default("observe"),
     rotationMode: rotationModeSchema.default("portfolio"),
@@ -68,7 +70,17 @@ export const makerConfigSchema = z
     quoteSizeUsd: z.number().positive().max(1_000).default(10),
     spreadBps: z.number().min(8).max(500).default(30),
     refreshMs: z.number().int().min(2_000).max(300_000).default(8_000),
-    maxQuoteAgeMs: z.number().int().min(10_000).max(3_900_000).default(120_000),
+    marketDwellMs: z.number().int().min(2_000).max(3_600_000).default(60_000),
+    requoteThresholdBps: z.number().min(0).max(500).default(5),
+    maxRestingMs: z.number().int().min(5_000).max(3_600_000).default(60_000),
+    autoRebalanceEnabled: z.boolean().default(false),
+    rebalanceGrossExposureUsd: z.number().positive().max(100_000).default(100),
+    maxQuoteAgeMs: z
+      .number()
+      .int()
+      .min(10_000)
+      .max(86_400_000)
+      .default(120_000),
     maxInventoryUsd: z.number().positive().max(10_000).default(50),
     inventoryTargetUsd: z.number().min(-10_000).max(10_000).default(0),
     maxGrossExposureUsd: z.number().positive().max(100_000).default(150),
@@ -110,6 +122,22 @@ export const makerConfigSchema = z
         });
       }
     }
+    if (config.autoRebalanceEnabled) {
+      if (!config.hedge.enabled) {
+        context.addIssue({
+          code: "custom",
+          path: ["autoRebalanceEnabled"],
+          message: "Automatic rebalancing requires paired-account hedging",
+        });
+      }
+      if (config.rebalanceGrossExposureUsd > config.maxGrossExposureUsd) {
+        context.addIssue({
+          code: "custom",
+          path: ["rebalanceGrossExposureUsd"],
+          message: "Rebalance exposure must not exceed the hard gross limit",
+        });
+      }
+    }
     if (new Set(ids).size !== ids.length) {
       context.addIssue({
         code: "custom",
@@ -131,14 +159,40 @@ export const makerConfigSchema = z
       });
     }
 
+    if (
+      config.rotationMode === "single-slot" &&
+      config.marketDwellMs < config.refreshMs
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["marketDwellMs"],
+        message: "Market dwell time cannot be shorter than the poll interval",
+      });
+    }
+    if (
+      config.rotationMode === "single-slot" &&
+      config.maxRestingMs < config.refreshMs
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["maxRestingMs"],
+        message: "Maximum resting age cannot be shorter than the poll interval",
+      });
+    }
+
     const minimumQuoteAgeMs =
-      config.refreshMs * config.markets.length +
-      Math.min(10_000, config.refreshMs);
+      config.rotationMode === "single-slot"
+        ? Math.max(
+            config.refreshMs * 2 + Math.min(10_000, config.refreshMs),
+            config.maxRestingMs + 30_000,
+          )
+        : config.refreshMs * config.markets.length +
+          Math.min(10_000, config.refreshMs);
     if (config.maxQuoteAgeMs < minimumQuoteAgeMs) {
       context.addIssue({
         code: "custom",
         path: ["maxQuoteAgeMs"],
-        message: `Quote age limit must cover one full rotation (${minimumQuoteAgeMs} ms)`,
+        message: `Quote age limit must cover the observation window (${minimumQuoteAgeMs} ms)`,
       });
     }
 
@@ -265,6 +319,8 @@ export type RuntimeSnapshot = {
     confirmedLiveQuotes: number;
     averageGasMist: number | null;
     gasRunwayTransactions: number | null;
+    avoidedTransactions: number;
+    lastDecision: "quoted" | "switched" | "held" | "rebalanced" | null;
     lastExecutionAt: string | null;
   };
   hedge: {

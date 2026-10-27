@@ -23,20 +23,20 @@ A profile supplies conservative global defaults. Every selected market can overr
 
 The engine resolves the effective policy for the current market before quote calculation, risk checks, and transaction construction. Saving while running stops, cancels tagged orders, and restarts with the new configuration.
 
-A strategy can select up to 15 markets in two rotation modes:
+A strategy can select any count from one to the server cap of 64 markets in two rotation modes:
 
 - **Portfolio:** each market keeps its pair until the next lap. Capital and stale-quote limits must cover every selected market.
-- **One live pair:** one pair rests at a time. Before switching, Maker checks the prior market for attributed fills. A clean switch combines prior-market cancellation and next-market placement in one Sui transaction. Missing or delayed prior-order state blocks the switch and triggers fail-closed cancellation.
+- **One live pair:** one pair rests at a time. The poll interval controls off-chain price and risk checks; market dwell controls rotation. An unchanged quote remains on-chain until movement crosses the requote threshold or its maximum resting age expires. Before switching, Maker checks the prior market for attributed fills. A clean switch combines prior-market cancellation and next-market placement in one Sui transaction. Missing or delayed prior-order state blocks the switch and triggers fail-closed cancellation.
 
-Both modes wrap continuously from the final selected market to the first until stopped or a safety gate trips. One-live-pair rotation uses less simultaneous collateral, but each market receives only its share of active quote time; 15 selected markets imply roughly one-fifteenth uptime per market.
+Both modes wrap continuously from the final selected market to the first until stopped or a safety gate trips. One-live-pair rotation uses less simultaneous collateral, but each market receives only its share of active quote time; N selected markets imply roughly one-Nth uptime per market.
 
-One-live-pair mode reduces simultaneous collateral demand; it does not create 15-market uptime from one market's capital. At a two-second cadence it can submit up to 43,200 quote transactions per day, so two seconds is reserved for bounded testing rather than the recommended unattended cadence.
+One-live-pair mode reduces simultaneous collateral demand; it does not create N-market uptime from one market's capital. A two-second poll does not itself spend gas. A two-second dwell or forced-refresh interval could still submit up to 43,200 transactions per day, so paid intervals that short are reserved for bounded testing.
 
 ### Quote lifecycle
 
 Maker uses Aftermath's protocol index as fair value and the live best bid and ask as execution constraints. It refuses to quote when book midpoint diverges from the index beyond policy, creates a post-only bid and ask around the index, rounds against the venue tick while reserving one tick behind the opposite side, skews both around the configured inventory target, and uses Aftermath's atomic cancel-and-place transaction to replace its prior quote pair.
 
-Every quote receives fresh client order IDs in Maker's reserved namespace. Portfolio cancellation recognizes that namespace and uses the exact IDs recorded from confirmed transactions and live account state. It does not cancel manual orders or orders created by another client.
+Every quote receives fresh client order IDs in Maker's reserved namespace. Portfolio cancellation recognizes that namespace and uses the exact IDs recorded from confirmed transactions and live account state. It does not cancel manual orders or orders created by another client. If simulation reports that a post-only quote would cross a book that moved after observation, the atomic transaction has no effect. A same-market requote keeps its prior pair; a cross-market switch explicitly cancels the prior pair, then rebuilds from a fresh book on the next poll. Other transaction failures remain fail-closed.
 
 ### Paired-account delta hedge
 
@@ -48,7 +48,7 @@ A wallet can assign one authorized Aftermath account to quoting and a different 
 4. poll both accounts through a bounded index-consistency window and require no resting orders, including manual orders;
 5. cap the hedge to the smaller of combined account delta, attributed pending-fill delta, and the configured maximum;
 6. submit an opposite market order from the hedge account; and
-7. reload both accounts and mark the fills processed only when actual combined delta is inside the completion tolerance.
+7. poll both accounts through a bounded post-transaction indexing window, then mark fills processed only when observed combined delta is inside the completion tolerance.
 
 The trigger threshold controls when hedging begins; it is not the success threshold. A partial hedge suppresses new quotes and retries. No progress, material over-hedging, persistent orders, or an expired consistency window stops fail-closed.
 
@@ -56,13 +56,21 @@ This design cannot intentionally self-match: the hedge is triggered by a previou
 
 For example, $1,000 of attributed Maker bids creates positive perp delta. Once the threshold is crossed, the second account sells up to that attributable delta into the public Aftermath book. This reduces wallet-level direction, but both legs remain on Aftermath. It is not a cross-venue or spot hedge and still carries venue, basis, funding, liquidation, slippage, and execution risk. Thin books may require a wider slippage ceiling; Maker reports the failure and never raises the user-approved cap automatically.
 
+### Automatic paired-account rebalance
+
+A same-venue hedge can make wallet-level delta small while both accounts retain offsetting gross positions and consume collateral. Auto-rebalance turns continuous rotation into bounded exposure epochs. When Maker gross exposure plus the next quote would reach the configured rebalance line, it cancels all Maker-tagged quotes and executes reduce-only market orders on both dedicated accounts.
+
+The runtime requires three consecutive flat account reads before it starts another epoch. Because account and fill indexes can expose related state in different orders, one sweep may not include every position visible a few seconds later. Maker records the residual account and market state, retries up to two more paired sweeps, and otherwise stops fail-closed. Once the unwind begins, a Stop request cannot interrupt it.
+
+This is a risk and collateral-release control, not free rebalancing. Every sweep can cross the spread, incur slippage and gas, and realize losses. A lower threshold reduces inventory duration but raises taker and transaction cost. A higher threshold reduces rebalance frequency but leaves more gross exposure, collateral use, and liquidation risk. The appropriate line must be chosen from measured fills and costs, below the hard gross cap.
+
 ### Independent freshness protection
 
-The rotation interval grows with the number of selected markets. Configuration is rejected unless the stale-quote cutoff can cover one complete rotation plus a buffer.
+In portfolio mode, the observation window grows with the number of selected markets because every pair remains live. In one-live-pair mode only the active market is watched, so configuration requires the stale-observation cutoff to cover repeated polls rather than a full N-market lap.
 
-Live mode also runs an independent watchdog. If any selected market exceeds the cutoff, the watchdog invalidates the current cycle, stops scheduling, and immediately cancels Maker-tagged orders with retries. It does not wait for a stalled market RPC. Manual stop uses a bounded wait instead of hanging behind the RPC, and both paths reconcile again after an ambiguous cycle resolves.
+Live mode runs an independent watchdog. If a live market exceeds the cutoff, the watchdog invalidates the current cycle, stops scheduling, and immediately cancels Maker-tagged orders with retries. It does not wait for a stalled market RPC. Manual stop uses a bounded wait instead of hanging behind the RPC, and both paths reconcile again after an ambiguous cycle resolves.
 
-Gas runway excludes the configured worst-case transaction reserve. The desk projects both runway time and SUI use per 24 hours from measured quote transactions and the selected cadence. Reaching the reserve fails the next pre-signing safety gate and invokes fail-closed cancellation.
+Gas runway excludes the configured worst-case transaction reserve. The desk projects runway from measured quote transactions. For one-live-pair mode, stable-market cost uses the smaller of dwell and forced-refresh intervals, while every poll still performs off-chain risk work. Material price movement can trigger earlier paid requotes, so the projection is not a cap. Reaching the reserve fails the next pre-signing safety gate and invokes fail-closed cancellation.
 
 ### Three-cycle canary
 

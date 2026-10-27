@@ -20,11 +20,48 @@ const keyPath =
   process.env.AUDIT_WALLET_KEY_PATH ??
   process.env.HOME + "/.codex/secrets/aftermath-maker/audit-owner-20261027.key";
 const marketCount = Number(process.env.ROTATION_MARKETS ?? 15);
+const marketOffset = Number(process.env.ROTATION_MARKET_OFFSET ?? 0);
 const cycleCount = Number(process.env.ROTATION_CYCLES ?? 3);
 const cadenceMs = Number(process.env.ROTATION_CADENCE_MS ?? 2_000);
+const dwellMs = Number(process.env.ROTATION_DWELL_MS ?? cadenceMs);
+const requoteThresholdBps = Number(
+  process.env.ROTATION_REQUOTE_THRESHOLD_BPS ?? 5,
+);
+const maxRestingMs = Number(
+  process.env.ROTATION_MAX_RESTING_MS ?? Math.max(dwellMs, cadenceMs),
+);
+const autoRebalanceEnabled = process.env.ROTATION_AUTO_REBALANCE === "true";
+const rebalanceGrossExposureUsd = Number(
+  process.env.ROTATION_REBALANCE_GROSS_USD ?? 2.5,
+);
+const timeoutMs = Number(
+  process.env.ROTATION_TIMEOUT_MS ??
+    Math.max(120_000, cycleCount * dwellMs * 1.5 + 60_000),
+);
 const finalState = process.env.ROTATION_FINAL_STATE ?? "restored";
 if (finalState !== "restored" && finalState !== "staged") {
   throw new Error("ROTATION_FINAL_STATE must be restored or staged");
+}
+if (!Number.isInteger(marketCount) || marketCount < 1 || marketCount > 64) {
+  throw new Error("ROTATION_MARKETS must be an integer from 1 to 64");
+}
+if (!Number.isInteger(marketOffset) || marketOffset < 0) {
+  throw new Error("ROTATION_MARKET_OFFSET must be a non-negative integer");
+}
+if (!Number.isInteger(cycleCount) || cycleCount < 1) {
+  throw new Error("ROTATION_CYCLES must be a positive integer");
+}
+if (dwellMs < cadenceMs || maxRestingMs < cadenceMs) {
+  throw new Error(
+    "Rotation dwell and maximum resting age must cover the poll cadence",
+  );
+}
+if (
+  autoRebalanceEnabled &&
+  (!Number.isFinite(rebalanceGrossExposureUsd) ||
+    rebalanceGrossExposureUsd <= 0)
+) {
+  throw new Error("ROTATION_REBALANCE_GROSS_USD must be positive");
 }
 
 const encrypted = JSON.parse(fs.readFileSync(encryptedPath, "utf8"));
@@ -61,6 +98,26 @@ const call = async (method, path, data) => {
 };
 const sleep = (milliseconds) =>
   new Promise((resolve) => setTimeout(resolve, milliseconds));
+const flattenAndVerify = async (maxSlippageBps) => {
+  for (let attempt = 1; attempt <= 4; attempt += 1) {
+    const recovery = await call("post", "api/runtime/flatten", {
+      confirmation: "FLATTEN",
+      maxSlippageBps,
+    });
+    await sleep(1_500);
+    const first = await call("get", "api/accounts");
+    if (first.accounts.every((account) => account.positionCount === 0)) {
+      await sleep(1_500);
+      const second = await call("get", "api/accounts");
+      if (second.accounts.every((account) => account.positionCount === 0)) {
+        return recovery;
+      }
+    }
+  }
+  throw new Error(
+    "Recovery did not produce two consecutive flat account reads",
+  );
+};
 const inventoryFloor = (quoteSizeUsd, spreadBps, skewBps) =>
   Math.ceil(
     quoteSizeUsd *
@@ -89,9 +146,10 @@ let started = false;
 let recovered = false;
 try {
   await authenticate();
-  const [status, configPayload] = await Promise.all([
+  const [status, configPayload, startingAccounts] = await Promise.all([
     call("get", "api/status"),
     call("get", "api/config"),
+    call("get", "api/accounts"),
   ]);
   originalConfig = configPayload.config;
   if (status.snapshot.running) {
@@ -99,6 +157,13 @@ try {
   }
   if ((status.snapshot.portfolio.grossExposureUsd ?? 0) > 0) {
     throw new Error("Maker account must be flat before the rotation canary");
+  }
+  if (
+    startingAccounts.accounts.some((account) => account.positionCount !== 0)
+  ) {
+    throw new Error(
+      "Every owner account must be flat before the rotation canary",
+    );
   }
   const rewards = await call(
     "get",
@@ -120,8 +185,8 @@ try {
         market.overrides?.maxInventoryUsd ?? originalConfig.maxInventoryUsd,
     ),
   );
-  const candidates = rewards.rewards.marketModel.opportunities
-    .filter((opportunity) => {
+  const eligibleCandidates = rewards.rewards.marketModel.opportunities.filter(
+    (opportunity) => {
       if (!opportunity.objectiveEligible) return false;
       if (opportunity.minimumQuoteSizeUsd > quoteCap + 1e-9) return false;
       return (
@@ -132,11 +197,33 @@ try {
         ) <=
         inventoryCap + 1e-9
       );
-    })
-    .slice(0, marketCount);
-  if (candidates.length < marketCount) {
+    },
+  );
+  if (eligibleCandidates.length < marketCount) {
     throw new Error(
-      `Only ${candidates.length} markets fit the saved quote and inventory caps; ${marketCount} requested`,
+      `Only ${eligibleCandidates.length} markets fit the saved quote and inventory caps; ${marketCount} requested`,
+    );
+  }
+  const normalizedOffset = marketOffset % eligibleCandidates.length;
+  const candidates = Array.from(
+    { length: marketCount },
+    (_, index) =>
+      eligibleCandidates[
+        (normalizedOffset + index) % eligibleCandidates.length
+      ],
+  );
+  const requiredInventoryHeadroom = Math.max(
+    ...candidates.map((opportunity) =>
+      inventoryFloor(
+        opportunity.minimumQuoteSizeUsd * 2,
+        opportunity.suggestedSpreadBps,
+        originalConfig.inventorySkewBps,
+      ),
+    ),
+  );
+  if (inventoryCap < requiredInventoryHeadroom) {
+    throw new Error(
+      `The saved $${inventoryCap.toFixed(2)} inventory cap is below the $${requiredInventoryHeadroom.toFixed(2)} two-fill canary headroom`,
     );
   }
 
@@ -158,9 +245,17 @@ try {
       },
     })),
     refreshMs: cadenceMs,
+    marketDwellMs: dwellMs,
+    requoteThresholdBps,
+    maxRestingMs,
+    autoRebalanceEnabled,
+    rebalanceGrossExposureUsd: Math.min(
+      rebalanceGrossExposureUsd,
+      originalConfig.maxGrossExposureUsd,
+    ),
     maxQuoteAgeMs: Math.max(
-      10_000,
-      cadenceMs * candidates.length + Math.min(10_000, cadenceMs),
+      cadenceMs * 2 + Math.min(10_000, cadenceMs),
+      maxRestingMs + 30_000,
     ),
     staleBookMs: 3_000,
     maxLeverage: 1,
@@ -171,10 +266,13 @@ try {
   const baselineCycle = baseline.snapshot.cycle;
   const baselineConfirmedQuotes =
     baseline.snapshot.execution.confirmedLiveQuotes;
+  const baselineAvoidedTransactions =
+    baseline.snapshot.execution.avoidedTransactions ?? 0;
+  const startingGasSui = baseline.snapshot.balances.gasSui;
   await call("post", "api/runtime/start", {});
   started = true;
 
-  const deadline = Date.now() + 120_000;
+  const deadline = Date.now() + timeoutMs;
   let latest = baseline;
   while (Date.now() < deadline) {
     await sleep(1_000);
@@ -187,6 +285,9 @@ try {
         ? latest.snapshot.execution.confirmedLiveQuotes -
           baselineConfirmedQuotes
         : latest.snapshot.cycle - baselineCycle;
+    if (!latest.snapshot.running && progress < cycleCount) {
+      throw new Error("Runtime stopped before the rotation canary completed");
+    }
     if (progress >= cycleCount) break;
   }
   const completedCycles =
@@ -200,10 +301,7 @@ try {
   await call("post", "api/runtime/stop", {});
   started = false;
   if (mode === "live") {
-    await call("post", "api/runtime/flatten", {
-      confirmation: "FLATTEN",
-      maxSlippageBps: originalConfig.hedge.maxSlippageBps,
-    });
+    await flattenAndVerify(originalConfig.hedge.maxSlippageBps);
   }
   recovered = true;
   const finalConfig =
@@ -221,8 +319,25 @@ try {
         at: new Date().toISOString(),
         mode,
         marketCount: candidates.length,
+        marketOffset: normalizedOffset,
         markets: candidates.map((candidate) => candidate.symbol),
         completedCycles,
+        pollIntervalMs: cadenceMs,
+        marketDwellMs: dwellMs,
+        requoteThresholdBps,
+        maxRestingMs,
+        autoRebalanceEnabled,
+        rebalanceGrossExposureUsd: trialConfig.rebalanceGrossExposureUsd,
+        avoidedTransactions:
+          latest.snapshot.execution.avoidedTransactions ??
+          baselineAvoidedTransactions,
+        startingGasSui,
+        endingGasSui: finalStatus.snapshot.balances.gasSui,
+        gasSpentSui:
+          startingGasSui === null ||
+          finalStatus.snapshot.balances.gasSui === null
+            ? null
+            : startingGasSui - finalStatus.snapshot.balances.gasSui,
         transactions: latest.snapshot.markets
           .filter((market) => market.lastTransactionDigest)
           .map((market) => ({
@@ -255,10 +370,9 @@ try {
     await call("post", "api/runtime/stop", {}).catch(() => undefined);
   }
   if (mode === "live" && trialConfig) {
-    recovered = await call("post", "api/runtime/flatten", {
-      confirmation: "FLATTEN",
-      maxSlippageBps: originalConfig?.hedge.maxSlippageBps ?? 500,
-    })
+    recovered = await flattenAndVerify(
+      originalConfig?.hedge.maxSlippageBps ?? 500,
+    )
       .then(() => true)
       .catch(() => false);
   }

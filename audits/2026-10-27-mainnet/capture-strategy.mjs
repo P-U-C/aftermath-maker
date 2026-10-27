@@ -62,11 +62,13 @@ await call("post", "api/auth/verify", {
   signature: signed.signature,
 });
 await call("post", "api/runtime/cycle", {});
-const [status, configPayload, accountsPayload] = await Promise.all([
-  call("get", "api/status"),
-  call("get", "api/config"),
-  call("get", "api/accounts"),
-]);
+const [status, configPayload, accountsPayload, performancePayload] =
+  await Promise.all([
+    call("get", "api/status"),
+    call("get", "api/config"),
+    call("get", "api/accounts"),
+    call("get", "api/performance"),
+  ]);
 console.log(
   JSON.stringify({
     deployedState: {
@@ -78,7 +80,25 @@ console.log(
       gasRunwayTransactions: status.snapshot.execution.gasRunwayTransactions,
       averageGasMist: status.snapshot.execution.averageGasMist,
       rotationMode: configPayload.config.rotationMode,
+      pollIntervalMs: configPayload.config.refreshMs,
+      marketDwellMs: configPayload.config.marketDwellMs,
+      maxRestingMs: configPayload.config.maxRestingMs,
+      maxQuoteAgeMs: configPayload.config.maxQuoteAgeMs,
       markets: configPayload.config.markets.map((market) => market.symbol),
+      grossExposureUsd: status.snapshot.portfolio.grossExposureUsd,
+      nonzeroMarkets: status.snapshot.markets
+        .filter((market) => Math.abs(market.inventoryUsd ?? 0) > 0.000_001)
+        .map((market) => ({
+          symbol: market.symbol,
+          inventoryUsd: market.inventoryUsd,
+        })),
+      attributedFills: performancePayload.performance.attributed.fills,
+      attributedFillMarkets: [
+        ...new Set(
+          performancePayload.performance.fills.map((fill) => fill.symbol),
+        ),
+      ],
+      confirmedHedgeFills: performancePayload.performance.hedge.fills,
       accounts: accountsPayload.accounts.map((account) => ({
         accountId: account.accountId,
         equityUsd: account.equityUsd,
@@ -115,8 +135,18 @@ try {
       deviceScaleFactor: 1,
     });
     const page = await context.newPage();
+    const browserErrors = [];
+    page.on("pageerror", (error) => browserErrors.push(error.message));
+    page.on("console", (message) => {
+      if (message.type() === "error") browserErrors.push(message.text());
+    });
     await page.goto(baseUrl, { waitUntil: "networkidle" });
     await page.getByRole("heading", { name: "Maker controls" }).waitFor();
+    if (browserErrors.length) {
+      throw new Error(
+        `${capture.name} emitted browser errors: ${browserErrors.join(" | ")}`,
+      );
+    }
     const metrics = await page.evaluate(() => ({
       scrollWidth: document.documentElement.scrollWidth,
       clientWidth: document.documentElement.clientWidth,
@@ -141,6 +171,8 @@ try {
       "Farming / Profit / Both",
       "One live pair",
       "Run 3 x 2s",
+      "Auto-rebalance dedicated accounts",
+      "of Maker equity",
     ]) {
       if (!metrics.bodyText.toLowerCase().includes(label.toLowerCase())) {
         throw new Error(`${capture.name} is missing ${label}`);

@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 import {
   executionGasUsedMist,
   explainTransactionFailure,
+  isPostOnlyWouldMatch,
   postedOrderIds,
+  totalSuiBalance,
 } from "../src/gateway.js";
 
 const result = {
@@ -39,6 +41,10 @@ describe("gateway execution evidence", () => {
     expect(executionGasUsedMist(result)).toBe(130);
   });
 
+  it("counts coin objects and address balance in gas readiness", () => {
+    expect(totalSuiBalance({ balance: "3167713058" })).toBe(3.167713058);
+  });
+
   it("extracts only order IDs emitted by posted-order events", () => {
     expect(postedOrderIds(result)).toEqual(["41", "42"]);
   });
@@ -62,6 +68,18 @@ describe("gateway execution evidence", () => {
     expect(explainTransactionFailure(venueError)).toContain(venueError);
     expect(explainTransactionFailure("another failure")).toBe(
       "another failure",
+    );
+  });
+
+  it("classifies a post-only crossing race as retryable", () => {
+    const venueError =
+      "MoveAbort in 8th command, abort code: 47, in '0x1::clearing_house::execute_limit_order'";
+    expect(isPostOnlyWouldMatch(venueError)).toBe(true);
+    expect(explainTransactionFailure(venueError)).toContain(
+      "retrying from a fresh observation",
+    );
+    expect(isPostOnlyWouldMatch("abort code: 47 in another module")).toBe(
+      false,
     );
   });
 });

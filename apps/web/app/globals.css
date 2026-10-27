@@ -2002,7 +2002,8 @@ input[type="range"] {
   gap: 5px;
 }
 
-.reward-count select {
+.reward-count input {
+  width: 82px;
   height: 34px;
   color: var(--paper);
   background: #252a27;

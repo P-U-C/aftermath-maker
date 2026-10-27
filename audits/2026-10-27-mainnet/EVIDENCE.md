@@ -130,6 +130,21 @@ A corrected 15-market one-live-pair canary counted persisted confirmed transacti
 
 Both bounded runs ended stopped, restored the saved Paper strategy, and reported zero positions on accounts 1745 and 1746. See [ITERATION-4.md](ITERATION-4.md) for the 15-market set, first observer defect, measured gas economics, and unattended-operation boundary.
 
+## Long rotation and automatic rebalance
+
+A 45-action suite ran 15 bounded batches across 20 distinct markets. It produced 14 newly attributed Maker fills, seven confirmed hedges, and 18 recovery transactions without a cycle error or watchdog trip. Every one of seven post-cancel and seven post-hedge index waits resolved; two fill/position ordering mismatches also resolved inside the bounded reconciliation window. Eight post-only crossing races were retried without relaxing post-only.
+
+A first automatic-rebalance canary confirmed a paired flatten but failed closed when an earlier market's position remained visible. Its recovery completed a second reduce-only pass and restored both accounts flat. Maker now performs up to three bounded paired sweeps itself and records residual state before each retry.
+
+The corrected 15-market Live canary completed 15 confirmed quote actions, four real fill-driven hedges, and four automatic paired-account rebalances. It continued rotation after each rebalance, reported 12 avoided paid replacements, then stopped and found both accounts already flat. The final recovery therefore submitted no market order. Representative evidence:
+
+- First hedge: [`99iS76...r7RD`](https://suiscan.xyz/mainnet/tx/99iS766VX5s6Tx2x5o8F4LVKD532RBBC673JVNBcr7RD)
+- First paired flatten: [Maker `F8JY8L...sjdn`](https://suiscan.xyz/mainnet/tx/F8JY8LtgXMPmCE2nTFxCWFvUzN8T1rQKLqSDnFAmsjdn), [hedge `DBmVm3...WDFJ`](https://suiscan.xyz/mainnet/tx/DBmVm3k5gfD1bdrREbRv4vqWEg1aq7BZmHWcRM3LWDFJ)
+- Fourth hedge: [`FF3k4C...redE`](https://suiscan.xyz/mainnet/tx/FF3k4CkAvSMxvNRuNnp3eCeoiwmr1Q6AM4eFHmVdredE)
+- Fourth paired flatten: [Maker `CrEiqX...AKpH`](https://suiscan.xyz/mainnet/tx/CrEiqXGLH4wHwwWKdMvoWgX9u4cqctqLdtooN7ySAKpH), [hedge `2afyyw...uRoy`](https://suiscan.xyz/mainnet/tx/2afyywkcTLEqTSezBkVaiHkCDHzUcZ4AP5Bf4uCwuRoy)
+
+The corrected run's observed agent balance changed by `-0.008615794 SUI`. Reported account-pair equity changed by about `-$0.015608`. These are balance movements, not complete PnL. See [ITERATION-5.md](ITERATION-5.md) for the failure sequence, all four rebalance epochs, measured costs, and evidence boundary.
+
 ## Browser evidence
 
 - [Final desktop reconciliation](member-reconcile-paper.png)
@@ -145,26 +160,24 @@ Both bounded runs ended stopped, restored the saved Paper strategy, and reported
 
 At the final read:
 
-- Account 1745 equity: about $7.4861
-- Account 1746 equity: about $7.4919
+- Account 1745 equity: about $7.44242
+- Account 1746 equity: about $7.44930
 - Saved mode: Paper
-- Rotation: one live pair, 15 markets, 15-second turns
+- Rotation: one live pair across 15 staged markets, with 5-second polls and 60-second turns
 - Engine: stopped
-- Attributed Maker fills: 4, all covered by recorded Maker order IDs
-- Confirmed hedge executions: 1
-- Three confirmed objective-canary quotes and three confirmed corrected rotation-canary quotes
-- Both accounts: zero positions after separate reduce-only recovery transactions
+- Confirmed quote actions in the long bounded suite: 45 across 20 distinct markets
+- Confirmed quote actions in the corrected automatic-rebalance canary: 15 across 15 selected markets
+- Confirmed automatic paired-account rebalance epochs: 4
+- Both accounts: zero positions; the final canary recovery found nothing left to flatten
 - Live gates: both disabled
-- Agent gas: 0.167713058 SUI
-- Reserve-aware gas runway: 244 quotes, about 61 minutes at the staged cadence
+- Agent gas: 2.985289723 SUI
 - Root response: private, no-cache, no-store
 - Desktop and 390 px authenticated layouts: no page-level horizontal overflow or browser errors
-- Fresh-container readiness: account 1745 immediately reported funded; agent gas remains explicitly unknown until a runtime cycle
 - Membership management: hidden from the member wallet; its operator status request returned HTTP 403
-- Post-rotation state backup: `backups/aftermath-maker-20261027T124559Z.tar.gz` on the deployment host
+- Final state backup: `backups/aftermath-maker-20261027T165125Z.tar.gz` on the deployment host
 
 The agent capabilities remain intentionally authorized on both accounts for further testing. They were not revoked because this is the retained audit setup.
 
 ## What remains unproven
 
-Mainnet now proves fill ingestion, exact order attribution, known fee reporting, repeated atomic replacement, a three-policy canary, atomic cross-market one-pair rotation, protective halt, post-cancel index-lag reconciliation, a fill-triggered hedge from the second account, actual combined-delta verification, and reduce-only recovery of both accounts. Withdrawal and final capability revocation were not executed because the two-account setup is being retained. Independent external fair value, cross-venue hedging, long-duration economics, restart recovery after a hard host failure, and complete net PnL attribution remain outside this bounded audit.
+Mainnet now proves fill ingestion, exact current-run order attribution, known fee reporting, repeated atomic replacement, a three-policy canary, N-market one-pair rotation, global fill reconciliation before switching, protective halt, bidirectional fill/position index-lag reconciliation, fill-triggered hedging from the second account, actual combined-delta verification, automatic paired-account rebalance, continuation after rebalance, and reduce-only recovery of both accounts. Withdrawal and final capability revocation were not executed because the two-account setup is being retained. Independent external fair value, cross-venue hedging, long-duration economics, restart recovery after a hard host failure, and complete net PnL attribution remain outside this bounded audit.
