@@ -38,6 +38,20 @@ const outputDirectory = path.resolve(
   option("--output", defaultOutput),
 );
 
+const makerViews = ["desk", "strategy", "markets", "performance", "venues"];
+
+function selectedViews() {
+  const requested = option("--view", null);
+  if (!requested) return [null];
+  if (requested === "all") return makerViews;
+  if (!makerViews.includes(requested)) {
+    throw new Error(
+      `Unknown view "${requested}". Choose: ${makerViews.join(", ")}, all`,
+    );
+  }
+  return [requested];
+}
+
 const captures = [
   {
     name: "desktop-light",
@@ -120,7 +134,7 @@ async function waitForFixture(page, stateName) {
     return;
   }
 
-  await page.getByRole("heading", { name: "Maker controls" }).waitFor();
+  await page.getByRole("navigation", { name: "Maker views" }).waitFor();
   if (stateName === "onboarding") {
     await page
       .getByRole("heading", { name: "Authorize once. Run unattended." })
@@ -128,7 +142,7 @@ async function waitForFixture(page, stateName) {
   }
 }
 
-async function capture(browser, stateName, captureConfig) {
+async function capture(browser, stateName, captureConfig, view) {
   const fixture = fixtureStates[stateName];
   const context = await browser.newContext({
     viewport: captureConfig.viewport,
@@ -178,8 +192,30 @@ async function capture(browser, stateName, captureConfig) {
   });
 
   try {
-    await page.goto(baseUrl, { waitUntil: "networkidle" });
+    await page.goto(`${baseUrl}${view ? `#${view}` : ""}`, {
+      waitUntil: "networkidle",
+    });
     await waitForFixture(page, stateName);
+    if (fixture.auth.status === 200) {
+      const tabStops = await page
+        .getByRole("navigation", { name: "Maker views" })
+        .getByRole("link")
+        .evaluateAll((links) => links.map((link) => link.tabIndex));
+      if (
+        tabStops.length !== makerViews.length ||
+        tabStops.some((tab) => tab < 0)
+      ) {
+        throw new Error(
+          `${stateName}/${captureConfig.name} has unreachable view tabs`,
+        );
+      }
+    }
+    if (view && stateName !== "onboarding") {
+      await page
+        .locator(`[data-view="${view}"]:not([hidden])`)
+        .first()
+        .waitFor();
+    }
     await page.waitForTimeout(100);
 
     const dimensions = await page.evaluate(() => ({
@@ -205,11 +241,11 @@ async function capture(browser, stateName, captureConfig) {
 
     const file = path.join(
       outputDirectory,
-      `${stateName}-${captureConfig.name}.png`,
+      `${stateName}${view ? `-${view}` : ""}-${captureConfig.name}.png`,
     );
     await page.screenshot({ path: file, fullPage: false });
     process.stdout.write(
-      `${stateName}/${captureConfig.name}: ${file} (${dimensions.scrollWidth}px wide)\n`,
+      `${stateName}${view ? `/${view}` : ""}/${captureConfig.name}: ${file} (${dimensions.scrollWidth}px wide)\n`,
     );
   } finally {
     await context.close();
@@ -226,8 +262,10 @@ const browser = await chromium.launch({
 
 try {
   for (const stateName of selectedStates()) {
-    for (const captureConfig of captures) {
-      await capture(browser, stateName, captureConfig);
+    for (const view of selectedViews()) {
+      for (const captureConfig of captures) {
+        await capture(browser, stateName, captureConfig, view);
+      }
     }
   }
 } finally {

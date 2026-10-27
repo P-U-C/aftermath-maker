@@ -1,5 +1,7 @@
+export type SpreadMarkState = "stopped" | "paper" | "live";
+
 type SpreadMarkProps = {
-  state: "stopped" | "paper" | "live";
+  state: SpreadMarkState;
   size?: number;
   label?: string;
 };
