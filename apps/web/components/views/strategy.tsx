@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { X } from "lucide-react";
 
 import { formatMoney } from "../../lib/format";
 import type { VenueDescriptor } from "../../lib/venues";
@@ -8,12 +9,25 @@ import { ViewFrame } from "./view-frame";
 export function StrategyView({
   active,
   children,
+  onClose,
 }: {
   active: boolean;
   children: ReactNode;
+  onClose: () => void;
 }) {
   return (
     <ViewFrame active={active} name="strategy">
+      <header className="strategy-mobile-sheet-header">
+        <strong>Edit strategy</strong>
+        <Button
+          variant="quiet"
+          size="icon"
+          onClick={onClose}
+          aria-label="Close strategy"
+        >
+          <X size={20} aria-hidden="true" />
+        </Button>
+      </header>
       {children}
     </ViewFrame>
   );

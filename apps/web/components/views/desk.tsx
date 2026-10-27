@@ -44,9 +44,8 @@ export type DeskFill = {
 export type DeskEvent = {
   id: number;
   occurredAt: string;
-  category: string;
-  action: string;
-  outcome: string;
+  severity: "info" | "warning" | "error";
+  sentence: string;
 };
 
 type DeskViewProps = {
@@ -179,7 +178,7 @@ export function DeskView({
 
   return (
     <ViewFrame active={active} name="desk">
-      <div className="desk-page">
+      <div className={running ? "desk-page is-running" : "desk-page"}>
         <section className="desk-hero">
           <div>
             <span>Net known result, last 24 hours</span>
@@ -255,7 +254,8 @@ export function DeskView({
             className="desk-ladder-card"
             title={
               <span className="desk-card-title">
-                Quoting {market.symbol}
+                <span className="desk-card-title-prefix">Quoting </span>
+                {market.symbol}
                 <VenueChip venue={venue} />
               </span>
             }
@@ -466,12 +466,28 @@ export function DeskView({
                 <ListRow
                   key={event.id}
                   leading={<Clock3 size={15} aria-hidden="true" />}
-                  trailing={event.outcome}
                 >
                   <span className="desk-event-row">
-                    <time>{formatTimestamp(event.occurredAt)}</time>
-                    <strong>{event.action}</strong>
-                    <span>{event.category}</span>
+                    <time dateTime={event.occurredAt}>
+                      <span>
+                        {new Intl.DateTimeFormat("en-US", {
+                          month: "short",
+                          day: "numeric",
+                        }).format(new Date(event.occurredAt))}
+                      </span>
+                      <span>
+                        {new Intl.DateTimeFormat("en-US", {
+                          hour: "numeric",
+                          minute: "2-digit",
+                        }).format(new Date(event.occurredAt))}
+                      </span>
+                    </time>
+                    <span
+                      className={`desk-event-severity is-${event.severity}`}
+                    >
+                      {event.severity}
+                    </span>
+                    <strong>{event.sentence}</strong>
                   </span>
                 </ListRow>
               ))
@@ -481,6 +497,23 @@ export function DeskView({
           </div>
         </Card>
       </div>
+
+      {running && (
+        <div className="desk-phone-dock" aria-label="Running controls">
+          <Button
+            variant="quiet"
+            size="large"
+            onClick={onFlatten}
+            disabled={flattenDisabled}
+          >
+            Flatten…
+          </Button>
+          <Button variant="stop" size="large" onClick={onStop}>
+            <CircleStop size={18} aria-hidden="true" />
+            Stop
+          </Button>
+        </div>
+      )}
 
       <Sheet
         open={flattenArmed}

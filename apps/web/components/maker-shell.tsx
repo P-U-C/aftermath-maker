@@ -85,11 +85,27 @@ export function MakerShell({
       : displayedMode === "paper"
         ? "paper"
         : "neutral";
+  const activeLabel =
+    makerViews.find((view) => view.id === activeView)?.label ?? "Desk";
 
   return (
     <main className="shell">
       {live && <div className="live-rail" aria-hidden="true" />}
       <header className="maker-nav">
+        <div className="maker-phone-heading">
+          <span className="maker-phone-title">
+            <SpreadMark
+              state={markState}
+              size={30}
+              label={`Maker is ${displayedMode}`}
+            />
+            <strong>{activeLabel}</strong>
+          </span>
+          <Pill tone={modeTone} dot={running}>
+            {displayedMode[0]?.toUpperCase()}
+            {displayedMode.slice(1)}
+          </Pill>
+        </div>
         <a
           className="maker-nav-brand"
           href="#desk"

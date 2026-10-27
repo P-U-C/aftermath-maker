@@ -5607,3 +5607,396 @@ footer a {
     bottom: 84px;
   }
 }
+
+/* Step 8: phone desk and editing surfaces. */
+.maker-phone-heading,
+.strategy-mobile-sheet-header,
+.desk-phone-dock {
+  display: none;
+}
+
+.desk-event-row {
+  display: grid;
+  grid-template-columns: 92px 66px minmax(0, 1fr);
+  align-items: center;
+  gap: 12px;
+}
+
+.desk-event-row time {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 5px;
+  color: var(--ink-3);
+  font-feature-settings: "tnum" 1;
+}
+
+.desk-event-severity {
+  min-height: 22px;
+  padding: 0 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  justify-self: start;
+  color: var(--ink-2);
+  background: var(--fill);
+  border-radius: 999px;
+  font-size: 11px;
+  text-transform: capitalize;
+}
+
+.desk-event-severity.is-warning {
+  color: var(--amber-text);
+  background: var(--amber-soft);
+}
+
+.desk-event-severity.is-error {
+  color: var(--ember-text);
+  background: var(--ember-soft);
+}
+
+.desk-event-row strong {
+  min-width: 0;
+  overflow: hidden;
+  font-size: 13px;
+  font-weight: 560;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@media (max-width: 700px) {
+  .maker-nav {
+    padding: 14px 14px 10px;
+    grid-template-columns: 1fr;
+    gap: 10px;
+  }
+
+  .live-rail + .maker-nav {
+    padding-top: 14px;
+  }
+
+  .maker-phone-heading {
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+  }
+
+  .maker-phone-title {
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+
+  .maker-phone-title .spread-mark {
+    width: 44px !important;
+    height: 44px !important;
+    border-radius: 13px !important;
+  }
+
+  .maker-phone-title strong {
+    overflow: hidden;
+    font-size: 32px;
+    font-stretch: 122%;
+    font-weight: 640;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .maker-phone-heading .ui-pill {
+    min-height: 38px;
+    padding: 0 15px;
+    font-size: 14px;
+  }
+
+  .maker-nav-brand,
+  .maker-nav-right {
+    display: none;
+  }
+
+  .maker-view-tabs {
+    width: 100%;
+    margin: 0;
+    padding: 4px;
+    grid-column: 1;
+    grid-row: 2;
+    justify-content: flex-start;
+    scroll-padding: 4px;
+  }
+
+  .maker-view-tabs a {
+    min-width: 92px;
+    min-height: 44px;
+    padding: 0 14px;
+    font-size: 13px;
+  }
+
+  .desk-page {
+    padding: 12px 14px 116px;
+  }
+
+  .desk-hero {
+    margin-bottom: 12px;
+    padding: 16px;
+    background: var(--surface);
+    border-radius: 18px;
+  }
+
+  .desk-hero > div:first-child > span {
+    font-size: 13px;
+  }
+
+  .desk-pnl {
+    margin: 4px 0 10px;
+    font-size: 44px;
+  }
+
+  .desk-facts {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .desk-facts span:nth-child(n + 3) {
+    display: none;
+  }
+
+  .desk-facts span {
+    color: var(--ink-2);
+    font-size: 13px;
+  }
+
+  .desk-facts b {
+    color: var(--ink);
+    font-size: 14px;
+  }
+
+  .desk-page.is-running .desk-hero-actions {
+    display: none;
+  }
+
+  .desk-primary-grid,
+  .desk-secondary-grid {
+    gap: 14px;
+  }
+
+  .desk-primary-grid .ui-card,
+  .desk-secondary-grid .ui-card,
+  .desk-log-card {
+    padding: 16px;
+    border-radius: 18px;
+  }
+
+  .desk-ladder-card {
+    grid-row: 1;
+  }
+
+  .desk-risk-card {
+    grid-row: 2;
+  }
+
+  .desk-ladder-card .ui-card-header,
+  .desk-risk-card .ui-card-header {
+    margin-bottom: 10px;
+    align-items: center;
+  }
+
+  .desk-ladder-card .ui-card-header h2,
+  .desk-risk-card .ui-card-header h2 {
+    font-size: 18px;
+  }
+
+  .desk-ladder-card .ui-card-header p,
+  .desk-risk-card .ui-card-header p {
+    display: none;
+  }
+
+  .desk-ladder-card .desk-card-action .ui-button {
+    display: none;
+  }
+
+  .desk-card-title-prefix {
+    display: none;
+  }
+
+  .desk-ladder {
+    min-height: 132px;
+  }
+
+  .desk-ladder-line {
+    top: 70px;
+  }
+
+  .desk-price-point {
+    top: 6px;
+  }
+
+  .desk-spread-pill {
+    bottom: 0;
+  }
+
+  .desk-risk-stack {
+    gap: 14px;
+  }
+
+  .desk-market-row {
+    min-height: 58px;
+    grid-template-columns: minmax(90px, 1fr) 64px;
+  }
+
+  .desk-market-row > span:nth-child(2),
+  .desk-market-row > span:nth-child(3) {
+    display: none;
+  }
+
+  .desk-log-card .ui-list-row {
+    min-height: 70px;
+    padding: 0;
+    grid-template-columns: 18px minmax(0, 1fr);
+  }
+
+  .desk-log-card .ui-list-row::after {
+    right: 0;
+    left: 30px;
+  }
+
+  .desk-event-row {
+    grid-template-columns: 76px 58px minmax(0, 1fr);
+    gap: 8px;
+  }
+
+  .desk-event-row time {
+    grid-template-columns: 1fr;
+    gap: 0;
+    font-size: 12px;
+  }
+
+  .desk-event-severity {
+    padding: 0 6px;
+    font-size: 12px;
+  }
+
+  .desk-event-row strong {
+    font-size: 12px;
+  }
+
+  .desk-phone-dock {
+    min-height: 92px;
+    padding: 12px 14px calc(12px + env(safe-area-inset-bottom));
+    position: fixed;
+    z-index: 210;
+    right: 0;
+    bottom: 0;
+    left: 0;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+    background: var(--material);
+    border-top: 1px solid var(--hair);
+    backdrop-filter: blur(22px);
+    -webkit-backdrop-filter: blur(22px);
+  }
+
+  .desk-phone-dock .ui-button {
+    min-height: 58px;
+    font-size: 18px;
+  }
+
+  .maker-view[data-view="strategy"] {
+    position: fixed;
+    z-index: 300;
+    inset: 0;
+    overflow-y: auto;
+    background: var(--canvas);
+    overscroll-behavior: contain;
+  }
+
+  .strategy-mobile-sheet-header {
+    min-height: 68px;
+    padding: 10px 16px;
+    position: sticky;
+    z-index: 5;
+    top: 0;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    background: var(--material);
+    border-bottom: 1px solid var(--hair);
+    backdrop-filter: blur(22px);
+    -webkit-backdrop-filter: blur(22px);
+  }
+
+  .strategy-mobile-sheet-header strong {
+    font-size: 20px;
+    font-stretch: 112%;
+  }
+
+  .strategy-mobile-sheet-header .ui-button-icon {
+    width: 44px;
+    min-height: 44px;
+  }
+
+  .maker-view[data-view="strategy"] .workspace-strategy {
+    width: calc(100% - 28px);
+    padding-top: 20px;
+  }
+
+  .maker-view[data-view="strategy"] .strategy-title {
+    display: none;
+  }
+
+  .maker-view[data-view="strategy"]
+    .workspace-strategy
+    :is(
+      .execution-model span,
+      .execution-model strong,
+      .objective-segments strong,
+      .objective-segments small,
+      .strategy-trial-heading span,
+      .strategy-trial-heading strong,
+      .switch-row strong,
+      .input-unit b,
+      label > small,
+      .strategy-mode-fieldset > small,
+      .glossary-term,
+      .strategy-profile-card dt,
+      .pair-picker-head strong,
+      .pair-picker-head span,
+      .pair-option strong,
+      .pair-option small,
+      .strategy-market-overrides summary span,
+      .strategy-market-overrides summary strong,
+      .override-toggle strong,
+      .override-inherited
+    ) {
+    font-size: 12px;
+  }
+
+  .maker-view[data-view="strategy"]
+    .workspace-strategy
+    :is(
+      .rotation-mode-segments button,
+      .trial-mode-segments button,
+      .segments button,
+      .strategy-venue-filters button,
+      .strategy-live-review,
+      .strategy-trial-actions .button,
+      .strategy-market-overrides summary,
+      .strategy-advanced > summary
+    ) {
+    min-height: 44px;
+  }
+
+  .maker-view[data-view="strategy"] .override-toggle {
+    min-height: 44px;
+  }
+
+  footer,
+  footer a {
+    font-size: 12px;
+  }
+
+  footer a {
+    min-height: 44px;
+  }
+}

@@ -690,6 +690,24 @@ const timeUntil = (timestamp: string | null) => {
   return days > 0 ? `${days}d ${hours}h` : `${hours}h`;
 };
 
+const deskEvent = (event: AuditEvent) => {
+  const words = event.action.replace(/[-_]+/g, " ");
+  const action = `${words.charAt(0).toUpperCase()}${words.slice(1)}`;
+  const failed = !["success", "ok", "completed"].includes(
+    event.outcome.toLowerCase(),
+  );
+  return {
+    id: event.id,
+    occurredAt: event.occurredAt,
+    severity: failed
+      ? ("error" as const)
+      : event.category === "risk" || event.category === "watchdog"
+        ? ("warning" as const)
+        : ("info" as const),
+    sentence: failed ? `${action}: ${event.outcome}.` : `${action}.`,
+  };
+};
+
 function DashboardBody() {
   const account = useCurrentAccount();
   const wallet = useDAppKit();
@@ -2343,7 +2361,7 @@ function DashboardBody() {
         marketsUpdatedAt={latestMarketUpdate}
         fills={deskFills}
         fillsUpdatedAt={performance?.asOf ?? null}
-        events={events}
+        events={events.map(deskEvent)}
         staleAfterMs={config.refreshMs * 2}
         onRefresh={() =>
           void mutate("refresh", async () => {
@@ -2359,7 +2377,10 @@ function DashboardBody() {
         onCancelFlatten={() => setFlattenArmed(false)}
       />
 
-      <StrategyView active={displayedView === "strategy"}>
+      <StrategyView
+        active={displayedView === "strategy"}
+        onClose={() => selectView("desk")}
+      >
         <section className="workspace workspace-strategy">
           <form className="settings-panel" onSubmit={saveConfig}>
             <header className="strategy-title">

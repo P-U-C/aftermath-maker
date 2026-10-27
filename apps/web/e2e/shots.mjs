@@ -341,6 +341,85 @@ async function capture(browser, stateName, captureConfig, view) {
         `${stateName}/${captureConfig.name} has horizontal overflow: ${dimensions.scrollWidth}px > ${dimensions.innerWidth}px`,
       );
     }
+    if (captureConfig.viewport.width <= 390 && fixture.auth.status === 200) {
+      const phoneCriteria = await page.evaluate(() => {
+        const isVisible = (element) => {
+          if (!(element instanceof HTMLElement)) return false;
+          if (element.closest('[aria-hidden="true"]')) return false;
+          const style = getComputedStyle(element);
+          const rect = element.getBoundingClientRect();
+          return (
+            style.display !== "none" &&
+            style.visibility !== "hidden" &&
+            Number(style.opacity) > 0 &&
+            rect.width > 0 &&
+            rect.height > 0
+          );
+        };
+        const all = Array.from(document.body.querySelectorAll("*"));
+        const smallText = all
+          .filter((element) => {
+            if (!isVisible(element)) return false;
+            const hasDirectText = Array.from(element.childNodes).some(
+              (node) =>
+                node.nodeType === Node.TEXT_NODE &&
+                Boolean(node.textContent?.trim()),
+            );
+            return (
+              hasDirectText &&
+              Number.parseFloat(getComputedStyle(element).fontSize) < 12
+            );
+          })
+          .slice(0, 50)
+          .map((element) => ({
+            element: element.tagName.toLowerCase(),
+            className: element instanceof HTMLElement ? element.className : "",
+            size: getComputedStyle(element).fontSize,
+            text: element.textContent?.trim().slice(0, 50),
+          }));
+        const controls = Array.from(
+          document.querySelectorAll(
+            'button, a[href], input, select, textarea, summary, [role="button"], [role="tab"]',
+          ),
+        );
+        const targetRect = (element) => {
+          if (element instanceof HTMLInputElement) {
+            const label = element.closest("label");
+            if (label && isVisible(label)) return label.getBoundingClientRect();
+          }
+          return element.getBoundingClientRect();
+        };
+        const smallTargets = controls
+          .filter(isVisible)
+          .filter((element) => {
+            const rect = targetRect(element);
+            return rect.width < 44 || rect.height < 44;
+          })
+          .slice(0, 50)
+          .map((element) => {
+            const rect = targetRect(element);
+            return {
+              element: element.tagName.toLowerCase(),
+              label:
+                element.getAttribute("aria-label") ??
+                element.textContent?.trim().slice(0, 50),
+              width: Math.round(rect.width),
+              height: Math.round(rect.height),
+            };
+          });
+        return { smallText, smallTargets };
+      });
+      if (phoneCriteria.smallText.length) {
+        throw new Error(
+          `${stateName}/${captureConfig.name} has text below 12px: ${JSON.stringify(phoneCriteria.smallText)}`,
+        );
+      }
+      if (phoneCriteria.smallTargets.length) {
+        throw new Error(
+          `${stateName}/${captureConfig.name} has tap targets below 44px: ${JSON.stringify(phoneCriteria.smallTargets)}`,
+        );
+      }
+    }
     if (remoteRequests.length) {
       throw new Error(
         `${stateName}/${captureConfig.name} attempted remote requests: ${[...new Set(remoteRequests)].join(", ")}`,
@@ -379,6 +458,22 @@ async function capture(browser, stateName, captureConfig, view) {
       }
       process.stdout.write(
         `${stateName}${view ? `/${view}` : ""}/${captureConfig.name}: Stop stayed enabled during busy and after error\n`,
+      );
+    }
+    if (
+      captureConfig.name === "phone-light" &&
+      view === "strategy" &&
+      stateName !== "onboarding"
+    ) {
+      await page.getByRole("button", { name: "Close strategy" }).click();
+      await page.locator('[data-view="desk"]:not([hidden])').waitFor();
+      if (new URL(page.url()).hash !== "#desk") {
+        throw new Error(
+          "Closing the phone strategy sheet did not return to Desk",
+        );
+      }
+      process.stdout.write(
+        `${stateName}/strategy/${captureConfig.name}: strategy sheet closed to Desk\n`,
       );
     }
   } finally {
