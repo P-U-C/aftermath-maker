@@ -8,17 +8,17 @@ Read this whole file before you change anything.
 
 ## 0. Context
 
-| Item | Value |
-| --- | --- |
-| Repo | `~/aftermath-maker` (expected `/home/ubuntu/aftermath-maker`) |
-| Base | tag `external-audit-remediation-v1`, commit `6b1ffe1` |
-| Branch to create | `ui/spread-identity` |
-| This bundle | `~/aftermath-maker/docs/design/maker-ui-handoff/` |
-| Main file today | `apps/web/components/maker-dashboard.tsx` (about 4,400 lines, data and UI mixed) |
-| Styles today | `apps/web/app/globals.css` (about 3,000 lines) |
-| Layout and metadata | `apps/web/app/layout.tsx` |
-| API access | every call goes through `request()` to `/api/control/<path>`, which is proxied by `apps/web/app/api/control/[...path]/route.ts` |
-| Checks | `npm run check` runs format:check, typecheck, tests, and build |
+| Item                | Value                                                                                                                           |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| Repo                | `~/aftermath-maker` (expected `/home/ubuntu/aftermath-maker`)                                                                   |
+| Base                | tag `external-audit-remediation-v1`, commit `6b1ffe1`                                                                           |
+| Branch to create    | `ui/spread-identity`                                                                                                            |
+| This bundle         | `~/aftermath-maker/docs/design/maker-ui-handoff/`                                                                               |
+| Main file today     | `apps/web/components/maker-dashboard.tsx` (about 4,400 lines, data and UI mixed)                                                |
+| Styles today        | `apps/web/app/globals.css` (about 3,000 lines)                                                                                  |
+| Layout and metadata | `apps/web/app/layout.tsx`                                                                                                       |
+| API access          | every call goes through `request()` to `/api/control/<path>`, which is proxied by `apps/web/app/api/control/[...path]/route.ts` |
+| Checks              | `npm run check` runs format:check, typecheck, tests, and build                                                                  |
 
 ```bash
 cd ~/aftermath-maker

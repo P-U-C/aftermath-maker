@@ -20,11 +20,11 @@ Five changes carry most of the gain:
 
 1. A sticky command bar with mode, engine state, PnL, exposure headroom, and always-enabled Stop and Flatten.
 2. Replace the price hero with positions, quotes, and risk headroom.
-3. Split the page into views: Desk, Strategy, Markets, Performance, Accounts *(now Venues)*.
+3. Split the page into views: Desk, Strategy, Markets, Performance, Accounts _(now Venues)_.
 4. A Go-Live review sheet, with Live disabled and explained when the deployment blocks it.
 5. Feedback next to the control that caused it, not in one banner at the top.
 
-The visual identity is distinctive and worth keeping: warm paper, black frames, mono numbers, restrained green and coral. *(Superseded by the polish audit; see the note at the top.)*
+The visual identity is distinctive and worth keeping: warm paper, black frames, mono numbers, restrained green and coral. _(Superseded by the polish audit; see the note at the top.)_
 
 ## What I reviewed
 
@@ -124,25 +124,25 @@ Greyed bars are placeholders, not data; the $7.44, −$0.01, and $1.04 of $3.00 
 
 The P0 rows are small and fix control and trust; P1 is the restructure; P2 is polish. Effort is a rough guess: S is days, M is one to two weeks.
 
-| Priority | Change | Lens | Effort |
-| --- | --- | --- | --- |
-| P0 | Sticky command bar: mode, engine, equity, PnL, gross headroom, gas runway, Stop, Flatten | Both | M |
-| P0 | Stop never disabled; Flatten separated from Start with its own confirm and slippage | Desk | S |
-| P0 | Disable Live with a plain reason when gates are off; drop env var names from errors | Consumer | S |
-| P0 | Go-Live review sheet with markets, size, max exposure, worst case, fees, how to stop | Consumer | S |
-| P0 | Toasts near the action, inline field errors, an `aria-live` region | Both | S |
-| P0 | Verify and fix the HTTPS-to-HTTP redirect; add HSTS | Both | S |
-| P0 | Instrument-aware number precision; no red "-$0.00" | Both | S |
-| P1 | Split into Desk, Strategy, Markets, Performance, Accounts, Settings | Both | M |
-| P1 | Positions and quotes table plus risk headroom bars replace the price hero | Desk | M |
-| P1 | Strategy form: capital, profile, markets up front; everything else under Advanced | Consumer | M |
-| P1 | Glossary tooltips and plainer labels | Consumer | S |
-| P1 | Landing page: what it is, fees, risks, one call to action, Request access | Consumer | S |
-| P1 | Mobile monitor layout with sticky Stop and Flatten; fix log overlap and truncation | Both | M |
-| P1 | Per-panel data age and greying; consider server-sent events | Desk | M |
-| P2 | Run PnL line, inventory sparklines, markouts | Desk | M |
-| P2 | Fills table: maker or taker, fee sign, markouts, symbol for every market | Desk | S |
-| P2 | Control log: severity, filters, human sentences, dates | Both | S |
-| P2 | Dark theme, 11 px type floor, fonts via `next/font` | Both | S |
-| P2 | Hotkeys for Stop, Flatten, Refresh | Desk | S |
-| P2 | Move the integrator inspector to operator settings | Consumer | S |
+| Priority | Change                                                                                   | Lens     | Effort |
+| -------- | ---------------------------------------------------------------------------------------- | -------- | ------ |
+| P0       | Sticky command bar: mode, engine, equity, PnL, gross headroom, gas runway, Stop, Flatten | Both     | M      |
+| P0       | Stop never disabled; Flatten separated from Start with its own confirm and slippage      | Desk     | S      |
+| P0       | Disable Live with a plain reason when gates are off; drop env var names from errors      | Consumer | S      |
+| P0       | Go-Live review sheet with markets, size, max exposure, worst case, fees, how to stop     | Consumer | S      |
+| P0       | Toasts near the action, inline field errors, an `aria-live` region                       | Both     | S      |
+| P0       | Verify and fix the HTTPS-to-HTTP redirect; add HSTS                                      | Both     | S      |
+| P0       | Instrument-aware number precision; no red "-$0.00"                                       | Both     | S      |
+| P1       | Split into Desk, Strategy, Markets, Performance, Accounts, Settings                      | Both     | M      |
+| P1       | Positions and quotes table plus risk headroom bars replace the price hero                | Desk     | M      |
+| P1       | Strategy form: capital, profile, markets up front; everything else under Advanced        | Consumer | M      |
+| P1       | Glossary tooltips and plainer labels                                                     | Consumer | S      |
+| P1       | Landing page: what it is, fees, risks, one call to action, Request access                | Consumer | S      |
+| P1       | Mobile monitor layout with sticky Stop and Flatten; fix log overlap and truncation       | Both     | M      |
+| P1       | Per-panel data age and greying; consider server-sent events                              | Desk     | M      |
+| P2       | Run PnL line, inventory sparklines, markouts                                             | Desk     | M      |
+| P2       | Fills table: maker or taker, fee sign, markouts, symbol for every market                 | Desk     | S      |
+| P2       | Control log: severity, filters, human sentences, dates                                   | Both     | S      |
+| P2       | Dark theme, 11 px type floor, fonts via `next/font`                                      | Both     | S      |
+| P2       | Hotkeys for Stop, Flatten, Refresh                                                       | Desk     | S      |
+| P2       | Move the integrator inspector to operator settings                                       | Consumer | S      |

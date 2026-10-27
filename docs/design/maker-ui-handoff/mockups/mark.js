@@ -2,7 +2,8 @@
 // stopped: capsules stacked flush (no spread). paper: outlined. live: filled in Tide and Ember.
 function markSVG(state, px) {
   const s = px || 18;
-  const tide = "var(--tide)", ember = "var(--ember)";
+  const tide = "var(--tide)",
+    ember = "var(--ember)";
   if (state === "stopped") {
     return `<svg width="${s}" height="${s}" viewBox="0 0 18 18"><rect x="4.5" y="4.5" width="9" height="3.6" rx="1.8" fill="#9aa0aa"/><rect x="4.5" y="9.9" width="9" height="3.6" rx="1.8" fill="#9aa0aa"/></svg>`;
   }
@@ -13,6 +14,7 @@ function markSVG(state, px) {
 }
 function applyTheme() {
   const q = new URLSearchParams(location.search);
-  document.documentElement.dataset.theme = q.get("theme") === "dark" ? "dark" : "light";
+  document.documentElement.dataset.theme =
+    q.get("theme") === "dark" ? "dark" : "light";
   return q;
 }

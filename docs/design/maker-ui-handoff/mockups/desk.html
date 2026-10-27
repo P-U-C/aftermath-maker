@@ -1,174 +1,590 @@
 <!doctype html>
 <html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Maker</title>
-<link rel="stylesheet" href="maker2.css">
-<script src="mark.js"></script>
-</head>
-<body>
-<script>const Q = applyTheme(); const SHEET = Q.get("sheet") === "1";</script>
-<div class="rail" id="rail"></div>
-<header class="nav">
-  <div class="brand"><span class="mark" id="mark"></span>Maker</div>
-  <div class="tabs"><span class="on">Desk</span><span>Strategy</span><span>Markets</span><span>Performance</span><span>Venues</span></div>
-  <div class="nav-right">
-    <span class="pill live" id="mode"><span class="dot"></span>Live</span>
-    <span class="acct"><span class="ava"></span>0x00a4…7060</span>
-  </div>
-</header>
-
-<main class="page">
-  <section class="hero">
-    <div>
-      <div class="k">Today, all venues</div>
-      <div class="big wide loss" id="pnl">−$0.01</div>
-      <div class="facts">
-        <span>Equity<b>$14.94</b></span>
-        <span>Exposure<b>$1.04</b></span>
-        <span>Venues<b>1</b></span>
-        <span>Markets<b>15</b></span>
-        <span id="run">Running since<b>4:51 PM</b></span>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Maker</title>
+    <link rel="stylesheet" href="maker2.css" />
+    <script src="mark.js"></script>
+  </head>
+  <body>
+    <script>
+      const Q = applyTheme();
+      const SHEET = Q.get("sheet") === "1";
+    </script>
+    <div class="rail" id="rail"></div>
+    <header class="nav">
+      <div class="brand"><span class="mark" id="mark"></span>Maker</div>
+      <div class="tabs">
+        <span class="on">Desk</span><span>Strategy</span><span>Markets</span
+        ><span>Performance</span><span>Venues</span>
       </div>
-    </div>
-    <div class="actions">
-      <button class="btn quiet">Flatten positions…</button>
-      <button class="btn stop" id="main">Stop</button>
-    </div>
-  </section>
+      <div class="nav-right">
+        <span class="pill live" id="mode"><span class="dot"></span>Live</span>
+        <span class="acct"><span class="ava"></span>0x00a4…7060</span>
+      </div>
+    </header>
 
-  <div class="grid">
-    <section class="card ladder">
-      <div class="head">
+    <main class="page">
+      <section class="hero">
         <div>
-          <h2>Quoting MON-PERP <span class="venue"><i>A</i>Aftermath</span></h2>
-          <div class="sub">One live pair at a time. NEAR-PERP is next in 12 s.</div>
+          <div class="k">Today, all venues</div>
+          <div class="big wide loss" id="pnl">−$0.01</div>
+          <div class="facts">
+            <span>Equity<b>$14.94</b></span>
+            <span>Exposure<b>$1.04</b></span>
+            <span>Venues<b>1</b></span>
+            <span>Markets<b>15</b></span>
+            <span id="run">Running since<b>4:51 PM</b></span>
+          </div>
         </div>
-        <span class="i3" style="font-size:13px">Updated 2 s ago</span>
-      </div>
-      <svg viewBox="0 0 760 180" role="img" aria-label="Your MON-PERP bid and ask against the best bid, best ask, and index">
-        <rect x="30" y="80" width="200" height="8" rx="4" fill="var(--tide-soft)"/>
-        <rect x="530" y="80" width="200" height="8" rx="4" fill="var(--ember-soft)"/>
-        <rect x="230" y="83" width="300" height="2" rx="1" fill="var(--fill-2)"/>
-        <line x1="385" x2="385" y1="64" y2="104" stroke="var(--ink-3)" stroke-width="1.25" stroke-dasharray="2 4"/>
-        <text x="385" y="32" text-anchor="middle" font-size="13" fill="var(--ink-2)">Index</text>
-        <text x="385" y="54" text-anchor="middle" font-size="16" font-weight="620" fill="var(--ink)" style="font-stretch:115%">0.021441</text>
-        <line x1="230" x2="230" y1="72" y2="96" stroke="var(--ink-3)" stroke-width="1.5"/>
-        <text x="230" y="122" text-anchor="middle" font-size="13" fill="var(--ink-2)">Best bid</text>
-        <text x="230" y="141" text-anchor="middle" font-size="14" fill="var(--ink)">0.021410</text>
-        <line x1="530" x2="530" y1="72" y2="96" stroke="var(--ink-3)" stroke-width="1.5"/>
-        <text x="530" y="122" text-anchor="middle" font-size="13" fill="var(--ink-2)">Best ask</text>
-        <text x="530" y="141" text-anchor="middle" font-size="14" fill="var(--ink)">0.021470</text>
-        <rect x="118" y="77" width="54" height="14" rx="7" fill="var(--tide)"/>
-        <text x="145" y="32" text-anchor="middle" font-size="13" fill="var(--ink-2)">Your bid</text>
-        <text x="145" y="54" text-anchor="middle" font-size="16" font-weight="620" fill="var(--tide-text)" style="font-stretch:115%">0.021393</text>
-        <rect x="573" y="77" width="54" height="14" rx="7" fill="var(--ember)"/>
-        <text x="600" y="32" text-anchor="middle" font-size="13" fill="var(--ink-2)">Your ask</text>
-        <text x="600" y="54" text-anchor="middle" font-size="16" font-weight="620" fill="var(--ember-text)" style="font-stretch:115%">0.021484</text>
-        <path d="M145 158 V166 H600 V158" fill="none" stroke="var(--ink-3)" stroke-width="1.25"/>
-        <rect x="314" y="154" width="132" height="24" rx="12" fill="var(--surface)"/>
-        <text x="380" y="171" text-anchor="middle" font-size="13" font-weight="620" fill="var(--ink)">Spread 42 bps</text>
-      </svg>
-      <div class="stats">
-        <div><div class="k">Inventory</div><div class="v wide gain">+$1.04</div></div>
-        <div><div class="k">Unrealized</div><div class="v wide loss">−$0.01</div></div>
-        <div><div class="k">Behind the touch</div><div class="v wide">8 / 7 bps</div></div>
-        <div><div class="k">Last fill</div><div class="v wide">12 s ago</div></div>
-      </div>
-    </section>
+        <div class="actions">
+          <button class="btn quiet">Flatten positions…</button>
+          <button class="btn stop" id="main">Stop</button>
+        </div>
+      </section>
 
-    <section class="card">
-      <div class="head"><div><h2>Risk</h2><div class="sub">Across every venue. Limits stop the engine first.</div></div></div>
-      <div class="meter"><div class="row"><span>Gross exposure</span><span>$1.04 of $3.00</span></div><div class="track"><i style="width:35%"></i></div></div>
-      <div class="meter"><div class="row"><span>Worst-case inventory</span><span>$2.08 of $2.50</span></div><div class="track"><i class="warn" style="width:83%"></i></div></div>
-      <div class="meter"><div class="row"><span>Run drawdown</span><span>$0.01 of $1.00</span></div><div class="track"><i style="width:1.5%"></i></div></div>
-      <div class="meter"><div class="row"><span>Gas on Sui</span><span>2.99 SUI, about 2 days</span></div></div>
-      <div class="note"><span class="dot" style="background:var(--amber);width:8px;height:8px;position:relative;top:1px"></span>One more MON-PERP buy would bring inventory close to its limit.</div>
-    </section>
-  </div>
+      <div class="grid">
+        <section class="card ladder">
+          <div class="head">
+            <div>
+              <h2>
+                Quoting MON-PERP <span class="venue"><i>A</i>Aftermath</span>
+              </h2>
+              <div class="sub">
+                One live pair at a time. NEAR-PERP is next in 12 s.
+              </div>
+            </div>
+            <span class="i3" style="font-size: 13px">Updated 2 s ago</span>
+          </div>
+          <svg
+            viewBox="0 0 760 180"
+            role="img"
+            aria-label="Your MON-PERP bid and ask against the best bid, best ask, and index"
+          >
+            <rect
+              x="30"
+              y="80"
+              width="200"
+              height="8"
+              rx="4"
+              fill="var(--tide-soft)"
+            />
+            <rect
+              x="530"
+              y="80"
+              width="200"
+              height="8"
+              rx="4"
+              fill="var(--ember-soft)"
+            />
+            <rect
+              x="230"
+              y="83"
+              width="300"
+              height="2"
+              rx="1"
+              fill="var(--fill-2)"
+            />
+            <line
+              x1="385"
+              x2="385"
+              y1="64"
+              y2="104"
+              stroke="var(--ink-3)"
+              stroke-width="1.25"
+              stroke-dasharray="2 4"
+            />
+            <text
+              x="385"
+              y="32"
+              text-anchor="middle"
+              font-size="13"
+              fill="var(--ink-2)"
+            >
+              Index
+            </text>
+            <text
+              x="385"
+              y="54"
+              text-anchor="middle"
+              font-size="16"
+              font-weight="620"
+              fill="var(--ink)"
+              style="font-stretch: 115%"
+            >
+              0.021441
+            </text>
+            <line
+              x1="230"
+              x2="230"
+              y1="72"
+              y2="96"
+              stroke="var(--ink-3)"
+              stroke-width="1.5"
+            />
+            <text
+              x="230"
+              y="122"
+              text-anchor="middle"
+              font-size="13"
+              fill="var(--ink-2)"
+            >
+              Best bid
+            </text>
+            <text
+              x="230"
+              y="141"
+              text-anchor="middle"
+              font-size="14"
+              fill="var(--ink)"
+            >
+              0.021410
+            </text>
+            <line
+              x1="530"
+              x2="530"
+              y1="72"
+              y2="96"
+              stroke="var(--ink-3)"
+              stroke-width="1.5"
+            />
+            <text
+              x="530"
+              y="122"
+              text-anchor="middle"
+              font-size="13"
+              fill="var(--ink-2)"
+            >
+              Best ask
+            </text>
+            <text
+              x="530"
+              y="141"
+              text-anchor="middle"
+              font-size="14"
+              fill="var(--ink)"
+            >
+              0.021470
+            </text>
+            <rect
+              x="118"
+              y="77"
+              width="54"
+              height="14"
+              rx="7"
+              fill="var(--tide)"
+            />
+            <text
+              x="145"
+              y="32"
+              text-anchor="middle"
+              font-size="13"
+              fill="var(--ink-2)"
+            >
+              Your bid
+            </text>
+            <text
+              x="145"
+              y="54"
+              text-anchor="middle"
+              font-size="16"
+              font-weight="620"
+              fill="var(--tide-text)"
+              style="font-stretch: 115%"
+            >
+              0.021393
+            </text>
+            <rect
+              x="573"
+              y="77"
+              width="54"
+              height="14"
+              rx="7"
+              fill="var(--ember)"
+            />
+            <text
+              x="600"
+              y="32"
+              text-anchor="middle"
+              font-size="13"
+              fill="var(--ink-2)"
+            >
+              Your ask
+            </text>
+            <text
+              x="600"
+              y="54"
+              text-anchor="middle"
+              font-size="16"
+              font-weight="620"
+              fill="var(--ember-text)"
+              style="font-stretch: 115%"
+            >
+              0.021484
+            </text>
+            <path
+              d="M145 158 V166 H600 V158"
+              fill="none"
+              stroke="var(--ink-3)"
+              stroke-width="1.25"
+            />
+            <rect
+              x="314"
+              y="154"
+              width="132"
+              height="24"
+              rx="12"
+              fill="var(--surface)"
+            />
+            <text
+              x="380"
+              y="171"
+              text-anchor="middle"
+              font-size="13"
+              font-weight="620"
+              fill="var(--ink)"
+            >
+              Spread 42 bps
+            </text>
+          </svg>
+          <div class="stats">
+            <div>
+              <div class="k">Inventory</div>
+              <div class="v wide gain">+$1.04</div>
+            </div>
+            <div>
+              <div class="k">Unrealized</div>
+              <div class="v wide loss">−$0.01</div>
+            </div>
+            <div>
+              <div class="k">Behind the touch</div>
+              <div class="v wide">8 / 7 bps</div>
+            </div>
+            <div>
+              <div class="k">Last fill</div>
+              <div class="v wide">12 s ago</div>
+            </div>
+          </div>
+        </section>
 
-  <div class="grid">
-    <section class="card mk">
-      <div class="head"><div><h2>Markets</h2><div class="sub">15 selected on 1 venue, rotating every 15 s</div></div><span class="more" style="font-size:14px">Edit</span></div>
-      <div class="list">
-        <div class="lr lh"><span>Market</span><span>Venue</span><span>Status</span><span class="r">Inventory</span><span class="r">Unrealized</span></div>
-        <div class="lr"><span class="sym">MON<small>PERP</small></span><span><span class="venue"><i>A</i>Aftermath</span></span><span class="st on"><span class="dot"></span>Quoting</span><span class="r gain">+$1.04</span><span class="r loss">−$0.01</span></div>
-        <div class="lr"><span class="sym">NEAR<small>PERP</small></span><span><span class="venue"><i>A</i>Aftermath</span></span><span class="st off">Next in 12 s</span><span class="r i2">$0.00</span><span class="r i2">$0.00</span></div>
-        <div class="lr"><span class="sym">ETH<small>PERP</small></span><span><span class="venue"><i>A</i>Aftermath</span></span><span class="st off">Waiting</span><span class="r i2">$0.00</span><span class="r i2">$0.00</span></div>
-        <div class="lr"><span class="sym">BTC<small>PERP</small></span><span><span class="venue"><i>A</i>Aftermath</span></span><span class="st off">Waiting</span><span class="r i2">$0.00</span><span class="r i2">$0.00</span></div>
-        <div class="lr"><span class="sym">HYPE<small>PERP</small></span><span><span class="venue"><i>A</i>Aftermath</span></span><span class="st off">Waiting</span><span class="r i2">$0.00</span><span class="r i2">$0.00</span></div>
-        <div class="lr"><span class="more">Show 10 more</span></div>
+        <section class="card">
+          <div class="head">
+            <div>
+              <h2>Risk</h2>
+              <div class="sub">
+                Across every venue. Limits stop the engine first.
+              </div>
+            </div>
+          </div>
+          <div class="meter">
+            <div class="row">
+              <span>Gross exposure</span><span>$1.04 of $3.00</span>
+            </div>
+            <div class="track"><i style="width: 35%"></i></div>
+          </div>
+          <div class="meter">
+            <div class="row">
+              <span>Worst-case inventory</span><span>$2.08 of $2.50</span>
+            </div>
+            <div class="track"><i class="warn" style="width: 83%"></i></div>
+          </div>
+          <div class="meter">
+            <div class="row">
+              <span>Run drawdown</span><span>$0.01 of $1.00</span>
+            </div>
+            <div class="track"><i style="width: 1.5%"></i></div>
+          </div>
+          <div class="meter">
+            <div class="row">
+              <span>Gas on Sui</span><span>2.99 SUI, about 2 days</span>
+            </div>
+          </div>
+          <div class="note">
+            <span
+              class="dot"
+              style="
+                background: var(--amber);
+                width: 8px;
+                height: 8px;
+                position: relative;
+                top: 1px;
+              "
+            ></span
+            >One more MON-PERP buy would bring inventory close to its limit.
+          </div>
+        </section>
       </div>
-    </section>
-    <section class="card fl">
-      <div class="head"><div><h2>Recent fills</h2><div class="sub">Maker orders on every venue</div></div></div>
-      <div class="list">
-        <div class="lr"><span><span class="sym">MON</span><span class="side b">Bought</span></span><span>$1.04</span><span class="r i2">12 s ago</span></div>
-        <div class="lr"><span><span class="sym">PUMP</span><span class="side s">Sold</span></span><span>$1.03</span><span class="r i2">4:41 PM</span></div>
-        <div class="lr"><span><span class="sym">XMR</span><span class="side s">Sold</span></span><span>$1.03</span><span class="r i2">4:40 PM</span></div>
-        <div class="lr"><span><span class="sym">NEAR</span><span class="side s">Sold</span></span><span>$1.03</span><span class="r i2">4:39 PM</span></div>
-        <div class="lr"><span><span class="sym">BNB</span><span class="side s">Sold</span></span><span>$1.03</span><span class="r i2">4:30 PM</span></div>
-        <div class="lr"><span class="more">All fills</span></div>
+
+      <div class="grid">
+        <section class="card mk">
+          <div class="head">
+            <div>
+              <h2>Markets</h2>
+              <div class="sub">15 selected on 1 venue, rotating every 15 s</div>
+            </div>
+            <span class="more" style="font-size: 14px">Edit</span>
+          </div>
+          <div class="list">
+            <div class="lr lh">
+              <span>Market</span><span>Venue</span><span>Status</span
+              ><span class="r">Inventory</span><span class="r">Unrealized</span>
+            </div>
+            <div class="lr">
+              <span class="sym">MON<small>PERP</small></span
+              ><span
+                ><span class="venue"><i>A</i>Aftermath</span></span
+              ><span class="st on"><span class="dot"></span>Quoting</span
+              ><span class="r gain">+$1.04</span
+              ><span class="r loss">−$0.01</span>
+            </div>
+            <div class="lr">
+              <span class="sym">NEAR<small>PERP</small></span
+              ><span
+                ><span class="venue"><i>A</i>Aftermath</span></span
+              ><span class="st off">Next in 12 s</span
+              ><span class="r i2">$0.00</span><span class="r i2">$0.00</span>
+            </div>
+            <div class="lr">
+              <span class="sym">ETH<small>PERP</small></span
+              ><span
+                ><span class="venue"><i>A</i>Aftermath</span></span
+              ><span class="st off">Waiting</span><span class="r i2">$0.00</span
+              ><span class="r i2">$0.00</span>
+            </div>
+            <div class="lr">
+              <span class="sym">BTC<small>PERP</small></span
+              ><span
+                ><span class="venue"><i>A</i>Aftermath</span></span
+              ><span class="st off">Waiting</span><span class="r i2">$0.00</span
+              ><span class="r i2">$0.00</span>
+            </div>
+            <div class="lr">
+              <span class="sym">HYPE<small>PERP</small></span
+              ><span
+                ><span class="venue"><i>A</i>Aftermath</span></span
+              ><span class="st off">Waiting</span><span class="r i2">$0.00</span
+              ><span class="r i2">$0.00</span>
+            </div>
+            <div class="lr"><span class="more">Show 10 more</span></div>
+          </div>
+        </section>
+        <section class="card fl">
+          <div class="head">
+            <div>
+              <h2>Recent fills</h2>
+              <div class="sub">Maker orders on every venue</div>
+            </div>
+          </div>
+          <div class="list">
+            <div class="lr">
+              <span
+                ><span class="sym">MON</span
+                ><span class="side b">Bought</span></span
+              ><span>$1.04</span><span class="r i2">12 s ago</span>
+            </div>
+            <div class="lr">
+              <span
+                ><span class="sym">PUMP</span
+                ><span class="side s">Sold</span></span
+              ><span>$1.03</span><span class="r i2">4:41 PM</span>
+            </div>
+            <div class="lr">
+              <span
+                ><span class="sym">XMR</span
+                ><span class="side s">Sold</span></span
+              ><span>$1.03</span><span class="r i2">4:40 PM</span>
+            </div>
+            <div class="lr">
+              <span
+                ><span class="sym">NEAR</span
+                ><span class="side s">Sold</span></span
+              ><span>$1.03</span><span class="r i2">4:39 PM</span>
+            </div>
+            <div class="lr">
+              <span
+                ><span class="sym">BNB</span
+                ><span class="side s">Sold</span></span
+              ><span>$1.03</span><span class="r i2">4:30 PM</span>
+            </div>
+            <div class="lr"><span class="more">All fills</span></div>
+          </div>
+        </section>
       </div>
-    </section>
-  </div>
 
-  <section class="card chart" style="margin-top:20px">
-    <div class="head"><div><h2>PnL since 4:51 PM</h2><div class="sub">All venues, after known fees</div></div><span class="tabs"><span class="on">Run</span><span>Day</span><span>Week</span></span></div>
-    <svg viewBox="0 0 1200 220" role="img" aria-label="PnL over the run">
-      <line x1="60" x2="1190" y1="40" y2="40" stroke="var(--hair)"/>
-      <line x1="60" x2="1190" y1="110" y2="110" stroke="var(--ink-3)" stroke-dasharray="2 5"/>
-      <line x1="60" x2="1190" y1="180" y2="180" stroke="var(--hair)"/>
-      <text x="48" y="44" text-anchor="end" font-size="12" fill="var(--ink-3)">+$0.02</text>
-      <text x="48" y="114" text-anchor="end" font-size="12" fill="var(--ink-3)">$0.00</text>
-      <text x="48" y="184" text-anchor="end" font-size="12" fill="var(--ink-3)">−$0.02</text>
-      <defs>
-        <clipPath id="above"><rect x="0" y="0" width="1200" height="110"/></clipPath>
-        <clipPath id="below"><rect x="0" y="110" width="1200" height="110"/></clipPath>
-      </defs>
-      <g clip-path="url(#above)"><path d="M60 110 L140 104 L220 98 L300 101 L380 92 L460 88 L540 95 L620 100 L700 97 L780 106 L860 112 L940 118 L1020 114 L1100 121 L1190 127" fill="none" stroke="var(--tide)" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round"/></g>
-      <g clip-path="url(#below)"><path d="M60 110 L140 104 L220 98 L300 101 L380 92 L460 88 L540 95 L620 100 L700 97 L780 106 L860 112 L940 118 L1020 114 L1100 121 L1190 127" fill="none" stroke="var(--ember)" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round"/></g>
-      <circle cx="1190" cy="127" r="4.5" fill="var(--ember)"/>
-      <text x="60" y="210" font-size="12" fill="var(--ink-3)">4:51 PM</text>
-      <text x="342" y="210" text-anchor="middle" font-size="12" fill="var(--ink-3)">4:55</text>
-      <text x="696" y="210" text-anchor="middle" font-size="12" fill="var(--ink-3)">5:00</text>
-      <text x="1049" y="210" text-anchor="middle" font-size="12" fill="var(--ink-3)">5:05</text>
-      <text x="1190" y="210" text-anchor="end" font-size="12" fill="var(--ink-3)">Now</text>
-    </svg>
-  </section>
-</main>
+      <section class="card chart" style="margin-top: 20px">
+        <div class="head">
+          <div>
+            <h2>PnL since 4:51 PM</h2>
+            <div class="sub">All venues, after known fees</div>
+          </div>
+          <span class="tabs"
+            ><span class="on">Run</span><span>Day</span><span>Week</span></span
+          >
+        </div>
+        <svg viewBox="0 0 1200 220" role="img" aria-label="PnL over the run">
+          <line x1="60" x2="1190" y1="40" y2="40" stroke="var(--hair)" />
+          <line
+            x1="60"
+            x2="1190"
+            y1="110"
+            y2="110"
+            stroke="var(--ink-3)"
+            stroke-dasharray="2 5"
+          />
+          <line x1="60" x2="1190" y1="180" y2="180" stroke="var(--hair)" />
+          <text
+            x="48"
+            y="44"
+            text-anchor="end"
+            font-size="12"
+            fill="var(--ink-3)"
+          >
+            +$0.02
+          </text>
+          <text
+            x="48"
+            y="114"
+            text-anchor="end"
+            font-size="12"
+            fill="var(--ink-3)"
+          >
+            $0.00
+          </text>
+          <text
+            x="48"
+            y="184"
+            text-anchor="end"
+            font-size="12"
+            fill="var(--ink-3)"
+          >
+            −$0.02
+          </text>
+          <defs>
+            <clipPath id="above">
+              <rect x="0" y="0" width="1200" height="110" />
+            </clipPath>
+            <clipPath id="below">
+              <rect x="0" y="110" width="1200" height="110" />
+            </clipPath>
+          </defs>
+          <g clip-path="url(#above)">
+            <path
+              d="M60 110 L140 104 L220 98 L300 101 L380 92 L460 88 L540 95 L620 100 L700 97 L780 106 L860 112 L940 118 L1020 114 L1100 121 L1190 127"
+              fill="none"
+              stroke="var(--tide)"
+              stroke-width="2.4"
+              stroke-linejoin="round"
+              stroke-linecap="round"
+            />
+          </g>
+          <g clip-path="url(#below)">
+            <path
+              d="M60 110 L140 104 L220 98 L300 101 L380 92 L460 88 L540 95 L620 100 L700 97 L780 106 L860 112 L940 118 L1020 114 L1100 121 L1190 127"
+              fill="none"
+              stroke="var(--ember)"
+              stroke-width="2.4"
+              stroke-linejoin="round"
+              stroke-linecap="round"
+            />
+          </g>
+          <circle cx="1190" cy="127" r="4.5" fill="var(--ember)" />
+          <text x="60" y="210" font-size="12" fill="var(--ink-3)">4:51 PM</text>
+          <text
+            x="342"
+            y="210"
+            text-anchor="middle"
+            font-size="12"
+            fill="var(--ink-3)"
+          >
+            4:55
+          </text>
+          <text
+            x="696"
+            y="210"
+            text-anchor="middle"
+            font-size="12"
+            fill="var(--ink-3)"
+          >
+            5:00
+          </text>
+          <text
+            x="1049"
+            y="210"
+            text-anchor="middle"
+            font-size="12"
+            fill="var(--ink-3)"
+          >
+            5:05
+          </text>
+          <text
+            x="1190"
+            y="210"
+            text-anchor="end"
+            font-size="12"
+            fill="var(--ink-3)"
+          >
+            Now
+          </text>
+        </svg>
+      </section>
+    </main>
 
-<div class="scrim" id="scrim" style="display:none">
-  <div class="sheet">
-    <h3>Start live trading?</h3>
-    <p>Maker will quote with real funds until you stop it or a limit is reached.</p>
-    <div class="grp">
-      <div class="gr"><span>Venues</span><span>Aftermath on Sui</span></div>
-      <div class="gr"><span>Markets</span><span>15, one live pair at a time</span></div>
-      <div class="gr"><span>Size per side</span><span>$1.00</span></div>
-      <div class="gr"><span>Max gross exposure</span><span>$3.00 across venues</span></div>
-      <div class="gr"><span>Stops automatically at</span><span>$1.00 run drawdown</span></div>
-      <div class="gr"><span>Hedge</span><span>Account 1746, up to 0.75% slippage</span></div>
-      <div class="gr"><span>Fees</span><span>Venue maker fee + 1 bp</span></div>
+    <div class="scrim" id="scrim" style="display: none">
+      <div class="sheet">
+        <h3>Start live trading?</h3>
+        <p>
+          Maker will quote with real funds until you stop it or a limit is
+          reached.
+        </p>
+        <div class="grp">
+          <div class="gr"><span>Venues</span><span>Aftermath on Sui</span></div>
+          <div class="gr">
+            <span>Markets</span><span>15, one live pair at a time</span>
+          </div>
+          <div class="gr"><span>Size per side</span><span>$1.00</span></div>
+          <div class="gr">
+            <span>Max gross exposure</span><span>$3.00 across venues</span>
+          </div>
+          <div class="gr">
+            <span>Stops automatically at</span><span>$1.00 run drawdown</span>
+          </div>
+          <div class="gr">
+            <span>Hedge</span><span>Account 1746, up to 0.75% slippage</span>
+          </div>
+          <div class="gr">
+            <span>Fees</span><span>Venue maker fee + 1 bp</span>
+          </div>
+        </div>
+        <div class="foot">
+          Stop cancels every Maker order on every venue. Flatten positions
+          closes them at market.
+        </div>
+        <div class="btns">
+          <button class="btn quiet">Cancel</button
+          ><button class="btn primary">Start live trading</button>
+        </div>
+      </div>
     </div>
-    <div class="foot">Stop cancels every Maker order on every venue. Flatten positions closes them at market.</div>
-    <div class="btns"><button class="btn quiet">Cancel</button><button class="btn primary">Start live trading</button></div>
-  </div>
-</div>
 
-<script>
-  let state = "live";
-  if (SHEET) {
-    state = "paper";
-    document.getElementById("scrim").style.display = "grid";
-    document.getElementById("rail").style.display = "none";
-    const m = document.getElementById("mode"); m.className = "pill paper"; m.textContent = "Paper";
-    const b = document.getElementById("main"); b.className = "btn primary"; b.textContent = "Start";
-    document.getElementById("run").innerHTML = "Engine<b>Stopped</b>";
-    const p = document.getElementById("pnl"); p.className = "big wide"; p.textContent = "$0.00";
-  }
-  document.getElementById("mark").innerHTML = markSVG(state, 18);
-</script>
-</body>
+    <script>
+      let state = "live";
+      if (SHEET) {
+        state = "paper";
+        document.getElementById("scrim").style.display = "grid";
+        document.getElementById("rail").style.display = "none";
+        const m = document.getElementById("mode");
+        m.className = "pill paper";
+        m.textContent = "Paper";
+        const b = document.getElementById("main");
+        b.className = "btn primary";
+        b.textContent = "Start";
+        document.getElementById("run").innerHTML = "Engine<b>Stopped</b>";
+        const p = document.getElementById("pnl");
+        p.className = "big wide";
+        p.textContent = "$0.00";
+      }
+      document.getElementById("mark").innerHTML = markSVG(state, 18);
+    </script>
+  </body>
 </html>

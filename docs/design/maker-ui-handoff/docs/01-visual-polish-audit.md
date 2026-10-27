@@ -23,17 +23,17 @@ Venue neutrality runs through all of it: venues are a first-class tab, every mar
 
 Nine tells account for most of the "generated" feel; each has a direct replacement.
 
-| Tell | Where it shows in Maker | Replace with |
-| --- | --- | --- |
-| Cream paper and graph-paper grid | `--paper: #f4f1e8` plus a 32 px grid on `body` | Cool mist canvas `#F0F1F3`, white cards, no grid |
-| Serif display headline | "Your wallet is the key." in Georgia | Mona Sans expanded, semibold |
-| Clay-coral accent | `--coral: #d95a3b` on asks, errors, the flatten banner | Ember `#F2483B`, used only for asks, losses, Live, and Stop |
-| Tinted near-black bands | `--black: #101311`, black setup and operator bands | Graphite `#16181D` for text and primary buttons; dark surfaces only in dark mode |
-| Uppercase tracked eyebrows | ROTATION NOW QUOTING, STRATEGY, MARKET BOOK, PREFLIGHT, EVIDENCE; 33 uppercase rules in the stylesheet | One sentence-case title per card; no label above it |
-| Monospace for small data | `ui-monospace` in 68 places: values, IDs, the log | Mona Sans tabular figures in data columns; monospace only for digests |
-| Hairline boxes everywhere | 1 px black frames around every panel and cell | No borders; cards separated by surface color and spacing |
-| Square corners | Only four rules set any radius, at 2–3 px | 12 px controls, 20 px cards, 30 px sheets, full pills |
-| Slash-joined meta strings | "AFTERMATH / AUTONOMOUS LIQUIDITY", the footer line | Say one thing plainly, or nothing; never name a venue in Maker's brand |
+| Tell                             | Where it shows in Maker                                                                                | Replace with                                                                     |
+| -------------------------------- | ------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------- |
+| Cream paper and graph-paper grid | `--paper: #f4f1e8` plus a 32 px grid on `body`                                                         | Cool mist canvas `#F0F1F3`, white cards, no grid                                 |
+| Serif display headline           | "Your wallet is the key." in Georgia                                                                   | Mona Sans expanded, semibold                                                     |
+| Clay-coral accent                | `--coral: #d95a3b` on asks, errors, the flatten banner                                                 | Ember `#F2483B`, used only for asks, losses, Live, and Stop                      |
+| Tinted near-black bands          | `--black: #101311`, black setup and operator bands                                                     | Graphite `#16181D` for text and primary buttons; dark surfaces only in dark mode |
+| Uppercase tracked eyebrows       | ROTATION NOW QUOTING, STRATEGY, MARKET BOOK, PREFLIGHT, EVIDENCE; 33 uppercase rules in the stylesheet | One sentence-case title per card; no label above it                              |
+| Monospace for small data         | `ui-monospace` in 68 places: values, IDs, the log                                                      | Mona Sans tabular figures in data columns; monospace only for digests            |
+| Hairline boxes everywhere        | 1 px black frames around every panel and cell                                                          | No borders; cards separated by surface color and spacing                         |
+| Square corners                   | Only four rules set any radius, at 2–3 px                                                              | 12 px controls, 20 px cards, 30 px sheets, full pills                            |
+| Slash-joined meta strings        | "AFTERMATH / AUTONOMOUS LIQUIDITY", the footer line                                                    | Say one thing plainly, or nothing; never name a venue in Maker's brand           |
 
 The palette and type do most of the damage. Fixing tokens alone, before any layout change, removes roughly half the generic feel.
 
@@ -116,20 +116,20 @@ Twelve color tokens, eight type roles in one family, and a short set of shape an
 
 ### Color
 
-| Token | Light | Dark | Use |
-| --- | --- | --- | --- |
-| Canvas | `#F0F1F3` | `#0B0C0E` | Page background |
-| Surface | `#FFFFFF` | `#15171B` | Cards |
-| Raised | `#FFFFFF` + shadow | `#1E2126` | Sheets, menus |
-| Graphite | `#16181D` | `#F2F3F5` | Text and every primary button |
-| Graphite 2 | `#5E636E` | `#A2A7B1` | Supporting text |
-| Graphite 3 | `#8A909B` | `#747A85` | Axes, placeholders, "Waiting" |
-| Hairline | `rgba(22,24,29,.09)` | `rgba(255,255,255,.08)` | Row separators |
-| Fill | `rgba(22,24,29,.055)`, strong `.10` | `rgba(255,255,255,.06)`, strong `.11` | Tracks, chips, quiet buttons, tab track |
-| Tide | `#0FA39A` marks, `#0A7C75` text | `#2FD3C6` | Bids, buys, gains |
-| Ember | `#F2483B` marks, `#C42A20` text | `#FF6A5C` | Asks, sells, losses, Live, Stop |
-| Amber | `#E8A200` marks, `#9A5B00` text | `#FFC23D` | Within 30% of a limit |
-| Material | `rgba(255,255,255,.74)` + 22 px blur | `rgba(21,23,27,.74)` + blur | Nav bar, phone dock |
+| Token      | Light                                | Dark                                  | Use                                     |
+| ---------- | ------------------------------------ | ------------------------------------- | --------------------------------------- |
+| Canvas     | `#F0F1F3`                            | `#0B0C0E`                             | Page background                         |
+| Surface    | `#FFFFFF`                            | `#15171B`                             | Cards                                   |
+| Raised     | `#FFFFFF` + shadow                   | `#1E2126`                             | Sheets, menus                           |
+| Graphite   | `#16181D`                            | `#F2F3F5`                             | Text and every primary button           |
+| Graphite 2 | `#5E636E`                            | `#A2A7B1`                             | Supporting text                         |
+| Graphite 3 | `#8A909B`                            | `#747A85`                             | Axes, placeholders, "Waiting"           |
+| Hairline   | `rgba(22,24,29,.09)`                 | `rgba(255,255,255,.08)`               | Row separators                          |
+| Fill       | `rgba(22,24,29,.055)`, strong `.10`  | `rgba(255,255,255,.06)`, strong `.11` | Tracks, chips, quiet buttons, tab track |
+| Tide       | `#0FA39A` marks, `#0A7C75` text      | `#2FD3C6`                             | Bids, buys, gains                       |
+| Ember      | `#F2483B` marks, `#C42A20` text      | `#FF6A5C`                             | Asks, sells, losses, Live, Stop         |
+| Amber      | `#E8A200` marks, `#9A5B00` text      | `#FFC23D`                             | Within 30% of a limit                   |
+| Material   | `rgba(255,255,255,.74)` + 22 px blur | `rgba(21,23,27,.74)` + blur           | Nav bar, phone dock                     |
 
 On white, the Tide, Ember, and Amber text shades reach 5.0:1, 5.6:1, and 5.3:1, all above WCAG AA. In dark mode the single shades clear 6:1 on Surface.
 
@@ -137,16 +137,16 @@ On white, the Tide, Ember, and Amber text shades reach 5.0:1, 5.6:1, and 5.3:1, 
 
 Mona Sans everywhere, loaded with `next/font` from its open-source variable file. Width carries the hierarchy: 125% for money, 112–122% for titles, 100% for the interface.
 
-| Role | Size / line | Width | Weight | Used for |
-| --- | --- | --- | --- | --- |
-| Hero money | 60 / 62 | 125% | 620 | Today's PnL |
-| Page title | 34 / 38 | 122% | 640 | Tab titles; 32 on the phone |
-| Stat | 22 / 28 | 125% | 620 | Inventory, unrealized, last fill |
-| Card title | 19 / 24 | 112% | 640 | Card titles, market names |
-| Body | 15 / 21 | 100% | 400 or 620 | Rows and values |
-| Subhead | 14 / 20 | 100% | 400 | Card subtitles |
-| Footnote | 13 / 18 | 100% | 520 | Labels, pills, timestamps |
-| Caption | 12 / 16 | 100% | 560 | Table headers and axes; the floor |
+| Role       | Size / line | Width | Weight     | Used for                          |
+| ---------- | ----------- | ----- | ---------- | --------------------------------- |
+| Hero money | 60 / 62     | 125%  | 620        | Today's PnL                       |
+| Page title | 34 / 38     | 122%  | 640        | Tab titles; 32 on the phone       |
+| Stat       | 22 / 28     | 125%  | 620        | Inventory, unrealized, last fill  |
+| Card title | 19 / 24     | 112%  | 640        | Card titles, market names         |
+| Body       | 15 / 21     | 100%  | 400 or 620 | Rows and values                   |
+| Subhead    | 14 / 20     | 100%  | 400        | Card subtitles                    |
+| Footnote   | 13 / 18     | 100%  | 520        | Labels, pills, timestamps         |
+| Caption    | 12 / 16     | 100%  | 560        | Table headers and axes; the floor |
 
 Tracking is −0.02em at expanded widths and 0 at normal width. Figures are proportional by default and tabular, with the dotted zero, in aligned columns.
 
