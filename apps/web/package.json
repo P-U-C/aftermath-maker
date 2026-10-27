@@ -6,6 +6,7 @@
     "build": "next build",
     "dev": "next dev -p 8788",
     "start": "next start -p 8788",
+    "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

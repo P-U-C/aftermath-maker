@@ -12,7 +12,7 @@
     "dev": "dotenv -e .env -- concurrently -n control,web -c green,cyan \"npm run dev -w @puc/control\" \"npm run dev -w @puc/web\"",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "test": "npm run test -w @puc/core && npm run test -w @puc/aftermath && npm run test -w @puc/control",
+    "test": "npm run test -w @puc/core && npm run test -w @puc/aftermath && npm run test -w @puc/control && npm run test -w @puc/web",
     "typecheck": "tsc -b packages/core packages/aftermath apps/control --pretty false && npm run typecheck -w @puc/web",
     "check": "npm run format:check && npm run typecheck && npm test && npm run build"
   },
