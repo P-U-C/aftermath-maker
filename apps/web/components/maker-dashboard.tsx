@@ -49,7 +49,9 @@ import {
   useState,
 } from "react";
 import { dAppKit } from "../app/dapp-kit";
+import { primaryVenue } from "../lib/venues";
 import { SpreadMark } from "./spread-mark";
+import { VenueChip } from "./venue-chip";
 
 type PreparedOwnerTransactionResponse = {
   transaction: string;
@@ -95,13 +97,17 @@ function verifiedOwnerTransaction(
     (!("agentAddress" in intent) ||
       intent.agentAddress.toLowerCase() !== expected.agentAddress.toLowerCase())
   ) {
-    throw new Error("Prepared agent recipient does not match this account");
+    throw new Error(
+      "Prepared trading key recipient does not match this account",
+    );
   }
   if (
     expected.gasMist !== undefined &&
     (!("gasMist" in intent) || intent.gasMist !== expected.gasMist)
   ) {
-    throw new Error("Prepared agent gas grant does not match this action");
+    throw new Error(
+      "Prepared trading key gas grant does not match this action",
+    );
   }
   if (
     expected.agentCapId &&
@@ -976,7 +982,7 @@ function DashboardBody() {
       if (result.$kind === "FailedTransaction") {
         throw new Error(
           result.FailedTransaction.status.error?.message ??
-            "Builder registration failed",
+            "Venue fee registration failed",
         );
       }
       const confirmed = await request<{ builderCode: BuilderCode }>(
@@ -994,7 +1000,7 @@ function DashboardBody() {
         current ? { ...current, builderCode: confirmed.builderCode } : current,
       );
       setNotice(
-        `Builder code #${confirmed.builderCode.integratorId} registered at 1 bp.`,
+        `Venue fee code #${confirmed.builderCode.integratorId} registered at 1 bp.`,
       );
     });
   }
@@ -1047,7 +1053,7 @@ function DashboardBody() {
     }
   }
 
-  async function createAftermathAccount() {
+  async function createVenueAccount() {
     if (!account?.address) return;
     await mutate("create-account", async () => {
       const built = await request<PreparedOwnerTransactionResponse>(
@@ -1065,7 +1071,7 @@ function DashboardBody() {
       if (result.$kind === "FailedTransaction") {
         throw new Error(
           result.FailedTransaction.status.error?.message ??
-            "Aftermath account creation failed",
+            `${primaryVenue.name} account creation failed`,
         );
       }
 
@@ -1082,7 +1088,7 @@ function DashboardBody() {
       setSelectedAccount(discovered.at(-1)?.accountId ?? "");
       setNotice(
         discovered.length
-          ? "Aftermath account created. Select it and create the agent."
+          ? `${primaryVenue.name} account created. Select it and create the trading key.`
           : "Account transaction confirmed; refresh account discovery shortly.",
       );
     });
@@ -1122,7 +1128,7 @@ function DashboardBody() {
       if (result.$kind === "FailedTransaction") {
         throw new Error(
           result.FailedTransaction.status.error?.message ??
-            `Aftermath ${direction} failed`,
+            `${primaryVenue.name} ${direction} failed`,
         );
       }
 
@@ -1196,7 +1202,7 @@ function DashboardBody() {
         makerAccountId: current.makerAccountId ?? accountId,
       }));
       setNotice(
-        `Account ${accountId} authorized for trading and funded with agent gas.`,
+        `Account ${accountId} authorized for trading and funded with trading key gas.`,
       );
     });
   }
@@ -1219,7 +1225,7 @@ function DashboardBody() {
       if (result.$kind === "FailedTransaction") {
         throw new Error(
           result.FailedTransaction.status.error?.message ??
-            "Agent revocation failed",
+            "Trading key revocation failed",
         );
       }
       await request("api/setup/revoke-confirm", {
@@ -1229,7 +1235,9 @@ function DashboardBody() {
           digest: result.Transaction.digest,
         }),
       });
-      setNotice(`Account ${accountId} agent and Maker fee approval revoked.`);
+      setNotice(
+        `Account ${accountId} trading key and venue fee approval revoked.`,
+      );
     });
   }
 
@@ -1621,7 +1629,7 @@ function DashboardBody() {
             <SpreadMark state="stopped" />
             <div>
               <strong>Maker</strong>
-              <span>Aftermath / autonomous liquidity</span>
+              <span>Live on {primaryVenue.name}. More venues on the way.</span>
             </div>
           </div>
           <ConnectButton>Connect wallet</ConnectButton>
@@ -1630,7 +1638,7 @@ function DashboardBody() {
           <div className="access-seal">
             <LockKeyhole size={26} />
           </div>
-          <span className="eyebrow">Sui mainnet access</span>
+          <span className="eyebrow">{primaryVenue.network} access</span>
           <h1>Your wallet is the key.</h1>
           <p>
             Connect and sign a readable login message. Membership is checked
@@ -1880,7 +1888,7 @@ function DashboardBody() {
           />
           <div>
             <strong>Maker</strong>
-            <span>Aftermath / autonomous liquidity</span>
+            <span>Autonomous liquidity across venues</span>
           </div>
         </div>
         <div className="topbar-actions">
@@ -1922,7 +1930,7 @@ function DashboardBody() {
         </div>
         <div>
           <KeyRound size={16} />
-          <span>Agent</span>
+          <span>Trading key</span>
           <strong>{compact(setup.agent?.address ?? null)}</strong>
         </div>
         <div>
@@ -1955,7 +1963,7 @@ function DashboardBody() {
               <div>
                 <strong>Owner wallet</strong>
                 <p>
-                  Connect the wallet that holds the Aftermath account
+                  Connect the wallet that holds the {primaryVenue.name} account
                   capability.
                 </p>
               </div>
@@ -1969,7 +1977,7 @@ function DashboardBody() {
                 <KeyRound size={19} />
               </span>
               <div className="setup-body">
-                <strong>Agent capability</strong>
+                <strong>Trading key</strong>
                 {!account ? (
                   <p>Connect the owner wallet to continue.</p>
                 ) : !setup.agent ? (
@@ -1985,7 +1993,7 @@ function DashboardBody() {
                           setSelectedAccount(event.target.value)
                         }
                         disabled={!accounts.length}
-                        aria-label="Aftermath account"
+                        aria-label={`${primaryVenue.name} account`}
                       >
                         {!accounts.length && (
                           <option value="">
@@ -2004,7 +2012,7 @@ function DashboardBody() {
                       </select>
                       <button
                         className="button secondary inverse"
-                        onClick={() => void createAftermathAccount()}
+                        onClick={() => void createVenueAccount()}
                         disabled={Boolean(busy)}
                         type="button"
                       >
@@ -2020,7 +2028,7 @@ function DashboardBody() {
                       >
                         {busy === `provision-${selectedAccount}`
                           ? "Creating..."
-                          : "Create agent"}
+                          : "Create trading key"}
                       </button>
                     </div>
                   </>
@@ -2028,18 +2036,18 @@ function DashboardBody() {
                   <>
                     <p>
                       Grant trading-only access to account{" "}
-                      {setup.setup?.accountId ?? selectedAccount} and seed 0.1
-                      SUI gas in one owner transaction. The agent cannot
-                      withdraw.
+                      {setup.setup?.accountId ?? selectedAccount} and seed 0.1{" "}
+                      {primaryVenue.gasUnit} gas in one owner transaction. The
+                      trading key cannot withdraw.
                       {builderCode ? (
                         <>
                           {" "}
                           Maker orders carry a disclosed{" "}
-                          {(builderCode.integratorFee * 100).toFixed(2)}%
-                          builder fee.
+                          {(builderCode.integratorFee * 100).toFixed(2)}% venue
+                          fee.
                         </>
                       ) : (
-                        <> Builder registration must finish first.</>
+                        <> Venue fee registration must finish first.</>
                       )}
                     </p>
                     <button
@@ -2056,8 +2064,8 @@ function DashboardBody() {
                       `authorize-${setup.setup?.accountId ?? selectedAccount}`
                         ? "Waiting for wallet..."
                         : builderCode
-                          ? "Authorize agent"
-                          : "Builder setup pending"}
+                          ? "Authorize trading key"
+                          : "Venue fee setup pending"}
                     </button>
                   </>
                 )}
@@ -2083,8 +2091,8 @@ function DashboardBody() {
               className="icon-button account-manager-toggle"
               onClick={() => setAccountManagerOpen((open) => !open)}
               aria-expanded={accountManagerOpen}
-              aria-label="Manage Aftermath accounts"
-              title="Manage Aftermath accounts"
+              aria-label={`Manage ${primaryVenue.name} accounts`}
+              title={`Manage ${primaryVenue.name} accounts`}
             >
               <WalletCards size={16} aria-hidden="true" />
             </button>
@@ -2106,20 +2114,25 @@ function DashboardBody() {
             <strong>{money(makerWithdrawableCollateralUsd)}</strong>
           </div>
           <div>
-            <span>Agent gas</span>
+            <span>Trading key gas</span>
             <strong>
-              {agentGasSui === null ? "-" : `${agentGasSui.toFixed(4)} SUI`}
+              {agentGasSui === null
+                ? "-"
+                : `${agentGasSui.toFixed(4)} ${primaryVenue.gasUnit}`}
             </strong>
           </div>
           <div>
-            <span>Agent authority</span>
+            <span>Trading key authority</span>
             <strong>Trade / no withdrawals</strong>
           </div>
         </section>
       )}
 
       {onboardingComplete && accountManagerOpen && (
-        <section className="account-desk" aria-label="Aftermath accounts">
+        <section
+          className="account-desk"
+          aria-label={`${primaryVenue.name} accounts`}
+        >
           <div className="section-heading compact">
             <div>
               <span className="eyebrow">Account desk</span>
@@ -2127,7 +2140,7 @@ function DashboardBody() {
             </div>
             <button
               className="button secondary"
-              onClick={() => void createAftermathAccount()}
+              onClick={() => void createVenueAccount()}
               disabled={!account?.address || Boolean(busy)}
               type="button"
             >
@@ -2225,7 +2238,7 @@ function DashboardBody() {
                           <KeyRound size={15} aria-hidden="true" />
                           {busy === `provision-${owned.accountId}`
                             ? "Adding..."
-                            : "Add agent"}
+                            : "Add trading key"}
                         </button>
                       ) : !managed.agentCapId ? (
                         <button
@@ -2287,8 +2300,8 @@ function DashboardBody() {
                             type="button"
                             onClick={() => void revokeAgent(owned.accountId)}
                             disabled={Boolean(busy)}
-                            aria-label={`Revoke agent for account ${owned.accountId}`}
-                            title="Revoke agent and Maker fee approval"
+                            aria-label={`Revoke trading key for account ${owned.accountId}`}
+                            title="Revoke trading key and venue fee approval"
                           >
                             <ShieldOff size={15} aria-hidden="true" />
                           </button>
@@ -2308,11 +2321,14 @@ function DashboardBody() {
           <div className="section-heading compact">
             <div>
               <span className="eyebrow">Rotation now quoting</span>
-              <h2>
-                {snapshot?.market.symbol ??
-                  activeMarket?.symbol ??
-                  "Choose markets"}
-              </h2>
+              <div className="market-heading-row">
+                <h2>
+                  {snapshot?.market.symbol ??
+                    activeMarket?.symbol ??
+                    "Choose markets"}
+                </h2>
+                <VenueChip venue={primaryVenue} />
+              </div>
             </div>
             <button
               className="icon-button"
@@ -3540,6 +3556,7 @@ function DashboardBody() {
             <thead>
               <tr>
                 <th>Pair</th>
+                <th>Venue</th>
                 <th>State</th>
                 <th>Policy</th>
                 <th>Index</th>
@@ -3565,13 +3582,18 @@ function DashboardBody() {
                     <span>{compact(row.id)}</span>
                   </td>
                   <td>
+                    <VenueChip venue={primaryVenue} />
+                  </td>
+                  <td>
                     <span className={`desk-state state-${row.status}`}>
                       {row.status}
                     </span>
                     {row.lastTransactionDigest && (
                       <a
                         className="tx-link"
-                        href={`https://suiscan.xyz/mainnet/tx/${row.lastTransactionDigest}`}
+                        href={primaryVenue.explorerTxUrl(
+                          row.lastTransactionDigest,
+                        )}
                         target="_blank"
                         rel="noreferrer"
                         title="Open last transaction"
@@ -3642,7 +3664,7 @@ function DashboardBody() {
             </div>
             <a
               className="reward-claim-link"
-              href="https://aftermath.finance/rewards"
+              href={primaryVenue.rewardsUrl}
               target="_blank"
               rel="noreferrer"
             >
@@ -3859,7 +3881,7 @@ function DashboardBody() {
                           ? "positive-number"
                           : "negative-number"
                       }
-                      title="Half of the observed spread less current maker and builder fees; excludes adverse selection, gas, funding, hedging, and inventory carry"
+                      title="Half of the observed spread less current maker and venue fees; excludes adverse selection, gas, funding, hedging, and inventory carry"
                     >
                       {opportunity.preRiskEdgeBps === null
                         ? "-"
@@ -3917,7 +3939,7 @@ function DashboardBody() {
           </p>
           <p>
             Pre-risk edge is half the observed spread less current maker and
-            builder fees. It excludes adverse selection, gas, funding, hedge
+            venue fees. It excludes adverse selection, gas, funding, hedge
             slippage, markouts, inventory carry, and reward-rule changes.
           </p>
           <p>
@@ -3969,7 +3991,7 @@ function DashboardBody() {
             </strong>
           </div>
           <div>
-            <span>Est. builder fees</span>
+            <span>Est. venue fees</span>
             <strong>
               {money(performance?.attributed.estimatedBuilderFeesUsd ?? 0)}
             </strong>
@@ -4058,7 +4080,7 @@ function DashboardBody() {
                     <td>
                       <a
                         className="tx-link"
-                        href={`https://suiscan.xyz/mainnet/tx/${fill.txDigest}`}
+                        href={primaryVenue.explorerTxUrl(fill.txDigest)}
                         target="_blank"
                         rel="noreferrer"
                       >
@@ -4119,7 +4141,7 @@ function DashboardBody() {
               </strong>
             </div>
             <div>
-              <span>Builder fee / fill</span>
+              <span>Venue fee / fill</span>
               <strong>{money(builderFeePerFillUsd, 4)}</strong>
             </div>
             <div>
@@ -4216,20 +4238,20 @@ function DashboardBody() {
           <div className="section-heading compact">
             <div>
               <span className="eyebrow">Account inspection</span>
-              <h2>Builder fee</h2>
+              <h2>Venue fee</h2>
             </div>
             <Search size={18} />
           </div>
           <p className="panel-copy">
             {builderCode
-              ? `Maker code #${builderCode.integratorId} charges ${(builderCode.integratorFee * 10_000).toFixed(1)} bp on filled notional. Your one-time approval caps it at that exact rate and remains revocable.`
-              : "Builder incentives are not active. Orders carry no builder code until the operator completes on-chain registration."}
+              ? `Venue code #${builderCode.integratorId} charges ${(builderCode.integratorFee * 10_000).toFixed(1)} bp on filled notional. Your one-time approval caps it at that exact rate and remains revocable.`
+              : "Venue incentives are not active. Orders carry no venue fee code until the operator completes on-chain registration."}
           </p>
           {builderCode && (
             <p className="fee-caveat">
               Each market's current maker fee is included in its known fill
-              cost. A 1 bp builder fee can reduce a rebate or turn a narrow
-              spread negative. Maker reports it separately from strategy PnL.
+              cost. A 1 bp venue fee can reduce a rebate or turn a narrow spread
+              negative. Maker reports it separately from strategy PnL.
             </p>
           )}
           <form className="fee-form" onSubmit={inspectFee}>
@@ -4303,11 +4325,11 @@ function DashboardBody() {
                 <Coins size={18} />
               </span>
               <div>
-                <strong>Builder incentive</strong>
+                <strong>Venue incentive</strong>
                 <p>
                   {operatorStatus?.builderCode
                     ? `Code #${operatorStatus.builderCode.integratorId} / 1 bp`
-                    : "Register once with Aftermath. Users approve the 1 bp cap."}
+                    : `Register once with ${primaryVenue.name}. Users approve the 1 bp cap.`}
                 </p>
               </div>
               {!operatorStatus?.builderCode && (
@@ -4369,10 +4391,10 @@ function DashboardBody() {
       <footer>
         <span>
           Maker / wallet-gated public release / signer encrypted at rest /
-          withdrawals unavailable to agent
+          withdrawals unavailable to trading keys
         </span>
-        <a href="https://aftermath.finance/" target="_blank" rel="noreferrer">
-          Aftermath <ExternalLink size={13} />
+        <a href={primaryVenue.homeUrl} target="_blank" rel="noreferrer">
+          {primaryVenue.name} <ExternalLink size={13} />
         </a>
       </footer>
     </main>
