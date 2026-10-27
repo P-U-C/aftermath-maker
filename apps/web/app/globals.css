@@ -445,7 +445,7 @@ button:disabled {
   display: grid;
   grid-template-columns:
     minmax(130px, 1.25fr) repeat(3, minmax(90px, 1fr))
-    minmax(170px, auto);
+    minmax(410px, auto);
   align-items: center;
   gap: 12px;
   background: var(--white);
@@ -486,7 +486,39 @@ button:disabled {
   display: flex !important;
   justify-content: flex-end;
   flex-direction: row;
-  gap: 6px !important;
+  flex-wrap: wrap;
+  gap: 10px !important;
+}
+
+.account-collateral-actions,
+.account-role-actions {
+  display: flex;
+  align-items: end;
+  gap: 6px;
+}
+
+.account-collateral-actions label {
+  display: grid;
+  gap: 3px;
+}
+
+.account-collateral-actions input {
+  width: 82px;
+  height: 32px;
+  padding: 0 8px;
+  color: var(--ink);
+  background: var(--paper);
+  border: 1px solid var(--line-strong);
+  font:
+    600 11px/1 ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    monospace;
+}
+
+.account-collateral-actions .button,
+.account-role-actions .button {
+  min-height: 32px;
 }
 
 .role-button {
@@ -501,6 +533,19 @@ button:disabled {
   color: var(--white);
   background: var(--green);
   border-color: var(--green);
+}
+
+.icon-button.revoke-agent {
+  width: 32px;
+  height: 32px;
+  color: var(--coral);
+  border-color: #d9a69e;
+}
+
+.icon-button.revoke-agent:hover:not(:disabled) {
+  color: var(--white);
+  background: var(--coral);
+  border-color: var(--coral);
 }
 
 .section-heading {
@@ -1679,7 +1724,7 @@ input[type="range"] {
   min-height: 74px;
   padding: 12px 16px;
   display: grid;
-  grid-template-columns: minmax(220px, 1fr) 82px auto;
+  grid-template-columns: minmax(220px, 1fr) auto 82px auto;
   align-items: center;
   gap: 14px;
   color: var(--paper);
@@ -1694,6 +1739,7 @@ input[type="range"] {
 }
 
 .reward-leader span,
+.reward-focus > span,
 .reward-count span {
   color: #adb5b0;
   font-size: 9px;
@@ -1714,6 +1760,41 @@ input[type="range"] {
   font-size: 10px;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.reward-focus {
+  display: grid;
+  gap: 5px;
+}
+
+.reward-focus > div {
+  height: 34px;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  padding: 3px;
+  background: #252a27;
+  border: 1px solid #505853;
+}
+
+.reward-focus button {
+  min-width: 76px;
+  padding: 0 9px;
+  color: #d2d7d3;
+  background: transparent;
+  border: 0;
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.reward-focus button.selected {
+  color: var(--black);
+  background: var(--paper);
+  font-weight: 700;
+}
+
+.reward-focus button:focus-visible {
+  outline: 2px solid var(--amber);
+  outline-offset: 1px;
 }
 
 .reward-count {
@@ -1801,6 +1882,16 @@ input[type="range"] {
 
 .confidence-low {
   color: var(--coral);
+}
+
+.thin-active {
+  width: fit-content;
+  margin-top: 3px;
+  padding: 2px 4px;
+  color: #624500;
+  background: #fff0bf;
+  font-size: 8px;
+  text-transform: uppercase;
 }
 
 .score-cell {
@@ -2584,6 +2675,10 @@ footer a {
 
   .reward-command {
     grid-template-columns: minmax(0, 1fr) 72px;
+  }
+
+  .reward-leader {
+    grid-column: 1 / -1;
   }
 
   .reward-leader small {

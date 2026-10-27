@@ -207,6 +207,7 @@ export class MakerRuntime {
   private cyclePromise: Promise<void> | null = null;
   private markets: MarketSummary[] = [];
   private marketIndex = 0;
+  private runPeakEquityUsd: number | null = null;
 
   constructor(
     private readonly store: TenantStore,
@@ -339,6 +340,7 @@ export class MakerRuntime {
     this.snapshotValue.mode = config.mode;
     this.snapshotValue.startedAt = startedAt;
     this.snapshotValue.lastError = null;
+    this.runPeakEquityUsd = null;
     this.snapshotValue.markets = config.markets.map((market) =>
       emptyRuntimeMarket(market, config),
     );
@@ -414,16 +416,26 @@ export class MakerRuntime {
     });
     const activeCycle = this.cyclePromise;
     const wasRunning = this.stopScheduling("watchdog");
-    if (wasRunning) await this.cancelOpenOrders(config);
+    if (wasRunning) {
+      await this.cancelOpenOrders(config, {
+        attempts: 3,
+        retryDelayMs: 2_000,
+      });
+    }
 
     // Do not let a stalled RPC prevent immediate cancellation. If a transaction
     // was already broadcast, cancel again after its result becomes known.
     if (activeCycle) {
-      void activeCycle.finally(async () => {
-        if (this.snapshotValue.watchdog.state === "tripped") {
-          await this.cancelOpenOrders(config);
-        }
-      });
+      void activeCycle
+        .finally(async () => {
+          if (this.snapshotValue.watchdog.state === "tripped") {
+            await this.cancelOpenOrders(config, {
+              attempts: 3,
+              retryDelayMs: 2_000,
+            });
+          }
+        })
+        .catch(() => undefined);
     }
     this.watchdogTripping = false;
   }
@@ -455,7 +467,10 @@ export class MakerRuntime {
     return wasRunning;
   }
 
-  private async cancelOpenOrders(config: MakerConfig): Promise<void> {
+  private async cancelOpenOrders(
+    config: MakerConfig,
+    options: { attempts?: number; retryDelayMs?: number } = {},
+  ): Promise<void> {
     const setup = this.store.getSetup();
     const account = setup ? this.store.getAccountSetup(setup.accountId) : null;
     const agent = this.store.getAgent();
@@ -474,28 +489,42 @@ export class MakerRuntime {
       context: agent.encryptionContext,
       encryptedSecret: agent.encryptedSecret,
     });
-    try {
-      const receipt = await this.gateway.cancelMakerOrders({
-        setup,
-        marketIds: config.markets.map((market) => market.marketId),
-        signer,
-        config,
-      });
-      this.store.logEvent({
-        category: "runtime",
-        action: "cancel-maker-orders",
-        outcome: receipt ? "confirmed" : "clear",
-        detail: receipt ?? {},
-      });
-    } catch (error) {
-      const errorText = message(error);
-      this.snapshotValue.lastError = `Quote cancellation failed: ${errorText}`;
-      this.store.logEvent({
-        category: "runtime",
-        action: "cancel-maker-orders",
-        outcome: "error",
-        detail: { error: errorText },
-      });
+    const attempts = Math.max(1, options.attempts ?? 1);
+    const retryDelayMs = Math.max(0, options.retryDelayMs ?? 0);
+    for (let attempt = 1; attempt <= attempts; attempt += 1) {
+      try {
+        const receipt = await this.gateway.cancelMakerOrders({
+          setup,
+          marketIds: config.markets.map((market) => market.marketId),
+          signer,
+          config,
+        });
+        if (receipt || attempt === attempts) {
+          this.store.logEvent({
+            category: "runtime",
+            action: "cancel-maker-orders",
+            outcome: receipt ? "confirmed" : "clear",
+            detail: { attempt, attempts, ...(receipt ?? {}) },
+          });
+          return;
+        }
+      } catch (error) {
+        const errorText = message(error);
+        this.store.logEvent({
+          category: "runtime",
+          action: "cancel-maker-orders-attempt",
+          outcome: "error",
+          detail: { attempt, attempts, error: errorText },
+        });
+        if (attempt === attempts) {
+          this.snapshotValue.lastError = `Quote cancellation failed after ${attempts} attempts: ${errorText}`;
+          return;
+        }
+      }
+
+      if (retryDelayMs > 0) {
+        await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
+      }
     }
   }
 
@@ -503,8 +532,31 @@ export class MakerRuntime {
     const config = this.store.getConfig();
     const activeCycle = this.cyclePromise;
     const wasRunning = this.stopScheduling();
-    if (activeCycle) await activeCycle;
-    if (wasRunning && config) await this.cancelOpenOrders(config);
+    let cycleSettled = !activeCycle;
+    if (activeCycle) {
+      cycleSettled = await Promise.race([
+        activeCycle.then(() => true),
+        new Promise<false>((resolve) =>
+          setTimeout(() => resolve(false), 5_000),
+        ),
+      ]);
+    }
+    if (wasRunning && config) {
+      await this.cancelOpenOrders(config, {
+        attempts: 3,
+        retryDelayMs: 2_000,
+      });
+    }
+    if (!cycleSettled && activeCycle && config) {
+      void activeCycle
+        .finally(() =>
+          this.cancelOpenOrders(config, {
+            attempts: 3,
+            retryDelayMs: 2_000,
+          }),
+        )
+        .catch(() => undefined);
+    }
   }
 
   async flatten(maxSlippage: number): Promise<{
@@ -1014,6 +1066,16 @@ export class MakerRuntime {
           marketIds: config.markets.map((item) => item.marketId),
         });
       }
+      if (setup && account?.agentCapId && agent) {
+        this.runPeakEquityUsd = Math.max(
+          this.runPeakEquityUsd ?? portfolio.equityUsd,
+          portfolio.equityUsd,
+        );
+      }
+      const runDrawdownUsd = Math.max(
+        0,
+        (this.runPeakEquityUsd ?? portfolio.equityUsd) - portfolio.equityUsd,
+      );
       const position = portfolio.positions.find(
         (item) => item.marketId === selected!.marketId,
       );
@@ -1026,6 +1088,7 @@ export class MakerRuntime {
           marketId: selected.marketId,
           bestBid,
           bestAsk,
+          indexPrice: market.indexPrice,
           observedAt,
         },
         inventoryUsd,
@@ -1040,6 +1103,9 @@ export class MakerRuntime {
         liveEnabled: this.options.liveEnabled,
         mainnetAllowed: this.options.mainnetAllowed,
         portfolioGrossExposureUsd: portfolio.grossExposureUsd,
+        portfolioAvailableCollateralUsd: portfolio.availableCollateralUsd,
+        agentGasSui: portfolio.gasSui,
+        runDrawdownUsd,
       });
       const summary = this.markets.find(
         (item) => item.id === selected!.marketId,
@@ -1247,7 +1313,12 @@ export class MakerRuntime {
       });
       if (!cancelled && this.snapshotValue.mode === "live") {
         this.stopScheduling();
-        if (config) await this.cancelOpenOrders(config);
+        if (config) {
+          await this.cancelOpenOrders(config, {
+            attempts: 3,
+            retryDelayMs: 2_000,
+          });
+        }
       }
     } finally {
       if (config?.markets.length) {
@@ -1256,9 +1327,10 @@ export class MakerRuntime {
     }
   }
 
-  async reconfigure(): Promise<void> {
+  async reconfigure(nextConfig?: MakerConfig): Promise<void> {
     const wasRunning = this.snapshotValue.running;
     await this.stop();
+    if (nextConfig) this.store.setConfig(nextConfig);
     this.marketIndex = 0;
     const config = this.store.getConfig();
     if (config) {

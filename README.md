@@ -28,12 +28,14 @@ SUI_FALLBACK_GRPC_URL=https://fullnode.mainnet.sui.io:443
 
 1. Connect a Sui wallet and sign a readable login message.
 2. Select or create an Aftermath USDC account.
-3. Create one encrypted trading agent and authorize it on each account you want Maker to use.
-4. Assign a Maker account and, optionally, a different hedge account.
-5. Check collateral and gas readiness, select markets, then set portfolio limits.
-6. Run Observe, then Paper, then deliberately small Live limits.
+3. Deposit collateral from the owner wallet.
+4. Create one encrypted trading agent and authorize it on each account you want Maker to use.
+5. Assign a Maker account and, optionally, a different hedge account.
+6. Check collateral and gas readiness, select markets, then set portfolio limits.
+7. Run Observe, then Paper, then deliberately small Live limits.
+8. Stop, reconcile, withdraw, or revoke the agent and Maker fee approval from the account desk.
 
-The agent can trade but cannot withdraw collateral or grant another agent. Creating an account does not deposit collateral.
+The agent can trade but cannot withdraw collateral or grant another agent. Owner-signed account, collateral, authorization, and revocation transactions are simulated before the wallet is asked to sign.
 
 ## What the desk shows
 
@@ -56,7 +58,7 @@ Maker visits selected markets round-robin. Each live visit atomically cancels an
 
 When paired-account hedging is enabled, Maker reacts only to independently filled order IDs that it previously recorded. It aggregates small fills to the configured threshold, cancels its quotes, requires both accounts to have no resting orders, then submits one capped opposite market order from the hedge account. It never creates a paired self-match loop.
 
-Live mode fails closed on setup, signer, mainnet, freshness, spread, quote size, inventory, gross exposure, loss, transaction simulation, and gas limits. An independent watchdog cancels Maker orders if any selected market exceeds its maximum quote age, even when the market RPC is stalled.
+Live mode fails closed on setup, signer, mainnet, freshness, book/index divergence, quote size, worst post-fill inventory and gross exposure, two-sided collateral, agent gas, unrealized loss, run equity drawdown, transaction simulation, and gas limits. An independent watchdog cancels Maker orders if any selected market exceeds its maximum quote age, even when the market RPC is stalled.
 
 Flattening is separate from stopping. It first stops scheduling and cancels Maker-tagged orders, then submits reduce-only market orders for positions in the selected markets. The UI requires a second confirmation and states the slippage ceiling.
 
@@ -71,11 +73,13 @@ ALLOW_MAINNET=true
 
 The reward desk keeps protocol facts separate from strategy estimates. Account totals come from Aftermath's current-epoch rewards endpoint. Market rankings are Maker's heuristic: organic 24-hour flow per dollar of balanced depth within 50 bps, adjusted for competition, spread, volatility, funding, open-interest capacity, and book balance.
 
-Closed-session markets and markets without meaningful two-sided depth, OI, or organic volume are ineligible. **Stage rotation** selects the requested number of top markets, applies bounded per-market policies, and forces Observe mode. It never saves, starts, or enables Live trading.
+Closed-session markets and markets with less than $10,000 of reported 24-hour volume, $100 of balanced depth within 50 bps, positive OI, or a valid two-sided book are ineligible. Suggested quote size is capped at 5% of measured balanced depth and by available account collateral.
+
+**Best net** stages the highest-ranked eligible markets. **Thin & active** narrows that set to books with $100-$1,000 of balanced depth within 50 bps, preserving the same activity and safety gates. **Stage rotation** applies bounded per-market policies and forces Observe mode. It never saves, starts, enables Live trading, or promises that a shallow market will earn a larger reward.
 
 Aftermath trading incentives require a manual claim. The desk links to the official Rewards page rather than constructing or automatically signing a value-moving claim transaction.
 
-The ranking is not Aftermath's private per-market rewards formula and does not estimate guaranteed profit. Its purpose is to direct scarce collateral toward measurable, independently generated flow while avoiding volume churn and self-trading.
+The ranking is not an Aftermath per-market rewards formula and does not estimate guaranteed profit. Aftermath currently documents no designated market-maker program or special latency advantage; trading incentives are bi-weekly and discretionary. The model's purpose is to direct scarce collateral toward measurable, independently generated flow while avoiding volume churn, self-trading, and books too thin to exit safely.
 
 ## Performance boundary
 
@@ -85,7 +89,7 @@ Attribution starts when this release records posted order IDs. Older account act
 
 The default builder fee is **1 bp (0.01%) of filled notional**. That exceeds Aftermath's base 0.5 bp maker rebate before market-share rebates, spread capture, and adverse selection. The dashboard discloses and reports it separately.
 
-Read [the operating model](docs/OPERATING_MODEL.md), [review guide](docs/REVIEW_GUIDE.md), and [security model](SECURITY.md) before using Live.
+Read [the operating model](docs/OPERATING_MODEL.md), [review guide](docs/REVIEW_GUIDE.md), [security model](SECURITY.md), and [current mainnet audit](audits/2026-10-27-mainnet/FINDINGS.md) before using Live.
 
 ## Public access
 

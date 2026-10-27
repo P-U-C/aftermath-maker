@@ -86,7 +86,7 @@ export class OnchainAllowlist {
     const result = await this.client.waitForTransaction({
       digest,
       timeout: 60_000,
-      include: { effects: true, objectTypes: true },
+      include: { transaction: true, effects: true, objectTypes: true },
     });
     if (result.$kind === "FailedTransaction") {
       throw new Error(
@@ -96,6 +96,10 @@ export class OnchainAllowlist {
     }
 
     const transaction = result.Transaction;
+    const normalizedOperator = normalizeAddress(expectedOperator);
+    if (transaction.transaction?.sender?.toLowerCase() !== normalizedOperator) {
+      throw new Error("Whitelist deployment was signed by another wallet");
+    }
     const types = transaction.objectTypes;
     const created =
       transaction.effects?.changedObjects.filter(
@@ -113,6 +117,12 @@ export class OnchainAllowlist {
     const registryType = registry ? types?.[registry.objectId] : undefined;
     if (!registry || !adminCap || !registryType) {
       throw new Error("Deployment did not create the expected access objects");
+    }
+    if (
+      adminCap.outputOwner?.$kind !== "AddressOwner" ||
+      normalizeAddress(adminCap.outputOwner.AddressOwner) !== normalizedOperator
+    ) {
+      throw new Error("Whitelist AdminCap was not assigned to the operator");
     }
 
     const packageId = registryType.split("::")[0];
@@ -133,7 +143,7 @@ export class OnchainAllowlist {
     return deployment;
   }
 
-  buildMembershipTransaction(inputs: {
+  async buildMembershipTransaction(inputs: {
     operatorAddress: string;
     memberAddress: string;
     action: "add" | "remove";
@@ -151,6 +161,17 @@ export class OnchainAllowlist {
       ],
     });
     tx.setSender(normalizeAddress(inputs.operatorAddress));
+    tx.setGasBudget(100_000_000n);
+    const simulation = await this.client.simulateTransaction({
+      transaction: tx,
+      include: { effects: true },
+    });
+    if (simulation.$kind === "FailedTransaction") {
+      throw new Error(
+        simulation.FailedTransaction.status.error?.message ??
+          "Whitelist membership transaction simulation failed",
+      );
+    }
     return tx.toJSON();
   }
 

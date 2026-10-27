@@ -6,9 +6,9 @@ Maker is an execution and measurement system, not a promise that one spread sett
 
 ### Account readiness
 
-The account desk discovers every Aftermath USDC account held by the signed-in wallet. It shows equity, available collateral, positions, agent authorization, and the assigned Maker or hedge role. One locally encrypted agent signer can hold a separate trading capability for each authorized account; account creation and each capability grant remain owner-signed transactions.
+The account desk discovers every Aftermath USDC account held by the signed-in wallet. It shows equity, available collateral, positions, agent authorization, and the assigned Maker or hedge role. It can create an account, deposit or withdraw USDC, and revoke the agent plus Maker fee approval. One locally encrypted agent signer can hold a separate trading capability for each authorized account; every account, collateral, capability, and revocation transaction remains owner-signed and is simulated before signing.
 
-Do not withdraw collateral while an engine is running. Stop quoting first, reconcile open orders and positions, then withdraw through the owner account.
+Collateral changes are blocked while an engine is running. Revocation first stops the engine, checks every listed market for remaining Maker-tagged orders, and refuses to proceed until they are clear.
 
 ### Portfolio policy
 
@@ -25,7 +25,7 @@ The engine resolves the effective policy for the current market before quote cal
 
 ### Quote lifecycle
 
-Maker currently uses the live Aftermath best bid and ask as its reference. It creates a post-only bid and ask, skews both around the configured inventory target, and uses Aftermath's atomic cancel-and-place transaction to replace its prior quote pair.
+Maker uses Aftermath's protocol index as fair value and the live best bid and ask as execution constraints. It refuses to quote when book midpoint diverges from the index beyond policy, creates a post-only bid and ask around the index, skews both around the configured inventory target, and uses Aftermath's atomic cancel-and-place transaction to replace its prior quote pair.
 
 Every market has stable Maker client order IDs. Portfolio cancellation looks up pending orders and selects only those IDs. It does not cancel manual orders or orders created by another client.
 
@@ -48,7 +48,7 @@ For example, $1,000 of attributed Maker bids creates positive perp delta. Once t
 
 The rotation interval grows with the number of selected markets. Configuration is rejected unless the stale-quote cutoff can cover one complete rotation plus a buffer.
 
-Live mode also runs an independent watchdog. If any selected market exceeds the cutoff, the watchdog invalidates the current cycle, stops scheduling, and immediately cancels Maker-tagged orders. It does not wait for a stalled market RPC. If a transaction was already broadcast, it performs another cancellation after that cycle resolves.
+Live mode also runs an independent watchdog. If any selected market exceeds the cutoff, the watchdog invalidates the current cycle, stops scheduling, and immediately cancels Maker-tagged orders with retries. It does not wait for a stalled market RPC. Manual stop uses a bounded wait instead of hanging behind the RPC, and both paths reconcile again after an ambiguous cycle resolves.
 
 ### Stop and flatten
 
@@ -90,7 +90,7 @@ There is no single Wintermute setting to copy. The transferable operating ideas 
 4. **Measure realized outcomes.** Compare spread capture, markouts, funding, incentives, builder fees, protocol fees, gas, hedge cost, and capital at risk.
 5. **Prefer reliability over nominal activity.** Stale-order controls, atomic replacement, reconciliation, and collateral visibility matter more than gross volume.
 
-Maker now supplies the measurement and control foundation for those experiments. It implements a guarded same-venue paired-account hedge, but does not yet provide external fair-value feeds or automated cross-venue hedging.
+Maker now supplies the measurement and control foundation for those experiments. It anchors fair value to Aftermath's index and implements a guarded same-venue paired-account hedge, but does not yet provide independent external fair-value feeds or automated cross-venue hedging.
 
 ## Strategy families to test
 
@@ -101,9 +101,9 @@ These are hypotheses to compare in Observe, Paper, and small Live runs:
 - **Paired-account hedging:** the implemented same-venue baseline for reducing bot-attributed delta while measuring taker fees and residual exposure.
 - **Cross-venue hedged market making:** quote on Aftermath and hedge externally when expected spread exceeds hedge, funding, fee, gas, and basis costs.
 - **Funding and basis:** pair spot and perps, or two perp venues, while measuring funding reversal, margin, liquidation, and basis risk.
-- **Incentive-aware liquidity:** the reward desk now ranks open markets by organic flow per dollar of balanced near-book depth, adjusted for competition, spread, volatility, funding, OI capacity, and book balance. It stages an Observe-mode rotation for review; it does not start the engine.
+- **Incentive-aware liquidity:** the reward desk ranks open markets by organic flow per dollar of balanced near-book depth, adjusted for competition, spread, volatility, funding, OI capacity, and book balance. Eligibility requires at least $10,000 reported 24-hour volume, $100 balanced depth within 50 bps, positive OI, and a valid two-sided book. Suggested quote size cannot exceed 5% of that measured depth or the account-aware collateral allowance. **Best net** uses all eligible markets; **Thin & active** restricts selection to $100-$1,000 of balanced depth without relaxing any other gate. Both stage an Observe-mode rotation for review; neither starts the engine.
 
-The ranking is a transparent allocation heuristic, not Aftermath's private per-market reward formula. Exact current-epoch account Q-score, qualifying uptime, maker volume share, rewards, and rebates come directly from Aftermath. Low OI alone is never treated as opportunity: it can mean less competition, little organic flow, and higher thin-book risk.
+The ranking is a transparent allocation heuristic, not an Aftermath reward formula. Exact current-epoch account Q-score, qualifying uptime, maker volume share, rewards, and rebates come directly from Aftermath. Aftermath currently documents no designated market-maker program or special rebate beyond its public fee and incentive systems. Low OI or depth alone is never treated as opportunity: either can mean little organic flow, toxic fills, and no safe exit.
 
 ## Next measurement layer
 
@@ -113,9 +113,9 @@ The next implementation sequence is:
 2. Attribute actual funding and gas in USD to each position and run.
 3. Add realized spread and inventory-carry decomposition.
 4. Compare staged reward rotations against realized rewards per dollar of collateral.
-5. Add volatility and oracle-versus-book divergence signals.
+5. Add realized-volatility sizing around the implemented index-versus-book divergence gate.
 6. Run profiles long enough to compare net return on collateral at risk.
-7. Add external fair-value inputs and a venue-diversified hedge after same-venue reconciliation is validated with mainnet traces.
+7. Add independent external fair-value inputs and a venue-diversified hedge after same-venue reconciliation is validated with mainnet traces.
 
 ## References
 

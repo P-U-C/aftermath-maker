@@ -1,0 +1,102 @@
+{
+  "asOf": "2026-10-27T01:50:21.154Z",
+  "source": "Aftermath mainnet via AftermathGateway 6.3.0",
+  "model": {
+    "minimumVolume24hUsd": 10000,
+    "minimumBalancedDepth50BpsUsd": 100,
+    "builderFeeBps": 1
+  },
+  "topEligible": [
+    {
+      "rank": 1,
+      "symbol": "NEAR",
+      "score": 72.7,
+      "balancedDepth50BpsUsd": 50757.47,
+      "volume24hUsd": 195421.49003442677,
+      "openInterestUsd": 12156.094297579097,
+      "spreadBps": 14.61
+    },
+    {
+      "rank": 2,
+      "symbol": "CHIP",
+      "score": 70.3,
+      "balancedDepth50BpsUsd": 18769.28,
+      "volume24hUsd": 106907.87890540005,
+      "openInterestUsd": 2082.848571648,
+      "spreadBps": 12.28
+    },
+    {
+      "rank": 3,
+      "symbol": "MON",
+      "score": 68.4,
+      "balancedDepth50BpsUsd": 59889.64,
+      "volume24hUsd": 180849.43084149997,
+      "openInterestUsd": 3800.8903485119995,
+      "spreadBps": 28.72
+    },
+    {
+      "rank": 4,
+      "symbol": "USDKRW",
+      "score": 67.2,
+      "balancedDepth50BpsUsd": 167.63,
+      "volume24hUsd": 11554.508962999997,
+      "openInterestUsd": 2465.4084325,
+      "spreadBps": 0.68
+    },
+    {
+      "rank": 5,
+      "symbol": "ETH",
+      "score": 64.7,
+      "balancedDepth50BpsUsd": 101413.47,
+      "volume24hUsd": 338807.0267373817,
+      "openInterestUsd": 64796.11103133631,
+      "spreadBps": 7.06
+    },
+    {
+      "rank": 6,
+      "symbol": "XMR",
+      "score": 63.3,
+      "balancedDepth50BpsUsd": 474.49,
+      "volume24hUsd": 60163.15409729333,
+      "openInterestUsd": 36779.581693322136,
+      "spreadBps": 6.94
+    },
+    {
+      "rank": 7,
+      "symbol": "LIT",
+      "score": 62.8,
+      "balancedDepth50BpsUsd": 15626.85,
+      "volume24hUsd": 71577.50186349798,
+      "openInterestUsd": 2166.8251190128412,
+      "spreadBps": 21.99
+    },
+    {
+      "rank": 8,
+      "symbol": "BNB",
+      "score": 61.8,
+      "balancedDepth50BpsUsd": 21686.78,
+      "volume24hUsd": 79302.49842483111,
+      "openInterestUsd": 39233.72589571027,
+      "spreadBps": 8.64
+    },
+    {
+      "rank": 9,
+      "symbol": "JP225",
+      "score": 61.1,
+      "balancedDepth50BpsUsd": 219.52,
+      "volume24hUsd": 11748.372641146472,
+      "openInterestUsd": 3797.6098813444,
+      "spreadBps": 6.41
+    },
+    {
+      "rank": 10,
+      "symbol": "FLUID",
+      "score": 61,
+      "balancedDepth50BpsUsd": 142.17,
+      "volume24hUsd": 18254.836978052892,
+      "openInterestUsd": 1147.1626999569003,
+      "spreadBps": 17.57
+    }
+  ],
+  "interpretation": "The top three are not the least-liquid books. Lower competition matters only after two-sided depth, organic volume, OI, session, funding, volatility, spread, and exit capacity pass minimum gates."
+}

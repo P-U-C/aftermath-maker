@@ -23,6 +23,7 @@ export type RewardMarketOpportunity = {
   score: number;
   confidence: "high" | "medium" | "low";
   eligible: boolean;
+  thinActive: boolean;
   sessionOpen: boolean | null;
   observedSpreadBps: number | null;
   balancedDepth50BpsUsd: number;
@@ -40,6 +41,8 @@ export type RewardMarketOpportunity = {
   reasons: string[];
   error: string | null;
 };
+
+export const THIN_ACTIVE_MAX_DEPTH_USD = 1_000;
 
 const clamp = (value: number, minimum: number, maximum: number) =>
   Math.min(maximum, Math.max(minimum, value));
@@ -97,13 +100,31 @@ export function rankRewardMarkets(inputs: {
       .filter((value): value is number => value !== null && value >= 0)
       .map((value) => Math.log1p(value));
 
-  const volumeValues = logValues(rows.map((row) => row.market.volume24hUsd));
-  const efficiencyValues = logValues(rows.map((row) => row.volumeToDepth));
-  const depthValues = logValues(rows.map((row) => row.balancedDepth50BpsUsd));
-  const movementValues = rows
+  const isEligible = (row: (typeof rows)[number]) =>
+    Boolean(
+      !row.market.error &&
+      row.market.sessionOpen !== false &&
+      row.spreadBps !== null &&
+      (row.market.volume24hUsd ?? 0) >= 10_000 &&
+      row.market.openInterestUsd > 0 &&
+      row.balancedDepth50BpsUsd >= 100,
+    );
+  const eligibleRows = rows.filter(isEligible);
+  const comparisonRows = eligibleRows.length ? eligibleRows : rows;
+
+  const volumeValues = logValues(
+    comparisonRows.map((row) => row.market.volume24hUsd),
+  );
+  const efficiencyValues = logValues(
+    comparisonRows.map((row) => row.volumeToDepth),
+  );
+  const depthValues = logValues(
+    comparisonRows.map((row) => row.balancedDepth50BpsUsd),
+  );
+  const movementValues = comparisonRows
     .map((row) => Math.abs(row.market.priceChange24hPct ?? Number.NaN))
     .filter(Number.isFinite);
-  const fundingValues = rows
+  const fundingValues = comparisonRows
     .map((row) => Math.abs(row.market.fundingRate))
     .filter(Number.isFinite);
 
@@ -145,14 +166,14 @@ export function rankRewardMarkets(inputs: {
             ? clamp((spreadBps / 40) * 100, 20, 100)
             : clamp(100 - (spreadBps - 40) * 0.75, 20, 100);
 
-      const eligible = Boolean(
-        !market.error &&
-        market.sessionOpen !== false &&
-        spreadBps !== null &&
-        (market.volume24hUsd ?? 0) >= 1_000 &&
-        market.openInterestUsd > 0 &&
-        balancedDepth50BpsUsd >= 10,
-      );
+      const eligible = isEligible({
+        market,
+        balancedDepth50BpsUsd,
+        spreadBps,
+        volumeToDepth,
+      });
+      const thinActive =
+        eligible && balancedDepth50BpsUsd <= THIN_ACTIVE_MAX_DEPTH_USD;
       const coverage = [
         market.volume24hUsd !== null,
         market.priceChange24hPct !== null,
@@ -212,7 +233,14 @@ export function rankRewardMarkets(inputs: {
         clamp(Math.max(8, (spreadBps ?? 30) * 0.9), 8, 80),
       );
       const suggestedQuoteSizeUsd = round(
-        clamp(Math.sqrt(Math.max(0, balancedDepth50BpsUsd)) * 1.5, 5, 100),
+        clamp(
+          Math.min(
+            Math.sqrt(Math.max(0, balancedDepth50BpsUsd)) * 1.5,
+            balancedDepth50BpsUsd * 0.05,
+          ),
+          1,
+          100,
+        ),
         0,
       );
 
@@ -223,6 +251,7 @@ export function rankRewardMarkets(inputs: {
         score: round(score, 1),
         confidence,
         eligible,
+        thinActive,
         sessionOpen: market.sessionOpen,
         observedSpreadBps: spreadBps === null ? null : round(spreadBps, 2),
         balancedDepth50BpsUsd: round(balancedDepth50BpsUsd),

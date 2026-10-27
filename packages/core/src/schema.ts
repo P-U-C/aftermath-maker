@@ -65,6 +65,8 @@ export const makerConfigSchema = z
     inventoryTargetUsd: z.number().min(-10_000).max(10_000).default(0),
     maxGrossExposureUsd: z.number().positive().max(100_000).default(150),
     maxUnrealizedLossUsd: z.number().positive().max(10_000).default(20),
+    maxRunDrawdownUsd: z.number().positive().max(10_000).default(20),
+    maxBookDivergenceBps: z.number().positive().max(5_000).default(100),
     maxLeverage: z.number().min(1).max(3).default(1),
     maxGasMist: z
       .number()
@@ -167,6 +169,7 @@ export const quoteIntentSchema = z
     observedAt: z.string().datetime(),
     bestBid: z.number().positive(),
     bestAsk: z.number().positive(),
+    indexPrice: z.number().positive(),
     bidPrice: z.number().positive(),
     askPrice: z.number().positive(),
     sizeBase: z.number().positive(),

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import cors from "@fastify/cors";
 import rateLimit from "@fastify/rate-limit";
 import { SuiGrpcClient } from "@mysten/sui/grpc";
@@ -5,6 +6,7 @@ import Fastify, { type FastifyRequest } from "fastify";
 import { z } from "zod";
 import { createEncryptedAgent } from "@puc/aftermath";
 import {
+  decimalToBaseUnits,
   integratorInspectionSchema,
   makerConfigSchema,
   setupSchema,
@@ -147,6 +149,13 @@ await app.register(cors, { origin: false });
 await app.register(rateLimit, {
   max: 120,
   timeWindow: "1 minute",
+  keyGenerator: (request) => {
+    const header = request.headers["x-maker-session"];
+    const session = Array.isArray(header) ? header[0] : header;
+    return session
+      ? `session:${createHash("sha256").update(session).digest("hex")}`
+      : `unauthenticated:${request.ip}`;
+  },
 });
 
 const publicPaths = new Set([
@@ -381,6 +390,71 @@ app.post("/api/accounts/create-transaction", async (request) => {
   return { transaction };
 });
 
+const collateralMutationSchema = z
+  .object({
+    accountId: z.string().regex(/^\d+$/),
+    amountUsdc: z
+      .string()
+      .min(1)
+      .max(30)
+      .regex(/^(0|[1-9]\d*)(?:\.\d{1,6})?$/),
+  })
+  .strict();
+
+app.post("/api/accounts/deposit-transaction", async (request) => {
+  const identity = requestAuth(request);
+  const body = collateralMutationSchema.parse(request.body);
+  const active = runtime(request);
+  if (active.snapshot.running) {
+    throw new AuthError(409, "Stop the engine before changing collateral");
+  }
+  const amount = decimalToBaseUnits(body.amountUsdc, 6);
+  if (amount <= 0n) throw new AuthError(400, "Deposit amount must be positive");
+  const transaction = await active
+    .requireGateway()
+    .buildDepositCollateralTransaction({
+      ownerAddress: identity.ownerAddress,
+      accountId: body.accountId,
+      collateralCoinType: USDC_COIN_TYPE,
+      amount,
+    });
+  tenant(request).logEvent({
+    category: "collateral",
+    action: "deposit.transaction",
+    outcome: "prepared",
+    detail: { accountId: body.accountId, amountUsdc: body.amountUsdc },
+  });
+  return { transaction };
+});
+
+app.post("/api/accounts/withdraw-transaction", async (request) => {
+  const identity = requestAuth(request);
+  const body = collateralMutationSchema.parse(request.body);
+  const active = runtime(request);
+  if (active.snapshot.running) {
+    throw new AuthError(409, "Stop the engine before changing collateral");
+  }
+  const amount = decimalToBaseUnits(body.amountUsdc, 6);
+  if (amount <= 0n) {
+    throw new AuthError(400, "Withdrawal amount must be positive");
+  }
+  const transaction = await active
+    .requireGateway()
+    .buildWithdrawCollateralTransaction({
+      ownerAddress: identity.ownerAddress,
+      accountId: body.accountId,
+      collateralCoinType: USDC_COIN_TYPE,
+      amount,
+    });
+  tenant(request).logEvent({
+    category: "collateral",
+    action: "withdraw.transaction",
+    outcome: "prepared",
+    detail: { accountId: body.accountId, amountUsdc: body.amountUsdc },
+  });
+  return { transaction };
+});
+
 app.post("/api/config", async (request) => {
   const scoped = tenant(request);
   const config = makerConfigSchema.parse(request.body);
@@ -404,8 +478,7 @@ app.post("/api/config", async (request) => {
       throw new Error("The selected hedge account is not authorized");
     }
   }
-  scoped.setConfig(config);
-  await runtime(request).reconfigure();
+  await runtime(request).reconfigure(config);
   scoped.logEvent({
     category: "configuration",
     action: "maker.update",
@@ -513,6 +586,7 @@ app.post("/api/setup/confirm", async (request) => {
   const verified = await runtime(request).requireGateway().verifyAgentGrant({
     setup,
     agentAddress: agent.address,
+    digest: body.digest,
     builderCode: fee,
   });
   scoped.confirmAgentGrant({
@@ -548,20 +622,93 @@ app.post("/api/setup/confirm", async (request) => {
 app.post("/api/setup/revoke-transaction", async (request) => {
   const body = z
     .object({ accountId: z.string().regex(/^\d+$/) })
+    .strict()
     .parse(request.body);
   const scoped = tenant(request);
   const setup = scoped.getAccountSetup(body.accountId);
-  if (!setup?.agentCapId) {
+  const agent = scoped.getAgent();
+  if (!setup?.agentCapId || !agent) {
     throw new Error("No confirmed agent capability exists for this account");
   }
+
+  const active = runtime(request);
+  await active.stop();
+  const gateway = active.requireGateway();
+  const markets = await gateway.listMarkets(setup.collateralCoinType);
+  const portfolio = await gateway.getAgentPortfolioSnapshot({
+    setup,
+    agentAddress: agent.address,
+    marketIds: markets.map((market) => market.id),
+  });
+  const taggedOrders = portfolio.positions.reduce(
+    (count, position) => count + position.makerOrderIds.length,
+    0,
+  );
+  if (taggedOrders > 0) {
+    throw new Error(
+      `Refusing revocation while ${taggedOrders} Maker-tagged orders remain open`,
+    );
+  }
+
   return {
-    transaction: await runtime(request)
-      .requireGateway()
-      .buildRevokeAgentTransaction({
-        setup,
-        agentCapId: setup.agentCapId,
-      }),
+    transaction: await gateway.buildRevokeAgentTransaction({
+      setup,
+      agentCapId: setup.agentCapId,
+      builderCode: builderCode(),
+    }),
+    agentCapId: setup.agentCapId,
   };
+});
+
+app.post("/api/setup/revoke-confirm", async (request) => {
+  const body = z
+    .object({
+      accountId: z.string().regex(/^\d+$/),
+      digest: z.string().min(20).max(100),
+    })
+    .strict()
+    .parse(request.body);
+  const scoped = tenant(request);
+  const setup = scoped.getAccountSetup(body.accountId);
+  const agent = scoped.getAgent();
+  if (!setup?.agentCapId || !agent) {
+    throw new Error("No confirmed agent capability exists for this account");
+  }
+
+  await runtime(request).requireGateway().verifyAgentRevocation({
+    setup,
+    agentAddress: agent.address,
+    agentCapId: setup.agentCapId,
+    digest: body.digest,
+    builderCode: builderCode(),
+  });
+  scoped.clearAgentGrant(body.accountId);
+
+  const current = scoped.getConfig();
+  if (current) {
+    const revokedMaker = current.makerAccountId === body.accountId;
+    const revokedHedge = current.hedge.accountId === body.accountId;
+    await runtime(request).reconfigure({
+      ...current,
+      mode: revokedMaker ? "observe" : current.mode,
+      makerAccountId: revokedMaker ? null : current.makerAccountId,
+      hedge: revokedHedge
+        ? { ...current.hedge, enabled: false, accountId: null }
+        : current.hedge,
+    });
+  }
+  scoped.logEvent({
+    category: "onboarding",
+    action: "agent.revoke",
+    outcome: "confirmed",
+    detail: {
+      accountId: body.accountId,
+      digest: body.digest,
+      agentCapId: setup.agentCapId,
+      builderApprovalRemoved: Boolean(builderCode()),
+    },
+  });
+  return { confirmed: true };
 });
 
 app.post("/api/runtime/start", async (request) => {

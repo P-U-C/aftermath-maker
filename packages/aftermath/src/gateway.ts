@@ -720,7 +720,7 @@ export class AftermathGateway {
       marketModel: {
         label: "heuristic",
         methodology:
-          "Ranks organic volume per dollar of balanced near-book depth, then adjusts for competition, spread, volatility, funding, capacity, and book balance. It is not Aftermath's private per-market reward formula.",
+          "Ranks organic volume per dollar of balanced near-book depth, then adjusts for competition, spread, volatility, funding, capacity, and book balance. Thin & active identifies otherwise-eligible books with $100-$1,000 balanced depth. It is not Aftermath's private per-market reward formula.",
         depthBandBps: 50,
         opportunities: rankRewardMarkets({
           markets: evidence,
@@ -798,7 +798,71 @@ export class AftermathGateway {
       walletAddress: inputs.ownerAddress,
       collateralCoinType: inputs.collateralCoinType,
     });
-    tx.setSender(inputs.ownerAddress);
+    return this.prepareOwnerTransaction(tx, inputs.ownerAddress);
+  }
+
+  async buildDepositCollateralTransaction(inputs: {
+    ownerAddress: string;
+    accountId: string;
+    collateralCoinType: string;
+    amount: bigint;
+  }): Promise<string> {
+    if (inputs.amount <= 0n) throw new Error("Deposit amount must be positive");
+    const cap = await this.findAccountCap({
+      walletAddress: inputs.ownerAddress,
+      accountId: inputs.accountId,
+      collateralCoinType: inputs.collateralCoinType,
+      requireAgent: false,
+    });
+    const { account } = await this.sdk.Perpetuals().getAccount({
+      accountCap: cap,
+    });
+    const { tx } = await account.getDepositCollateralTx({
+      depositAmount: inputs.amount,
+    });
+    return this.prepareOwnerTransaction(tx, inputs.ownerAddress);
+  }
+
+  async buildWithdrawCollateralTransaction(inputs: {
+    ownerAddress: string;
+    accountId: string;
+    collateralCoinType: string;
+    amount: bigint;
+  }): Promise<string> {
+    if (inputs.amount <= 0n)
+      throw new Error("Withdrawal amount must be positive");
+    const cap = await this.findAccountCap({
+      walletAddress: inputs.ownerAddress,
+      accountId: inputs.accountId,
+      collateralCoinType: inputs.collateralCoinType,
+      requireAgent: false,
+    });
+    const { account } = await this.sdk.Perpetuals().getAccount({
+      accountCap: cap,
+    });
+    const { tx } = await account.getWithdrawCollateralTx({
+      withdrawAmount: inputs.amount,
+      recipientAddress: inputs.ownerAddress,
+    });
+    return this.prepareOwnerTransaction(tx, inputs.ownerAddress);
+  }
+
+  private async prepareOwnerTransaction(
+    tx: Transaction,
+    ownerAddress: string,
+  ): Promise<string> {
+    tx.setSender(ownerAddress);
+    tx.setGasBudget(100_000_000n);
+    const simulation = await this.client.simulateTransaction({
+      transaction: tx,
+      include: { effects: true, balanceChanges: true },
+    });
+    if (simulation.$kind === "FailedTransaction") {
+      throw new Error(
+        simulation.FailedTransaction.status.error?.message ??
+          "Owner transaction simulation failed",
+      );
+    }
     return tx.toJSON();
   }
 
@@ -987,21 +1051,49 @@ export class AftermathGateway {
     }
     const [gasCoin] = tx.splitCoins(tx.gas, [inputs.gasMist]);
     tx.transferObjects([gasCoin], inputs.agentAddress);
-    tx.setSender(inputs.setup.ownerAddress);
-    return tx.toJSON();
+    return this.prepareOwnerTransaction(tx, inputs.setup.ownerAddress);
   }
 
   async verifyAgentGrant(inputs: {
     setup: Setup;
     agentAddress: string;
+    digest: string;
     builderCode: BuilderFeePolicy | null;
   }): Promise<{ agentCapId: string }> {
+    const result = await this.client.waitForTransaction({
+      digest: inputs.digest,
+      timeout: 60_000,
+      include: { transaction: true, effects: true },
+    });
+    if (result.$kind === "FailedTransaction") {
+      throw new Error(
+        result.FailedTransaction.status.error?.message ??
+          "Agent authorization transaction failed",
+      );
+    }
+    if (
+      result.Transaction.transaction?.sender?.toLowerCase() !==
+      inputs.setup.ownerAddress.toLowerCase()
+    ) {
+      throw new Error("Agent authorization was signed by another wallet");
+    }
+
     const cap = await this.findAccountCap({
       walletAddress: inputs.agentAddress,
       accountId: inputs.setup.accountId,
       collateralCoinType: inputs.setup.collateralCoinType,
       requireAgent: true,
     });
+    const createdCap = result.Transaction.effects?.changedObjects.find(
+      (change) =>
+        change.objectId.toLowerCase() === cap.objectId.toLowerCase() &&
+        change.idOperation === "Created",
+    );
+    if (!createdCap) {
+      throw new Error(
+        "Transaction did not create the confirmed agent capability",
+      );
+    }
     if (inputs.builderCode) {
       const approval = await this.sdk
         .Perpetuals()
@@ -1024,6 +1116,7 @@ export class AftermathGateway {
   async buildRevokeAgentTransaction(inputs: {
     setup: Setup;
     agentCapId: string;
+    builderCode: BuilderFeePolicy | null;
   }): Promise<string> {
     const cap = await this.findAccountCap({
       walletAddress: inputs.setup.ownerAddress,
@@ -1031,14 +1124,82 @@ export class AftermathGateway {
       collateralCoinType: inputs.setup.collateralCoinType,
       requireAgent: false,
     });
-    const { account } = await this.sdk.Perpetuals().getAccount({
+    const perps = this.sdk.Perpetuals();
+    const { account } = await perps.getAccount({
       accountCap: cap,
     });
-    const { tx } = await account.getRevokeAgentWalletTx({
+    let { tx } = await account.getRevokeAgentWalletTx({
       accountCapId: inputs.agentCapId,
     });
-    tx.setSender(inputs.setup.ownerAddress);
-    return tx.toJSON();
+    if (inputs.builderCode) {
+      ({ tx } = await perps.getRemoveBuilderCodeIntegratorConfigTx({
+        accountId: BigInt(inputs.setup.accountId),
+        integratorId: inputs.builderCode.integratorId,
+        tx,
+      }));
+    }
+    return this.prepareOwnerTransaction(tx, inputs.setup.ownerAddress);
+  }
+
+  async verifyAgentRevocation(inputs: {
+    setup: Setup;
+    agentAddress: string;
+    agentCapId: string;
+    digest: string;
+    builderCode: BuilderFeePolicy | null;
+  }): Promise<void> {
+    const result = await this.client.waitForTransaction({
+      digest: inputs.digest,
+      timeout: 60_000,
+      include: { transaction: true, effects: true },
+    });
+    if (result.$kind === "FailedTransaction") {
+      throw new Error(
+        result.FailedTransaction.status.error?.message ??
+          "Agent revocation transaction failed",
+      );
+    }
+    if (
+      result.Transaction.transaction?.sender?.toLowerCase() !==
+      inputs.setup.ownerAddress.toLowerCase()
+    ) {
+      throw new Error("Agent revocation was signed by another wallet");
+    }
+    const deletedCap = result.Transaction.effects?.changedObjects.find(
+      (change) =>
+        change.objectId.toLowerCase() === inputs.agentCapId.toLowerCase() &&
+        change.idOperation === "Deleted",
+    );
+    if (!deletedCap) {
+      throw new Error(
+        "Transaction did not delete the configured agent capability",
+      );
+    }
+
+    for (let attempt = 1; attempt <= 5; attempt += 1) {
+      const caps = await this.getOwnedAccountCaps({
+        walletAddress: inputs.agentAddress,
+        collateralCoinType: inputs.setup.collateralCoinType,
+      });
+      const agentStillAuthorized = caps.some(
+        (candidate) =>
+          candidate.isAgent &&
+          candidate.accountId.toString() === inputs.setup.accountId,
+      );
+      const approval = inputs.builderCode
+        ? await this.sdk.Perpetuals().getBuilderCodeIntegratorConfig({
+            accountId: BigInt(inputs.setup.accountId),
+            integratorId: inputs.builderCode.integratorId,
+          })
+        : { exists: false };
+      if (!agentStillAuthorized && !approval.exists) return;
+      if (attempt < 5) {
+        await new Promise((resolve) => setTimeout(resolve, 1_000));
+      }
+    }
+    throw new Error(
+      "Revocation transaction confirmed, but capability or fee approval still appears active",
+    );
   }
 
   async inspectIntegrator(inputs: { accountId: string; integratorId: number }) {

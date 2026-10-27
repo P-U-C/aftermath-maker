@@ -21,6 +21,7 @@ describe("quote strategy", () => {
         marketId: config.markets[0]!.marketId,
         bestBid: 9.99,
         bestAsk: 10.01,
+        indexPrice: 10,
         observedAt: new Date("2026-10-26T12:00:00Z"),
       },
       inventoryUsd: 0,
@@ -32,6 +33,7 @@ describe("quote strategy", () => {
         marketId: config.markets[0]!.marketId,
         bestBid: 9.99,
         bestAsk: 10.01,
+        indexPrice: 10,
         observedAt: new Date("2026-10-26T12:00:00Z"),
       },
       inventoryUsd: 40,
@@ -51,6 +53,7 @@ describe("quote strategy", () => {
           marketId: config.markets[0]!.marketId,
           bestBid: 10,
           bestAsk: 10,
+          indexPrice: 10,
           observedAt: new Date(),
         },
         inventoryUsd: 0,
@@ -68,6 +71,7 @@ describe("risk gates", () => {
         marketId: config.markets[0]!.marketId,
         bestBid: 9.99,
         bestAsk: 10.01,
+        indexPrice: 10,
         observedAt: new Date("2026-10-26T12:00:00Z"),
       },
       inventoryUsd: 0,
@@ -85,6 +89,173 @@ describe("risk gates", () => {
     expect(checks.find((check) => check.code === "live-gate")?.ok).toBe(false);
   });
 
+  it("rejects a thin book that diverges from the protocol index", () => {
+    const bounded = makerConfigSchema.parse({
+      markets: [{ marketId: "0x1234", symbol: "SUI-PERP" }],
+      maxBookDivergenceBps: 50,
+    });
+    const quote = buildQuoteIntent({
+      config: bounded,
+      observation: {
+        marketId: bounded.markets[0]!.marketId,
+        bestBid: 10.09,
+        bestAsk: 10.11,
+        indexPrice: 10,
+        observedAt: new Date("2026-10-26T12:00:00Z"),
+      },
+      inventoryUsd: 0,
+      unrealizedPnlUsd: 0,
+    });
+    const checks = evaluateQuoteSafety({
+      config: bounded,
+      quote,
+      now: new Date("2026-10-26T12:00:01Z"),
+      setupComplete: true,
+      hasAgentKey: true,
+      liveEnabled: true,
+      mainnetAllowed: true,
+    });
+
+    expect(checks.find((check) => check.code === "fair-value")?.ok).toBe(false);
+    expect(quote.bidPrice).toBeLessThan(10);
+  });
+
+  it("rejects a quote whose next fill would breach inventory limits", () => {
+    const bounded = makerConfigSchema.parse({
+      markets: [{ marketId: "0x1234", symbol: "SUI-PERP" }],
+      quoteSizeUsd: 2,
+      maxInventoryUsd: 5,
+      maxGrossExposureUsd: 10,
+    });
+    const quote = buildQuoteIntent({
+      config: bounded,
+      observation: {
+        marketId: bounded.markets[0]!.marketId,
+        bestBid: 9.99,
+        bestAsk: 10.01,
+        indexPrice: 10,
+        observedAt: new Date("2026-10-26T12:00:00Z"),
+      },
+      inventoryUsd: 4,
+      unrealizedPnlUsd: 0,
+    });
+    const checks = evaluateQuoteSafety({
+      config: bounded,
+      quote,
+      now: new Date("2026-10-26T12:00:01Z"),
+      setupComplete: true,
+      hasAgentKey: true,
+      liveEnabled: true,
+      mainnetAllowed: true,
+      portfolioGrossExposureUsd: 4,
+    });
+
+    expect(checks.find((check) => check.code === "inventory")?.ok).toBe(false);
+  });
+
+  it("rejects a quote whose next fill would breach portfolio exposure", () => {
+    const bounded = makerConfigSchema.parse({
+      markets: [{ marketId: "0x1234", symbol: "SUI-PERP" }],
+      quoteSizeUsd: 2,
+      maxInventoryUsd: 10,
+      maxGrossExposureUsd: 10,
+    });
+    const quote = buildQuoteIntent({
+      config: bounded,
+      observation: {
+        marketId: bounded.markets[0]!.marketId,
+        bestBid: 9.99,
+        bestAsk: 10.01,
+        indexPrice: 10,
+        observedAt: new Date("2026-10-26T12:00:00Z"),
+      },
+      inventoryUsd: 1,
+      unrealizedPnlUsd: 0,
+    });
+    const checks = evaluateQuoteSafety({
+      config: bounded,
+      quote,
+      now: new Date("2026-10-26T12:00:01Z"),
+      setupComplete: true,
+      hasAgentKey: true,
+      liveEnabled: true,
+      mainnetAllowed: true,
+      portfolioGrossExposureUsd: 9.5,
+    });
+
+    expect(checks.find((check) => check.code === "gross-exposure")?.ok).toBe(
+      false,
+    );
+  });
+
+  it("requires collateral for both sides and one full gas ceiling", () => {
+    const bounded = makerConfigSchema.parse({
+      markets: [{ marketId: "0x1234", symbol: "SUI-PERP" }],
+      quoteSizeUsd: 10,
+      maxLeverage: 2,
+      maxGasMist: 50_000_000,
+    });
+    const quote = buildQuoteIntent({
+      config: bounded,
+      observation: {
+        marketId: bounded.markets[0]!.marketId,
+        bestBid: 9.99,
+        bestAsk: 10.01,
+        indexPrice: 10,
+        observedAt: new Date("2026-10-26T12:00:00Z"),
+      },
+      inventoryUsd: 0,
+      unrealizedPnlUsd: 0,
+    });
+    const checks = evaluateQuoteSafety({
+      config: bounded,
+      quote,
+      now: new Date("2026-10-26T12:00:01Z"),
+      setupComplete: true,
+      hasAgentKey: true,
+      liveEnabled: true,
+      mainnetAllowed: true,
+      portfolioAvailableCollateralUsd: 9.99,
+      agentGasSui: 0.049,
+    });
+
+    expect(checks.find((check) => check.code === "collateral")?.ok).toBe(false);
+    expect(checks.find((check) => check.code === "gas")?.ok).toBe(false);
+  });
+
+  it("stops when run equity drawdown exceeds its circuit breaker", () => {
+    const bounded = makerConfigSchema.parse({
+      markets: [{ marketId: "0x1234", symbol: "SUI-PERP" }],
+      maxRunDrawdownUsd: 5,
+    });
+    const quote = buildQuoteIntent({
+      config: bounded,
+      observation: {
+        marketId: bounded.markets[0]!.marketId,
+        bestBid: 9.99,
+        bestAsk: 10.01,
+        indexPrice: 10,
+        observedAt: new Date("2026-10-26T12:00:00Z"),
+      },
+      inventoryUsd: 0,
+      unrealizedPnlUsd: 0,
+    });
+    const checks = evaluateQuoteSafety({
+      config: bounded,
+      quote,
+      now: new Date("2026-10-26T12:00:01Z"),
+      setupComplete: true,
+      hasAgentKey: true,
+      liveEnabled: true,
+      mainnetAllowed: true,
+      runDrawdownUsd: 5.01,
+    });
+
+    expect(checks.find((check) => check.code === "run-drawdown")?.ok).toBe(
+      false,
+    );
+  });
+
   it("stops when unrealized losses exceed the configured floor", () => {
     const quote = buildQuoteIntent({
       config,
@@ -92,6 +263,7 @@ describe("risk gates", () => {
         marketId: config.markets[0]!.marketId,
         bestBid: 9.99,
         bestAsk: 10.01,
+        indexPrice: 10,
         observedAt: new Date("2026-10-26T12:00:00Z"),
       },
       inventoryUsd: 0,
@@ -214,6 +386,7 @@ describe("portfolio configuration", () => {
       marketId: "0x1234",
       bestBid: 9.99,
       bestAsk: 10.01,
+      indexPrice: 10,
       observedAt: new Date("2026-10-26T12:00:00Z"),
     };
 

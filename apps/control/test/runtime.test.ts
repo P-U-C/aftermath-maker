@@ -51,6 +51,7 @@ function createHarness() {
 
   let executionCount = 0;
   let cancellationCount = 0;
+  const cancelledMarketSets: string[][] = [];
   let flattenCount = 0;
   let hedgeExecutionCount = 0;
   const executionSequence: string[] = [];
@@ -102,8 +103,9 @@ function createHarness() {
       setup: { accountId: string };
       marketIds: string[];
     }) => portfolioResolver(inputs),
-    cancelMakerOrders: async () => {
+    cancelMakerOrders: async (inputs: { marketIds: string[] }) => {
       cancellationCount += 1;
+      cancelledMarketSets.push([...inputs.marketIds]);
       executionSequence.push("cancel");
       return {
         digest: "cancel-digest",
@@ -170,6 +172,7 @@ function createHarness() {
     gateway,
     executions: () => executionCount,
     cancellations: () => cancellationCount,
+    cancelledMarketSets: () => cancelledMarketSets,
     flattens: () => flattenCount,
     hedgeExecutions: () => hedgeExecutionCount,
     executionSequence,
@@ -208,6 +211,23 @@ describe("runtime execution boundaries", () => {
     await harness.runtime.cycle();
     expect(harness.runtime.snapshot.market.id).toBe("0x9999");
     expect(harness.runtime.snapshot.markets).toHaveLength(2);
+    harness.store.close();
+  });
+
+  it("cancels the old market set before saving a replacement configuration", async () => {
+    const harness = createHarness();
+    harness.runtime.start();
+    await harness.runtime.cycle();
+
+    const replacement = makerConfigSchema.parse({
+      markets: [{ marketId: "0xabcd", symbol: "NEW" }],
+      mode: "live",
+    });
+    await harness.runtime.reconfigure(replacement);
+
+    expect(harness.cancelledMarketSets()[0]).toEqual(["0x5678", "0x9999"]);
+    expect(harness.tenant.getConfig()?.markets).toEqual(replacement.markets);
+    await harness.runtime.stop();
     harness.store.close();
   });
 
@@ -576,6 +596,98 @@ describe("runtime execution boundaries", () => {
     expect(harness.runtime.snapshot.running).toBe(false);
     expect(harness.runtime.snapshot.watchdog.state).toBe("tripped");
     expect(harness.cancellations()).toBeGreaterThanOrEqual(1);
+    harness.store.close();
+  });
+
+  it("stops live quoting after equity breaches the run drawdown limit", async () => {
+    const harness = createHarness();
+    harness.tenant.setConfig(
+      makerConfigSchema.parse({
+        markets: [{ marketId: "0x5678", symbol: "SUI" }],
+        mode: "live",
+        maxRunDrawdownUsd: 5,
+      }),
+    );
+
+    harness.runtime.start();
+    await harness.runtime.cycle();
+    harness.setPortfolioResolver((inputs) => ({
+      equityUsd: 94,
+      availableCollateralUsd: 80,
+      allocatedCollateralUsd: 20,
+      freeMarginUsd: 70,
+      withdrawableCollateralUsd: 75,
+      grossExposureUsd: 0,
+      unrealizedPnlUsd: 0,
+      gasSui: 0.1,
+      positions: inputs.marketIds.map((marketId) => ({
+        marketId,
+        baseAssetAmount: 0,
+        pendingOrderCount: 0,
+        inventoryUsd: 0,
+        unrealizedPnlUsd: 0,
+        collateralUsd: 0,
+        freeMarginUsd: 0,
+        makerOrderIds: [],
+        hasPosition: false,
+      })),
+    }));
+    await harness.runtime.cycle({ executeLive: true });
+
+    expect(harness.runtime.snapshot.running).toBe(false);
+    expect(harness.runtime.snapshot.lastError).toContain("run-drawdown");
+    expect(harness.cancellations()).toBeGreaterThanOrEqual(1);
+    harness.store.close();
+  });
+
+  it("rechecks cancellation after a possibly broadcast quote fails", async () => {
+    vi.useFakeTimers();
+    const harness = createHarness();
+    let cancellationAttempts = 0;
+    harness.gateway.executeQuote = async () => {
+      throw new Error("RPC timed out after submission");
+    };
+    harness.gateway.cancelMakerOrders = async () => {
+      cancellationAttempts += 1;
+      return cancellationAttempts < 3
+        ? null
+        : {
+            digest: "recovery-cancel-digest",
+            endpoint: "test",
+            gasUsedMist: 10,
+            postedOrderIds: [],
+          };
+    };
+
+    harness.runtime.start();
+    await vi.advanceTimersByTimeAsync(4_100);
+
+    expect(cancellationAttempts).toBe(3);
+    expect(harness.runtime.snapshot.running).toBe(false);
+    expect(harness.tenant.listEvents(10)).toContainEqual(
+      expect.objectContaining({
+        action: "cancel-maker-orders",
+        outcome: "confirmed",
+        detail: expect.objectContaining({ attempt: 3, attempts: 3 }),
+      }),
+    );
+    harness.store.close();
+  });
+
+  it("does not let a stalled cycle block an operator stop", async () => {
+    vi.useFakeTimers();
+    const harness = createHarness();
+    harness.gateway.getOrderbook = async () =>
+      new Promise<never>(() => undefined);
+
+    harness.runtime.start();
+    await vi.advanceTimersByTimeAsync(0);
+    const stopping = harness.runtime.stop();
+    await vi.advanceTimersByTimeAsync(5_100);
+    await stopping;
+
+    expect(harness.cancellations()).toBe(1);
+    expect(harness.runtime.snapshot.running).toBe(false);
     harness.store.close();
   });
 

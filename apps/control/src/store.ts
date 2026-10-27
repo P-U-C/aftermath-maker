@@ -781,6 +781,21 @@ export class TenantStore {
     };
   }
 
+  clearAgentGrant(accountId: string): void {
+    const accounts = this.listAccountSetups();
+    if (!accounts.some((account) => account.accountId === accountId)) {
+      throw new Error("Account setup was not found");
+    }
+    this.setSetting(
+      "account_setups",
+      accounts.map((account) =>
+        account.accountId === accountId
+          ? { ...account, grantDigest: null, agentCapId: null }
+          : account,
+      ),
+    );
+  }
+
   confirmAgentGrant(inputs: {
     accountId: string;
     digest: string;

@@ -23,6 +23,7 @@ export type MarketObservation = {
   marketId: string;
   bestBid: number;
   bestAsk: number;
+  indexPrice: number;
   observedAt: Date;
 };
 
@@ -36,14 +37,19 @@ export function buildQuoteIntent(inputs: {
 }): QuoteIntent {
   const { config, observation, inventoryUsd, unrealizedPnlUsd } = inputs;
 
-  if (observation.bestBid <= 0 || observation.bestAsk <= 0) {
-    throw new Error("Orderbook prices must be positive");
+  if (
+    observation.bestBid <= 0 ||
+    observation.bestAsk <= 0 ||
+    observation.indexPrice <= 0
+  ) {
+    throw new Error("Orderbook and index prices must be positive");
   }
   if (observation.bestBid >= observation.bestAsk) {
     throw new Error("Orderbook is crossed or locked");
   }
 
   const mid = (observation.bestBid + observation.bestAsk) / 2;
+  const fairValue = observation.indexPrice;
   const halfSpread = config.spreadBps / 20_000;
   const inventoryDeltaUsd = inventoryUsd - config.inventoryTargetUsd;
   const inventoryRatio = Math.max(
@@ -52,8 +58,8 @@ export function buildQuoteIntent(inputs: {
   );
   const skew = inventoryRatio * (config.inventorySkewBps / 10_000);
 
-  const rawBid = mid * (1 - halfSpread - skew);
-  const rawAsk = mid * (1 + halfSpread - skew);
+  const rawBid = fairValue * (1 - halfSpread - skew);
+  const rawAsk = fairValue * (1 + halfSpread - skew);
 
   // Post-only quotes must stay behind the opposite side.
   const bidPrice = Math.min(rawBid, observation.bestAsk - Number.EPSILON);
@@ -68,6 +74,7 @@ export function buildQuoteIntent(inputs: {
     observedAt: observation.observedAt.toISOString(),
     bestBid: observation.bestBid,
     bestAsk: observation.bestAsk,
+    indexPrice: observation.indexPrice,
     bidPrice: round(bidPrice),
     askPrice: round(askPrice),
     sizeBase: round(config.quoteSizeUsd / mid),

@@ -30,6 +30,7 @@ import {
   TimerReset,
   Trophy,
   ShieldCheck,
+  ShieldOff,
   SlidersHorizontal,
   UserPlus,
   WalletCards,
@@ -192,6 +193,8 @@ type MakerConfig = {
   inventoryTargetUsd: number;
   maxGrossExposureUsd: number;
   maxUnrealizedLossUsd: number;
+  maxRunDrawdownUsd: number;
+  maxBookDivergenceBps: number;
   maxLeverage: number;
   maxGasMist: number;
   staleBookMs: number;
@@ -293,6 +296,7 @@ type RewardOpportunity = {
   score: number;
   confidence: "high" | "medium" | "low";
   eligible: boolean;
+  thinActive: boolean;
   observedSpreadBps: number | null;
   balancedDepth50BpsUsd: number;
   volume24hUsd: number | null;
@@ -390,6 +394,8 @@ const defaultConfig: MakerConfig = {
   inventoryTargetUsd: 0,
   maxGrossExposureUsd: 150,
   maxUnrealizedLossUsd: 20,
+  maxRunDrawdownUsd: 20,
+  maxBookDivergenceBps: 100,
   maxLeverage: 1,
   maxGasMist: 50_000_000,
   staleBookMs: 15_000,
@@ -491,7 +497,11 @@ function DashboardBody() {
   const [performance, setPerformance] = useState<Performance | null>(null);
   const [rewards, setRewards] = useState<RewardDashboard | null>(null);
   const [rewardMarketCount, setRewardMarketCount] = useState(3);
+  const [rewardFocus, setRewardFocus] = useState<"best" | "thin">("best");
   const [selectedAccount, setSelectedAccount] = useState("");
+  const [collateralAmounts, setCollateralAmounts] = useState<
+    Record<string, string>
+  >({});
   const [busy, setBusy] = useState("");
   const [flattenArmed, setFlattenArmed] = useState(false);
   const [advancedOpen, setAdvancedOpen] = useState(false);
@@ -851,6 +861,50 @@ function DashboardBody() {
     });
   }
 
+  async function moveCollateral(
+    accountId: string,
+    direction: "deposit" | "withdraw",
+  ) {
+    if (!account?.address) return;
+    const amountUsdc = collateralAmounts[accountId] ?? "10";
+    if (!/^(0|[1-9]\d*)(?:\.\d{1,6})?$/.test(amountUsdc)) {
+      setNotice("Enter a plain USDC amount with no more than six decimals.");
+      return;
+    }
+    if (Number(amountUsdc) <= 0) {
+      setNotice("Collateral amount must be greater than zero.");
+      return;
+    }
+
+    await mutate(`${direction}-${accountId}`, async () => {
+      const built = await request<{ transaction: string }>(
+        `api/accounts/${direction}-transaction`,
+        {
+          method: "POST",
+          body: JSON.stringify({ accountId, amountUsdc }),
+        },
+      );
+      const result = await wallet.signAndExecuteTransaction({
+        transaction: Transaction.from(built.transaction),
+      });
+      if (result.$kind === "FailedTransaction") {
+        throw new Error(
+          result.FailedTransaction.status.error?.message ??
+            `Aftermath ${direction} failed`,
+        );
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, 1_000));
+      const response = await request<{ accounts: AccountCap[] }>(
+        `api/accounts?collateralCoinType=${encodeURIComponent(USDC)}`,
+      );
+      setAccounts(response.accounts);
+      setNotice(
+        `${amountUsdc} USDC ${direction === "deposit" ? "deposited into" : "withdrawn from"} account ${accountId}.`,
+      );
+    });
+  }
+
   async function provision(accountId = selectedAccount) {
     const accountCap = accounts.find(
       (candidate) => candidate.accountId === accountId,
@@ -907,6 +961,35 @@ function DashboardBody() {
       setNotice(
         `Account ${accountId} authorized for trading and funded with agent gas.`,
       );
+    });
+  }
+
+  async function revokeAgent(accountId: string) {
+    await mutate(`revoke-${accountId}`, async () => {
+      const built = await request<{ transaction: string }>(
+        "api/setup/revoke-transaction",
+        {
+          method: "POST",
+          body: JSON.stringify({ accountId }),
+        },
+      );
+      const result = await wallet.signAndExecuteTransaction({
+        transaction: Transaction.from(built.transaction),
+      });
+      if (result.$kind === "FailedTransaction") {
+        throw new Error(
+          result.FailedTransaction.status.error?.message ??
+            "Agent revocation failed",
+        );
+      }
+      await request("api/setup/revoke-confirm", {
+        method: "POST",
+        body: JSON.stringify({
+          accountId,
+          digest: result.Transaction.digest,
+        }),
+      });
+      setNotice(`Account ${accountId} agent and Maker fee approval revoked.`);
     });
   }
 
@@ -1023,10 +1106,18 @@ function DashboardBody() {
   function stageRewardRotation() {
     const candidates =
       rewards?.marketModel.opportunities
-        .filter((opportunity) => opportunity.eligible)
+        .filter(
+          (opportunity) =>
+            opportunity.eligible &&
+            (rewardFocus === "best" || opportunity.thinActive),
+        )
         .slice(0, rewardMarketCount) ?? [];
     if (!candidates.length) {
-      setNotice("No eligible reward markets are available in the latest scan.");
+      setNotice(
+        rewardFocus === "thin"
+          ? "No thin, active markets pass every safety gate in the latest scan."
+          : "No eligible reward markets are available in the latest scan.",
+      );
       return;
     }
     if (snapshot?.running || (snapshot?.portfolio.grossExposureUsd ?? 0) > 0) {
@@ -1037,13 +1128,20 @@ function DashboardBody() {
     }
 
     setConfig((current) => {
+      const availableCollateral =
+        snapshot?.portfolio.availableCollateralUsd ?? null;
+      const capitalBudget =
+        availableCollateral !== null && availableCollateral > 0
+          ? Math.min(current.maxGrossExposureUsd, availableCollateral * 0.5)
+          : current.maxGrossExposureUsd;
       const perMarketInventory = Math.max(
         1,
-        Math.min(
-          current.maxInventoryUsd,
-          current.maxGrossExposureUsd / candidates.length,
-        ),
+        Math.min(current.maxInventoryUsd, capitalBudget / candidates.length),
       );
+      const collateralQuoteCap =
+        availableCollateral !== null && availableCollateral > 0
+          ? Math.max(1, availableCollateral / (4 * candidates.length))
+          : Number.POSITIVE_INFINITY;
       const nextMarkets = candidates.map((opportunity) => ({
         marketId: opportunity.marketId,
         symbol: opportunity.symbol,
@@ -1051,6 +1149,7 @@ function DashboardBody() {
           quoteSizeUsd: Math.min(
             opportunity.suggestedQuoteSizeUsd,
             Math.max(1, perMarketInventory / 2),
+            collateralQuoteCap,
           ),
           spreadBps: opportunity.suggestedSpreadBps,
           maxInventoryUsd: perMarketInventory,
@@ -1066,11 +1165,13 @@ function DashboardBody() {
         ...current,
         mode: "observe",
         markets: nextMarkets,
+        maxInventoryUsd: perMarketInventory,
+        maxGrossExposureUsd: Math.max(perMarketInventory, capitalBudget),
         maxQuoteAgeMs: Math.max(current.maxQuoteAgeMs, minimumQuoteAge),
       };
     });
     setNotice(
-      `Top ${candidates.length} reward markets staged in Observe mode. Review the policies, then save the strategy.`,
+      `${rewardFocus === "thin" ? "Thin & active" : "Best net"} rotation staged across ${candidates.length} market${candidates.length === 1 ? "" : "s"} in Observe mode. Review the policies, then save the strategy.`,
     );
   }
 
@@ -1245,7 +1346,10 @@ function DashboardBody() {
     rewards?.marketModel.opportunities
       .filter((opportunity) => opportunity.eligible)
       .slice(0, 8) ?? [];
-  const topRewardOpportunity = rewardOpportunities[0] ?? null;
+  const focusedRewardOpportunities = rewardOpportunities.filter(
+    (opportunity) => rewardFocus === "best" || opportunity.thinActive,
+  );
+  const topRewardOpportunity = focusedRewardOpportunities[0] ?? null;
   const rewardRotationBlocked =
     Boolean(snapshot?.running) ||
     (snapshot?.portfolio.grossExposureUsd ?? 0) > 0;
@@ -1599,75 +1703,138 @@ function DashboardBody() {
                     <strong>{owned.positionCount}</strong>
                   </div>
                   <div className="account-row-actions">
-                    {!managed ? (
+                    <div className="account-collateral-actions">
+                      <label>
+                        <span>USDC amount</span>
+                        <input
+                          type="number"
+                          min="0.01"
+                          step="0.01"
+                          inputMode="decimal"
+                          value={collateralAmounts[owned.accountId] ?? "10"}
+                          onChange={(event) =>
+                            setCollateralAmounts((current) => ({
+                              ...current,
+                              [owned.accountId]: event.target.value,
+                            }))
+                          }
+                          aria-label={`USDC amount for account ${owned.accountId}`}
+                        />
+                      </label>
                       <button
                         className="button secondary"
                         type="button"
-                        onClick={() => void provision(owned.accountId)}
-                        disabled={Boolean(busy)}
+                        onClick={() =>
+                          void moveCollateral(owned.accountId, "deposit")
+                        }
+                        disabled={Boolean(busy) || Boolean(snapshot?.running)}
+                        title="Deposit owner-wallet USDC into this account"
                       >
-                        <KeyRound size={15} aria-hidden="true" />
-                        {busy === `provision-${owned.accountId}`
-                          ? "Adding..."
-                          : "Add agent"}
+                        <ArrowDownRight size={15} aria-hidden="true" />
+                        {busy === `deposit-${owned.accountId}`
+                          ? "Depositing..."
+                          : "Deposit"}
                       </button>
-                    ) : !managed.agentCapId ? (
                       <button
-                        className="button primary"
+                        className="button secondary"
                         type="button"
-                        onClick={() => void authorizeAgent(owned.accountId)}
-                        disabled={!builderCode || Boolean(busy)}
+                        onClick={() =>
+                          void moveCollateral(owned.accountId, "withdraw")
+                        }
+                        disabled={
+                          Boolean(busy) ||
+                          Boolean(snapshot?.running) ||
+                          owned.availableCollateralUsd <= 0
+                        }
+                        title="Withdraw available collateral to the owner wallet"
                       >
-                        <ShieldCheck size={15} aria-hidden="true" />
-                        {busy === `authorize-${owned.accountId}`
-                          ? "Authorizing..."
-                          : "Authorize"}
+                        <ArrowUpRight size={15} aria-hidden="true" />
+                        {busy === `withdraw-${owned.accountId}`
+                          ? "Withdrawing..."
+                          : "Withdraw"}
                       </button>
-                    ) : (
-                      <>
+                    </div>
+                    <div className="account-role-actions">
+                      {!managed ? (
                         <button
-                          className={
-                            isMaker ? "role-button selected" : "role-button"
-                          }
+                          className="button secondary"
                           type="button"
-                          onClick={() =>
-                            setConfig((current) => ({
-                              ...current,
-                              makerAccountId: owned.accountId,
-                              hedge:
-                                current.hedge.accountId === owned.accountId
-                                  ? {
-                                      ...current.hedge,
-                                      enabled: false,
-                                      accountId: null,
-                                    }
-                                  : current.hedge,
-                            }))
-                          }
+                          onClick={() => void provision(owned.accountId)}
+                          disabled={Boolean(busy)}
                         >
-                          Maker
+                          <KeyRound size={15} aria-hidden="true" />
+                          {busy === `provision-${owned.accountId}`
+                            ? "Adding..."
+                            : "Add agent"}
                         </button>
+                      ) : !managed.agentCapId ? (
                         <button
-                          className={
-                            isHedge ? "role-button selected" : "role-button"
-                          }
+                          className="button primary"
                           type="button"
-                          disabled={isMaker}
-                          onClick={() =>
-                            setConfig((current) => ({
-                              ...current,
-                              hedge: {
-                                ...current.hedge,
-                                enabled: true,
-                                accountId: owned.accountId,
-                              },
-                            }))
-                          }
+                          onClick={() => void authorizeAgent(owned.accountId)}
+                          disabled={!builderCode || Boolean(busy)}
                         >
-                          Hedge
+                          <ShieldCheck size={15} aria-hidden="true" />
+                          {busy === `authorize-${owned.accountId}`
+                            ? "Authorizing..."
+                            : "Authorize"}
                         </button>
-                      </>
-                    )}
+                      ) : (
+                        <>
+                          <button
+                            className={
+                              isMaker ? "role-button selected" : "role-button"
+                            }
+                            type="button"
+                            onClick={() =>
+                              setConfig((current) => ({
+                                ...current,
+                                makerAccountId: owned.accountId,
+                                hedge:
+                                  current.hedge.accountId === owned.accountId
+                                    ? {
+                                        ...current.hedge,
+                                        enabled: false,
+                                        accountId: null,
+                                      }
+                                    : current.hedge,
+                              }))
+                            }
+                          >
+                            Maker
+                          </button>
+                          <button
+                            className={
+                              isHedge ? "role-button selected" : "role-button"
+                            }
+                            type="button"
+                            disabled={isMaker}
+                            onClick={() =>
+                              setConfig((current) => ({
+                                ...current,
+                                hedge: {
+                                  ...current.hedge,
+                                  enabled: true,
+                                  accountId: owned.accountId,
+                                },
+                              }))
+                            }
+                          >
+                            Hedge
+                          </button>
+                          <button
+                            className="icon-button revoke-agent"
+                            type="button"
+                            onClick={() => void revokeAgent(owned.accountId)}
+                            disabled={Boolean(busy)}
+                            aria-label={`Revoke agent for account ${owned.accountId}`}
+                            title="Revoke agent and Maker fee approval"
+                          >
+                            <ShieldOff size={15} aria-hidden="true" />
+                          </button>
+                        </>
+                      )}
+                    </div>
                   </div>
                 </article>
               );
@@ -2385,7 +2552,7 @@ function DashboardBody() {
               </div>
             </label>
             <label>
-              <span>Loss kill switch</span>
+              <span>Unrealized loss</span>
               <div className="input-unit">
                 <b>$</b>
                 <input
@@ -2399,6 +2566,41 @@ function DashboardBody() {
                     }))
                   }
                 />
+              </div>
+            </label>
+            <label>
+              <span>Run drawdown</span>
+              <div className="input-unit">
+                <b>$</b>
+                <input
+                  type="number"
+                  min="1"
+                  value={config.maxRunDrawdownUsd}
+                  onChange={(event) =>
+                    setConfig((current) => ({
+                      ...current,
+                      maxRunDrawdownUsd: Number(event.target.value),
+                    }))
+                  }
+                />
+              </div>
+            </label>
+            <label>
+              <span>Book / index limit</span>
+              <div className="input-unit suffix">
+                <input
+                  type="number"
+                  min="1"
+                  max="5000"
+                  value={config.maxBookDivergenceBps}
+                  onChange={(event) =>
+                    setConfig((current) => ({
+                      ...current,
+                      maxBookDivergenceBps: Number(event.target.value),
+                    }))
+                  }
+                />
+                <b>bps</b>
               </div>
             </label>
             <label>
@@ -2696,6 +2898,27 @@ function DashboardBody() {
                 "Live books and account rewards refresh every minute."}
             </small>
           </div>
+          <div className="reward-focus" aria-label="Reward rotation focus">
+            <span>Focus</span>
+            <div role="group" aria-label="Reward rotation focus">
+              <button
+                type="button"
+                className={rewardFocus === "best" ? "selected" : ""}
+                aria-pressed={rewardFocus === "best"}
+                onClick={() => setRewardFocus("best")}
+              >
+                Best net
+              </button>
+              <button
+                type="button"
+                className={rewardFocus === "thin" ? "selected" : ""}
+                aria-pressed={rewardFocus === "thin"}
+                onClick={() => setRewardFocus("thin")}
+              >
+                Thin & active
+              </button>
+            </div>
+          </div>
           <label className="reward-count">
             <span>Markets</span>
             <select
@@ -2717,12 +2940,14 @@ function DashboardBody() {
             onClick={stageRewardRotation}
             disabled={
               rewardRotationBlocked ||
-              rewardOpportunities.length < rewardMarketCount
+              focusedRewardOpportunities.length < rewardMarketCount
             }
             title={
               rewardRotationBlocked
                 ? "Stop the engine and clear exposure before changing markets"
-                : "Stage the highest-ranked markets in Observe mode"
+                : rewardFocus === "thin"
+                  ? "Stage eligible markets with $100-$1,000 balanced depth in Observe mode"
+                  : "Stage the highest-ranked markets in Observe mode"
             }
           >
             <Target size={16} aria-hidden="true" />
@@ -2760,6 +2985,9 @@ function DashboardBody() {
                       >
                         {opportunity.confidence}
                       </span>
+                      {opportunity.thinActive ? (
+                        <span className="thin-active">thin + active</span>
+                      ) : null}
                     </td>
                     <td>
                       <div className="score-cell">
@@ -2812,6 +3040,11 @@ function DashboardBody() {
         <details className="reward-method">
           <summary>Method and limits</summary>
           <p>{rewards?.marketModel.methodology}</p>
+          <p>
+            Thin & active means $100-$1,000 of balanced depth within 50 bps, at
+            least $10,000 of reported 24h volume, positive open interest, and an
+            open, two-sided book. It does not imply a guaranteed reward.
+          </p>
           <p>
             Staging only changes the draft strategy and forces Observe mode.
             Save after review; starting Live remains a separate action.

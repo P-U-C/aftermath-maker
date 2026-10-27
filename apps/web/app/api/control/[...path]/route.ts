@@ -11,8 +11,28 @@ async function proxy(
   context: { params: Promise<{ path: string[] }> },
 ) {
   const { path } = await context.params;
+  if (
+    path.length < 2 ||
+    path[0] !== "api" ||
+    path.some(
+      (segment) =>
+        !segment ||
+        segment === "." ||
+        segment === ".." ||
+        segment.includes("/") ||
+        segment.includes("\\"),
+    )
+  ) {
+    return NextResponse.json(
+      { error: "Unknown control route" },
+      { status: 404, headers: { "cache-control": "no-store" } },
+    );
+  }
   const route = path.join("/");
-  const target = new URL(route, `${CONTROL_URL}/`);
+  const target = new URL(CONTROL_URL);
+  target.pathname = `/${path
+    .map((segment) => encodeURIComponent(segment))
+    .join("/")}`;
   target.search = request.nextUrl.search;
 
   const headers = new Headers();

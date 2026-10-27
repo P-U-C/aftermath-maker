@@ -33,6 +33,7 @@ Keep enough SUI in the owner wallet for emergency revocation.
 - `MAKER_MASTER_KEY` encrypts agent private keys with AES-256-GCM.
 - A unique salt, IV, and authenticated account context are stored with each ciphertext.
 - Plaintext agent keys are never returned by the API or dashboard.
+- Only the internal control container receives `MAKER_MASTER_KEY`. The public web container receives one internal control token and cannot decrypt signers.
 - `.env`, SQLite, and backups are separate required assets. The master key plus database can recover every tenant agent.
 - Logs redact control tokens, session tokens, signatures, and encrypted signer fields.
 - `CONTROL_TOKEN` exists only between the Next.js proxy and the internal control service.
@@ -62,15 +63,18 @@ A live strategy requires all of the following:
 - an encrypted signer;
 - fresh two-sided orderbook data;
 - quote, inventory, loss, spread, and leverage checks; and
+- book/index divergence, worst next-fill exposure, two-sided collateral, agent gas, unrealized loss, and run equity drawdown checks; and
 - successful Sui transaction simulation.
 
-Any failed live cycle stops that wallet's engine. A separate watchdog monitors the age of every selected market. It invalidates a stalled cycle and cancels Maker-tagged orders without waiting for the blocked market RPC. If a transaction may already have been broadcast, it cancels again after that cycle resolves.
+Any failed live cycle stops that wallet's engine. A separate watchdog monitors the age of every selected market. It invalidates a stalled cycle and cancels Maker-tagged orders with retries without waiting for the blocked market RPC. Manual stop has a bounded wait. If a transaction may already have been broadcast, both paths cancel again after that cycle resolves.
 
 ## Transaction policy
 
 Orders are post-only and replaced atomically with cancel-and-place. Stable client order IDs restrict cancellation to Maker's own bid and ask. Manual refresh is read-only in live mode. Stop and reconfigure invalidate an in-flight cycle before signing. Gas has an explicit maximum.
 
 Stopping and flattening are separate. Stop only cancels Maker-tagged orders. Flatten additionally uses reduce-only market orders for selected-market positions, requires an explicit second confirmation, and forbids a builder fee. A market flatten can incur slippage and does not guarantee a particular execution price.
+
+Owner account creation, deposit, withdrawal, agent grant, agent revocation, fee approval, and whitelist membership transactions are simulated before being returned to the wallet. Grant and revoke confirmation verifies the supplied digest, sender, and exact capability-object effect before local authority state changes. Revocation removes the configured builder-fee approval in the same transaction.
 
 Transactions are built by the official Aftermath SDK/API. That is an external trust dependency. Simulation detects execution failures but is not a semantic proof of every Move call. Pin and review SDK upgrades, especially changes to agent permissions, order builders, order event shapes, or builder-code fields.
 
@@ -82,7 +86,7 @@ Maker records order IDs emitted by confirmed quote transactions and attributes f
 
 ## Network exposure
 
-The control API is reachable only on the internal Docker network. The web service binds to `127.0.0.1` by default and is published through Cloudflare Tunnel and Nginx.
+The control API is reachable only on the internal Docker network. The web service binds to `127.0.0.1` by default and is published through Cloudflare Tunnel and Nginx. Both containers run as a non-root user with a read-only root filesystem, all Linux capabilities dropped, and no-new-privileges.
 
 During bootstrap, Nginx uses Basic Auth. After the registry is confirmed, deploy `deploy/nginx-public.conf`; wallet authentication and on-chain membership then become the public gate.
 

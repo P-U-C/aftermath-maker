@@ -72,6 +72,95 @@ describe("reward opportunity ranking", () => {
     expect(ranked[1]?.confidence).toBe("low");
   });
 
+  it("rejects nominal flow when the two-sided exit depth is too thin", () => {
+    const ranked = rankRewardMarkets({
+      builderFeeBps: 1,
+      markets: [
+        market({
+          marketId: "0x1",
+          symbol: "THIN",
+          bidDepth50BpsUsd: 20,
+          askDepth50BpsUsd: 20,
+        }),
+        market({
+          marketId: "0x2",
+          symbol: "TRADEABLE",
+          bidDepth50BpsUsd: 100,
+          askDepth50BpsUsd: 100,
+        }),
+      ],
+    });
+
+    expect(ranked[0]?.symbol).toBe("TRADEABLE");
+    expect(ranked.find((row) => row.symbol === "THIN")?.eligible).toBe(false);
+    expect(ranked.find((row) => row.symbol === "THIN")?.thinActive).toBe(false);
+    expect(ranked[0]?.thinActive).toBe(true);
+    expect(ranked[0]?.suggestedQuoteSizeUsd).toBeLessThanOrEqual(5);
+  });
+
+  it("marks only eligible books at or below the thin-active depth ceiling", () => {
+    const ranked = rankRewardMarkets({
+      builderFeeBps: 1,
+      markets: [
+        market({
+          marketId: "0x1",
+          symbol: "EDGE",
+          bidDepth50BpsUsd: 1_000,
+          askDepth50BpsUsd: 1_000,
+        }),
+        market({
+          marketId: "0x2",
+          symbol: "DEEP",
+          bidDepth50BpsUsd: 1_001,
+          askDepth50BpsUsd: 1_001,
+        }),
+      ],
+    });
+
+    expect(ranked.find((row) => row.symbol === "EDGE")?.thinActive).toBe(true);
+    expect(ranked.find((row) => row.symbol === "DEEP")?.thinActive).toBe(false);
+  });
+
+  it("excludes closed outliers from eligible-market percentiles", () => {
+    const base = [
+      market({
+        marketId: "0x1",
+        symbol: "LOWER-COMPETITION",
+        bidDepth50BpsUsd: 100,
+        askDepth50BpsUsd: 100,
+      }),
+      market({
+        marketId: "0x2",
+        symbol: "HIGHER-COMPETITION",
+        bidDepth50BpsUsd: 1_000,
+        askDepth50BpsUsd: 1_000,
+      }),
+    ];
+    const withoutOutlier = rankRewardMarkets({
+      builderFeeBps: 1,
+      markets: base,
+    });
+    const withOutlier = rankRewardMarkets({
+      builderFeeBps: 1,
+      markets: [
+        ...base,
+        market({
+          marketId: "0x3",
+          symbol: "CLOSED-OUTLIER",
+          sessionOpen: false,
+          volume24hUsd: 1_000_000_000,
+          bidDepth50BpsUsd: 1_000_000,
+          askDepth50BpsUsd: 1_000_000,
+        }),
+      ],
+    });
+
+    expect(withOutlier.slice(0, 2).map((row) => row.symbol)).toEqual(
+      withoutOutlier.map((row) => row.symbol),
+    );
+    expect(withOutlier[0]?.score).toBe(withoutOutlier[0]?.score);
+  });
+
   it("does not recommend a closed session with a resting book", () => {
     const ranked = rankRewardMarkets({
       builderFeeBps: 1,
