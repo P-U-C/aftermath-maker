@@ -1,0 +1,316 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Maker</title>
+    <link rel="stylesheet" href="maker2.css" />
+    <script src="mark.js"></script>
+    <style>
+      .top {
+        height: 64px;
+        display: flex;
+        align-items: center;
+        padding: 0 40px;
+      }
+      .wrap {
+        max-width: 1240px;
+        margin: 0 auto;
+        padding: 56px 40px 0;
+        display: grid;
+        grid-template-columns: 560px 1fr;
+        gap: 64px;
+        align-items: center;
+      }
+      h1 {
+        font-size: 58px;
+        line-height: 1.02;
+        font-weight: 640;
+        font-stretch: 125%;
+        letter-spacing: -0.035em;
+        margin: 0 0 22px;
+      }
+      .lede {
+        font-size: 18px;
+        line-height: 1.5;
+        color: var(--ink-2);
+        margin: 0 0 30px;
+        max-width: 520px;
+      }
+      .cta {
+        display: flex;
+        align-items: center;
+        gap: 22px;
+      }
+      .facts3 {
+        margin-top: 40px;
+        display: grid;
+        gap: 18px;
+      }
+      .f {
+        display: grid;
+        grid-template-columns: 34px 1fr;
+        gap: 12px;
+        align-items: start;
+      }
+      .f .ic {
+        width: 34px;
+        height: 34px;
+        border-radius: 10px;
+        background: var(--surface);
+        display: grid;
+        place-items: center;
+      }
+      .f b {
+        display: block;
+        font-weight: 620;
+        font-size: 15px;
+      }
+      .f span {
+        color: var(--ink-2);
+        font-size: 14px;
+      }
+      .venues {
+        margin-top: 34px;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        font-size: 14px;
+        color: var(--ink-2);
+      }
+      .art {
+        background: var(--surface);
+        border-radius: 32px;
+        padding: 48px 40px 30px;
+      }
+      .art svg {
+        width: 100%;
+        height: auto;
+        display: block;
+      }
+      .cap {
+        margin-top: 18px;
+        display: flex;
+        justify-content: space-between;
+        font-size: 13px;
+        color: var(--ink-3);
+      }
+      .fine {
+        max-width: 1240px;
+        margin: 44px auto 0;
+        padding: 0 40px;
+        font-size: 12.5px;
+        color: var(--ink-3);
+      }
+    </style>
+  </head>
+  <body>
+    <script>
+      applyTheme();
+    </script>
+    <div class="top">
+      <div class="brand"><span class="mark" id="mark"></span>Maker</div>
+    </div>
+    <main class="wrap">
+      <section>
+        <h1>Both sides of the market, from your own wallet.</h1>
+        <p class="lede">
+          Maker keeps a bid and an ask resting on perpetual markets for you,
+          hedges what fills, and stops itself at your limits. It can trade the
+          accounts you connect. It can never withdraw from them.
+        </p>
+        <div class="cta">
+          <button class="btn primary lg">Connect wallet</button
+          ><span class="u">Request access</span>
+        </div>
+        <div class="facts3">
+          <div class="f">
+            <span class="ic"
+              ><svg
+                width="18"
+                height="18"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="var(--ink)"
+                stroke-width="1.75"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              >
+                <rect x="4" y="10" width="16" height="11" rx="3" />
+                <path d="M8 10V7a4 4 0 0 1 8 0v3" /></svg
+            ></span>
+            <div>
+              <b>Your keys stay with you</b
+              ><span
+                >Sign in with a message. Maker never holds your wallet
+                key.</span
+              >
+            </div>
+          </div>
+          <div class="f">
+            <span class="ic"
+              ><svg
+                width="18"
+                height="18"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="var(--ink)"
+                stroke-width="1.75"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              >
+                <path d="M12 3l7 3v5c0 4.5-3 8-7 10-4-2-7-5.5-7-10V6l7-3z" />
+                <path d="M9 12l2 2 4-4" /></svg
+            ></span>
+            <div>
+              <b>Trade-only access per venue</b
+              ><span
+                >Grant a trading key for each venue account and revoke it any
+                time.</span
+              >
+            </div>
+          </div>
+          <div class="f">
+            <span class="ic"
+              ><svg
+                width="18"
+                height="18"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="var(--ink)"
+                stroke-width="1.75"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              >
+                <circle cx="12" cy="12" r="9" />
+                <path d="M8 12h8" /></svg
+            ></span>
+            <div>
+              <b>1 bp on filled orders</b
+              ><span
+                >Shown before you approve it, on top of each venue's own
+                fees.</span
+              >
+            </div>
+          </div>
+        </div>
+        <div class="venues">
+          Live on <span class="venue"><i>A</i>Aftermath</span> More venues on
+          the way.
+        </div>
+      </section>
+      <section class="art" aria-hidden="true">
+        <svg viewBox="0 78 560 196">
+          <rect
+            x="20"
+            y="172"
+            width="230"
+            height="16"
+            rx="8"
+            fill="var(--tide-soft)"
+          />
+          <rect
+            x="310"
+            y="172"
+            width="230"
+            height="16"
+            rx="8"
+            fill="var(--ember-soft)"
+          />
+          <rect x="250" y="179" width="60" height="2" fill="var(--fill-2)" />
+          <line
+            x1="280"
+            x2="280"
+            y1="110"
+            y2="250"
+            stroke="var(--ink-3)"
+            stroke-width="1.5"
+            stroke-dasharray="3 6"
+          />
+          <rect
+            x="120"
+            y="164"
+            width="104"
+            height="32"
+            rx="16"
+            fill="var(--tide)"
+          />
+          <rect
+            x="336"
+            y="164"
+            width="104"
+            height="32"
+            rx="16"
+            fill="var(--ember)"
+          />
+          <text
+            x="172"
+            y="134"
+            text-anchor="middle"
+            font-size="15"
+            fill="var(--ink-2)"
+            font-family="Mona"
+          >
+            Your bid
+          </text>
+          <text
+            x="388"
+            y="134"
+            text-anchor="middle"
+            font-size="15"
+            fill="var(--ink-2)"
+            font-family="Mona"
+          >
+            Your ask
+          </text>
+          <text
+            x="280"
+            y="96"
+            text-anchor="middle"
+            font-size="15"
+            fill="var(--ink-3)"
+            font-family="Mona"
+          >
+            Fair value
+          </text>
+          <path
+            d="M172 232 V244 H388 V232"
+            fill="none"
+            stroke="var(--ink-3)"
+            stroke-width="1.5"
+          />
+          <rect
+            x="228"
+            y="234"
+            width="104"
+            height="22"
+            rx="11"
+            fill="var(--surface)"
+          />
+          <text
+            x="280"
+            y="250"
+            text-anchor="middle"
+            font-size="15"
+            font-weight="620"
+            fill="var(--ink)"
+            font-family="Mona"
+            style="font-stretch: 118%"
+          >
+            The spread
+          </text>
+        </svg>
+        <div class="cap">
+          <span>Sellers fill your bid</span><span>Buyers fill your ask</span>
+        </div>
+      </section>
+    </main>
+    <div class="fine">
+      Invite only. Perpetuals trading can lose money; Maker's limits reduce that
+      risk but do not remove it.
+    </div>
+    <script>
+      document.getElementById("mark").innerHTML = markSVG("live", 18);
+    </script>
+  </body>
+</html>
