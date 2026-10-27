@@ -8,6 +8,8 @@ Market: MON perpetual
 
 Accounts: Maker 1745, hedge 1746
 
+> Historical checkpoint: the hedge and two-account flatten evidence gaps recorded below were closed later the same day in [ITERATION-3.md](ITERATION-3.md).
+
 This iteration tested the Farming, Profit, and Both objective controls in Observe and Paper, then exercised repeated Live requotes with a maximum of about $1.05 of Maker inventory. No self-trading was used.
 
 ## Pre-Live coverage

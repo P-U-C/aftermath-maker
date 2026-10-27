@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { executionGasUsedMist, postedOrderIds } from "../src/gateway.js";
+import {
+  executionGasUsedMist,
+  explainTransactionFailure,
+  postedOrderIds,
+} from "../src/gateway.js";
 
 const result = {
   $kind: "Transaction",
@@ -47,5 +51,17 @@ describe("gateway execution evidence", () => {
       },
     };
     expect(() => executionGasUsedMist(failed)).toThrow("Move abort");
+  });
+
+  it("explains the thin-book market-order slippage abort", () => {
+    const venueError =
+      "MoveAbort in 5th command, abort code: 46, in '0x1::clearing_house::execute_limit_order'";
+    expect(explainTransactionFailure(venueError)).toContain(
+      "could not execute within the configured slippage cap",
+    );
+    expect(explainTransactionFailure(venueError)).toContain(venueError);
+    expect(explainTransactionFailure("another failure")).toBe(
+      "another failure",
+    );
   });
 });

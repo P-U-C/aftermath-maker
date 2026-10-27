@@ -335,6 +335,16 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+export function explainTransactionFailure(message: string): string {
+  if (
+    message.includes("abort code: 46") &&
+    message.includes("::clearing_house::execute_limit_order")
+  ) {
+    return `Market order could not execute within the configured slippage cap. Increase the hedge or flatten slippage only after reviewing this market's depth. Venue error: ${message}`;
+  }
+  return message;
+}
+
 function timestampMs(value: number | bigint): number {
   const numeric = Number(value);
   return numeric < 1_000_000_000_000 ? numeric * 1_000 : numeric;
@@ -1432,8 +1442,10 @@ export class AftermathGateway {
     });
     if (simulation.$kind === "FailedTransaction") {
       throw new Error(
-        simulation.FailedTransaction.status.error?.message ??
-          "Transaction simulation failed",
+        explainTransactionFailure(
+          simulation.FailedTransaction.status.error?.message ??
+            "Transaction simulation failed",
+        ),
       );
     }
   }

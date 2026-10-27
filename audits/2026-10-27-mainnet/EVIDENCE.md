@@ -101,6 +101,19 @@ That fill exposed a hedge-ordering defect: quote-entry safety halted the cycle b
 
 See [ITERATION-2.md](ITERATION-2.md) for the full trace, defect analysis, and evidence boundary.
 
+## Fill-driven hedge iteration
+
+Three further independent MON fills exercised the corrected hedge path. The final successful fill was [`BUSKk3...`](https://suiscan.xyz/mainnet/tx/BUSKk3Pky8uSy86Ti1zkmhMXxc9d93wxSzEqcsZSp9oS), a 47.9 MON Maker ask worth `$1.0389989`.
+
+The runtime cancelled the remaining Maker quote in [`6RkujP...`](https://suiscan.xyz/mainnet/tx/6RkujPD5ZmdaXXW5hwYyfLQr1VZ3iW9BSF2DzX3axwSc). The first account read still reported one pending order; the bounded reconciliation loop waited 750 ms and confirmed both accounts clear before proceeding. Hedge account 1746 then submitted the opposite public-book market order in [`8ARc5A...`](https://suiscan.xyz/mainnet/tx/8ARc5AYa8QPJgqSqcijYpJS6zt9KkvpJuvtsePWcLjj4). Fresh account state measured `$0.0015328` combined residual delta, inside the `$0.020779978` completion tolerance.
+
+A 75 bps attempt had previously failed simulation with Aftermath `execute_limit_order` abort code 46. The successful run used an explicitly configured 500 bps ceiling; Maker never raised the cap automatically. Recovery then flattened both account roles separately:
+
+- Maker account 1745: [`5CBCNk...`](https://suiscan.xyz/mainnet/tx/5CBCNkgYPTJwp9Qd9gjPMcyBcnxXX8h8nDR8zjFzUDrt)
+- Hedge account 1746: [`4kMHLp...`](https://suiscan.xyz/mainnet/tx/4kMHLpYPdhmK833Jx2BKc4RztUfTYC1CKW8EyEfJFEYm)
+
+See [ITERATION-3.md](ITERATION-3.md) for the failure sequence, fixes, and full hedge evidence.
+
 ## Browser evidence
 
 - [Final desktop reconciliation](member-reconcile-paper.png)
@@ -114,25 +127,22 @@ See [ITERATION-2.md](ITERATION-2.md) for the full trace, defect analysis, and ev
 
 At the final read:
 
-- Owner wallet: 5 USDC and 0.758343458 SUI
-- Agent wallet: 0 USDC and 0.184537027 SUI
-- Account 1745 equity: about $7.4961
-- Account 1746 equity: about $7.4978
+- Account 1745 equity: about $7.4861
+- Account 1746 equity: about $7.4919
 - Saved mode: Paper
 - Engine: stopped
-- Confirmed Live quote count: 65
-- Attributed Maker fills: 1
-- Hedge executions: 0
-- Both accounts: zero positions and zero pending orders
+- Attributed Maker fills: 4, all covered by recorded Maker order IDs
+- Confirmed hedge executions: 1
+- Both accounts: zero positions after separate reduce-only recovery transactions
 - Live gates: both disabled
 - Root response: private, no-cache, no-store
 - Desktop and 390 px authenticated layouts: no page-level horizontal overflow or browser errors
-- Fresh-container readiness: account 1745 immediately reported funded with $7.50 equity; agent gas remained explicitly unknown until a runtime cycle
+- Fresh-container readiness: account 1745 immediately reported funded; agent gas remains explicitly unknown until a runtime cycle
 - Membership management: hidden from the member wallet; its operator status request returned HTTP 403
-- Post-audit state backup: `backups/aftermath-maker-20261027T061234Z.tar.gz` on the deployment host
+- Post-audit state backup: `backups/aftermath-maker-20261027T101843Z.tar.gz` on the deployment host
 
-The agent capabilities remain intentionally authorized on both accounts for the next fill-driven hedge test. They were not revoked because this is the retained audit setup.
+The agent capabilities remain intentionally authorized on both accounts for further testing. They were not revoked because this is the retained audit setup.
 
 ## What remains unproven
 
-Mainnet now proves fill ingestion, exact order attribution, known fee reporting, repeated atomic replacement, protective halt, and reduce-only flattening of the Maker position. No second organic fill occurred after the hedge-ordering fix, so a fill-triggered hedge transaction, hedge slippage, and a two-account mainnet flatten remain unproven. Withdrawal and final capability revocation were also not executed because the two-account setup is being retained. Their local regressions do not replace a mainnet trace.
+Mainnet now proves fill ingestion, exact order attribution, known fee reporting, repeated atomic replacement, protective halt, post-cancel index-lag reconciliation, a fill-triggered hedge from the second account, actual combined-delta verification, and reduce-only recovery of both accounts. Withdrawal and final capability revocation were not executed because the two-account setup is being retained. Independent external fair value, cross-venue hedging, long-duration economics, and complete net PnL attribution remain outside this bounded audit.

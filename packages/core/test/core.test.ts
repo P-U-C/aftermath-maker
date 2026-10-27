@@ -22,6 +22,7 @@ describe("quote strategy", () => {
         bestBid: 9.99,
         bestAsk: 10.01,
         indexPrice: 10,
+        tickSize: 0.01,
         observedAt: new Date("2026-10-26T12:00:00Z"),
       },
       inventoryUsd: 0,
@@ -34,6 +35,7 @@ describe("quote strategy", () => {
         bestBid: 9.99,
         bestAsk: 10.01,
         indexPrice: 10,
+        tickSize: 0.01,
         observedAt: new Date("2026-10-26T12:00:00Z"),
       },
       inventoryUsd: 40,
@@ -45,6 +47,49 @@ describe("quote strategy", () => {
     expect(long.askPrice).toBeLessThan(neutral.askPrice);
   });
 
+  it("reserves a valid venue tick when fair value is outside the book", () => {
+    const observedAt = new Date("2026-10-26T12:00:00Z");
+    const highFairValue = buildQuoteIntent({
+      config: { ...config, spreadBps: 8 },
+      observation: {
+        marketId: config.markets[0]!.marketId,
+        bestBid: 0.02135,
+        bestAsk: 0.02136,
+        indexPrice: 0.0214,
+        tickSize: 0.000001,
+        observedAt,
+      },
+      inventoryUsd: 0,
+      unrealizedPnlUsd: 0,
+    });
+    const lowFairValue = buildQuoteIntent({
+      config: { ...config, spreadBps: 8 },
+      observation: {
+        marketId: config.markets[0]!.marketId,
+        bestBid: 0.02135,
+        bestAsk: 0.02136,
+        indexPrice: 0.0213,
+        tickSize: 0.000001,
+        observedAt,
+      },
+      inventoryUsd: 0,
+      unrealizedPnlUsd: 0,
+    });
+
+    expect(highFairValue.bidPrice).toBe(0.021359);
+    expect(highFairValue.bidPrice).toBeLessThan(highFairValue.bestAsk);
+    expect(lowFairValue.askPrice).toBe(0.021351);
+    expect(lowFairValue.askPrice).toBeGreaterThan(lowFairValue.bestBid);
+    for (const price of [
+      highFairValue.bidPrice,
+      highFairValue.askPrice,
+      lowFairValue.bidPrice,
+      lowFairValue.askPrice,
+    ]) {
+      expect(price / 0.000001).toBeCloseTo(Math.round(price / 0.000001), 8);
+    }
+  });
+
   it("rejects crossed observations", () => {
     expect(() =>
       buildQuoteIntent({
@@ -54,6 +99,7 @@ describe("quote strategy", () => {
           bestBid: 10,
           bestAsk: 10,
           indexPrice: 10,
+          tickSize: 0.01,
           observedAt: new Date(),
         },
         inventoryUsd: 0,
@@ -72,6 +118,7 @@ describe("risk gates", () => {
         bestBid: 9.99,
         bestAsk: 10.01,
         indexPrice: 10,
+        tickSize: 0.01,
         observedAt: new Date("2026-10-26T12:00:00Z"),
       },
       inventoryUsd: 0,
@@ -101,6 +148,7 @@ describe("risk gates", () => {
         bestBid: 10.09,
         bestAsk: 10.11,
         indexPrice: 10,
+        tickSize: 0.01,
         observedAt: new Date("2026-10-26T12:00:00Z"),
       },
       inventoryUsd: 0,
@@ -134,6 +182,7 @@ describe("risk gates", () => {
         bestBid: 9.99,
         bestAsk: 10.01,
         indexPrice: 10,
+        tickSize: 0.01,
         observedAt: new Date("2026-10-26T12:00:00Z"),
       },
       inventoryUsd: 4,
@@ -167,6 +216,7 @@ describe("risk gates", () => {
         bestBid: 9.99,
         bestAsk: 10.01,
         indexPrice: 10,
+        tickSize: 0.01,
         observedAt: new Date("2026-10-26T12:00:00Z"),
       },
       inventoryUsd: 1,
@@ -202,6 +252,7 @@ describe("risk gates", () => {
         bestBid: 9.99,
         bestAsk: 10.01,
         indexPrice: 10,
+        tickSize: 0.01,
         observedAt: new Date("2026-10-26T12:00:00Z"),
       },
       inventoryUsd: 0,
@@ -235,6 +286,7 @@ describe("risk gates", () => {
         bestBid: 9.99,
         bestAsk: 10.01,
         indexPrice: 10,
+        tickSize: 0.01,
         observedAt: new Date("2026-10-26T12:00:00Z"),
       },
       inventoryUsd: 0,
@@ -264,6 +316,7 @@ describe("risk gates", () => {
         bestBid: 9.99,
         bestAsk: 10.01,
         indexPrice: 10,
+        tickSize: 0.01,
         observedAt: new Date("2026-10-26T12:00:00Z"),
       },
       inventoryUsd: 0,
@@ -387,6 +440,7 @@ describe("portfolio configuration", () => {
       bestBid: 9.99,
       bestAsk: 10.01,
       indexPrice: 10,
+      tickSize: 0.01,
       observedAt: new Date("2026-10-26T12:00:00Z"),
     };
 

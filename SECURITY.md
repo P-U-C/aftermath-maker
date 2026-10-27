@@ -66,13 +66,13 @@ A live strategy requires all of the following:
 - book/index divergence, worst next-fill exposure, two-sided collateral, agent gas, unrealized loss, and run equity drawdown checks; and
 - successful Sui transaction simulation.
 
-Any failed live cycle stops that wallet's engine. A separate watchdog monitors the age of every selected market. It invalidates a stalled cycle and cancels Maker-tagged orders with retries without waiting for the blocked market RPC. Manual stop has a bounded wait. If a transaction may already have been broadcast, both paths cancel again after that cycle resolves.
+Any failed live cycle stops that wallet's engine. A separate watchdog monitors the age of every selected market. It invalidates a stalled cycle and cancels Maker-tagged orders with retries without waiting for the blocked market RPC. Manual stop has a bounded wait. If a transaction may already have been broadcast, both paths cancel again after that cycle resolves. Fill-driven hedging also waits through a bounded account-index consistency window after cancellation and refuses to trade while either account reports a resting order.
 
 ## Transaction policy
 
-Orders are post-only and replaced atomically with cancel-and-place. Stable client order IDs restrict cancellation to Maker's own bid and ask. Manual refresh is read-only in live mode. Stop and reconfigure invalidate an in-flight cycle before signing. Gas has an explicit maximum.
+Orders are post-only, rounded to the venue tick away from the opposite side, and replaced atomically with cancel-and-place. Fresh client order IDs in Maker's reserved namespace restrict cancellation to Maker's own bid and ask. Manual refresh is read-only in live mode. Stop and reconfigure invalidate an in-flight cycle before signing. Gas has an explicit maximum.
 
-Stopping and flattening are separate. Stop only cancels Maker-tagged orders. Flatten additionally uses reduce-only market orders for selected-market positions, requires an explicit second confirmation, and forbids a builder fee. A market flatten can incur slippage and does not guarantee a particular execution price.
+Stopping and flattening are separate. Stop only cancels Maker-tagged orders. Flatten additionally uses reduce-only market orders for selected-market positions, requires an explicit second confirmation, and forbids a builder fee. Hedge and flatten market orders can incur slippage and do not guarantee a particular execution price. A venue slippage failure is reported without automatically raising the configured cap.
 
 Owner account creation, deposit, withdrawal, agent grant, agent revocation, fee approval, and whitelist membership transactions are simulated before being returned to the wallet. Grant and revoke confirmation verifies the supplied digest, sender, and exact capability-object effect before local authority state changes. Revocation removes the configured builder-fee approval in the same transaction.
 
@@ -82,7 +82,7 @@ Transactions are built by the official Aftermath SDK/API. That is an external tr
 
 Maker records order IDs emitted by confirmed quote transactions and attributes fills only when Aftermath history returns a matching maker order for that wallet. The ledger is intentionally incomplete for activity before order tracking was deployed.
 
-“Net known result” is not total account profit. It excludes markouts, attributed funding, gas converted to USD, hedging, and inventory carry. Builder fees are estimated from filled notional and must be confirmed against representative mainnet transaction effects.
+“Net known result” is not total account profit. It includes attributed Maker and confirmed hedge fills, but excludes markouts, attributed funding, gas converted to USD, explicit hedge-slippage decomposition, and inventory carry. Builder fees are estimated from filled notional and must be confirmed against representative mainnet transaction effects.
 
 ## Network exposure
 

@@ -56,7 +56,7 @@ Strategy changes reconfigure the running engine and apply on its next cycle.
 
 Maker visits selected markets round-robin. Each live visit atomically cancels and replaces two stable, Maker-tagged, post-only orders. Manual orders are outside that cancellation set.
 
-When paired-account hedging is enabled, Maker reacts only to independently filled order IDs that it previously recorded. It aggregates small fills to the configured threshold, cancels its quotes, requires both accounts to have no resting orders, then submits one capped opposite market order from the hedge account. It never creates a paired self-match loop.
+When paired-account hedging is enabled, Maker reacts only to independently filled order IDs that it previously recorded. It aggregates small fills to the configured threshold, cancels its quotes, waits through a bounded account-index consistency window until both accounts report no resting orders, then submits one capped opposite market order from the hedge account. It reloads both accounts and marks fills processed only after actual combined delta reaches the completion tolerance. Partial progress suppresses new quotes and retries; no progress fails closed. It never creates a paired self-match loop or raises the user-approved slippage cap automatically.
 
 Live mode fails closed on setup, signer, mainnet, freshness, book/index divergence, quote size, worst post-fill inventory and gross exposure, two-sided collateral, agent gas, unrealized loss, run equity drawdown, transaction simulation, and gas limits. An independent watchdog cancels Maker orders if any selected market exceeds its maximum quote age, even when the market RPC is stalled.
 

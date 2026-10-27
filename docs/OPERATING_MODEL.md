@@ -25,9 +25,9 @@ The engine resolves the effective policy for the current market before quote cal
 
 ### Quote lifecycle
 
-Maker uses Aftermath's protocol index as fair value and the live best bid and ask as execution constraints. It refuses to quote when book midpoint diverges from the index beyond policy, creates a post-only bid and ask around the index, skews both around the configured inventory target, and uses Aftermath's atomic cancel-and-place transaction to replace its prior quote pair.
+Maker uses Aftermath's protocol index as fair value and the live best bid and ask as execution constraints. It refuses to quote when book midpoint diverges from the index beyond policy, creates a post-only bid and ask around the index, rounds against the venue tick while reserving one tick behind the opposite side, skews both around the configured inventory target, and uses Aftermath's atomic cancel-and-place transaction to replace its prior quote pair.
 
-Every market has stable Maker client order IDs. Portfolio cancellation looks up pending orders and selects only those IDs. It does not cancel manual orders or orders created by another client.
+Every quote receives fresh client order IDs in Maker's reserved namespace. Portfolio cancellation recognizes that namespace and uses the exact IDs recorded from confirmed transactions and live account state. It does not cancel manual orders or orders created by another client.
 
 ### Paired-account delta hedge
 
@@ -36,13 +36,16 @@ A wallet can assign one authorized Aftermath account to quoting and a different 
 1. accept only fills whose order IDs were recorded by Maker;
 2. aggregate their signed notional until it crosses the configured hedge threshold;
 3. cancel Maker-tagged quotes on that market;
-4. require both accounts to have no resting orders, including manual orders;
-5. cap the hedge to the smaller of combined account delta, attributed pending-fill delta, and the configured maximum; and
-6. submit an opposite market order from the hedge account and record its transaction digest.
+4. poll both accounts through a bounded index-consistency window and require no resting orders, including manual orders;
+5. cap the hedge to the smaller of combined account delta, attributed pending-fill delta, and the configured maximum;
+6. submit an opposite market order from the hedge account; and
+7. reload both accounts and mark the fills processed only when actual combined delta is inside the completion tolerance.
 
-This design cannot intentionally self-match: the hedge is triggered by a previously confirmed independent fill, and no hedge is submitted while either account has a resting order. It also avoids absorbing unrelated manual exposure by capping each action to newly attributed fill delta.
+The trigger threshold controls when hedging begins; it is not the success threshold. A partial hedge suppresses new quotes and retries. No progress, material over-hedging, persistent orders, or an expired consistency window stops fail-closed.
 
-For example, $1,000 of attributed Maker bids creates positive perp delta. Once the threshold is crossed, the second account sells up to that attributable delta into the public Aftermath book. This reduces wallet-level direction, but both legs remain on Aftermath. It is not a cross-venue or spot hedge and still carries venue, basis, funding, liquidation, slippage, and execution risk.
+This design cannot intentionally self-match: the hedge is triggered by a previously confirmed independent fill, and no hedge is submitted while either account reports a resting order. It also avoids absorbing unrelated manual exposure by capping each action to newly attributed fill delta.
+
+For example, $1,000 of attributed Maker bids creates positive perp delta. Once the threshold is crossed, the second account sells up to that attributable delta into the public Aftermath book. This reduces wallet-level direction, but both legs remain on Aftermath. It is not a cross-venue or spot hedge and still carries venue, basis, funding, liquidation, slippage, and execution risk. Thin books may require a wider slippage ceiling; Maker reports the failure and never raises the user-approved cap automatically.
 
 ### Independent freshness protection
 
@@ -129,7 +132,7 @@ The next implementation sequence is:
 5. Add reward-pool valuation and break-even cost per $1 million of turnover.
 6. Add realized-volatility sizing around the implemented index-versus-book divergence gate.
 7. Run objective/profile combinations long enough to compare net return on collateral at risk.
-8. Add independent external fair-value inputs and a venue-diversified hedge after same-venue reconciliation is validated with mainnet traces.
+8. Add independent external fair-value inputs and a venue-diversified hedge.
 
 ## References
 

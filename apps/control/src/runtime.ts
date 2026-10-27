@@ -26,6 +26,7 @@ export type RuntimeOptions = {
   liveEnabled: boolean;
   mainnetAllowed: boolean;
   builderCode: () => BuilderFeePolicy | null;
+  sleep?: (milliseconds: number) => Promise<void>;
 };
 
 export type MakerFill = {
@@ -864,7 +865,7 @@ export class MakerRuntime {
     signer: ReturnType<typeof loadAgentKeypair>;
     makerPortfolio: PortfolioSnapshot;
     executionIsCurrent: () => boolean;
-  }): Promise<void> {
+  }): Promise<boolean> {
     const hedgeConfig = inputs.config.hedge;
     this.snapshotValue.hedge = {
       ...this.snapshotValue.hedge,
@@ -873,7 +874,7 @@ export class MakerRuntime {
       accountId: hedgeConfig.accountId,
       error: null,
     };
-    if (!hedgeConfig.enabled) return;
+    if (!hedgeConfig.enabled) return true;
 
     const makerAccount = this.store.getAccountSetup(
       inputs.makerSetup.accountId,
@@ -929,28 +930,34 @@ export class MakerRuntime {
           hedgeFillKey(order),
         ),
     );
-    if (!pendingFills.length) return;
+    if (!pendingFills.length) return true;
 
     const pendingDeltaUsd = pendingFills.reduce(
       (total, fill) => total + signedFillNotional(fill),
       0,
     );
     const fillKeys = pendingFills.map(hedgeFillKey);
+    const completionToleranceUsd = Math.min(
+      hedgeConfig.thresholdUsd,
+      Math.max(0.01, Math.min(0.05, Math.abs(pendingDeltaUsd) * 0.02)),
+    );
     if (Math.abs(pendingDeltaUsd) < hedgeConfig.thresholdUsd) {
       this.snapshotValue.hedge.state = "waiting";
-      return;
+      return true;
     }
 
-    if (
-      Math.abs(combinedDeltaUsd) < hedgeConfig.thresholdUsd ||
-      Math.sign(combinedDeltaUsd) !== Math.sign(pendingDeltaUsd)
-    ) {
+    if (Math.abs(combinedDeltaUsd) < completionToleranceUsd) {
       this.store.markHedgeFillsProcessed({
         makerAccountId: inputs.makerSetup.accountId,
         fillKeys,
         hedgeDigest: "already-offset",
       });
-      return;
+      return true;
+    }
+    if (Math.sign(combinedDeltaUsd) !== Math.sign(pendingDeltaUsd)) {
+      throw new Error(
+        "Hedge account over-offsets the attributed Maker fills; flatten both accounts before restarting",
+      );
     }
 
     const cancelReceipt = await this.gateway.cancelMakerOrders({
@@ -972,43 +979,78 @@ export class MakerRuntime {
       throw new Error("Hedge execution cancelled after quote cancellation");
     }
 
-    const [makerAfterCancel, hedgeAfterCancel] = await Promise.all([
-      this.gateway.getAgentPortfolioSnapshot({
-        setup: inputs.makerSetup,
-        agentAddress: inputs.agentAddress,
-        marketIds: [inputs.selected.marketId],
-      }),
-      this.gateway.getAgentPortfolioSnapshot({
-        setup: hedgeAccount,
-        agentAddress: inputs.agentAddress,
-        marketIds: [inputs.selected.marketId],
-      }),
-    ]);
-    const makerAfterPosition = makerAfterCancel.positions[0];
-    const hedgeAfterPosition = hedgeAfterCancel.positions[0];
-    if (
-      (makerAfterPosition?.pendingOrderCount ?? 0) > 0 ||
-      (hedgeAfterPosition?.pendingOrderCount ?? 0) > 0
-    ) {
+    let postCancelPortfolios: [PortfolioSnapshot, PortfolioSnapshot] | null =
+      null;
+    for (let attempt = 1; attempt <= 10; attempt += 1) {
+      const portfolios = await Promise.all([
+        this.gateway.getAgentPortfolioSnapshot({
+          setup: inputs.makerSetup,
+          agentAddress: inputs.agentAddress,
+          marketIds: [inputs.selected.marketId],
+        }),
+        this.gateway.getAgentPortfolioSnapshot({
+          setup: hedgeAccount,
+          agentAddress: inputs.agentAddress,
+          marketIds: [inputs.selected.marketId],
+        }),
+      ]);
+      const makerPending = portfolios[0].positions[0]?.pendingOrderCount ?? 0;
+      const hedgePending = portfolios[1].positions[0]?.pendingOrderCount ?? 0;
+      if (makerPending === 0 && hedgePending === 0) {
+        postCancelPortfolios = portfolios;
+        if (attempt > 1) {
+          this.store.logEvent({
+            category: "hedge",
+            action: "post-cancel-reconciliation",
+            outcome: "confirmed",
+            detail: { attempt, makerPending, hedgePending },
+          });
+        }
+        break;
+      }
+      if (attempt === 1) {
+        this.store.logEvent({
+          category: "hedge",
+          action: "post-cancel-reconciliation",
+          outcome: "waiting",
+          detail: { attempt, makerPending, hedgePending },
+        });
+      }
+      if (attempt === 10) break;
+      if (!inputs.executionIsCurrent()) {
+        throw new Error(
+          "Hedge execution cancelled while confirming order removal",
+        );
+      }
+      await (this.options.sleep
+        ? this.options.sleep(750)
+        : new Promise((resolve) => setTimeout(resolve, 750)));
+    }
+    if (!postCancelPortfolios) {
       throw new Error(
         "Hedge blocked: clear every resting order on both configured accounts",
       );
     }
 
+    const [makerAfterCancel, hedgeAfterCancel] = postCancelPortfolios;
+    const makerAfterPosition = makerAfterCancel.positions[0];
+    const hedgeAfterPosition = hedgeAfterCancel.positions[0];
     const currentCombinedDeltaUsd =
       (makerAfterPosition?.inventoryUsd ?? 0) +
       (hedgeAfterPosition?.inventoryUsd ?? 0);
     this.snapshotValue.hedge.combinedDeltaUsd = currentCombinedDeltaUsd;
-    if (
-      Math.abs(currentCombinedDeltaUsd) < hedgeConfig.thresholdUsd ||
-      Math.sign(currentCombinedDeltaUsd) !== Math.sign(pendingDeltaUsd)
-    ) {
+    if (Math.abs(currentCombinedDeltaUsd) < completionToleranceUsd) {
       this.store.markHedgeFillsProcessed({
         makerAccountId: inputs.makerSetup.accountId,
         fillKeys,
         hedgeDigest: cancelReceipt?.digest ?? "already-offset",
       });
-      return;
+      return true;
+    }
+    if (Math.sign(currentCombinedDeltaUsd) !== Math.sign(pendingDeltaUsd)) {
+      throw new Error(
+        "Hedge account over-offsets the attributed Maker fills; flatten both accounts before restarting",
+      );
     }
 
     const attributedDeltaUsd =
@@ -1026,10 +1068,24 @@ export class MakerRuntime {
       builderCode: this.options.builderCode(),
       shouldContinue: inputs.executionIsCurrent,
     });
-    const projectedResidualUsd = Math.max(
-      0,
-      Math.abs(currentCombinedDeltaUsd) - receipt.requestedNotionalUsd,
-    );
+    const [makerAfterHedge, hedgeAfterHedge] = await Promise.all([
+      this.gateway.getAgentPortfolioSnapshot({
+        setup: inputs.makerSetup,
+        agentAddress: inputs.agentAddress,
+        marketIds: [inputs.selected.marketId],
+      }),
+      this.gateway.getAgentPortfolioSnapshot({
+        setup: hedgeAccount,
+        agentAddress: inputs.agentAddress,
+        marketIds: [inputs.selected.marketId],
+      }),
+    ]);
+    const actualCombinedDeltaUsd =
+      (makerAfterHedge.positions[0]?.inventoryUsd ?? 0) +
+      (hedgeAfterHedge.positions[0]?.inventoryUsd ?? 0);
+    const resolved = Math.abs(actualCombinedDeltaUsd) < completionToleranceUsd;
+    const progressUsd =
+      Math.abs(currentCombinedDeltaUsd) - Math.abs(actualCombinedDeltaUsd);
     this.store.recordHedgeExecution({
       makerAccountId: inputs.makerSetup.accountId,
       hedgeAccountId: hedgeAccount.accountId,
@@ -1038,15 +1094,13 @@ export class MakerRuntime {
       side: receipt.side,
       requestedNotionalUsd: receipt.requestedNotionalUsd,
       gasUsedMist: receipt.gasUsedMist,
-      fillKeys: projectedResidualUsd < hedgeConfig.thresholdUsd ? fillKeys : [],
+      fillKeys: resolved ? fillKeys : [],
     });
     const occurredAt = new Date().toISOString();
     this.snapshotValue.hedge = {
       ...this.snapshotValue.hedge,
-      state: "ready",
-      combinedDeltaUsd:
-        currentCombinedDeltaUsd -
-        Math.sign(currentCombinedDeltaUsd) * receipt.requestedNotionalUsd,
+      state: resolved ? "ready" : "hedging",
+      combinedDeltaUsd: actualCombinedDeltaUsd,
       lastHedgeAt: occurredAt,
       lastDigest: receipt.digest,
       error: null,
@@ -1054,7 +1108,7 @@ export class MakerRuntime {
     this.store.logEvent({
       category: "hedge",
       action: "fill-driven-market-order",
-      outcome: "confirmed",
+      outcome: resolved ? "confirmed" : "partial",
       detail: {
         marketId: inputs.selected.marketId,
         makerAccountId: inputs.makerSetup.accountId,
@@ -1062,9 +1116,17 @@ export class MakerRuntime {
         digest: receipt.digest,
         side: receipt.side,
         requestedNotionalUsd: receipt.requestedNotionalUsd,
+        actualCombinedDeltaUsd,
+        completionToleranceUsd,
         pendingFillCount: pendingFills.length,
       },
     });
+    if (!resolved && progressUsd <= 0.001) {
+      throw new Error(
+        `Hedge transaction did not reduce combined delta: $${Math.abs(actualCombinedDeltaUsd).toFixed(4)} remains`,
+      );
+    }
+    return resolved;
   }
 
   async cycle(
@@ -1144,6 +1206,7 @@ export class MakerRuntime {
           bestBid,
           bestAsk,
           indexPrice: market.indexPrice,
+          tickSize: market.tickSize(),
           observedAt,
         },
         inventoryUsd,
@@ -1296,7 +1359,7 @@ export class MakerRuntime {
         context: agent.encryptionContext,
         encryptedSecret: agent.encryptedSecret,
       });
-      await this.reconcileHedge({
+      const hedgeReadyForQuotes = await this.reconcileHedge({
         config,
         marketConfig,
         selected,
@@ -1308,6 +1371,10 @@ export class MakerRuntime {
       });
       hedgeReconciliationCompleted = true;
       if (!executionIsCurrent()) return;
+      if (!hedgeReadyForQuotes) {
+        this.snapshotValue.lastSuccessfulCycleAt = new Date().toISOString();
+        return;
+      }
       assertSafe(safety);
 
       const trackedMakerOrders = this.store

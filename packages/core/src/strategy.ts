@@ -24,10 +24,30 @@ export type MarketObservation = {
   bestBid: number;
   bestAsk: number;
   indexPrice: number;
+  tickSize: number;
   observedAt: Date;
 };
 
 const round = (value: number, decimals = 8) => Number(value.toFixed(decimals));
+
+function tickDecimals(tickSize: number): number {
+  const fixed = tickSize.toFixed(12).replace(/0+$/, "");
+  const decimal = fixed.indexOf(".");
+  return decimal === -1 ? 0 : fixed.length - decimal - 1;
+}
+
+function roundToTick(
+  value: number,
+  tickSize: number,
+  direction: "floor" | "ceil",
+): number {
+  const scaled = value / tickSize;
+  const units =
+    direction === "floor"
+      ? Math.floor(scaled + 1e-9)
+      : Math.ceil(scaled - 1e-9);
+  return Number((units * tickSize).toFixed(tickDecimals(tickSize)));
+}
 
 export function buildQuoteIntent(inputs: {
   config: MakerConfig;
@@ -40,9 +60,11 @@ export function buildQuoteIntent(inputs: {
   if (
     observation.bestBid <= 0 ||
     observation.bestAsk <= 0 ||
-    observation.indexPrice <= 0
+    observation.indexPrice <= 0 ||
+    !Number.isFinite(observation.tickSize) ||
+    observation.tickSize <= 0
   ) {
-    throw new Error("Orderbook and index prices must be positive");
+    throw new Error("Orderbook, index price, and tick size must be positive");
   }
   if (observation.bestBid >= observation.bestAsk) {
     throw new Error("Orderbook is crossed or locked");
@@ -61,12 +83,26 @@ export function buildQuoteIntent(inputs: {
   const rawBid = fairValue * (1 - halfSpread - skew);
   const rawAsk = fairValue * (1 + halfSpread - skew);
 
-  // Post-only quotes must stay behind the opposite side.
-  const bidPrice = Math.min(rawBid, observation.bestAsk - Number.EPSILON);
-  const askPrice = Math.max(rawAsk, observation.bestBid + Number.EPSILON);
+  // Reserve one venue tick before rounding so post-only prices cannot
+  // round back onto the opposite side of the book.
+  const bidPrice = roundToTick(
+    Math.min(rawBid, observation.bestAsk - observation.tickSize),
+    observation.tickSize,
+    "floor",
+  );
+  const askPrice = roundToTick(
+    Math.max(rawAsk, observation.bestBid + observation.tickSize),
+    observation.tickSize,
+    "ceil",
+  );
 
-  if (bidPrice >= askPrice) {
-    throw new Error("Calculated quote would self-cross");
+  if (
+    bidPrice <= 0 ||
+    bidPrice >= askPrice ||
+    bidPrice >= observation.bestAsk ||
+    askPrice <= observation.bestBid
+  ) {
+    throw new Error("Calculated quote would cross the orderbook");
   }
 
   return {
@@ -75,8 +111,8 @@ export function buildQuoteIntent(inputs: {
     bestBid: observation.bestBid,
     bestAsk: observation.bestAsk,
     indexPrice: observation.indexPrice,
-    bidPrice: round(bidPrice),
-    askPrice: round(askPrice),
+    bidPrice,
+    askPrice,
     sizeBase: round(config.quoteSizeUsd / mid),
     sizeUsd: config.quoteSizeUsd,
     inventoryUsd,
