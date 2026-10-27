@@ -43,6 +43,8 @@ The agent can trade but cannot withdraw collateral or grant another agent. Creat
 - Global defaults plus per-market spread, size, inventory target, inventory cap, skew, and leverage overrides
 - Runtime, last successful cycle, quote freshness, transaction links, measured gas, and estimated gas runway
 - A fill ledger limited to order IDs that Maker recorded when posting
+- Current-epoch maker rewards, Q-score share, qualifying uptime, volume share, and direct rebates from Aftermath
+- A live reward-efficiency ranking across every open market, with one-click staging of a reviewable Observe-mode rotation
 - Separate Maker and hedge attribution, protocol fees, estimated builder fees, and combined result after those known costs
 - Separate **Stop quoting** and **Flatten at market** actions
 
@@ -64,6 +66,14 @@ Live mode requires both deployment gates:
 LIVE_TRADING_ENABLED=true
 ALLOW_MAINNET=true
 ```
+
+## Reward efficiency
+
+The reward desk keeps protocol facts separate from strategy estimates. Account totals come from Aftermath's current-epoch rewards endpoint. Market rankings are Maker's heuristic: organic 24-hour flow per dollar of balanced depth within 50 bps, adjusted for competition, spread, volatility, funding, open-interest capacity, and book balance.
+
+Closed-session markets and markets without meaningful two-sided depth, OI, or organic volume are ineligible. **Stage rotation** selects the requested number of top markets, applies bounded per-market policies, and forces Observe mode. It never saves, starts, or enables Live trading.
+
+The ranking is not Aftermath's private per-market rewards formula and does not estimate guaranteed profit. Its purpose is to direct scarce collateral toward measurable, independently generated flow while avoiding volume churn and self-trading.
 
 ## Performance boundary
 

@@ -314,6 +314,15 @@ app.get("/api/markets", async (request) => {
   };
 });
 
+app.get("/api/rewards", async (request) => {
+  const query = z
+    .object({ collateralCoinType: z.string().default(USDC_COIN_TYPE) })
+    .parse(request.query);
+  return {
+    rewards: await runtime(request).rewardDashboard(query.collateralCoinType),
+  };
+});
+
 app.get("/api/setup", async (request) => {
   const scoped = tenant(request);
   const setup = scoped.getSetup();

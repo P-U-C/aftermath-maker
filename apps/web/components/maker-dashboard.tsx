@@ -26,6 +26,9 @@ import {
   Search,
   Server,
   Settings2,
+  Target,
+  TimerReset,
+  Trophy,
   ShieldCheck,
   SlidersHorizontal,
   UserPlus,
@@ -283,6 +286,56 @@ type Performance = {
   note: string;
 };
 
+type RewardOpportunity = {
+  rank: number;
+  marketId: string;
+  symbol: string;
+  score: number;
+  confidence: "high" | "medium" | "low";
+  eligible: boolean;
+  observedSpreadBps: number | null;
+  balancedDepth50BpsUsd: number;
+  volume24hUsd: number | null;
+  openInterestUsd: number;
+  openInterestUtilizationPct: number | null;
+  volumeToDepth: number | null;
+  fundingRate: number;
+  priceChange24hPct: number | null;
+  makerRebateBps: number;
+  builderFeeBps: number;
+  knownCostBps: number;
+  suggestedSpreadBps: number;
+  suggestedQuoteSizeUsd: number;
+  reasons: string[];
+  error: string | null;
+};
+
+type RewardDashboard = {
+  asOf: string;
+  epoch: {
+    number: number;
+    startedAt: string;
+    cutoffAt: string;
+  };
+  account: {
+    trackedAccountIds: string[];
+    error: string | null;
+    makerRewardsSui: number;
+    qScoreShare: number;
+    uptime: number;
+    makerVolumeUsd: number;
+    makerVolumeShare: number;
+    directRebatesUsd: number;
+    baseMakerFeesUsd: number;
+  };
+  marketModel: {
+    label: "heuristic";
+    methodology: string;
+    depthBandBps: 50;
+    opportunities: RewardOpportunity[];
+  };
+};
+
 type AuditEvent = {
   id: number;
   occurredAt: string;
@@ -405,6 +458,14 @@ const compactNumber = (value: number | null) =>
 const percent = (value: number | null, digits = 2) =>
   value === null ? "-" : `${value.toFixed(digits)}%`;
 
+const timeUntil = (timestamp: string | null) => {
+  if (!timestamp) return "Schedule unavailable";
+  const remaining = Math.max(0, Date.parse(timestamp) - Date.now());
+  const days = Math.floor(remaining / 86_400_000);
+  const hours = Math.floor((remaining % 86_400_000) / 3_600_000);
+  return days > 0 ? `${days}d ${hours}h` : `${hours}h`;
+};
+
 function DashboardBody() {
   const account = useCurrentAccount();
   const wallet = useDAppKit();
@@ -428,6 +489,8 @@ function DashboardBody() {
   const [accounts, setAccounts] = useState<AccountCap[]>([]);
   const [events, setEvents] = useState<AuditEvent[]>([]);
   const [performance, setPerformance] = useState<Performance | null>(null);
+  const [rewards, setRewards] = useState<RewardDashboard | null>(null);
+  const [rewardMarketCount, setRewardMarketCount] = useState(3);
   const [selectedAccount, setSelectedAccount] = useState("");
   const [busy, setBusy] = useState("");
   const [flattenArmed, setFlattenArmed] = useState(false);
@@ -472,6 +535,13 @@ function DashboardBody() {
       "api/performance",
     );
     setPerformance(result.performance);
+  }, []);
+
+  const loadRewards = useCallback(async () => {
+    const result = await request<{ rewards: RewardDashboard }>(
+      `api/rewards?collateralCoinType=${encodeURIComponent(USDC)}`,
+    );
+    setRewards(result.rewards);
   }, []);
 
   const loadMarkets = useCallback(async () => {
@@ -520,6 +590,7 @@ function DashboardBody() {
     void refresh().catch((error) => setNotice(String(error)));
     void loadMarkets().catch((error) => setNotice(String(error)));
     void loadPerformance().catch(() => undefined);
+    void loadRewards().catch((error) => setNotice(String(error)));
     if (identity.operator) {
       void request<OperatorStatus>("api/operator/status")
         .then(setOperatorStatus)
@@ -531,11 +602,15 @@ function DashboardBody() {
     const performanceTimer = setInterval(() => {
       void loadPerformance().catch(() => undefined);
     }, 30_000);
+    const rewardsTimer = setInterval(() => {
+      void loadRewards().catch(() => undefined);
+    }, 60_000);
     return () => {
       clearInterval(timer);
       clearInterval(performanceTimer);
+      clearInterval(rewardsTimer);
     };
-  }, [identity, refresh, loadMarkets, loadPerformance]);
+  }, [identity, refresh, loadMarkets, loadPerformance, loadRewards]);
 
   useEffect(() => {
     if (
@@ -945,6 +1020,60 @@ function DashboardBody() {
     }));
   }
 
+  function stageRewardRotation() {
+    const candidates =
+      rewards?.marketModel.opportunities
+        .filter((opportunity) => opportunity.eligible)
+        .slice(0, rewardMarketCount) ?? [];
+    if (!candidates.length) {
+      setNotice("No eligible reward markets are available in the latest scan.");
+      return;
+    }
+    if (snapshot?.running || (snapshot?.portfolio.grossExposureUsd ?? 0) > 0) {
+      setNotice(
+        "Stop quoting and clear portfolio exposure before changing the market rotation.",
+      );
+      return;
+    }
+
+    setConfig((current) => {
+      const perMarketInventory = Math.max(
+        1,
+        Math.min(
+          current.maxInventoryUsd,
+          current.maxGrossExposureUsd / candidates.length,
+        ),
+      );
+      const nextMarkets = candidates.map((opportunity) => ({
+        marketId: opportunity.marketId,
+        symbol: opportunity.symbol,
+        overrides: {
+          quoteSizeUsd: Math.min(
+            opportunity.suggestedQuoteSizeUsd,
+            Math.max(1, perMarketInventory / 2),
+          ),
+          spreadBps: opportunity.suggestedSpreadBps,
+          maxInventoryUsd: perMarketInventory,
+          inventoryTargetUsd: 0,
+          inventorySkewBps: current.inventorySkewBps,
+          maxLeverage: 1,
+        },
+      }));
+      const minimumQuoteAge =
+        current.refreshMs * nextMarkets.length +
+        Math.min(10_000, current.refreshMs);
+      return {
+        ...current,
+        mode: "observe",
+        markets: nextMarkets,
+        maxQuoteAgeMs: Math.max(current.maxQuoteAgeMs, minimumQuoteAge),
+      };
+    });
+    setNotice(
+      `Top ${candidates.length} reward markets staged in Observe mode. Review the policies, then save the strategy.`,
+    );
+  }
+
   async function saveConfig(event: FormEvent) {
     event.preventDefault();
     await mutate("save", async () => {
@@ -1112,6 +1241,14 @@ function DashboardBody() {
     config.maxGrossExposureUsd / Math.max(1, config.maxLeverage);
   const builderFeePerFillUsd =
     config.quoteSizeUsd * (builderCode?.integratorFee ?? 0);
+  const rewardOpportunities =
+    rewards?.marketModel.opportunities
+      .filter((opportunity) => opportunity.eligible)
+      .slice(0, 8) ?? [];
+  const topRewardOpportunity = rewardOpportunities[0] ?? null;
+  const rewardRotationBlocked =
+    Boolean(snapshot?.running) ||
+    (snapshot?.portfolio.grossExposureUsd ?? 0) > 0;
   const visibleMarkets = markets.filter((market) => {
     const query = marketQuery.trim().toLowerCase();
     return (
@@ -2477,6 +2614,197 @@ function DashboardBody() {
           estimate using the displayed index price. Capacity is measured against
           the protocol limit at the data timestamp.
         </p>
+      </section>
+
+      <section className="rewards-board">
+        <div className="section-heading compact rewards-heading">
+          <div>
+            <span className="eyebrow">Bi-weekly incentives</span>
+            <h2>Reward efficiency</h2>
+          </div>
+          <div className="reward-cutoff">
+            <TimerReset size={16} aria-hidden="true" />
+            <span>Next snapshot</span>
+            <strong>{timeUntil(rewards?.epoch.cutoffAt ?? null)}</strong>
+          </div>
+        </div>
+
+        <div className="reward-metrics">
+          <div>
+            <Trophy size={16} aria-hidden="true" />
+            <span>Est. maker rewards</span>
+            <strong>
+              {rewards
+                ? `${rewards.account.makerRewardsSui.toFixed(2)} SUI`
+                : "Loading"}
+            </strong>
+          </div>
+          <div>
+            <span>Q-score share</span>
+            <strong>
+              {rewards ? percent(rewards.account.qScoreShare * 100, 3) : "-"}
+            </strong>
+          </div>
+          <div>
+            <span>Qualifying snapshots</span>
+            <strong>{rewards?.account.uptime.toLocaleString() ?? "-"}</strong>
+          </div>
+          <div>
+            <span>Maker volume share</span>
+            <strong>
+              {rewards
+                ? percent(rewards.account.makerVolumeShare * 100, 3)
+                : "-"}
+            </strong>
+          </div>
+          <div>
+            <span>Base maker rebates</span>
+            <strong>
+              {money(
+                rewards ? Math.max(0, -rewards.account.baseMakerFeesUsd) : null,
+              )}
+            </strong>
+          </div>
+          <div>
+            <span>Direct rebates</span>
+            <strong>{money(rewards?.account.directRebatesUsd ?? null)}</strong>
+          </div>
+        </div>
+
+        <div className="reward-command">
+          <div className="reward-leader">
+            <span>Best measured opportunity</span>
+            <strong>
+              {topRewardOpportunity
+                ? `#1 ${topRewardOpportunity.symbol} / ${topRewardOpportunity.score}`
+                : "Scanning markets"}
+            </strong>
+            <small>
+              {topRewardOpportunity?.reasons[0] ??
+                "Live books and account rewards refresh every minute."}
+            </small>
+          </div>
+          <label className="reward-count">
+            <span>Markets</span>
+            <select
+              value={rewardMarketCount}
+              onChange={(event) =>
+                setRewardMarketCount(Number(event.target.value))
+              }
+            >
+              {[1, 2, 3, 4, 5, 6].map((count) => (
+                <option key={count} value={count}>
+                  {count}
+                </option>
+              ))}
+            </select>
+          </label>
+          <button
+            className="button reward-stage"
+            type="button"
+            onClick={stageRewardRotation}
+            disabled={
+              rewardRotationBlocked ||
+              rewardOpportunities.length < rewardMarketCount
+            }
+            title={
+              rewardRotationBlocked
+                ? "Stop the engine and clear exposure before changing markets"
+                : "Stage the highest-ranked markets in Observe mode"
+            }
+          >
+            <Target size={16} aria-hidden="true" />
+            Stage rotation
+          </button>
+        </div>
+
+        <div className="reward-table-wrap">
+          <table className="reward-table">
+            <thead>
+              <tr>
+                <th>Rank</th>
+                <th>Pair</th>
+                <th>Efficiency</th>
+                <th>24h flow</th>
+                <th>Depth +/-50bp</th>
+                <th>Flow / depth</th>
+                <th>Book spread</th>
+                <th>Known fill cost</th>
+                <th>Suggested policy</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rewardOpportunities.length ? (
+                rewardOpportunities.map((opportunity) => (
+                  <tr
+                    key={opportunity.marketId}
+                    title={opportunity.reasons.join(". ")}
+                  >
+                    <td>{opportunity.rank}</td>
+                    <td>
+                      <strong>{opportunity.symbol}</strong>
+                      <span
+                        className={`confidence confidence-${opportunity.confidence}`}
+                      >
+                        {opportunity.confidence}
+                      </span>
+                    </td>
+                    <td>
+                      <div className="score-cell">
+                        <strong>{opportunity.score}</strong>
+                        <span aria-hidden="true">
+                          <i style={{ width: `${opportunity.score}%` }} />
+                        </span>
+                      </div>
+                    </td>
+                    <td>{compactUsd(opportunity.volume24hUsd)}</td>
+                    <td>{compactUsd(opportunity.balancedDepth50BpsUsd)}</td>
+                    <td>
+                      {opportunity.volumeToDepth === null
+                        ? "-"
+                        : `${opportunity.volumeToDepth.toFixed(1)}x`}
+                    </td>
+                    <td>
+                      {opportunity.observedSpreadBps === null
+                        ? "-"
+                        : `${opportunity.observedSpreadBps.toFixed(1)} bp`}
+                    </td>
+                    <td
+                      className={
+                        opportunity.knownCostBps <= 0 ? "positive-number" : ""
+                      }
+                    >
+                      {opportunity.knownCostBps <= 0
+                        ? `${Math.abs(opportunity.knownCostBps).toFixed(1)} bp rebate`
+                        : `${opportunity.knownCostBps.toFixed(1)} bp`}
+                    </td>
+                    <td className="dual-value">
+                      <strong>
+                        {money(opportunity.suggestedQuoteSizeUsd, 0)}
+                      </strong>
+                      <span>{opportunity.suggestedSpreadBps} bp spread</span>
+                    </td>
+                  </tr>
+                ))
+              ) : (
+                <tr>
+                  <td className="empty-fill" colSpan={9}>
+                    {rewards?.account.error ??
+                      "Scanning live books for eligible markets."}
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+        <details className="reward-method">
+          <summary>Method and limits</summary>
+          <p>{rewards?.marketModel.methodology}</p>
+          <p>
+            Staging only changes the draft strategy and forces Observe mode.
+            Save after review; starting Live remains a separate action.
+          </p>
+        </details>
       </section>
 
       <section className="performance-board">

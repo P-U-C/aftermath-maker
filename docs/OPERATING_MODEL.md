@@ -101,9 +101,9 @@ These are hypotheses to compare in Observe, Paper, and small Live runs:
 - **Paired-account hedging:** the implemented same-venue baseline for reducing bot-attributed delta while measuring taker fees and residual exposure.
 - **Cross-venue hedged market making:** quote on Aftermath and hedge externally when expected spread exceeds hedge, funding, fee, gas, and basis costs.
 - **Funding and basis:** pair spot and perps, or two perp venues, while measuring funding reversal, margin, liquidation, and basis risk.
-- **Incentive-aware liquidity:** allocate by verified net return per unit of collateral, not low OI or gross volume alone.
+- **Incentive-aware liquidity:** the reward desk now ranks open markets by organic flow per dollar of balanced near-book depth, adjusted for competition, spread, volatility, funding, OI capacity, and book balance. It stages an Observe-mode rotation for review; it does not start the engine.
 
-A market score should eventually use organic fills, depth, spread, volatility, funding, realized rewards, adverse selection, gas, and collateral usage. Low OI can mean less competition; it can also mean little flow and higher thin-book risk.
+The ranking is a transparent allocation heuristic, not Aftermath's private per-market reward formula. Exact current-epoch account Q-score, qualifying uptime, maker volume share, rewards, and rebates come directly from Aftermath. Low OI alone is never treated as opportunity: it can mean less competition, little organic flow, and higher thin-book risk.
 
 ## Next measurement layer
 
@@ -112,9 +112,10 @@ The next implementation sequence is:
 1. Calculate post-fill markouts at fixed horizons.
 2. Attribute actual funding and gas in USD to each position and run.
 3. Add realized spread and inventory-carry decomposition.
-4. Add volatility and oracle-versus-book divergence signals.
-5. Run profiles long enough to compare net return on collateral at risk.
-6. Add external fair-value inputs and a venue-diversified hedge after same-venue reconciliation is validated with mainnet traces.
+4. Compare staged reward rotations against realized rewards per dollar of collateral.
+5. Add volatility and oracle-versus-book divergence signals.
+6. Run profiles long enough to compare net return on collateral at risk.
+7. Add external fair-value inputs and a venue-diversified hedge after same-venue reconciliation is validated with mainnet traces.
 
 ## References
 

@@ -13,9 +13,13 @@ import { Transaction } from "@mysten/sui/transactions";
 import {
   assertBuilderFeePolicy,
   assertNoBuilderFee,
+  rankRewardMarkets,
+  rewardEpochWindow,
   type BuilderFeePolicy,
   type MakerConfig,
   type QuoteIntent,
+  type RewardMarketEvidence,
+  type RewardMarketOpportunity,
   type Setup,
 } from "@puc/core";
 
@@ -34,8 +38,53 @@ export type MarketSummary = {
   maxOpenInterestBase: number;
   fundingRate: number;
   makerFee: number;
+  category: string | null;
+  sessionOpen: boolean | null;
+  sessionNextTransitionAt: number | null;
   volume24hUsd: number | null;
   priceChange24hPct: number | null;
+};
+
+export type RewardAccountSnapshot = {
+  accountId: string;
+  maker: {
+    qScore: number;
+    qScoreShare: number;
+    uptime: number;
+    rewardsSui: number;
+    volumeUsd: number;
+    volumeShare: number;
+    volumeRebateUsd: number;
+    feeRebateUsd: number;
+    feesPaidUsd: number;
+  };
+};
+
+export type RewardDashboard = {
+  asOf: string;
+  epoch: {
+    number: number;
+    startedAt: string;
+    cutoffAt: string;
+  };
+  account: {
+    trackedAccountIds: string[];
+    error: string | null;
+    makerRewardsSui: number;
+    qScoreShare: number;
+    uptime: number;
+    makerVolumeUsd: number;
+    makerVolumeShare: number;
+    directRebatesUsd: number;
+    baseMakerFeesUsd: number;
+    accounts: RewardAccountSnapshot[];
+  };
+  marketModel: {
+    label: "heuristic";
+    methodology: string;
+    depthBandBps: 50;
+    opportunities: RewardMarketOpportunity[];
+  };
 };
 
 export type PositionSnapshot = {
@@ -123,6 +172,71 @@ export type HedgeReceipt = ExecutionReceipt & {
 };
 
 const PUBLIC_MAINNET_GRPC = "https://fullnode.mainnet.sui.io:443";
+const AFTERMATH_API = "https://aftermath.finance/api";
+const REWARD_MARKET_CACHE_MS = 60_000;
+
+type RewardOrderbook = {
+  marketId: string;
+  bids: Array<{ price: number; size: number }>;
+  asks: Array<{ price: number; size: number }>;
+  bestBidPrice: number | null;
+  bestAskPrice: number | null;
+  midPrice: number | null;
+};
+
+function parseRewardOrderbooks(value: unknown): RewardOrderbook[] {
+  if (!value || typeof value !== "object") {
+    throw new Error("Aftermath returned an invalid orderbook response");
+  }
+  const orderbooks = (value as { orderbooks?: unknown }).orderbooks;
+  if (!Array.isArray(orderbooks)) {
+    throw new Error("Aftermath orderbook response omitted orderbooks");
+  }
+
+  return orderbooks.flatMap((entry) => {
+    if (!entry || typeof entry !== "object") return [];
+    const record = entry as {
+      marketId?: unknown;
+      orderbook?: {
+        bids?: unknown;
+        asks?: unknown;
+        bestBidPrice?: unknown;
+        bestAskPrice?: unknown;
+        midPrice?: unknown;
+      };
+    };
+    if (
+      typeof record.marketId !== "string" ||
+      !Array.isArray(record.orderbook?.bids) ||
+      !Array.isArray(record.orderbook?.asks)
+    ) {
+      return [];
+    }
+    const levels = (items: unknown[]): Array<{ price: number; size: number }> =>
+      items.flatMap((item) => {
+        if (!item || typeof item !== "object") return [];
+        const level = item as { price?: unknown; size?: unknown };
+        return typeof level.price === "number" &&
+          Number.isFinite(level.price) &&
+          typeof level.size === "number" &&
+          Number.isFinite(level.size)
+          ? [{ price: level.price, size: level.size }]
+          : [];
+      });
+    const numericOrNull = (item: unknown) =>
+      typeof item === "number" && Number.isFinite(item) ? item : null;
+    return [
+      {
+        marketId: record.marketId,
+        bids: levels(record.orderbook.bids),
+        asks: levels(record.orderbook.asks),
+        bestBidPrice: numericOrNull(record.orderbook.bestBidPrice),
+        bestAskPrice: numericOrNull(record.orderbook.bestAskPrice),
+        midPrice: numericOrNull(record.orderbook.midPrice),
+      },
+    ];
+  });
+}
 
 export const MAKER_BID_CLIENT_ORDER_ID = 0x5055434d4b520001n;
 export const MAKER_ASK_CLIENT_ORDER_ID = 0x5055434d4b520002n;
@@ -252,6 +366,20 @@ export function postedOrderIds(result: unknown): string[] {
 }
 
 export class AftermathGateway {
+  private rewardMarketCache:
+    | {
+        collateralCoinType: string;
+        expiresAt: number;
+        evidence: RewardMarketEvidence[];
+      }
+    | undefined;
+  private rewardMarketPromise:
+    | {
+        collateralCoinType: string;
+        value: Promise<RewardMarketEvidence[]>;
+      }
+    | undefined;
+
   private constructor(
     private readonly sdk: Aftermath,
     private readonly client: SuiGrpcClient,
@@ -340,6 +468,14 @@ export class AftermathGateway {
       const openInterestBase = Math.abs(market.marketState.openInterest);
       const maxOpenInterestBase = market.marketParams.maxOpenInterest;
       const stats = statsResult.marketsStats[index];
+      const metadata = market.metadata as
+        | (NonNullable<typeof market.metadata> & {
+            session?: {
+              isOpen?: boolean;
+              nextTransitionAt?: number;
+            };
+          })
+        | null;
       return {
         id: market.marketId,
         symbol: market.metadata?.symbol ?? market.marketId.slice(0, 10),
@@ -361,10 +497,237 @@ export class AftermathGateway {
         maxOpenInterestBase,
         fundingRate: market.estimatedFundingRate(),
         makerFee: market.marketParams.makerFee,
+        category: metadata?.category ?? null,
+        sessionOpen:
+          typeof metadata?.session?.isOpen === "boolean"
+            ? metadata.session.isOpen
+            : null,
+        sessionNextTransitionAt:
+          typeof metadata?.session?.nextTransitionAt === "number"
+            ? metadata.session.nextTransitionAt
+            : null,
         volume24hUsd: stats?.volumeUsd ?? null,
         priceChange24hPct: stats?.priceChangePercentage ?? null,
       };
     });
+  }
+
+  private async fetchRewardMarketEvidence(
+    collateralCoinType: string,
+  ): Promise<RewardMarketEvidence[]> {
+    const markets = await this.listMarkets(collateralCoinType);
+    const batches = Array.from(
+      { length: Math.ceil(markets.length / 10) },
+      (_value, index) => markets.slice(index * 10, index * 10 + 10),
+    );
+    const batchResults = await Promise.all(
+      batches.map(async (batch) => {
+        try {
+          const response = await fetch(
+            `${AFTERMATH_API}/perpetuals/markets/orderbooks`,
+            {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({
+                marketIds: batch.map((market) => market.id),
+              }),
+              signal: AbortSignal.timeout(15_000),
+            },
+          );
+          if (!response.ok) {
+            const detail = (await response.text()).slice(0, 160);
+            throw new Error(
+              `Aftermath orderbook request failed with HTTP ${response.status}: ${detail}`,
+            );
+          }
+          return {
+            orderbooks: parseRewardOrderbooks(await response.json()),
+            errors: new Map<string, string>(),
+          };
+        } catch (error) {
+          return {
+            orderbooks: [] as RewardOrderbook[],
+            errors: new Map(
+              batch.map((market) => [market.id, errorMessage(error)]),
+            ),
+          };
+        }
+      }),
+    );
+    const orderbooks = batchResults.flatMap((result) => result.orderbooks);
+    const orderbookErrors = new Map(
+      batchResults.flatMap((result) => [...result.errors]),
+    );
+
+    const booksByMarket = new Map(
+      orderbooks.map((orderbook) => [
+        orderbook.marketId.toLowerCase(),
+        orderbook,
+      ]),
+    );
+    return markets.map((market) => {
+      const orderbook = booksByMarket.get(market.id.toLowerCase());
+      const bestBid = orderbook?.bestBidPrice ?? null;
+      const bestAsk = orderbook?.bestAskPrice ?? null;
+      const midpoint =
+        orderbook?.midPrice ??
+        (bestBid !== null && bestAsk !== null ? (bestBid + bestAsk) / 2 : null);
+      const bidFloor = midpoint === null ? null : midpoint * (1 - 0.005);
+      const askCeiling = midpoint === null ? null : midpoint * (1 + 0.005);
+      const bidDepth50BpsUsd =
+        midpoint === null || bidFloor === null
+          ? 0
+          : (orderbook?.bids ?? [])
+              .filter((level) => level.price >= bidFloor)
+              .reduce((total, level) => total + level.price * level.size, 0);
+      const askDepth50BpsUsd =
+        midpoint === null || askCeiling === null
+          ? 0
+          : (orderbook?.asks ?? [])
+              .filter((level) => level.price <= askCeiling)
+              .reduce((total, level) => total + level.price * level.size, 0);
+
+      return {
+        marketId: market.id,
+        symbol: market.symbol,
+        indexPrice: market.indexPrice,
+        volume24hUsd: market.volume24hUsd,
+        openInterestUsd: market.openInterestUsd,
+        openInterestUtilizationPct: market.openInterestUtilizationPct,
+        fundingRate: market.fundingRate,
+        priceChange24hPct: market.priceChange24hPct,
+        makerFee: market.makerFee,
+        sessionOpen: market.sessionOpen,
+        bestBid,
+        bestAsk,
+        bidDepth50BpsUsd,
+        askDepth50BpsUsd,
+        error:
+          orderbookErrors.get(market.id) ??
+          (orderbook ? null : "No two-sided orderbook snapshot returned"),
+      };
+    });
+  }
+
+  private async getRewardMarketEvidence(
+    collateralCoinType: string,
+  ): Promise<RewardMarketEvidence[]> {
+    if (
+      this.rewardMarketCache &&
+      this.rewardMarketCache.collateralCoinType === collateralCoinType &&
+      this.rewardMarketCache.expiresAt > Date.now()
+    ) {
+      return this.rewardMarketCache.evidence;
+    }
+    if (this.rewardMarketPromise?.collateralCoinType === collateralCoinType) {
+      return this.rewardMarketPromise.value;
+    }
+
+    const request = this.fetchRewardMarketEvidence(collateralCoinType);
+    this.rewardMarketPromise = { collateralCoinType, value: request };
+    try {
+      const evidence = await request;
+      this.rewardMarketCache = {
+        collateralCoinType,
+        expiresAt: Date.now() + REWARD_MARKET_CACHE_MS,
+        evidence,
+      };
+      return evidence;
+    } finally {
+      if (this.rewardMarketPromise?.value === request) {
+        this.rewardMarketPromise = undefined;
+      }
+    }
+  }
+
+  async getRewardDashboard(inputs: {
+    accountIds: string[];
+    collateralCoinType: string;
+    builderFeeBps: number;
+  }): Promise<RewardDashboard> {
+    const uniqueAccountIds = [...new Set(inputs.accountIds)];
+    const [evidence, distributionResult] = await Promise.all([
+      this.getRewardMarketEvidence(inputs.collateralCoinType),
+      uniqueAccountIds.length
+        ? this.sdk
+            .Rewards()
+            .getDistribution({
+              accountIds: uniqueAccountIds.map((accountId) =>
+                BigInt(accountId),
+              ),
+              totalMakerRewards: 0,
+              totalTakerRewards: 0,
+              calculationVariables: {
+                qScoreCoefficient: 1,
+                uptimeCoefficient: 1,
+                mmVolumeCoefficient: 1,
+                takerVolumeCoefficient: 1,
+                takerOiCoefficient: 1,
+              },
+            })
+            .then((value) => ({ value, error: null as string | null }))
+            .catch((error) => ({
+              value: null,
+              error: errorMessage(error),
+            }))
+        : Promise.resolve({
+            value: null,
+            error: null as string | null,
+          }),
+    ]);
+
+    const accountRows: RewardAccountSnapshot[] = (
+      distributionResult.value?.rewards ?? []
+    ).map((reward) => ({
+      accountId: reward.accountId.toString(),
+      maker: {
+        qScore: reward.maker.qScore,
+        qScoreShare: reward.maker.qScoreFinalShare,
+        uptime: Number(reward.maker.uptime),
+        rewardsSui: reward.maker.rewards,
+        volumeUsd: reward.maker.volume,
+        volumeShare: reward.maker.volumeShare,
+        volumeRebateUsd: reward.maker.volumeRebate,
+        feeRebateUsd: reward.maker.feeRebate,
+        feesPaidUsd: reward.maker.feesPaid,
+      },
+    }));
+    const sum = (select: (row: RewardAccountSnapshot) => number) =>
+      accountRows.reduce((total, row) => total + select(row), 0);
+    const epoch = rewardEpochWindow();
+
+    return {
+      asOf: new Date().toISOString(),
+      epoch: {
+        number: epoch.epoch,
+        startedAt: epoch.startedAt,
+        cutoffAt: epoch.cutoffAt,
+      },
+      account: {
+        trackedAccountIds: uniqueAccountIds,
+        error: distributionResult.error,
+        makerRewardsSui: sum((row) => row.maker.rewardsSui),
+        qScoreShare: sum((row) => row.maker.qScoreShare),
+        uptime: sum((row) => row.maker.uptime),
+        makerVolumeUsd: sum((row) => row.maker.volumeUsd),
+        makerVolumeShare: sum((row) => row.maker.volumeShare),
+        directRebatesUsd: sum(
+          (row) => row.maker.volumeRebateUsd + row.maker.feeRebateUsd,
+        ),
+        baseMakerFeesUsd: sum((row) => row.maker.feesPaidUsd),
+        accounts: accountRows,
+      },
+      marketModel: {
+        label: "heuristic",
+        methodology:
+          "Ranks organic volume per dollar of balanced near-book depth, then adjusts for competition, spread, volatility, funding, capacity, and book balance. It is not Aftermath's private per-market reward formula.",
+        depthBandBps: 50,
+        opportunities: rankRewardMarkets({
+          markets: evidence,
+          builderFeeBps: inputs.builderFeeBps,
+        }),
+      },
+    };
   }
 
   async getMarket(marketId: string): Promise<PerpetualsMarket> {

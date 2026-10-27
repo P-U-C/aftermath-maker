@@ -283,6 +283,16 @@ export class MakerRuntime {
     return this.markets;
   }
 
+  async rewardDashboard(collateralCoinType: string) {
+    return this.gateway.getRewardDashboard({
+      accountIds: this.store
+        .listAccountSetups()
+        .map((account) => account.accountId),
+      collateralCoinType,
+      builderFeeBps: (this.options.builderCode()?.integratorFee ?? 0) * 10_000,
+    });
+  }
+
   private syncMarketRows(config: MakerConfig): void {
     const previous = new Map(
       this.snapshotValue.markets.map((market) => [market.id, market]),
