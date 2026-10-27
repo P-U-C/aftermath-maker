@@ -26,7 +26,8 @@ Validate Maker from a clean, dedicated owner through account creation, funding, 
 
 ## First Live canary limits
 
-- Capital deposited: at most 15 USDC; retain at least 5 USDC in the owner wallet until recovery is proven
+- Capital deposited: 10 USDC to the maker account and 5 USDC to a separate hedge account; retain 5 USDC in the owner wallet until recovery is proven
+- Accounts: two independently created and authorized Aftermath accounts, assigned distinct Maker and Hedge roles in the interface
 - Markets: one liquid, continuously open market selected from live evidence
 - Quote size: 1 USDC per side
 - Maximum inventory: 5 USDC
@@ -36,7 +37,7 @@ Validate Maker from a clean, dedicated owner through account creation, funding, 
 - Maximum book/index divergence: 50 bps
 - Leverage: 1x
 - Spread: conservative and post-only
-- Hedge: disabled for the first canary; tested separately only after maker attribution works
+- Hedge: disabled only long enough to prove maker-fill attribution, then enabled on the second account with a 1 USDC threshold and a 5 USDC maximum hedge; combined delta is reconciled after every attributed fill
 - Duration: enough cycles to prove replacement and watchdog behavior, not artificial reward farming
 
 ## Evidence
