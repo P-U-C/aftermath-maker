@@ -26,7 +26,7 @@ Validate Maker from a clean, dedicated owner through account creation, funding, 
 
 ## First Live canary limits
 
-- Capital deposited: 10 USDC to the maker account and 5 USDC to a separate hedge account; retain 5 USDC in the owner wallet until recovery is proven
+- Capital deposited: 7.50 USDC to the maker account and 7.50 USDC to a separate hedge account; retain 5 USDC in the owner wallet until recovery is proven
 - Accounts: two independently created and authorized Aftermath accounts, assigned distinct Maker and Hedge roles in the interface
 - Markets: one liquid, continuously open market selected from live evidence
 - Quote size: 1 USDC per side
