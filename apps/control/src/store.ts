@@ -669,6 +669,12 @@ export class Store {
           recorded_at TEXT NOT NULL
         );
 
+        CREATE TABLE IF NOT EXISTS bundle_config_mirrors (
+          owner_address TEXT PRIMARY KEY,
+          core_config_updated_at TEXT NOT NULL,
+          mirrored_at TEXT NOT NULL
+        );
+
         CREATE INDEX IF NOT EXISTS bundles_owner_status
           ON bundles(owner_address, status, updated_at DESC);
         CREATE INDEX IF NOT EXISTS bundle_markets_market
@@ -814,16 +820,39 @@ export class Store {
           (owner_address, occurred_at, category, action, outcome, detail)
          VALUES (?, ?, 'bundles', 'migration.core-skipped', 'failed', ?)`,
       );
+      const writeLegacyConfig = this.db.prepare(
+        `INSERT INTO tenant_settings (owner_address, key, value, updated_at)
+         VALUES (?, 'maker_config', ?, ?)
+         ON CONFLICT(owner_address, key) DO UPDATE SET
+           value = excluded.value,
+           updated_at = excluded.updated_at`,
+      );
+      const recordCoreMirror = this.db.prepare(
+        `INSERT INTO bundle_config_mirrors
+          (owner_address, core_config_updated_at, mirrored_at)
+         VALUES (?, ?, ?)
+         ON CONFLICT(owner_address) DO UPDATE SET
+           core_config_updated_at = excluded.core_config_updated_at,
+           mirrored_at = excluded.mirrored_at`,
+      );
+      const getCoreMirror = this.db.prepare(
+        `SELECT core_config_updated_at FROM bundle_config_mirrors
+         WHERE owner_address = ?`,
+      );
       const existingBundles = this.db
         .prepare(
-          `SELECT id, owner_address, maker_account_id, taker_account_id
+          `SELECT id, owner_address, name, maker_account_id, taker_account_id,
+                  config, updated_at
            FROM bundles`,
         )
         .all() as Array<{
         id: string;
         owner_address: string;
+        name: string;
         maker_account_id: string | null;
         taker_account_id: string | null;
+        config: string;
+        updated_at: string;
       }>;
       for (const bundle of existingBundles) {
         if (bundle.maker_account_id) {
@@ -842,6 +871,26 @@ export class Store {
             "taker",
           );
         }
+        if (bundle.name !== "Core") continue;
+        const mirror = getCoreMirror.get(bundle.owner_address) as
+          { core_config_updated_at: string } | undefined;
+        if (mirror?.core_config_updated_at === bundle.updated_at) continue;
+
+        const now = new Date().toISOString();
+        try {
+          const config = normalizeMakerConfig(
+            parse<StoredMakerConfig>(bundle.config),
+          ).config;
+          writeLegacyConfig.run(
+            bundle.owner_address,
+            stringify(config),
+            bundle.updated_at,
+          );
+        } catch {
+          // Keep the existing legacy value as the fallback for an invalid Core
+          // row, but record this version so startup does not retry it forever.
+        }
+        recordCoreMirror.run(bundle.owner_address, bundle.updated_at, now);
       }
 
       const migrateOwner = this.db.transaction(
@@ -851,13 +900,14 @@ export class Store {
           );
           const id = coreBundleId(ownerAddress);
           const now = new Date().toISOString();
+          const serialized = stringify(config);
           backup.run(ownerAddress, legacy.value, legacy.updated_at, now);
           const inserted = insertBundle.run(
             id,
             ownerAddress,
             config.makerAccountId ?? null,
             config.hedge.accountId ?? null,
-            stringify(config),
+            serialized,
             config.mode,
             legacy.updated_at,
             legacy.updated_at,
@@ -887,6 +937,8 @@ export class Store {
               insertRole.run(id, ownerAddress, config.hedge.accountId, "taker");
             }
           }
+          writeLegacyConfig.run(ownerAddress, serialized, legacy.updated_at);
+          recordCoreMirror.run(ownerAddress, legacy.updated_at, now);
           clearSkip.run(ownerAddress);
         },
       );
@@ -1523,6 +1575,16 @@ export class TenantStore {
              updated_at = excluded.updated_at`,
         )
         .run(this.ownerAddress, serialized, now);
+      this.db
+        .prepare(
+          `INSERT INTO bundle_config_mirrors
+            (owner_address, core_config_updated_at, mirrored_at)
+           VALUES (?, ?, ?)
+           ON CONFLICT(owner_address) DO UPDATE SET
+             core_config_updated_at = excluded.core_config_updated_at,
+             mirrored_at = excluded.mirrored_at`,
+        )
+        .run(this.ownerAddress, now, now);
     });
     write();
   }

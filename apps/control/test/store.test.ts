@@ -755,6 +755,52 @@ describe("persistent control store", () => {
     reopened.close();
   });
 
+  it("backfills the legacy mirror from an existing Core config once", () => {
+    const directory = join(
+      process.env.TMPDIR ?? "/tmp",
+      `aftermath-maker-${randomBytes(8).toString("hex")}`,
+    );
+    mkdirSync(directory, { recursive: true });
+    const path = join(directory, "maker.db");
+    const ownerAddress = `0x${"f".repeat(64)}`;
+    const first = makerConfigSchema.parse({
+      markets: [{ marketId: "0x4001", symbol: "FOUR" }],
+      quoteSizeUsd: 10,
+    });
+    const current = makerConfigSchema.parse({
+      ...first,
+      quoteSizeUsd: 33,
+    });
+
+    const initial = new Store(path);
+    initial.forTenant(ownerAddress).setConfig(first);
+    initial.close();
+
+    const database = new Database(path);
+    database
+      .prepare(
+        `UPDATE bundles SET config = ?, updated_at = ?
+         WHERE owner_address = ? AND name = 'Core'`,
+      )
+      .run(JSON.stringify(current), "2026-10-28T01:00:00.000Z", ownerAddress);
+    database
+      .prepare("DELETE FROM bundle_config_mirrors WHERE owner_address = ?")
+      .run(ownerAddress);
+    database.close();
+
+    const upgraded = new Store(path);
+    upgraded.close();
+    const mirrorDatabase = new Database(path, { readonly: true });
+    const mirrored = mirrorDatabase
+      .prepare(
+        `SELECT value FROM tenant_settings
+         WHERE owner_address = ? AND key = 'maker_config'`,
+      )
+      .get(ownerAddress) as { value: string };
+    expect(mirrored.value).toBe(JSON.stringify(current));
+    mirrorDatabase.close();
+  });
+
   it("keeps the config API projection byte-compatible while reading and writing Core", () => {
     const directory = join(
       process.env.TMPDIR ?? "/tmp",
