@@ -32,6 +32,7 @@ import {
   WalletCards,
 } from "lucide-react";
 import {
+  Fragment,
   FormEvent,
   useCallback,
   useEffect,
@@ -46,6 +47,7 @@ import {
   walletSessionMatches,
 } from "../lib/access";
 import { narrate } from "../lib/narrate";
+import { quickPickMarketIds, type MarketQuickPick } from "../lib/quick-picks";
 import { primaryVenue } from "../lib/venues";
 import { AccessScreen, type AccessRequestInput } from "./access-screen";
 import { GlossaryTerm } from "./ui/glossary-term";
@@ -54,6 +56,7 @@ import { SpreadMark } from "./spread-mark";
 import { VenueChip } from "./venue-chip";
 import { AccountsView } from "./views/accounts";
 import { DeskView } from "./views/desk";
+import { LearnView } from "./views/learn";
 import { MarketsView } from "./views/markets";
 import { PerformanceView } from "./views/performance";
 import { GoLiveSheet, StrategyView } from "./views/strategy";
@@ -806,11 +809,15 @@ function DashboardBody() {
   const [performance, setPerformance] = useState<Performance | null>(null);
   const [performancePeriod, setPerformancePeriod] =
     useState<PerformancePeriod>("1D");
+  const [expandedPerformanceMarket, setExpandedPerformanceMarket] = useState<
+    string | null
+  >(null);
   const [rewards, setRewards] = useState<RewardDashboard | null>(null);
   const [liveGates, setLiveGates] = useState<LiveGates>({
     liveTradingEnabled: false,
     mainnetAllowed: false,
   });
+  const [strategyStep, setStrategyStep] = useState(0);
   const [trialMode, setTrialMode] = useState<"paper" | "live">("paper");
   const [trialArmed, setTrialArmed] = useState(false);
   const [trialResult, setTrialResult] = useState<StrategyTrialResult | null>(
@@ -1695,6 +1702,22 @@ function DashboardBody() {
     }));
   }
 
+  function applyQuickPick(pick: MarketQuickPick) {
+    const selected = new Set(
+      quickPickMarketIds(
+        rewards?.marketModel.opportunities ?? [],
+        pick,
+        MAX_SELECTED_MARKETS,
+      ),
+    );
+    setConfig((current) => ({
+      ...current,
+      markets: markets
+        .filter((market) => selected.has(market.id))
+        .map((market) => ({ marketId: market.id, symbol: market.symbol })),
+    }));
+  }
+
   function stageRewardRotation() {
     const candidates =
       rewards?.marketModel.opportunities
@@ -1940,7 +1963,7 @@ function DashboardBody() {
     if (!flattenArmed) {
       setFlattenArmed(true);
       setNotice(
-        "Flatten uses reduce-only market orders across every open position on both the Maker and hedge accounts, with up to 1% slippage. Review, then confirm.",
+        "Flatten uses reduce-only market orders across every open position on both the Maker and Taker accounts, with up to 1% slippage. Review, then confirm.",
         "warning",
       );
       return;
@@ -1969,7 +1992,7 @@ function DashboardBody() {
       setNotice(
         response.result.digest
           ? `Flatten confirmed across ${response.result.transactions.length} account(s) and ${response.result.flattenedMarketIds.length} market(s): ${response.result.digests.map(compact).join(", ")}`
-          : "No open positions remained on the Maker or hedge account.",
+          : "No open positions remained on the Maker or Taker account.",
         "success",
       );
     });
@@ -2115,6 +2138,13 @@ function DashboardBody() {
       (rewardFocus === "all" || opportunity.thinActive),
   );
   const topRewardOpportunity = focusedRewardOpportunities[0] ?? null;
+  const uptimeQualifiedPct =
+    rewards &&
+    Number.isFinite(rewards.account.uptime) &&
+    rewards.account.uptime >= 0 &&
+    rewards.account.uptime <= 1
+      ? rewards.account.uptime * 100
+      : null;
   const rewardQuotePreviewCap =
     makerAvailableCollateralUsd !== null
       ? Math.max(
@@ -2267,7 +2297,7 @@ function DashboardBody() {
       owned.accountId === activeMakerAccountId
         ? ("Maker" as const)
         : owned.accountId === config.hedge.accountId
-          ? ("Hedge" as const)
+          ? ("Taker" as const)
           : ("Available" as const),
   }));
   const venueEquityUsd = accounts.reduce(
@@ -2511,7 +2541,7 @@ function DashboardBody() {
                       </div>
                       <div className="account-identity-line">
                         <span>
-                          {isMaker ? "Maker" : isHedge ? "Hedge" : "Available"}
+                          {isMaker ? "Maker" : isHedge ? "Taker" : "Available"}
                         </span>
                         <small>Account {owned.accountId}</small>
                       </div>
@@ -2656,7 +2686,7 @@ function DashboardBody() {
                                 }))
                               }
                             >
-                              Hedge
+                              Taker
                             </button>
                             <button
                               className="icon-button revoke-agent"
@@ -2789,6 +2819,7 @@ function DashboardBody() {
           spreadBps:
             activeRuntimeMarket?.effectiveSpreadBps ?? config.spreadBps,
           updatedAt: snapshot?.market.updatedAt ?? null,
+          book: snapshot?.market.book ?? null,
           subtitle:
             config.rotationMode === "single-slot"
               ? nextSelectedMarket
@@ -2815,6 +2846,7 @@ function DashboardBody() {
         fillsUpdatedAt={performance?.asOf ?? null}
         events={events.map(deskEvent)}
         staleAfterMs={config.refreshMs * 2}
+        lastHedgeDigest={snapshot?.hedge.lastDigest ?? null}
         onRefresh={() =>
           void mutate("refresh", async () => {
             await request("api/runtime/cycle", {
@@ -2856,7 +2888,7 @@ function DashboardBody() {
                 </strong>
               </div>
               <div>
-                <span>Hedge path</span>
+                <span>Taker path</span>
                 <strong
                   className={config.hedge.enabled ? "available" : "unavailable"}
                 >
@@ -2866,6 +2898,44 @@ function DashboardBody() {
                 </strong>
               </div>
             </div>
+
+            <section className="strategy-builder" aria-label="Strategy builder">
+              <ol>
+                {[
+                  ["Goal", config.strategyObjective],
+                  ["Markets", `${config.markets.length} selected`],
+                  [
+                    "Size and limits",
+                    `${money(config.quoteSizeUsd)} / ${money(config.maxInventoryUsd)}`,
+                  ],
+                  ["Hedging", config.hedge.enabled ? "Taker on" : "Taker off"],
+                  ["Review", config.mode],
+                ].map(([label, answer], index) => (
+                  <li key={label}>
+                    <button
+                      type="button"
+                      className={
+                        strategyStep === index ? "is-active" : undefined
+                      }
+                      aria-current={strategyStep === index ? "step" : undefined}
+                      onClick={() => setStrategyStep(index)}
+                    >
+                      <span>{index + 1}</span>
+                      <strong>{label}</strong>
+                      <small>{answer}</small>
+                    </button>
+                  </li>
+                ))}
+              </ol>
+              <aside>
+                <span>What Maker will do</span>
+                <p>
+                  {config.markets.length
+                    ? `Quote ${config.markets.length} selected market${config.markets.length === 1 ? "" : "s"} with ${money(config.quoteSizeUsd)} on each side, and stop before ${money(config.maxRunDrawdownUsd)} of run drawdown.`
+                    : "Choose one or more markets before saving this strategy."}
+                </p>
+              </aside>
+            </section>
 
             <fieldset className="objective-control">
               <legend>Objective</legend>
@@ -3094,7 +3164,7 @@ function DashboardBody() {
                   </select>
                 </label>
                 <label>
-                  <span>Hedge account</span>
+                  <span>Taker account</span>
                   <select
                     value={config.hedge.accountId ?? ""}
                     disabled={!config.hedge.enabled}
@@ -3329,6 +3399,85 @@ function DashboardBody() {
                 Choose the venue markets this strategy may quote.
               </p>
               <div
+                className="strategy-quick-picks"
+                role="group"
+                aria-label="Market quick picks"
+              >
+                <span>Quick picks</span>
+                {(
+                  [
+                    ["rewards", "Best for rewards"],
+                    ["balanced", "Balanced"],
+                    ["quiet", "Quiet books"],
+                    ["steady", "Steadiest"],
+                    ["clear", "Clear"],
+                  ] as const
+                ).map(([pick, label]) => (
+                  <button
+                    key={pick}
+                    type="button"
+                    onClick={() => applyQuickPick(pick)}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+              <div className="strategy-rotation-stage">
+                <div
+                  className="reward-focus"
+                  aria-label="Reward rotation focus"
+                >
+                  <span>Focus</span>
+                  <div role="group" aria-label="Reward rotation focus">
+                    <button
+                      type="button"
+                      className={rewardFocus === "all" ? "selected" : ""}
+                      aria-pressed={rewardFocus === "all"}
+                      onClick={() => setRewardFocus("all")}
+                    >
+                      All eligible
+                    </button>
+                    <button
+                      type="button"
+                      className={rewardFocus === "thin" ? "selected" : ""}
+                      aria-pressed={rewardFocus === "thin"}
+                      onClick={() => setRewardFocus("thin")}
+                    >
+                      Quiet books
+                    </button>
+                  </div>
+                </div>
+                <label className="reward-count">
+                  <span>Markets</span>
+                  <input
+                    type="number"
+                    min="1"
+                    max={Math.max(1, focusedRewardOpportunities.length)}
+                    value={rewardMarketCount}
+                    onChange={(event) =>
+                      setRewardMarketCount(
+                        Math.min(
+                          MAX_SELECTED_MARKETS,
+                          Math.max(1, Number(event.target.value) || 1),
+                        ),
+                      )
+                    }
+                  />
+                </label>
+                <button
+                  className="button reward-stage"
+                  type="button"
+                  onClick={stageRewardRotation}
+                  disabled={
+                    rewardRotationBlocked ||
+                    focusedRewardOpportunities.length < rewardMarketCount
+                  }
+                >
+                  <Target size={16} aria-hidden="true" />
+                  Stage rotation
+                </button>
+              </div>
+              <div
                 className="strategy-venue-filters"
                 aria-label="Market venue filter"
               >
@@ -3375,6 +3524,9 @@ function DashboardBody() {
                 )}
                 {visibleMarkets.map((item) => {
                   const selected = selectedMarketIds.has(item.id);
+                  const opportunity = rewards?.marketModel.opportunities.find(
+                    (candidate) => candidate.marketId === item.id,
+                  );
                   return (
                     <label
                       className={
@@ -3395,6 +3547,23 @@ function DashboardBody() {
                       <span>
                         <strong>{item.symbol}</strong>
                         <small>{money(item.openInterestUsd, 0)} OI</small>
+                        {opportunity && (
+                          <small className="strategy-market-evidence">
+                            <span>
+                              Potential {Math.round(opportunity.score)} / 100
+                            </span>
+                            <span>
+                              Edge{" "}
+                              {opportunity.preRiskEdgeBps?.toFixed(1) ?? "—"} bp
+                            </span>
+                            <span>
+                              {compactUsd(opportunity.volume24hUsd)} 24h
+                            </span>
+                            <span>
+                              {opportunity.reasons[0] ?? "No reason reported"}
+                            </span>
+                          </small>
+                        )}
                       </span>
                     </label>
                   );
@@ -4042,6 +4211,7 @@ function DashboardBody() {
               <thead>
                 <tr>
                   <th>Pair</th>
+                  <th>Strategy</th>
                   <th>Venue</th>
                   <th>State</th>
                   <th>Policy</th>
@@ -4070,6 +4240,30 @@ function DashboardBody() {
                     <td>
                       <strong>{row.symbol}</strong>
                       <span>{compact(row.id)}</span>
+                    </td>
+                    <td>
+                      <button
+                        className="market-add-strategy"
+                        type="button"
+                        disabled={
+                          config.markets.some(
+                            (market) => market.marketId === row.id,
+                          ) || config.markets.length >= MAX_SELECTED_MARKETS
+                        }
+                        onClick={() => {
+                          const market = markets.find(
+                            (item) => item.id === row.id,
+                          );
+                          if (market) toggleMarket(market);
+                          selectView("strategy");
+                        }}
+                      >
+                        {config.markets.some(
+                          (market) => market.marketId === row.id,
+                        )
+                          ? "In strategy"
+                          : "Add to strategy"}
+                      </button>
                     </td>
                     <td>
                       <VenueChip venue={primaryVenue} />
@@ -4187,8 +4381,12 @@ function DashboardBody() {
               </strong>
             </div>
             <div>
-              <span>Qualifying snapshots</span>
-              <strong>{rewards?.account.uptime.toLocaleString() ?? "-"}</strong>
+              <span>Time your quotes qualified</span>
+              <strong>
+                {uptimeQualifiedPct === null
+                  ? "Not reported"
+                  : percent(uptimeQualifiedPct, 1)}
+              </strong>
             </div>
             <div>
               <span>Maker volume share</span>
@@ -4220,7 +4418,14 @@ function DashboardBody() {
             </div>
           </div>
 
-          <div className="objective-evidence">
+          <section
+            className="objective-evidence"
+            aria-label="Is the goal working?"
+          >
+            <header>
+              <h3>Is the goal working?</h3>
+              <p>What the desk can show today, and what is still unmeasured.</p>
+            </header>
             <div>
               <span>Active objective</span>
               <strong>
@@ -4240,78 +4445,24 @@ function DashboardBody() {
               <span>Still unmeasured</span>
               <strong>{objectiveEvidence.blindSpot}</strong>
             </div>
-          </div>
+          </section>
 
           <div className="reward-command">
             <div className="reward-leader">
-              <span>Best {config.strategyObjective} candidate</span>
+              <span>Strategy opportunity</span>
               <strong>
                 {topRewardOpportunity
-                  ? `#1 ${topRewardOpportunity.symbol} / ${topRewardOpportunity.score}`
+                  ? `${topRewardOpportunity.symbol} / ${topRewardOpportunity.score}`
                   : "Scanning markets"}
               </strong>
               <small>
                 {topRewardOpportunity?.reasons[0] ??
-                  "Live books and account rewards refresh every minute."}
+                  "Choose or stage markets from Strategy."}
               </small>
             </div>
-            <div className="reward-focus" aria-label="Reward rotation focus">
-              <span>Focus</span>
-              <div role="group" aria-label="Reward rotation focus">
-                <button
-                  type="button"
-                  className={rewardFocus === "all" ? "selected" : ""}
-                  aria-pressed={rewardFocus === "all"}
-                  onClick={() => setRewardFocus("all")}
-                >
-                  All eligible
-                </button>
-                <button
-                  type="button"
-                  className={rewardFocus === "thin" ? "selected" : ""}
-                  aria-pressed={rewardFocus === "thin"}
-                  onClick={() => setRewardFocus("thin")}
-                >
-                  Thin books
-                </button>
-              </div>
-            </div>
-            <label className="reward-count">
-              <span>Markets</span>
-              <input
-                type="number"
-                min="1"
-                max={Math.max(1, focusedRewardOpportunities.length)}
-                value={rewardMarketCount}
-                onChange={(event) =>
-                  setRewardMarketCount(
-                    Math.min(
-                      MAX_SELECTED_MARKETS,
-                      Math.max(1, Number(event.target.value) || 1),
-                    ),
-                  )
-                }
-              />
-            </label>
-            <button
-              className="button reward-stage"
-              type="button"
-              onClick={stageRewardRotation}
-              disabled={
-                rewardRotationBlocked ||
-                focusedRewardOpportunities.length < rewardMarketCount
-              }
-              title={
-                rewardRotationBlocked
-                  ? "Stop the engine and clear exposure before changing markets"
-                  : rewardFocus === "thin"
-                    ? `Stage thin markets passing the ${config.strategyObjective} gates in Observe mode`
-                    : `Stage the highest-ranked ${config.strategyObjective} markets in Observe mode`
-              }
-            >
-              <Target size={16} aria-hidden="true" />
-              Stage rotation
-            </button>
+            <a href="#strategy" onClick={() => selectView("strategy")}>
+              Set markets in Strategy
+            </a>
           </div>
 
           <div className="reward-table-wrap">
@@ -4532,6 +4683,44 @@ function DashboardBody() {
               </span>
             </div>
           </div>
+          <div className="performance-v3-stats">
+            <div>
+              <span>Net result</span>
+              <strong
+                className={
+                  (performance?.combinedNetAfterKnownCostsUsd ?? 0) < 0
+                    ? "negative-number"
+                    : ""
+                }
+              >
+                {money(performance?.combinedNetAfterKnownCostsUsd ?? 0)}
+              </strong>
+            </div>
+            <div>
+              <span>Volume</span>
+              <strong>
+                {money(
+                  (performance?.attributed.notionalUsd ?? 0) +
+                    (performance?.hedge.notionalUsd ?? 0),
+                )}
+              </strong>
+            </div>
+            <div>
+              <span>Fills</span>
+              <strong>
+                {(performance?.attributed.fills ?? 0) +
+                  (performance?.hedge.fills ?? 0)}
+              </strong>
+            </div>
+            <div>
+              <span>Estimated rewards</span>
+              <strong>
+                {rewards
+                  ? `${rewards.account.makerRewardsSui.toFixed(2)} SUI`
+                  : "Not reported"}
+              </strong>
+            </div>
+          </div>
           <div className="performance-metrics">
             <div>
               <span>Maker fills</span>
@@ -4580,7 +4769,7 @@ function DashboardBody() {
           </div>
           <div className="hedge-performance-strip">
             <div>
-              <span>Hedge account</span>
+              <span>Taker account</span>
               <strong>
                 {performance?.hedge.accountId
                   ? accountReference(performance.hedge.accountId)
@@ -4588,14 +4777,14 @@ function DashboardBody() {
               </strong>
             </div>
             <div>
-              <span>Hedge executions / fills</span>
+              <span>Taker executions / fills</span>
               <strong>
                 {performance?.hedge.executions ?? 0} /{" "}
                 {performance?.hedge.fills ?? 0}
               </strong>
             </div>
             <div>
-              <span>Hedge notional</span>
+              <span>Taker notional</span>
               <strong>{money(performance?.hedge.notionalUsd ?? 0)}</strong>
             </div>
             <div>
@@ -4611,6 +4800,109 @@ function DashboardBody() {
               </strong>
             </div>
           </div>
+          <section className="performance-volume-by-market">
+            <header>
+              <h3>Volume by market</h3>
+              <p>Maker and Taker activity reconciled from account history.</p>
+            </header>
+            <div className="performance-volume-table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Market</th>
+                    <th>Maker volume / fills</th>
+                    <th>Taker volume / fills</th>
+                    <th>Share of volume</th>
+                    <th>Net</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {performance?.volumeByMarket.length ? (
+                    performance.volumeByMarket.map((row) => {
+                      const totalVolume =
+                        (performance?.volumeByMarket ?? []).reduce(
+                          (sum, value) =>
+                            sum +
+                            value.makerNotionalUsd +
+                            value.takerNotionalUsd,
+                          0,
+                        ) || 1;
+                      const rowVolume =
+                        row.makerNotionalUsd + row.takerNotionalUsd;
+                      const expanded =
+                        expandedPerformanceMarket === row.marketId;
+                      return (
+                        <Fragment key={row.marketId}>
+                          <tr>
+                            <td>
+                              <button
+                                type="button"
+                                className="performance-market-expand"
+                                aria-expanded={expanded}
+                                onClick={() =>
+                                  setExpandedPerformanceMarket(
+                                    expanded ? null : row.marketId,
+                                  )
+                                }
+                              >
+                                {row.symbol}
+                              </button>
+                            </td>
+                            <td>
+                              {money(row.makerNotionalUsd)} / {row.makerFills}
+                            </td>
+                            <td>
+                              {money(row.takerNotionalUsd)} / {row.takerFills}
+                            </td>
+                            <td>
+                              {percent((rowVolume / totalVolume) * 100, 1)}
+                            </td>
+                            <td>{money(row.realizedPnlUsd - row.feesUsd)}</td>
+                          </tr>
+                          {expanded && (
+                            <tr className="performance-market-fills">
+                              <td colSpan={5}>
+                                {performance.fills
+                                  .filter(
+                                    (fill) => fill.marketId === row.marketId,
+                                  )
+                                  .map((fill) => (
+                                    <span
+                                      key={`${fill.txDigest}:${fill.orderId}`}
+                                    >
+                                      {new Date(
+                                        fill.occurredAt,
+                                      ).toLocaleString()}{" "}
+                                      · {fill.side} {money(fill.notionalUsd)}
+                                    </span>
+                                  ))}
+                                {!performance.fills.some(
+                                  (fill) => fill.marketId === row.marketId,
+                                ) && (
+                                  <span>
+                                    Maker fills are not attributed for this
+                                    market in the selected period.
+                                  </span>
+                                )}
+                              </td>
+                            </tr>
+                          )}
+                        </Fragment>
+                      );
+                    })
+                  ) : (
+                    <tr>
+                      <td colSpan={5}>
+                        Taker volume is shown in the account total until market
+                        history is available.
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </section>
+
           <div className="fill-table-wrap">
             <table className="fill-table">
               <thead>
@@ -4677,7 +4969,7 @@ function DashboardBody() {
             </span>
             <span>
               {performance && !performance.historyComplete
-                ? "History reached the retained fill limit; account totals remain complete."
+                ? `History covers ${performance.fills.length} attributed fills; account totals remain complete.`
                 : (performance?.note ??
                   "Attribution starts when this release records its first order IDs.")}
             </span>
@@ -4941,10 +5233,12 @@ function DashboardBody() {
         }}
       />
 
+      <LearnView active={displayedView === "learn"} />
+
       <footer>
         <span>
-          Maker / wallet-gated public release / signer encrypted at rest /
-          withdrawals unavailable to trading keys
+          Maker uses trade-only keys. Withdrawals remain unavailable to trading
+          keys.
         </span>
         <a href={primaryVenue.homeUrl} target="_blank" rel="noreferrer">
           {primaryVenue.name} <ExternalLink size={13} />

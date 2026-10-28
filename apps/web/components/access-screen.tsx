@@ -12,6 +12,7 @@ import { useEffect, useState, type FormEvent } from "react";
 
 import type { VenueDescriptor } from "../lib/venues";
 import { SpreadMark } from "./spread-mark";
+import { MarketMotion } from "./market-motion";
 import { VenueChip } from "./venue-chip";
 import { Button, Input } from "./ui/primitives";
 import { WalletControl } from "./wallet-control";
@@ -111,14 +112,16 @@ export function AccessScreen({
         )}
       </header>
 
-      <div className="access-layout">
+      <div
+        className={`access-layout${!denied && !requestOpen ? " access-layout-landing" : ""}`}
+      >
         <section className="access-copy">
           <h1>
             {denied
               ? "This wallet is not on the list yet."
               : requestOpen
                 ? "Request access to Maker."
-                : "Both sides of the market, from your own wallet."}
+                : "Your own market-making desk. Working for you."}
           </h1>
           <p className="access-lede">
             {denied
@@ -127,7 +130,7 @@ export function AccessScreen({
                 : "Connect another wallet, or request access below if this is the address you want to use."
               : requestOpen
                 ? "Send the wallet you will use and your X account. Requests are reviewed before a wallet is added to the on-chain access list."
-                : "Maker keeps a bid and an ask resting on perpetual markets for you, hedges what fills, and stops itself at your limits. It can trade the accounts you connect. It can never withdraw from them."}
+                : "Maker runs a desk from your own accounts. It keeps a bid and ask resting on the markets you choose, hedges what fills, and stops itself at your limits. You set the strategy; it tells you what it is doing in plain words."}
           </p>
 
           {requestOpen ? (
@@ -288,8 +291,54 @@ export function AccessScreen({
           </div>
         </section>
 
-        <SpreadIllustration />
+        {(denied || requestOpen) && <SpreadIllustration />}
       </div>
+
+      {!denied && !requestOpen && (
+        <>
+          <section className="access-landing-stage">
+            <MarketMotion
+              sim
+              mid={0.021441}
+              bid={0.021407}
+              ask={0.021475}
+              bestBid={0.021398}
+              bestAsk={0.021484}
+              inventoryUsd={0}
+              book={null}
+              caption="Illustration. Your desk draws the same picture from your real quotes and fills."
+            />
+          </section>
+          <section className="access-landing-moves" id="how-it-works">
+            <header>
+              <h2>Set up your desk in three moves.</h2>
+              <p>
+                Pair a Maker and Taker account, choose a goal and markets, then
+                run on paper before you go live.
+              </p>
+            </header>
+            <ol>
+              <li>
+                <span>1</span>
+                <strong>Pair two accounts</strong>
+                <p>One rests your quotes. The other can reduce inventory.</p>
+              </li>
+              <li>
+                <span>2</span>
+                <strong>Pick a goal and markets</strong>
+                <p>
+                  Choose rewards, profit, or both from the markets you trust.
+                </p>
+              </li>
+              <li>
+                <span>3</span>
+                <strong>Paper first, then live</strong>
+                <p>See the same decision-making against the real book first.</p>
+              </li>
+            </ol>
+          </section>
+        </>
+      )}
 
       <p className="access-risk-line">
         Invite only. Perpetuals trading can lose money; Maker's limits reduce

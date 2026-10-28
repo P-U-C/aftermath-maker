@@ -51,7 +51,12 @@ const makerViews = [
   "performance",
   "accounts",
   "venues",
+  "learn",
 ];
+
+const navigationViews = makerViews.filter(
+  (view) => view !== "accounts" && view !== "learn",
+);
 
 function selectedViews() {
   const requested = option("--view", null);
@@ -114,7 +119,7 @@ async function waitForFixture(page, stateName) {
   if (stateName === "signed-out") {
     await page
       .getByRole("heading", {
-        name: "Both sides of the market, from your own wallet.",
+        name: "Your own market-making desk. Working for you.",
       })
       .waitFor();
     return;
@@ -278,7 +283,7 @@ async function capture(browser, stateName, captureConfig, view) {
         .getByRole("link")
         .evaluateAll((links) => links.map((link) => link.tabIndex));
       if (
-        tabStops.length !== makerViews.length ||
+        tabStops.length !== navigationViews.length ||
         tabStops.some((tab) => tab < 0)
       ) {
         throw new Error(
@@ -298,7 +303,10 @@ async function capture(browser, stateName, captureConfig, view) {
         await walletMenu.locator("summary").click();
 
         if (stateName === "stopped") {
-          await page.getByRole("link", { name: "Accounts" }).click();
+          await walletMenu.locator("summary").click();
+          await walletMenu
+            .getByRole("button", { name: "Manage accounts" })
+            .click();
           const hedgeAccount = page.locator("article").filter({
             hasText: "Account 1746",
           });
@@ -335,9 +343,15 @@ async function capture(browser, stateName, captureConfig, view) {
         }
 
         for (const targetView of makerViews) {
-          await page
-            .getByRole("link", { name: targetView, exact: false })
-            .click();
+          if (navigationViews.includes(targetView)) {
+            await page
+              .getByRole("link", { name: targetView, exact: false })
+              .click();
+          } else {
+            await page.evaluate((nextView) => {
+              window.location.hash = nextView;
+            }, targetView);
+          }
           await page
             .locator(`[data-view="${targetView}"]:not([hidden])`)
             .first()
@@ -363,7 +377,15 @@ async function capture(browser, stateName, captureConfig, view) {
           await page.getByText("All time").first().waitFor();
         }
         const resetView = stateName === "onboarding" ? "accounts" : "desk";
-        await page.getByRole("link", { name: resetView, exact: false }).click();
+        if (navigationViews.includes(resetView)) {
+          await page
+            .getByRole("link", { name: resetView, exact: false })
+            .click();
+        } else {
+          await page.evaluate((nextView) => {
+            window.location.hash = nextView;
+          }, resetView);
+        }
         await page
           .locator(`[data-view="${resetView}"]:not([hidden])`)
           .first()

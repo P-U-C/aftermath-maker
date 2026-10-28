@@ -9,7 +9,13 @@ import {
   LogOut,
   WalletCards,
 } from "lucide-react";
-import { useCallback, useEffect, useState, type ReactNode } from "react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 
 import { Pill } from "./ui/primitives";
 import { MakerWordmark } from "./maker-mark";
@@ -22,6 +28,7 @@ export const makerViews = [
   { id: "performance", label: "Performance" },
   { id: "accounts", label: "Accounts" },
   { id: "venues", label: "Venues" },
+  { id: "learn", label: "Learn" },
 ] as const;
 
 export type MakerView = (typeof makerViews)[number]["id"];
@@ -62,6 +69,179 @@ export function useMakerView() {
   return { activeView, selectView };
 }
 
+type CoachNote = {
+  selector: string;
+  title: string;
+  body: string;
+};
+
+const coachNotes: Partial<Record<MakerView, CoachNote[]>> = {
+  desk: [
+    {
+      selector: ".desk-narration",
+      title: "Right now",
+      body: "This sentence tells you what the desk is doing with the data it has.",
+    },
+    {
+      selector: ".desk-ladder-card",
+      title: "Your two quotes",
+      body: "Your bid sits below the price and your ask sits above it.",
+    },
+    {
+      selector: ".desk-risk-card",
+      title: "Limits",
+      body: "These are the guardrails that can pause or stop the run.",
+    },
+    {
+      selector: ".desk-markets-card",
+      title: "Markets",
+      body: "Each row says whether that selected market is quoting or waiting.",
+    },
+  ],
+  strategy: [
+    {
+      selector: ".strategy-title",
+      title: "Strategy",
+      body: "Choose the markets, size, limits, and review the mode before saving.",
+    },
+    {
+      selector: ".execution-model",
+      title: "Two accounts",
+      body: "The Maker account quotes; the Taker account can reduce inventory.",
+    },
+    {
+      selector: ".strategy-capital-section",
+      title: "Size and limits",
+      body: "These limits describe the amount of risk the desk may take.",
+    },
+    {
+      selector: ".strategy-save-bar",
+      title: "Save changes",
+      body: "Changes are sent only when you save this strategy.",
+    },
+  ],
+  markets: [
+    {
+      selector: ".markets-title",
+      title: "Market list",
+      body: "Compare the markets that can be included in the strategy.",
+    },
+    {
+      selector: ".markets-table",
+      title: "Add markets",
+      body: "Use the rows to inspect a market before adding it to the strategy.",
+    },
+  ],
+  performance: [
+    {
+      selector: ".performance-board",
+      title: "Performance",
+      body: "Results separate what is measured from what still needs evidence.",
+    },
+    {
+      selector: ".performance-metrics",
+      title: "The headline numbers",
+      body: "Choose a period to see the current result, volume, fills, and rewards.",
+    },
+    {
+      selector: ".performance-table",
+      title: "Fills",
+      body: "Each attributed fill keeps the price, size, and realised result.",
+    },
+  ],
+  venues: [
+    {
+      selector: ".venues-board",
+      title: "Venue connection",
+      body: "This is the venue Maker uses and the status of your account access.",
+    },
+    {
+      selector: ".fee-panel",
+      title: "Fee inspection",
+      body: "Operators can inspect the venue fee before configuring the desk.",
+    },
+  ],
+};
+
+function CoachLayer({
+  activeView,
+  open,
+  onClose,
+}: {
+  activeView: MakerView;
+  open: boolean;
+  onClose: () => void;
+}) {
+  const dialog = useRef<HTMLElement>(null);
+  const [positions, setPositions] = useState<
+    Array<{ note: CoachNote; x: number; y: number }>
+  >([]);
+
+  useEffect(() => {
+    if (!open) return;
+    const update = () => {
+      const root = document.querySelector(
+        `.maker-view[data-view="${activeView}"]:not([hidden])`,
+      );
+      const next = (coachNotes[activeView] ?? []).flatMap((note) => {
+        const target = root?.querySelector<HTMLElement>(note.selector);
+        if (!target) return [];
+        const rect = target.getBoundingClientRect();
+        const x = Math.max(
+          12,
+          Math.min(window.innerWidth - 272, rect.left + 18),
+        );
+        const y = Math.max(
+          76,
+          Math.min(window.innerHeight - 132, rect.top + 14),
+        );
+        return [{ note, x, y }];
+      });
+      setPositions(next);
+    };
+    update();
+    dialog.current?.focus();
+    window.addEventListener("resize", update);
+    window.addEventListener("scroll", update, true);
+    const keydown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", keydown);
+    return () => {
+      window.removeEventListener("resize", update);
+      window.removeEventListener("scroll", update, true);
+      window.removeEventListener("keydown", keydown);
+    };
+  }, [activeView, onClose, open]);
+
+  if (!open || positions.length === 0) return null;
+  return (
+    <aside
+      ref={dialog}
+      className="maker-coach"
+      aria-label="Explain this view"
+      tabIndex={-1}
+    >
+      {positions.map(({ note, x, y }, index) => (
+        <article
+          className="maker-coach-note"
+          key={note.title}
+          style={{ left: x, top: y }}
+        >
+          <span>{index + 1}</span>
+          <div>
+            <strong>{note.title}</strong>
+            <p>{note.body}</p>
+          </div>
+        </article>
+      ))}
+      <button className="maker-coach-close" type="button" onClick={onClose}>
+        Close explain
+      </button>
+    </aside>
+  );
+}
+
 type MakerShellProps = {
   activeView: MakerView;
   selectView: (view: MakerView) => void;
@@ -98,6 +278,19 @@ export function MakerShell({
   children,
 }: MakerShellProps) {
   const [addressCopied, setAddressCopied] = useState(false);
+  const [explainOpen, setExplainOpen] = useState(false);
+  const closeCoach = useCallback(() => setExplainOpen(false), []);
+
+  useEffect(() => {
+    try {
+      if (!window.localStorage.getItem("maker:explain-seen")) {
+        setExplainOpen(true);
+        window.localStorage.setItem("maker:explain-seen", "1");
+      }
+    } catch {
+      // Explain still works when storage is unavailable.
+    }
+  }, []);
 
   useEffect(() => {
     let icon = document.querySelector<HTMLLinkElement>('link[rel="icon"]');
@@ -156,23 +349,33 @@ export function MakerShell({
         </a>
 
         <nav className="maker-view-tabs" aria-label="Maker views">
-          {makerViews.map((view) => (
-            <a
-              key={view.id}
-              href={`#${view.id}`}
-              className={activeView === view.id ? "is-active" : undefined}
-              aria-current={activeView === view.id ? "page" : undefined}
-              onClick={(event) => {
-                event.preventDefault();
-                selectView(view.id);
-              }}
-            >
-              {view.label}
-            </a>
-          ))}
+          {makerViews
+            .filter((view) => view.id !== "learn" && view.id !== "accounts")
+            .map((view) => (
+              <a
+                key={view.id}
+                href={`#${view.id}`}
+                className={activeView === view.id ? "is-active" : undefined}
+                aria-current={activeView === view.id ? "page" : undefined}
+                onClick={(event) => {
+                  event.preventDefault();
+                  selectView(view.id);
+                }}
+              >
+                {view.label}
+              </a>
+            ))}
         </nav>
 
         <div className="maker-nav-right">
+          <button
+            className="maker-explain-toggle"
+            type="button"
+            aria-pressed={explainOpen}
+            onClick={() => setExplainOpen((open) => !open)}
+          >
+            Explain
+          </button>
           <Pill tone={modeTone} dot={running}>
             {displayedMode[0]?.toUpperCase()}
             {displayedMode.slice(1)}
@@ -242,6 +445,11 @@ export function MakerShell({
       )}
 
       <div className="maker-view-content">{children}</div>
+      <CoachLayer
+        activeView={activeView}
+        open={explainOpen}
+        onClose={closeCoach}
+      />
     </main>
   );
 }
