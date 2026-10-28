@@ -5603,6 +5603,61 @@ footer a {
   line-height: 1.3;
 }
 
+.market-table th,
+.market-table td {
+  border-right: 0;
+}
+
+.market-table th {
+  color: var(--ink-2);
+  background: transparent;
+}
+
+.reward-metrics,
+.performance-metrics,
+.hedge-performance-strip {
+  gap: 12px;
+  padding: 20px;
+  background: transparent;
+  border: 0;
+}
+
+.reward-metrics > div,
+.performance-metrics > div,
+.hedge-performance-strip > div,
+.reward-metrics > div:first-child {
+  min-height: 0;
+  padding: 15px;
+  background: var(--surface);
+  border: 0;
+  border-radius: 14px;
+}
+
+.reward-metrics > div:first-child svg {
+  color: var(--ink-2);
+}
+
+.reward-command {
+  min-height: 0;
+  color: var(--ink);
+  background: var(--surface);
+  border: 0;
+  border-radius: 14px;
+}
+
+.reward-leader span,
+.reward-focus > span,
+.reward-count span,
+.reward-leader small {
+  color: var(--ink-2);
+}
+
+.reward-command a {
+  color: var(--tide-text);
+  font-size: 13px;
+  font-weight: 650;
+}
+
 .market-add-strategy {
   min-height: 30px;
   padding: 0 9px;
