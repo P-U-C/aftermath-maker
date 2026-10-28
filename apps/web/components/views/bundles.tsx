@@ -3,6 +3,11 @@
 import { Archive, Pause, Play, Plus, RotateCcw } from "lucide-react";
 import { useState } from "react";
 
+import {
+  activeBundles,
+  availableBundleAccounts,
+  availableBundleMarkets,
+} from "../../lib/bundle-options";
 import { formatMoney } from "../../lib/format";
 import { Button, Card, Sheet } from "../ui/primitives";
 import { ViewFrame } from "./view-frame";
@@ -72,15 +77,28 @@ export function BundlesView({
   markets,
   onCreate,
 }: BundlesViewProps) {
-  const visible = bundles.filter((bundle) => !bundle.archivedAt);
+  const visible = activeBundles(bundles);
   const [createOpen, setCreateOpen] = useState(false);
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [name, setName] = useState("");
   const [makerAccountId, setMakerAccountId] = useState("");
   const [takerAccountId, setTakerAccountId] = useState("");
   const [marketId, setMarketId] = useState("");
+  const availableMakerAccounts = availableBundleAccounts(accounts, visible);
+  const availableTakerAccounts = availableBundleAccounts(
+    accounts,
+    visible,
+    makerAccountId || null,
+  );
+  const availableMarkets = availableBundleMarkets(markets, visible);
   const canCreate =
-    visible.length < 4 && Boolean(name.trim() && makerAccountId && marketId);
+    visible.length < 4 &&
+    Boolean(
+      name.trim() &&
+      makerAccountId &&
+      marketId &&
+      makerAccountId !== takerAccountId,
+    );
   const submitCreate = (confirmWalletLimits: boolean) => {
     if (!canCreate) return;
     onCreate({
@@ -191,7 +209,13 @@ export function BundlesView({
                 </div>
                 <p className="bundle-markets">
                   {bundle.marketIds.length
-                    ? bundle.marketIds.join(", ")
+                    ? bundle.marketIds
+                        .map(
+                          (marketId) =>
+                            markets.find((market) => market.id === marketId)
+                              ?.symbol ?? marketId,
+                        )
+                        .join(", ")
                     : "No markets selected"}
                 </p>
                 {bundle.lastError && (
@@ -282,10 +306,16 @@ export function BundlesView({
               <span>Maker account</span>
               <select
                 value={makerAccountId}
-                onChange={(event) => setMakerAccountId(event.target.value)}
+                onChange={(event) => {
+                  const nextMakerAccountId = event.target.value;
+                  setMakerAccountId(nextMakerAccountId);
+                  setTakerAccountId((current) =>
+                    current === nextMakerAccountId ? "" : current,
+                  );
+                }}
               >
-                <option value="">Choose an account</option>
-                {accounts.map((account) => (
+                <option value="">Choose an available account</option>
+                {availableMakerAccounts.map((account) => (
                   <option key={account.accountId} value={account.accountId}>
                     {account.label ?? `Account ${account.accountId}`}
                   </option>
@@ -299,7 +329,7 @@ export function BundlesView({
                 onChange={(event) => setTakerAccountId(event.target.value)}
               >
                 <option value="">Off</option>
-                {accounts.map((account) => (
+                {availableTakerAccounts.map((account) => (
                   <option key={account.accountId} value={account.accountId}>
                     {account.label ?? `Account ${account.accountId}`}
                   </option>
@@ -312,8 +342,8 @@ export function BundlesView({
                 value={marketId}
                 onChange={(event) => setMarketId(event.target.value)}
               >
-                <option value="">Choose a market</option>
-                {markets.map((market) => (
+                <option value="">Choose an available market</option>
+                {availableMarkets.map((market) => (
                   <option key={market.id} value={market.id}>
                     {market.symbol}
                   </option>
@@ -321,6 +351,13 @@ export function BundlesView({
               </select>
             </label>
           </div>
+          {(!availableMakerAccounts.length || !availableMarkets.length) && (
+            <p className="bundle-create-note" role="status">
+              {!availableMakerAccounts.length
+                ? "Add or authorize an unassigned account before creating another bundle."
+                : "Every available market is already assigned to a bundle."}
+            </p>
+          )}
         </Sheet>
 
         <Sheet

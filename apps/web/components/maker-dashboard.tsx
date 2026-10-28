@@ -46,6 +46,7 @@ import {
   shouldBeginWalletSignIn,
   walletSessionMatches,
 } from "../lib/access";
+import { selectedActiveBundleId } from "../lib/bundle-options";
 import {
   formatCompactMoney,
   formatExactMoney,
@@ -831,6 +832,7 @@ function DashboardBody() {
     null,
   );
   const [selectedBundleId, setSelectedBundleId] = useState<string | null>(null);
+  const selectedBundleIdRef = useRef<string | null>(null);
   const [markets, setMarkets] = useState<Market[]>([]);
   const [marketQuery, setMarketQuery] = useState("");
   const [config, setConfig] = useState<MakerConfig>(defaultConfig);
@@ -928,12 +930,28 @@ function DashboardBody() {
     setBundleSnapshots(statusResult.bundles ?? []);
     setBundles(bundleResult.bundles);
     setWalletLimits(bundleResult.walletLimits);
-    setSelectedBundleId((current) =>
-      current && bundleResult.bundles.some((bundle) => bundle.id === current)
-        ? current
-        : (bundleResult.bundles.find((bundle) => bundle.name === "Core")?.id ??
-          null),
+    const previousBundleId = selectedBundleIdRef.current;
+    const nextBundleId = selectedActiveBundleId(
+      bundleResult.bundles,
+      previousBundleId,
     );
+    selectedBundleIdRef.current = nextBundleId;
+    setSelectedBundleId(nextBundleId);
+    if (
+      previousBundleId !== null &&
+      previousBundleId !== nextBundleId &&
+      configResult.config
+    ) {
+      const loadedConfig = {
+        ...configResult.config,
+        makerAccountId:
+          configResult.config.makerAccountId ??
+          setupResult.setup?.accountId ??
+          null,
+      };
+      setConfig(loadedConfig);
+      setSavedConfig(loadedConfig);
+    }
     setBuilderCode(statusResult.builderCode);
     setLiveGates(statusResult.liveGates);
     setSetup(setupResult);
@@ -969,6 +987,19 @@ function DashboardBody() {
     setPerformance(result.performance);
   }, [performancePeriod, performanceBundle, rewards?.epoch.startedAt]);
 
+  useEffect(() => {
+    if (performanceBundle === "all" || performanceBundle === "before") return;
+    if (
+      bundles.some(
+        (bundle) =>
+          bundle.id === performanceBundle && bundle.archivedAt === null,
+      )
+    ) {
+      return;
+    }
+    setPerformanceBundle("all");
+  }, [bundles, performanceBundle]);
+
   const loadRewards = useCallback(async (objective: StrategyObjective) => {
     const result = await request<{ rewards: RewardDashboard }>(
       `api/rewards?collateralCoinType=${encodeURIComponent(USDC)}&objective=${objective}`,
@@ -997,7 +1028,8 @@ function DashboardBody() {
 
   async function selectBundle(bundleId: string) {
     const selected = bundles.find((bundle) => bundle.id === bundleId);
-    if (!selected) return;
+    if (!selected || selected.archivedAt) return;
+    selectedBundleIdRef.current = bundleId;
     setSelectedBundleId(bundleId);
     if (selected.name === "Core") {
       const core = await request<{ config: MakerConfig | null }>("api/config");
@@ -1072,6 +1104,7 @@ function DashboardBody() {
           confirmWalletLimits: draft.confirmWalletLimits,
         }),
       });
+      selectedBundleIdRef.current = result.bundle.id;
       setSelectedBundleId(result.bundle.id);
       setConfig(nextConfig);
       setSavedConfig(nextConfig);
@@ -2516,10 +2549,6 @@ function DashboardBody() {
     )?.snapshot;
     return {
       ...bundle,
-      marketIds: bundle.marketIds.map(
-        (marketId) =>
-          markets.find((market) => market.id === marketId)?.symbol ?? marketId,
-      ),
       resultUsd: runtime?.portfolio.unrealizedPnlUsd ?? null,
     };
   });
@@ -2544,6 +2573,7 @@ function DashboardBody() {
       markState={markState}
       mode={snapshot?.mode ?? "observe"}
       running={Boolean(snapshot?.running || anyBundleRunning)}
+      phoneDeskStopAvailable={Boolean(snapshot?.running)}
       live={Boolean(snapshot?.running && snapshot.mode === "live")}
       walletAddress={identity.ownerAddress}
       walletLabel={compact(identity.ownerAddress)}
@@ -3097,6 +3127,8 @@ function DashboardBody() {
 
       <StrategyView
         active={displayedView === "strategy"}
+        phoneStopAll={Boolean(snapshot?.running || anyBundleRunning)}
+        onStopAll={() => void stopRuntime()}
         onClose={() => selectView("desk")}
       >
         <section className="workspace workspace-strategy">
