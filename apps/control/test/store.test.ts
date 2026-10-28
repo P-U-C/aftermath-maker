@@ -602,7 +602,7 @@ describe("persistent control store", () => {
         marketIds: ["0x1001", "0x1002"],
       },
     ]);
-    expect(tenant.listBundles()[0]).not.toHaveProperty("status");
+    expect(tenant.listBundles()[0]).toMatchObject({ status: "stopped" });
     expect(tenant.getWalletLimits()).toMatchObject({
       maxRunDrawdownUsd: 7,
       maxInventoryUsd: 11,
@@ -997,5 +997,208 @@ describe("persistent control store", () => {
       .get(tenant.ownerAddress) as { value: string };
     expect(legacy.value).toBe(JSON.stringify(second));
     legacyDatabase.close();
+  });
+
+  it("enforces Paper and Observe bundle constraints, wallet confirmation, and scoped attribution", () => {
+    const directory = join(
+      process.env.TMPDIR ?? "/tmp",
+      `aftermath-maker-${randomBytes(8).toString("hex")}`,
+    );
+    mkdirSync(directory, { recursive: true });
+    const databaseStore = new Store(join(directory, "maker.db"));
+    const ownerAddress = `0x${"a".repeat(64)}`;
+    const tenant = databaseStore.forTenant(ownerAddress);
+    const coreConfig = makerConfigSchema.parse({
+      markets: [{ marketId: "0x1001", symbol: "ONE" }],
+      makerAccountId: "1",
+      hedge: {
+        enabled: true,
+        accountId: "2",
+        thresholdUsd: 25,
+        maxOrderUsd: 100,
+        maxSlippageBps: 75,
+      },
+      maxRunDrawdownUsd: 10,
+      maxInventoryUsd: 20,
+      maxGrossExposureUsd: 40,
+      maxUnrealizedLossUsd: 8,
+    });
+    tenant.setConfig(coreConfig);
+    const paperConfig = makerConfigSchema.parse({
+      ...coreConfig,
+      markets: [{ marketId: "0x1002", symbol: "TWO" }],
+      makerAccountId: "3",
+      hedge: {
+        ...coreConfig.hedge,
+        accountId: "4",
+      },
+      mode: "paper",
+    });
+
+    expect(() =>
+      tenant.createBundle({ name: "Paper", config: paperConfig }),
+    ).toThrow("Confirm the wallet limits");
+    const paper = tenant.createBundle({
+      name: "Paper",
+      config: paperConfig,
+      confirmWalletLimits: true,
+    });
+    expect(paper).toMatchObject({
+      name: "Paper",
+      mode: "paper",
+      status: "paused",
+      marketIds: ["0x1002"],
+    });
+    expect(tenant.getWalletLimits()?.confirmedAt).not.toBeNull();
+
+    expect(() =>
+      tenant.createBundle({
+        name: "Shared account",
+        config: {
+          ...paperConfig,
+          makerAccountId: "3",
+          markets: [{ marketId: "0x1003", symbol: "THREE" }],
+        },
+      }),
+    ).toThrow("one bundle role");
+    expect(() =>
+      tenant.createBundle({
+        name: "Shared market",
+        config: {
+          ...paperConfig,
+          makerAccountId: "5",
+          hedge: { ...paperConfig.hedge, accountId: "6" },
+        },
+      }),
+    ).toThrow("one bundle per wallet");
+    expect(() =>
+      tenant.createBundle({
+        name: "Same roles",
+        config: {
+          ...paperConfig,
+          markets: [{ marketId: "0x1003", symbol: "THREE" }],
+          makerAccountId: "5",
+          hedge: { ...paperConfig.hedge, enabled: false, accountId: "5" },
+        },
+      }),
+    ).toThrow("must be different");
+    expect(() =>
+      tenant.createBundle({
+        name: "Beyond envelope",
+        config: {
+          ...paperConfig,
+          markets: [{ marketId: "0x1003", symbol: "THREE" }],
+          makerAccountId: "5",
+          hedge: { ...paperConfig.hedge, accountId: "6" },
+          maxGrossExposureUsd: 41,
+        },
+      }),
+    ).toThrow("exceeds this wallet's confirmed envelope");
+
+    const scoped = databaseStore.forBundle(ownerAddress, paper.id);
+    scoped.logEvent({
+      category: "paper",
+      action: "bundle-only",
+      outcome: "ok",
+    });
+    tenant.logEvent({ category: "paper", action: "core-only", outcome: "ok" });
+    expect(scoped.listEvents()).toMatchObject([{ action: "bundle-only" }]);
+    expect(tenant.listEvents(10, "before")).toEqual([]);
+    expect(tenant.listEvents()).toHaveLength(2);
+
+    tenant.setBundleStatus(paper.id, "running");
+    expect(tenant.getStoredBundle(paper.id)?.status).toBe("running");
+    const version = tenant.getStoredBundle(paper.id)!.updatedAt;
+    const changed = makerConfigSchema.parse({
+      ...paperConfig,
+      quoteSizeUsd: paperConfig.quoteSizeUsd + 1,
+    });
+    tenant.updateBundleConfig({
+      bundleId: paper.id,
+      config: changed,
+      expectedUpdatedAt: version,
+    });
+    expect(() =>
+      tenant.updateBundleConfig({
+        bundleId: paper.id,
+        config: paperConfig,
+        expectedUpdatedAt: version,
+      }),
+    ).toThrow("changed elsewhere");
+    expect(databaseStore.forBundle(ownerAddress, paper.id).getConfig()).toEqual(
+      changed,
+    );
+
+    tenant.archiveBundle(paper.id);
+    expect(tenant.getStoredBundle(paper.id)).toMatchObject({
+      status: "stopped",
+      archivedAt: expect.any(String),
+      marketIds: [],
+    });
+    expect(() => databaseStore.forBundle(ownerAddress, paper.id)).toThrow(
+      "not found",
+    );
+    expect(
+      tenant.createBundle({ name: "Released", config: paperConfig }),
+    ).toMatchObject({ name: "Released", status: "paused" });
+    databaseStore.close();
+
+    const reopened = new Store(join(directory, "maker.db"));
+    expect(
+      reopened
+        .forTenant(ownerAddress)
+        .listBundles()
+        .find((bundle) => bundle.name === "Released"),
+    ).toMatchObject({ name: "Released", archivedAt: null });
+    reopened.close();
+  });
+
+  it("caps a wallet at four active bundles and refuses Live outside Core", () => {
+    const directory = join(
+      process.env.TMPDIR ?? "/tmp",
+      `aftermath-maker-${randomBytes(8).toString("hex")}`,
+    );
+    mkdirSync(directory, { recursive: true });
+    const databaseStore = new Store(join(directory, "maker.db"));
+    const tenant = databaseStore.forTenant(`0x${"b".repeat(64)}`);
+    const core = makerConfigSchema.parse({
+      markets: [{ marketId: "0x2001", symbol: "CORE" }],
+      maxRunDrawdownUsd: 100,
+      maxInventoryUsd: 100,
+      maxGrossExposureUsd: 100,
+      maxUnrealizedLossUsd: 100,
+    });
+    tenant.setConfig(core);
+    tenant.confirmWalletLimits();
+    const config = (number: number) =>
+      makerConfigSchema.parse({
+        ...core,
+        markets: [{ marketId: `0x200${number + 1}`, symbol: `P${number}` }],
+        makerAccountId: String(number * 2 + 1),
+        hedge: {
+          enabled: true,
+          accountId: String(number * 2 + 2),
+          thresholdUsd: 25,
+          maxOrderUsd: 100,
+          maxSlippageBps: 75,
+        },
+        mode: "paper",
+      });
+    for (const number of [1, 2, 3]) {
+      tenant.createBundle({ name: `Paper ${number}`, config: config(number) });
+    }
+    expect(
+      tenant.listBundles().filter((bundle) => !bundle.archivedAt),
+    ).toHaveLength(4);
+    expect(() =>
+      tenant.createBundle({ name: "Too many", config: config(4) }),
+    ).toThrow("at most four");
+    expect(() =>
+      tenant.createBundle({
+        name: "Live paper",
+        config: { ...config(4), mode: "live" },
+      }),
+    ).toThrow("Observe or Paper");
+    databaseStore.close();
   });
 });

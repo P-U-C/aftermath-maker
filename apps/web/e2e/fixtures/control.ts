@@ -335,8 +335,47 @@ export type FixtureState = {
       liveTradingEnabled: boolean;
       mainnetAllowed: boolean;
     };
+    bundles?: Array<{
+      bundle: {
+        id: string;
+        name: string;
+        makerAccountId: string | null;
+        takerAccountId: string | null;
+        mode: Mode;
+        status: "stopped" | "running" | "paused" | "error";
+        marketIds: string[];
+        createdAt: string;
+        updatedAt: string;
+        lastError: string | null;
+        archivedAt: string | null;
+      };
+      snapshot: Snapshot;
+    }>;
   };
   config: { config: MakerConfig | null };
+  bundles: {
+    bundles: Array<{
+      id: string;
+      name: string;
+      makerAccountId: string | null;
+      takerAccountId: string | null;
+      mode: Mode;
+      status: "stopped" | "running" | "paused" | "error";
+      marketIds: string[];
+      createdAt: string;
+      updatedAt: string;
+      lastError: string | null;
+      archivedAt: string | null;
+    }>;
+    walletLimits: {
+      maxRunDrawdownUsd: number;
+      maxInventoryUsd: number;
+      maxGrossExposureUsd: number;
+      maxUnrealizedLossUsd: number;
+      updatedAt: string;
+      confirmedAt: string | null;
+    };
+  };
   setup: SetupState;
   accounts: {
     accounts: Array<{
@@ -930,6 +969,44 @@ const base: Omit<FixtureState, "auth" | "status" | "config" | "setup"> = {
   performance: { performance },
   rewards: { rewards },
   events: { events },
+  bundles: {
+    bundles: [
+      {
+        id: "core-fixture",
+        name: "Core",
+        makerAccountId: "1745",
+        takerAccountId: "1746",
+        mode: "paper",
+        status: "running",
+        marketIds: [marketIds.MON, marketIds.NEAR],
+        createdAt: fixedNow,
+        updatedAt: fixedNow,
+        lastError: null,
+        archivedAt: null,
+      },
+      {
+        id: "rewards-fixture",
+        name: "Rewards",
+        makerAccountId: "1747",
+        takerAccountId: "1748",
+        mode: "paper",
+        status: "running",
+        marketIds: [marketIds.ETH, marketIds.BTC],
+        createdAt: fixedNow,
+        updatedAt: fixedNow,
+        lastError: null,
+        archivedAt: null,
+      },
+    ],
+    walletLimits: {
+      maxRunDrawdownUsd: 4,
+      maxInventoryUsd: 10,
+      maxGrossExposureUsd: 16,
+      maxUnrealizedLossUsd: 4,
+      updatedAt: fixedNow,
+      confirmedAt: fixedNow,
+    },
+  },
   operator: {
     operatorAddress: `0x${"88".repeat(32)}`,
     registryObjectId,
@@ -956,6 +1033,10 @@ function fixture(
         liveTradingEnabled: false,
         mainnetAllowed: false,
       },
+      bundles: base.bundles.bundles.map((bundle) => ({
+        bundle,
+        snapshot: stateSnapshot,
+      })),
     },
     config: { config: stateConfig },
     setup,

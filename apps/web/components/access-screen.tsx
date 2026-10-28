@@ -375,8 +375,9 @@ export function AccessScreen({
             <header>
               <h2>Set up your desk in three moves.</h2>
               <p>
-                Pair a Maker and Taker account, choose a goal and markets, then
-                run on paper before you go live.
+                Each desk runs one or more bundles. A bundle is a pair of
+                accounts with one strategy, so you can run a few strategies side
+                by side.
               </p>
             </header>
             <ol>
