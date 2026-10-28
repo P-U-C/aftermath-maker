@@ -50,6 +50,8 @@ const outputDirectory = path.resolve(
   projectRoot,
   option("--output", defaultOutput),
 );
+const deviceScaleFactor = Number(option("--scale", "2"));
+const learnChapter = option("--learn-chapter", null);
 
 const makerViews = [
   "desk",
@@ -157,7 +159,7 @@ async function capture(browser, stateName, captureConfig, view) {
   const fixture = fixtureStates[stateName];
   const context = await browser.newContext({
     viewport: captureConfig.viewport,
-    deviceScaleFactor: 2,
+    deviceScaleFactor,
     colorScheme: captureConfig.colorScheme,
     reducedMotion: captureConfig.reducedMotion,
     locale: "en-US",
@@ -306,7 +308,13 @@ async function capture(browser, stateName, captureConfig, view) {
   });
 
   try {
-    await page.goto(`${baseUrl}${view ? `#${view}` : ""}`, {
+    const hash =
+      view === "learn" && learnChapter
+        ? "#learn/" + encodeURIComponent(learnChapter)
+        : view
+          ? "#" + view
+          : "";
+    await page.goto(baseUrl + hash, {
       waitUntil: "networkidle",
     });
     await waitForFixture(page, stateName);
@@ -985,7 +993,7 @@ async function capture(browser, stateName, captureConfig, view) {
 
     const file = path.join(
       outputDirectory,
-      `${stateName}${view ? `-${view}` : ""}${showFlattenSheet ? "-flatten" : ""}${showLiveSheet ? "-live" : ""}-${captureConfig.name}.png`,
+      `${stateName}${view ? `-${view}` : ""}${learnChapter ? `-${learnChapter}` : ""}${showFlattenSheet ? "-flatten" : ""}${showLiveSheet ? "-live" : ""}-${captureConfig.name}.png`,
     );
     await page.screenshot({ path: file, fullPage: false });
     process.stdout.write(
