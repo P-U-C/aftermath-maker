@@ -6026,6 +6026,258 @@ mysten-dapp-kit-connect-modal,
   line-height: 1.5;
 }
 
+/* M2: the complete landing path stays separate from the gated access flow. */
+.access-landing-nav {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 22px;
+  color: var(--ink-2);
+  font-size: 14px;
+  font-weight: 560;
+}
+
+.access-landing-nav a,
+.access-landing-nav button,
+.access-watch-link {
+  color: inherit;
+  background: transparent;
+  border: 0;
+  font: inherit;
+  text-decoration: none;
+}
+
+.access-landing-nav a:hover,
+.access-landing-nav button:hover,
+.access-watch-link:hover {
+  color: var(--ink);
+  text-decoration: underline;
+  text-underline-offset: 4px;
+}
+
+.access-header-connect,
+.access-closing-connect {
+  display: inline-flex;
+}
+
+.access-hero-links {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 16px;
+}
+
+.access-hero-links .access-request-link {
+  margin: 0;
+}
+
+.access-mini {
+  margin-top: 20px;
+  padding: 14px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--canvas);
+  border-radius: 16px;
+}
+
+.access-mini-pair > div {
+  min-width: 0;
+  flex: 1;
+  padding: 10px 12px;
+  display: grid;
+  gap: 2px;
+  background: var(--surface);
+  border-radius: 12px;
+}
+
+.access-mini-pair b {
+  font-size: 14px;
+}
+
+.access-mini-pair small {
+  color: var(--ink-2);
+  font-size: 12px;
+  line-height: 1.3;
+}
+
+.access-mini-pair i {
+  color: var(--ink-2);
+  font-style: normal;
+  font-weight: 700;
+}
+
+.access-mini-picks {
+  flex-wrap: wrap;
+}
+
+.access-mini-picks :is(b, span),
+.access-mini-modes :is(b, span) {
+  min-height: 30px;
+  padding: 0 12px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--surface);
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 620;
+}
+
+.access-mini-picks b,
+.access-mini-modes b {
+  color: var(--canvas);
+  background: var(--ink);
+}
+
+.access-mini-modes {
+  gap: 6px;
+}
+
+.access-mini-modes :is(b, span) {
+  min-width: 0;
+  flex: 1;
+  border-radius: 10px;
+}
+
+.access-landing-away,
+.access-landing-closing {
+  width: min(1160px, 100%);
+  margin: 0 auto;
+}
+
+.access-landing-away {
+  padding: 80px 0 0;
+}
+
+.access-landing-away header {
+  max-width: 680px;
+}
+
+.access-landing-away h2,
+.access-landing-closing h2 {
+  margin: 0;
+  font-size: clamp(28px, 3vw, 38px);
+  font-stretch: 122%;
+  letter-spacing: -0.03em;
+}
+
+.access-landing-away header p,
+.access-landing-closing p {
+  margin: 10px 0 0;
+  color: var(--ink-2);
+  font-size: 16px;
+  line-height: 1.5;
+}
+
+.access-away-grid {
+  margin-top: 28px;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 20px;
+}
+
+.access-away-grid article {
+  min-width: 0;
+  padding: 24px;
+  background: var(--surface);
+  border-radius: 24px;
+}
+
+.access-away-grid svg {
+  width: 38px;
+  height: 38px;
+  padding: 9px;
+  color: var(--ink);
+  background: var(--canvas);
+  border-radius: 12px;
+}
+
+.access-away-grid h3 {
+  margin: 16px 0 0;
+  font-size: 18px;
+  font-stretch: 112%;
+}
+
+.access-away-grid p,
+.access-away-grid q {
+  margin: 8px 0 0;
+  display: block;
+  color: var(--ink-2);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.access-away-grid q {
+  padding: 10px 12px;
+  color: var(--ink);
+  background: var(--canvas);
+  border-radius: 12px;
+}
+
+.access-landing-trust {
+  padding-top: 80px;
+}
+
+.access-landing-closing {
+  margin-top: 80px;
+  padding: 44px 52px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 28px;
+  color: var(--canvas);
+  background: var(--ink);
+  border-radius: 30px;
+}
+
+.access-landing-closing p {
+  color: color-mix(in srgb, var(--canvas) 78%, transparent);
+}
+
+.access-landing-closing .ui-button {
+  color: var(--ink);
+  background: var(--canvas);
+}
+
+.access-landing-foot {
+  padding-bottom: 0;
+}
+
+@media (max-width: 760px) {
+  .access-landing-nav {
+    gap: 12px;
+  }
+
+  .access-landing-nav :is(a, button) {
+    display: none;
+  }
+
+  .access-landing-nav .access-header-connect {
+    display: inline-flex;
+  }
+
+  .access-hero-links {
+    gap: 14px;
+  }
+
+  .access-landing-away,
+  .access-landing-trust {
+    padding-top: 56px;
+  }
+
+  .access-away-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .access-landing-closing {
+    margin-top: 56px;
+    padding: 28px 22px;
+    align-items: flex-start;
+    flex-direction: column;
+  }
+}
+
 .maker-explain-toggle {
   min-height: 32px;
   padding: 0 10px;
