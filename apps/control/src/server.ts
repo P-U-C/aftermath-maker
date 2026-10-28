@@ -361,6 +361,9 @@ app.get("/api/config", async (request) => ({
 
 app.get("/api/bundles", async (request) => {
   const scoped = tenant(request);
+  if (scoped.bundlesRolledBack()) {
+    throw new AuthError(409, "Bundles rolled back");
+  }
   return {
     bundles: scoped.listBundles(),
     walletLimits: scoped.getWalletLimits(),
@@ -368,10 +371,14 @@ app.get("/api/bundles", async (request) => {
 });
 
 app.get("/api/bundles/:bundleId/config", async (request) => {
+  const scoped = tenant(request);
+  if (scoped.bundlesRolledBack()) {
+    throw new AuthError(409, "Bundles rolled back");
+  }
   const params = z
     .object({ bundleId: z.string().min(1).max(200) })
     .parse(request.params);
-  const config = tenant(request).getBundleConfig(params.bundleId);
+  const config = scoped.getBundleConfig(params.bundleId);
   if (!config) throw new AuthError(404, "Bundle was not found");
   return { config };
 });

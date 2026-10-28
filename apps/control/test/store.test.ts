@@ -600,9 +600,9 @@ describe("persistent control store", () => {
         makerAccountId: "42",
         takerAccountId: "43",
         marketIds: ["0x1001", "0x1002"],
-        status: "stopped",
       },
     ]);
+    expect(tenant.listBundles()[0]).not.toHaveProperty("status");
     expect(tenant.getWalletLimits()).toMatchObject({
       maxRunDrawdownUsd: 7,
       maxInventoryUsd: 11,
@@ -632,17 +632,18 @@ describe("persistent control store", () => {
     expect(rerunTenant.listBundles()[0]?.marketIds).toEqual(["0x1002"]);
     expect(rerunTenant.rollbackBundleMigration()).toBe(true);
     expect(JSON.stringify(rerunTenant.getConfig())).toBe(
-      JSON.stringify(legacyConfig),
+      JSON.stringify(changed),
     );
+    expect(rerunTenant.bundlesRolledBack()).toBe(true);
     rerun.close();
 
     const rolledBack = new Store(path);
     expect(JSON.stringify(rolledBack.forTenant(ownerAddress).getConfig())).toBe(
-      JSON.stringify(legacyConfig),
+      JSON.stringify(changed),
     );
     rolledBack.close();
 
-    const migratedDatabase = new Database(path, { readonly: true });
+    const migratedDatabase = new Database(path);
     for (const table of [
       "tenant_audit_events",
       "tenant_executions",
@@ -655,7 +656,149 @@ describe("persistent control store", () => {
         .all() as Array<{ name: string }>;
       expect(columns.some((column) => column.name === "bundle_id")).toBe(true);
     }
+    const marketColumns = migratedDatabase
+      .prepare("PRAGMA table_info(bundle_markets)")
+      .all() as Array<{ name: string }>;
+    expect(
+      marketColumns.some((column) => column.name === "owner_address"),
+    ).toBe(true);
+    expect(() =>
+      migratedDatabase
+        .prepare("UPDATE bundles SET taker_account_id = ? WHERE id = ?")
+        .run("42", core.id),
+    ).toThrow();
+    expect(() =>
+      migratedDatabase
+        .prepare(
+          `INSERT INTO bundle_account_roles
+            (bundle_id, owner_address, account_id, role)
+           VALUES (?, ?, ?, 'taker')`,
+        )
+        .run(core.id, ownerAddress, "42"),
+    ).toThrow();
+    migratedDatabase
+      .prepare(
+        `INSERT INTO bundles
+          (id, owner_address, name, maker_account_id, taker_account_id,
+           config, mode, status, created_at, updated_at, last_error)
+         VALUES (?, ?, 'Secondary', NULL, NULL, ?, ?, 'stopped', ?, ?, NULL)`,
+      )
+      .run(
+        "secondary-bundle",
+        ownerAddress,
+        JSON.stringify(changed),
+        changed.mode,
+        "2026-10-28T00:00:00.000Z",
+        "2026-10-28T00:00:00.000Z",
+      );
+    expect(() =>
+      migratedDatabase
+        .prepare(
+          `INSERT INTO bundle_markets
+            (bundle_id, owner_address, market_id, symbol)
+           VALUES (?, ?, ?, ?)`,
+        )
+        .run("secondary-bundle", ownerAddress, "0x1002", "TWO"),
+    ).toThrow();
     migratedDatabase.close();
+  });
+
+  it("skips and audits a malformed legacy config without blocking startup", () => {
+    const directory = join(
+      process.env.TMPDIR ?? "/tmp",
+      `aftermath-maker-${randomBytes(8).toString("hex")}`,
+    );
+    mkdirSync(directory, { recursive: true });
+    const path = join(directory, "maker.db");
+    const badOwner = `0x${"d".repeat(64)}`;
+    const goodOwner = `0x${"e".repeat(64)}`;
+    const goodConfig = makerConfigSchema.parse({
+      markets: [{ marketId: "0x3001", symbol: "THREE" }],
+    });
+
+    const initial = new Store(path);
+    initial.close();
+    const legacyDatabase = new Database(path);
+    const insert = legacyDatabase.prepare(
+      `INSERT INTO tenant_settings (owner_address, key, value, updated_at)
+       VALUES (?, 'maker_config', ?, ?)`,
+    );
+    insert.run(
+      badOwner,
+      JSON.stringify({ markets: [] }),
+      "2026-10-28T00:00:00.000Z",
+    );
+    insert.run(
+      goodOwner,
+      JSON.stringify(goodConfig),
+      "2026-10-28T00:00:00.000Z",
+    );
+    legacyDatabase.close();
+
+    const booted = new Store(path);
+    expect(booted.forTenant(badOwner).listBundles()).toEqual([]);
+    expect(booted.forTenant(goodOwner).listBundles()).toHaveLength(1);
+    expect(booted.forTenant(badOwner).listEvents()).toMatchObject([
+      {
+        category: "bundles",
+        action: "migration.core-skipped",
+        outcome: "failed",
+        detail: { reason: "invalid_config" },
+      },
+    ]);
+    booted.close();
+
+    const reopened = new Store(path);
+    expect(reopened.forTenant(badOwner).listEvents()).toHaveLength(1);
+    expect(reopened.forTenant(badOwner).listBundles()).toEqual([]);
+    expect(reopened.forTenant(goodOwner).listBundles()).toHaveLength(1);
+    reopened.close();
+  });
+
+  it("backfills the legacy mirror from an existing Core config once", () => {
+    const directory = join(
+      process.env.TMPDIR ?? "/tmp",
+      `aftermath-maker-${randomBytes(8).toString("hex")}`,
+    );
+    mkdirSync(directory, { recursive: true });
+    const path = join(directory, "maker.db");
+    const ownerAddress = `0x${"f".repeat(64)}`;
+    const first = makerConfigSchema.parse({
+      markets: [{ marketId: "0x4001", symbol: "FOUR" }],
+      quoteSizeUsd: 10,
+    });
+    const current = makerConfigSchema.parse({
+      ...first,
+      quoteSizeUsd: 33,
+    });
+
+    const initial = new Store(path);
+    initial.forTenant(ownerAddress).setConfig(first);
+    initial.close();
+
+    const database = new Database(path);
+    database
+      .prepare(
+        `UPDATE bundles SET config = ?, updated_at = ?
+         WHERE owner_address = ? AND name = 'Core'`,
+      )
+      .run(JSON.stringify(current), "2026-10-28T01:00:00.000Z", ownerAddress);
+    database
+      .prepare("DELETE FROM bundle_config_mirrors WHERE owner_address = ?")
+      .run(ownerAddress);
+    database.close();
+
+    const upgraded = new Store(path);
+    upgraded.close();
+    const mirrorDatabase = new Database(path, { readonly: true });
+    const mirrored = mirrorDatabase
+      .prepare(
+        `SELECT value FROM tenant_settings
+         WHERE owner_address = ? AND key = 'maker_config'`,
+      )
+      .get(ownerAddress) as { value: string };
+    expect(mirrored.value).toBe(JSON.stringify(current));
+    mirrorDatabase.close();
   });
 
   it("keeps the config API projection byte-compatible while reading and writing Core", () => {
@@ -664,7 +807,8 @@ describe("persistent control store", () => {
       `aftermath-maker-${randomBytes(8).toString("hex")}`,
     );
     mkdirSync(directory, { recursive: true });
-    const databaseStore = new Store(join(directory, "maker.db"));
+    const path = join(directory, "maker.db");
+    const databaseStore = new Store(path);
     const tenant = databaseStore.forTenant(`0x${"c".repeat(64)}`);
     const first = makerConfigSchema.parse({
       markets: [{ marketId: "0x2001", symbol: "ONE" }],
@@ -695,5 +839,15 @@ describe("persistent control store", () => {
       { id: core.id, name: "Core", marketIds: ["0x2001", "0x2002"] },
     ]);
     databaseStore.close();
+
+    const legacyDatabase = new Database(path, { readonly: true });
+    const legacy = legacyDatabase
+      .prepare(
+        `SELECT value FROM tenant_settings
+         WHERE owner_address = ? AND key = 'maker_config'`,
+      )
+      .get(tenant.ownerAddress) as { value: string };
+    expect(legacy.value).toBe(JSON.stringify(second));
+    legacyDatabase.close();
   });
 });
