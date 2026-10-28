@@ -185,6 +185,16 @@ type Snapshot = {
     bestBid: number | null;
     bestAsk: number | null;
     updatedAt: string | null;
+    book: {
+      bids: Array<[number, number]>;
+      asks: Array<[number, number]>;
+      observedAt: string;
+    } | null;
+  };
+  risk: {
+    runDrawdownUsd: number | null;
+    runHighEquityUsd: number | null;
+    measuredAt: string | null;
   };
   markets: RuntimeMarket[];
   portfolio: {
@@ -401,6 +411,16 @@ type Performance = {
     netAfterKnownCostsUsd: number;
   };
   combinedNetAfterKnownCostsUsd: number;
+  volumeByMarket: Array<{
+    marketId: string;
+    symbol: string;
+    makerNotionalUsd: number;
+    makerFills: number;
+    takerNotionalUsd: number;
+    takerFills: number;
+    realizedPnlUsd: number;
+    feesUsd: number;
+  }>;
   fills: MakerFill[];
   note: string;
 };

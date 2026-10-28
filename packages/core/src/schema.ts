@@ -293,6 +293,16 @@ export type RuntimeSnapshot = {
     bestBid: number | null;
     bestAsk: number | null;
     updatedAt: string | null;
+    book: {
+      bids: Array<[price: number, size: number]>;
+      asks: Array<[price: number, size: number]>;
+      observedAt: string;
+    } | null;
+  };
+  risk: {
+    runDrawdownUsd: number | null;
+    runHighEquityUsd: number | null;
+    measuredAt: string | null;
   };
   markets: RuntimeMarketSnapshot[];
   portfolio: {
