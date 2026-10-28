@@ -14,6 +14,7 @@ import type { VenueDescriptor } from "../lib/venues";
 import { SpreadMark } from "./spread-mark";
 import { VenueChip } from "./venue-chip";
 import { Button, Input } from "./ui/primitives";
+import { WalletControl } from "./wallet-control";
 
 export type AccessRequestInput = {
   walletAddress: string;
@@ -104,8 +105,8 @@ export function AccessScreen({
           <strong>Maker</strong>
         </div>
         {connected && (
-          <div className="access-header-wallet" aria-label="Connected wallet">
-            <ConnectButton />
+          <div className="access-header-wallet">
+            <WalletControl />
           </div>
         )}
       </header>
@@ -121,7 +122,9 @@ export function AccessScreen({
           </h1>
           <p className="access-lede">
             {denied
-              ? "We disconnected it so you can choose another wallet. Request access below if this is the address you want to use."
+              ? connected
+                ? "Request access below if this is the address you want to use, or switch wallets from the control in the top right."
+                : "Connect another wallet, or request access below if this is the address you want to use."
               : requestOpen
                 ? "Send the wallet you will use and your X account. Requests are reviewed before a wallet is added to the on-chain access list."
                 : "Maker keeps a bid and an ask resting on perpetual markets for you, hedges what fills, and stops itself at your limits. It can trade the accounts you connect. It can never withdraw from them."}
@@ -222,7 +225,7 @@ export function AccessScreen({
             </div>
           )}
 
-          {(denied || requestSubmitted) && (
+          {(denied || requestSubmitted) && !connected && (
             <div className="access-alternate-wallet">
               <span>Already have access with another wallet?</span>
               <div className="access-connect access-connect-secondary">

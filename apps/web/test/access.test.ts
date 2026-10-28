@@ -19,8 +19,9 @@ describe("wallet session binding", () => {
     expect(walletSessionMatches("0x1111", null)).toBe(true);
   });
 
-  it("disconnects a rejected wallet but permits a different wallet", () => {
-    expect(deniedWalletAction("0x1111", "0x1111")).toBe("disconnect");
+  it("keeps a rejected wallet connected but retries a different wallet", () => {
+    expect(deniedWalletAction(null, "0x1111")).toBe("remember");
+    expect(deniedWalletAction("0x1111", "0x1111")).toBe("none");
     expect(deniedWalletAction("0x1111", "0x2222")).toBe("try-new");
     expect(deniedWalletAction("0x1111", null)).toBe("none");
   });

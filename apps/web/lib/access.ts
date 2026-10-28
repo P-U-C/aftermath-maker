@@ -6,14 +6,18 @@ export function walletSessionMatches(
   return ownerAddress.toLowerCase() === connectedAddress.toLowerCase();
 }
 
+/**
+ * A refused wallet stays connected so the operator keeps a visible wallet
+ * control; only a different connected address clears the refusal and retries.
+ */
 export function deniedWalletAction(
   deniedAddress: string | null,
   connectedAddress: string | null,
-): "none" | "disconnect" | "try-new" {
+): "none" | "remember" | "try-new" {
   if (!connectedAddress) return "none";
-  if (!deniedAddress) return "disconnect";
+  if (!deniedAddress) return "remember";
   return deniedAddress.toLowerCase() === connectedAddress.toLowerCase()
-    ? "disconnect"
+    ? "none"
     : "try-new";
 }
 
