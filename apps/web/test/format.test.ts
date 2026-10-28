@@ -31,6 +31,7 @@ describe("money formatting", () => {
 
   it("keeps table values to four decimals below one cent", () => {
     expect(formatMoney(0.004321, { table: true })).toBe("$0.0043");
+    expect(formatMoney(-0.0008, { table: true })).toBe("−$0.0008");
     expect(formatMoney(0.123456, { table: true })).toBe("$0.12");
   });
 

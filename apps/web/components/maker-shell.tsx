@@ -4,6 +4,7 @@ import {
   AlertTriangle,
   ChevronDown,
   CircleCheck,
+  CircleHelp,
   CircleX,
   Copy,
   LogOut,
@@ -578,10 +579,12 @@ export function MakerShell({
                 ref={phoneExplainSwitch}
                 className="maker-phone-explain"
                 type="button"
+                aria-label="Explain"
+                title="Explain"
                 aria-pressed={explainOpen}
                 onClick={toggleExplain}
               >
-                Explain
+                <CircleHelp size={19} aria-hidden="true" />
               </button>
             </div>
           </div>
