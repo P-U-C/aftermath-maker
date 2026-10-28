@@ -12,6 +12,7 @@ import {
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 
 import { Pill } from "./ui/primitives";
+import { MakerWordmark } from "./maker-mark";
 import { SpreadMark, type SpreadMarkState } from "./spread-mark";
 
 export const makerViews = [
@@ -97,6 +98,18 @@ export function MakerShell({
   children,
 }: MakerShellProps) {
   const [addressCopied, setAddressCopied] = useState(false);
+
+  useEffect(() => {
+    let icon = document.querySelector<HTMLLinkElement>('link[rel="icon"]');
+    if (!icon) {
+      icon = document.createElement("link");
+      icon.rel = "icon";
+      document.head.append(icon);
+    }
+    icon.type = "image/svg+xml";
+    icon.href = `/icon-${markState}.svg`;
+  }, [markState]);
+
   const displayedMode = running ? mode : "stopped";
   const modeTone =
     displayedMode === "live"
@@ -139,8 +152,7 @@ export function MakerShell({
             selectView("desk");
           }}
         >
-          <SpreadMark state={markState} label={`Maker is ${displayedMode}`} />
-          <strong>Maker</strong>
+          <MakerWordmark state={markState} />
         </a>
 
         <nav className="maker-view-tabs" aria-label="Maker views">
