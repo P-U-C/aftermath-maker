@@ -1031,4 +1031,4 @@ export const fixtureStates = {
 } satisfies Record<string, FixtureState>;
 
 export type FixtureName = keyof typeof fixtureStates;
-import fixtureBook from "../../../../docs/design/maker-ui-handoff-v3/mockups/fixture-book.json";
+import fixtureBook from "../../../../docs/design/maker-ui-handoff-v3/mockups/fixture-book.json" with { type: "json" };
