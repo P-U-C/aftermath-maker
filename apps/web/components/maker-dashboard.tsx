@@ -47,6 +47,7 @@ import {
 } from "../lib/access";
 import { primaryVenue } from "../lib/venues";
 import { AccessScreen, type AccessRequestInput } from "./access-screen";
+import { GlossaryTerm } from "./ui/glossary-term";
 import { MakerShell, useMakerView, type MakerNoticeTone } from "./maker-shell";
 import { SpreadMark } from "./spread-mark";
 import { VenueChip } from "./venue-chip";
@@ -951,9 +952,8 @@ function DashboardBody() {
       return;
     }
 
-    if (action === "disconnect") {
-      if (!deniedAddress) setDeniedAddress(connectedAddress);
-      void wallet.disconnectWallet().catch(() => undefined);
+    if (action === "remember") {
+      setDeniedAddress(connectedAddress);
     }
   }, [accessDenied, account?.address, deniedAddress, wallet]);
 
@@ -1122,7 +1122,6 @@ function DashboardBody() {
         setAccessDenied(true);
         setRequestSubmitted(false);
         setNotice(null);
-        await wallet.disconnectWallet().catch(() => undefined);
       } else {
         setNotice(error instanceof Error ? error.message : String(error));
       }
@@ -3196,12 +3195,9 @@ function DashboardBody() {
                       <small>
                         {percent(rebalanceEquityPct, 1)} of Maker equity.
                         Cancels quotes and uses{" "}
-                        <abbr
-                          className="glossary-term"
-                          title="Reduce-only orders can shrink or close a position, but cannot increase it."
-                        >
+                        <GlossaryTerm definition="Reduce-only orders can shrink or close a position, but cannot increase it.">
                           reduce-only
-                        </abbr>{" "}
+                        </GlossaryTerm>{" "}
                         market orders on both dedicated accounts.
                       </small>
                     </label>
@@ -3552,12 +3548,9 @@ function DashboardBody() {
                 <label>
                   <span>
                     Spread{" "}
-                    <abbr
-                      className="glossary-term"
-                      title="Basis points. One basis point is 0.01%."
-                    >
+                    <GlossaryTerm definition="Basis points. One basis point is 0.01%.">
                       bps
-                    </abbr>
+                    </GlossaryTerm>
                   </span>
                   <div className="input-unit suffix">
                     <input
@@ -3687,12 +3680,9 @@ function DashboardBody() {
                 <label>
                   <span>
                     Book / index{" "}
-                    <abbr
-                      className="glossary-term"
-                      title="Divergence is the distance between the venue book and index price."
-                    >
+                    <GlossaryTerm definition="Divergence is the distance between the venue book and index price.">
                       divergence
-                    </abbr>
+                    </GlossaryTerm>
                   </span>
                   <div className="input-unit suffix">
                     <input
@@ -3713,12 +3703,9 @@ function DashboardBody() {
                 <label>
                   <span>
                     Inventory{" "}
-                    <abbr
-                      className="glossary-term"
-                      title="Skew shifts quotes to encourage fills that move inventory toward its target."
-                    >
+                    <GlossaryTerm definition="Skew shifts quotes to encourage fills that move inventory toward its target.">
                       skew
-                    </abbr>
+                    </GlossaryTerm>
                   </span>
                   <div className="input-unit suffix">
                     <input
@@ -3989,12 +3976,9 @@ function DashboardBody() {
                   <th>Index</th>
                   <th>Open interest</th>
                   <th>
-                    <abbr
-                      className="glossary-term"
-                      title="Open-interest capacity is current one-sided open interest as a share of the venue limit."
-                    >
+                    <GlossaryTerm definition="Open-interest capacity is current one-sided open interest as a share of the venue limit.">
                       OI capacity
-                    </abbr>
+                    </GlossaryTerm>
                   </th>
                   <th>24h volume</th>
                   <th>Funding</th>
@@ -4122,12 +4106,9 @@ function DashboardBody() {
             </div>
             <div>
               <span>
-                <abbr
-                  className="glossary-term"
-                  title="Q-score share estimates this account's share of qualifying maker liquidity."
-                >
+                <GlossaryTerm definition="Q-score share estimates this account's share of qualifying maker liquidity.">
                   Q-score share
-                </abbr>
+                </GlossaryTerm>
               </span>
               <strong>
                 {rewards ? percent(rewards.account.qScoreShare * 100, 3) : "-"}
