@@ -359,6 +359,23 @@ app.get("/api/config", async (request) => ({
   config: tenant(request).getConfig(),
 }));
 
+app.get("/api/bundles", async (request) => {
+  const scoped = tenant(request);
+  return {
+    bundles: scoped.listBundles(),
+    walletLimits: scoped.getWalletLimits(),
+  };
+});
+
+app.get("/api/bundles/:bundleId/config", async (request) => {
+  const params = z
+    .object({ bundleId: z.string().min(1).max(200) })
+    .parse(request.params);
+  const config = tenant(request).getBundleConfig(params.bundleId);
+  if (!config) throw new AuthError(404, "Bundle was not found");
+  return { config };
+});
+
 app.get("/api/events", async (request) => {
   const query = z
     .object({ limit: z.coerce.number().int().min(1).max(200).default(50) })

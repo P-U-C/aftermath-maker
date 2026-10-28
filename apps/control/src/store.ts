@@ -28,6 +28,63 @@ const parse = <T>(value: string): T =>
 
 const normalizeAddress = (address: string) => address.toLowerCase();
 
+const coreBundleId = (ownerAddress: string) =>
+  `core-${normalizeAddress(ownerAddress).replace(/^0x/, "")}`;
+
+type StoredMakerConfig = Partial<MakerConfig> & {
+  marketId?: string;
+  symbol?: string;
+  maxDailyLossUsd?: number;
+};
+
+const normalizeMakerConfig = (stored: StoredMakerConfig) => {
+  const normalized = { ...stored } as Record<string, unknown>;
+  let migrated = false;
+
+  if (!normalized.markets && stored.marketId && stored.symbol) {
+    normalized.markets = [{ marketId: stored.marketId, symbol: stored.symbol }];
+    delete normalized.marketId;
+    delete normalized.symbol;
+    migrated = true;
+  }
+
+  if (
+    normalized.maxUnrealizedLossUsd === undefined &&
+    stored.maxDailyLossUsd !== undefined
+  ) {
+    normalized.maxUnrealizedLossUsd = stored.maxDailyLossUsd;
+    migrated = true;
+  }
+  delete normalized.maxDailyLossUsd;
+
+  const marketCount = Array.isArray(normalized.markets)
+    ? normalized.markets.length
+    : 1;
+  if (normalized.maxGrossExposureUsd === undefined) {
+    const perMarket =
+      typeof normalized.maxInventoryUsd === "number"
+        ? normalized.maxInventoryUsd
+        : 50;
+    normalized.maxGrossExposureUsd = Math.max(
+      perMarket,
+      perMarket * Math.min(3, marketCount),
+    );
+    migrated = true;
+  }
+
+  if (normalized.maxQuoteAgeMs === undefined) {
+    const refreshMs =
+      typeof normalized.refreshMs === "number" ? normalized.refreshMs : 8_000;
+    normalized.maxQuoteAgeMs = Math.max(
+      120_000,
+      refreshMs * marketCount + Math.min(10_000, refreshMs),
+    );
+    migrated = true;
+  }
+
+  return { config: makerConfigSchema.parse(normalized), migrated };
+};
+
 export type StoredAgent = {
   address: string;
   encryptedSecret: EncryptedSecret;
@@ -132,6 +189,44 @@ export type HedgeExecution = {
   gasUsedMist: number;
 };
 
+export type BundleStatus = "stopped" | "running" | "paused" | "error";
+
+export type BundleWalletLimits = {
+  maxRunDrawdownUsd: number;
+  maxInventoryUsd: number;
+  maxGrossExposureUsd: number;
+  maxUnrealizedLossUsd: number;
+  updatedAt: string;
+};
+
+export type StoredBundle = {
+  id: string;
+  ownerAddress: string;
+  name: string;
+  makerAccountId: string | null;
+  takerAccountId: string | null;
+  mode: MakerConfig["mode"];
+  status: BundleStatus;
+  marketIds: string[];
+  createdAt: string;
+  updatedAt: string;
+  lastError: string | null;
+};
+
+type BundleRow = {
+  id: string;
+  owner_address: string;
+  name: string;
+  maker_account_id: string | null;
+  taker_account_id: string | null;
+  config: string;
+  mode: MakerConfig["mode"];
+  status: BundleStatus;
+  created_at: string;
+  updated_at: string;
+  last_error: string | null;
+};
+
 export const RETENTION_LIMITS = {
   auditEvents: 10_000,
   executions: 50_000,
@@ -159,6 +254,7 @@ export class Store {
     this.db.pragma("busy_timeout = 5000");
     this.migrate();
     this.migrateLegacyTenant();
+    this.migrateBundles();
   }
 
   private migrate() {
@@ -507,6 +603,177 @@ export class Store {
     migrate();
   }
 
+  private migrateBundles(): void {
+    const migrate = this.db.transaction(() => {
+      this.db.exec(`
+        CREATE TABLE IF NOT EXISTS bundles (
+          id TEXT PRIMARY KEY,
+          owner_address TEXT NOT NULL,
+          name TEXT NOT NULL COLLATE NOCASE,
+          maker_account_id TEXT,
+          taker_account_id TEXT,
+          config TEXT NOT NULL,
+          mode TEXT NOT NULL,
+          status TEXT NOT NULL CHECK (status IN ('stopped', 'running', 'paused', 'error')),
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          last_error TEXT,
+          UNIQUE (owner_address, name)
+        );
+
+        CREATE TABLE IF NOT EXISTS bundle_markets (
+          bundle_id TEXT NOT NULL,
+          market_id TEXT NOT NULL,
+          symbol TEXT NOT NULL,
+          PRIMARY KEY (bundle_id, market_id),
+          FOREIGN KEY (bundle_id) REFERENCES bundles(id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS bundle_wallet_limits (
+          owner_address TEXT PRIMARY KEY,
+          max_run_drawdown_usd REAL NOT NULL,
+          max_inventory_usd REAL NOT NULL,
+          max_gross_exposure_usd REAL NOT NULL,
+          max_unrealized_loss_usd REAL NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS bundle_legacy_backups (
+          owner_address TEXT PRIMARY KEY,
+          legacy_config_value TEXT NOT NULL,
+          legacy_config_updated_at TEXT NOT NULL,
+          legacy_status TEXT NOT NULL,
+          backed_up_at TEXT NOT NULL,
+          rolled_back_at TEXT
+        );
+
+        CREATE INDEX IF NOT EXISTS bundles_owner_status
+          ON bundles(owner_address, status, updated_at DESC);
+        CREATE INDEX IF NOT EXISTS bundle_markets_market
+          ON bundle_markets(market_id);
+      `);
+
+      const ensureColumn = (
+        table: string,
+        column: string,
+        definition: string,
+      ) => {
+        const columns = this.db
+          .prepare(`PRAGMA table_info(${table})`)
+          .all() as Array<{ name: string }>;
+        if (!columns.some((candidate) => candidate.name === column)) {
+          this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${definition}`);
+        }
+      };
+      ensureColumn(
+        "tenant_audit_events",
+        "bundle_id",
+        "bundle_id TEXT REFERENCES bundles(id)",
+      );
+      ensureColumn(
+        "tenant_executions",
+        "bundle_id",
+        "bundle_id TEXT REFERENCES bundles(id)",
+      );
+      ensureColumn(
+        "tenant_maker_orders",
+        "bundle_id",
+        "bundle_id TEXT REFERENCES bundles(id)",
+      );
+      ensureColumn(
+        "tenant_hedge_executions",
+        "bundle_id",
+        "bundle_id TEXT REFERENCES bundles(id)",
+      );
+      ensureColumn(
+        "tenant_hedged_fills",
+        "bundle_id",
+        "bundle_id TEXT REFERENCES bundles(id)",
+      );
+      this.db.exec(`
+        CREATE INDEX IF NOT EXISTS tenant_audit_events_owner_bundle_time
+          ON tenant_audit_events(owner_address, bundle_id, occurred_at DESC);
+        CREATE INDEX IF NOT EXISTS tenant_executions_owner_bundle_time
+          ON tenant_executions(owner_address, bundle_id, occurred_at DESC);
+        CREATE INDEX IF NOT EXISTS tenant_maker_orders_owner_bundle_time
+          ON tenant_maker_orders(owner_address, bundle_id, posted_at DESC);
+        CREATE INDEX IF NOT EXISTS tenant_hedge_executions_owner_bundle_time
+          ON tenant_hedge_executions(owner_address, bundle_id, occurred_at DESC);
+        CREATE INDEX IF NOT EXISTS tenant_hedged_fills_owner_bundle_time
+          ON tenant_hedged_fills(owner_address, bundle_id, processed_at DESC);
+      `);
+
+      const legacyConfigs = this.db
+        .prepare(
+          `SELECT owner_address, value, updated_at
+           FROM tenant_settings
+           WHERE key = 'maker_config'`,
+        )
+        .all() as Array<{
+        owner_address: string;
+        value: string;
+        updated_at: string;
+      }>;
+      const backup = this.db.prepare(
+        `INSERT OR IGNORE INTO bundle_legacy_backups
+          (owner_address, legacy_config_value, legacy_config_updated_at,
+           legacy_status, backed_up_at)
+         VALUES (?, ?, ?, 'stopped', ?)`,
+      );
+      const insertBundle = this.db.prepare(
+        `INSERT OR IGNORE INTO bundles
+          (id, owner_address, name, maker_account_id, taker_account_id,
+           config, mode, status, created_at, updated_at, last_error)
+         VALUES (?, ?, 'Core', ?, ?, ?, ?, 'stopped', ?, ?, NULL)`,
+      );
+      const insertLimits = this.db.prepare(
+        `INSERT OR IGNORE INTO bundle_wallet_limits
+          (owner_address, max_run_drawdown_usd, max_inventory_usd,
+           max_gross_exposure_usd, max_unrealized_loss_usd, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+      );
+      const insertMarket = this.db.prepare(
+        `INSERT OR IGNORE INTO bundle_markets (bundle_id, market_id, symbol)
+         VALUES (?, ?, ?)`,
+      );
+      const now = new Date().toISOString();
+      for (const legacy of legacyConfigs) {
+        const ownerAddress = normalizeAddress(legacy.owner_address);
+        const { config } = normalizeMakerConfig(
+          parse<StoredMakerConfig>(legacy.value),
+        );
+        const id = coreBundleId(ownerAddress);
+        backup.run(ownerAddress, legacy.value, legacy.updated_at, now);
+        const inserted = insertBundle.run(
+          id,
+          ownerAddress,
+          config.makerAccountId ?? null,
+          config.hedge.accountId ?? null,
+          stringify(config),
+          config.mode,
+          legacy.updated_at,
+          legacy.updated_at,
+        );
+        // Once Core exists, its config and market rows are the source of truth. A
+        // later startup must not replay the preserved legacy snapshot over it.
+        if (inserted.changes === 1) {
+          insertLimits.run(
+            ownerAddress,
+            config.maxRunDrawdownUsd,
+            config.maxInventoryUsd,
+            config.maxGrossExposureUsd,
+            config.maxUnrealizedLossUsd,
+            legacy.updated_at,
+          );
+          for (const market of config.markets) {
+            insertMarket.run(id, market.marketId, market.symbol);
+          }
+        }
+      }
+    });
+    migrate();
+  }
+
   forTenant(ownerAddress: string): TenantStore {
     return new TenantStore(this.db, normalizeAddress(ownerAddress));
   }
@@ -517,6 +784,8 @@ export class Store {
         `SELECT owner_address FROM tenant_settings
          UNION
          SELECT owner_address FROM tenant_agents
+         UNION
+         SELECT owner_address FROM bundles
          ORDER BY owner_address`,
       )
       .all() as Array<{ owner_address: string }>;
@@ -939,69 +1208,249 @@ export class TenantStore {
       .run(this.ownerAddress, key, stringify(value), new Date().toISOString());
   }
 
-  getConfig(): MakerConfig | null {
-    const stored = this.getSetting<
-      Partial<MakerConfig> & {
-        marketId?: string;
-        symbol?: string;
-        maxDailyLossUsd?: number;
+  private getCoreRow(): BundleRow | null {
+    const row = this.db
+      .prepare(
+        `SELECT id, owner_address, name, maker_account_id, taker_account_id,
+                config, mode, status, created_at, updated_at, last_error
+         FROM bundles
+         WHERE owner_address = ? AND name = 'Core'`,
+      )
+      .get(this.ownerAddress) as BundleRow | undefined;
+    return row ?? null;
+  }
+
+  private migrationRolledBack(): boolean {
+    return Boolean(
+      this.db
+        .prepare(
+          `SELECT 1 FROM bundle_legacy_backups
+           WHERE owner_address = ? AND rolled_back_at IS NOT NULL`,
+        )
+        .get(this.ownerAddress),
+    );
+  }
+
+  private configSource():
+    { kind: "core"; value: string } | { kind: "legacy"; value: string } | null {
+    const core = this.getCoreRow();
+    if (core && !this.migrationRolledBack()) {
+      return { kind: "core", value: core.config };
+    }
+    const row = this.db
+      .prepare(
+        `SELECT value FROM tenant_settings
+         WHERE owner_address = ? AND key = 'maker_config'`,
+      )
+      .get(this.ownerAddress) as { value: string } | undefined;
+    return row ? { kind: "legacy", value: row.value } : null;
+  }
+
+  private replaceBundleMarkets(bundleId: string, config: MakerConfig): void {
+    this.db
+      .prepare("DELETE FROM bundle_markets WHERE bundle_id = ?")
+      .run(bundleId);
+    const insert = this.db.prepare(
+      `INSERT INTO bundle_markets (bundle_id, market_id, symbol)
+       VALUES (?, ?, ?)`,
+    );
+    for (const market of config.markets) {
+      insert.run(bundleId, market.marketId, market.symbol);
+    }
+  }
+
+  private writeCoreConfig(config: MakerConfig): void {
+    const existing = this.getCoreRow();
+    const now = new Date().toISOString();
+    const id = existing?.id ?? coreBundleId(this.ownerAddress);
+    const write = this.db.transaction(() => {
+      if (existing) {
+        this.db
+          .prepare(
+            `UPDATE bundles
+             SET maker_account_id = ?, taker_account_id = ?, config = ?, mode = ?,
+                 updated_at = ?
+             WHERE id = ?`,
+          )
+          .run(
+            config.makerAccountId ?? null,
+            config.hedge.accountId ?? null,
+            stringify(config),
+            config.mode,
+            now,
+            id,
+          );
+      } else {
+        this.db
+          .prepare(
+            `INSERT INTO bundles
+              (id, owner_address, name, maker_account_id, taker_account_id,
+               config, mode, status, created_at, updated_at, last_error)
+             VALUES (?, ?, 'Core', ?, ?, ?, ?, 'stopped', ?, ?, NULL)`,
+          )
+          .run(
+            id,
+            this.ownerAddress,
+            config.makerAccountId ?? null,
+            config.hedge.accountId ?? null,
+            stringify(config),
+            config.mode,
+            now,
+            now,
+          );
+        this.db
+          .prepare(
+            `INSERT OR IGNORE INTO bundle_wallet_limits
+              (owner_address, max_run_drawdown_usd, max_inventory_usd,
+               max_gross_exposure_usd, max_unrealized_loss_usd, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?)`,
+          )
+          .run(
+            this.ownerAddress,
+            config.maxRunDrawdownUsd,
+            config.maxInventoryUsd,
+            config.maxGrossExposureUsd,
+            config.maxUnrealizedLossUsd,
+            now,
+          );
       }
-    >("maker_config");
-    if (!stored) return null;
+      this.replaceBundleMarkets(id, config);
+    });
+    write();
+  }
 
-    const normalized = { ...stored } as Record<string, unknown>;
-    let migrated = false;
-
-    if (!normalized.markets && stored.marketId && stored.symbol) {
-      normalized.markets = [
-        { marketId: stored.marketId, symbol: stored.symbol },
-      ];
-      delete normalized.marketId;
-      delete normalized.symbol;
-      migrated = true;
+  getConfig(): MakerConfig | null {
+    const source = this.configSource();
+    if (!source) return null;
+    const { config, migrated } = normalizeMakerConfig(
+      parse<StoredMakerConfig>(source.value),
+    );
+    if (migrated) {
+      if (source.kind === "core") this.writeCoreConfig(config);
+      else this.setSetting("maker_config", config);
     }
-
-    if (
-      normalized.maxUnrealizedLossUsd === undefined &&
-      stored.maxDailyLossUsd !== undefined
-    ) {
-      normalized.maxUnrealizedLossUsd = stored.maxDailyLossUsd;
-      migrated = true;
-    }
-    delete normalized.maxDailyLossUsd;
-
-    const marketCount = Array.isArray(normalized.markets)
-      ? normalized.markets.length
-      : 1;
-    if (normalized.maxGrossExposureUsd === undefined) {
-      const perMarket =
-        typeof normalized.maxInventoryUsd === "number"
-          ? normalized.maxInventoryUsd
-          : 50;
-      normalized.maxGrossExposureUsd = Math.max(
-        perMarket,
-        perMarket * Math.min(3, marketCount),
-      );
-      migrated = true;
-    }
-
-    if (normalized.maxQuoteAgeMs === undefined) {
-      const refreshMs =
-        typeof normalized.refreshMs === "number" ? normalized.refreshMs : 8_000;
-      normalized.maxQuoteAgeMs = Math.max(
-        120_000,
-        refreshMs * marketCount + Math.min(10_000, refreshMs),
-      );
-      migrated = true;
-    }
-
-    const config = makerConfigSchema.parse(normalized);
-    if (migrated) this.setSetting("maker_config", config);
     return config;
   }
 
   setConfig(config: MakerConfig): void {
-    this.setSetting("maker_config", config);
+    if (this.migrationRolledBack()) {
+      this.setSetting("maker_config", config);
+      return;
+    }
+    this.writeCoreConfig(config);
+  }
+
+  listBundles(): StoredBundle[] {
+    const rows = this.db
+      .prepare(
+        `SELECT id, owner_address, name, maker_account_id, taker_account_id,
+                config, mode, status, created_at, updated_at, last_error
+         FROM bundles
+         WHERE owner_address = ?
+         ORDER BY created_at ASC, id ASC`,
+      )
+      .all(this.ownerAddress) as BundleRow[];
+    const markets = this.db.prepare(
+      `SELECT market_id FROM bundle_markets
+       WHERE bundle_id = ? ORDER BY market_id ASC`,
+    );
+    return rows.map((row) => ({
+      id: row.id,
+      ownerAddress: row.owner_address,
+      name: row.name,
+      makerAccountId: row.maker_account_id,
+      takerAccountId: row.taker_account_id,
+      mode: row.mode,
+      status: row.status,
+      marketIds: (markets.all(row.id) as Array<{ market_id: string }>).map(
+        (market) => market.market_id,
+      ),
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+      lastError: row.last_error,
+    }));
+  }
+
+  getBundleConfig(bundleId: string): MakerConfig | null {
+    const row = this.db
+      .prepare(
+        `SELECT config FROM bundles
+         WHERE owner_address = ? AND id = ?`,
+      )
+      .get(this.ownerAddress, bundleId) as { config: string } | undefined;
+    return row ? makerConfigSchema.parse(parse<unknown>(row.config)) : null;
+  }
+
+  getWalletLimits(): BundleWalletLimits | null {
+    const row = this.db
+      .prepare(
+        `SELECT max_run_drawdown_usd, max_inventory_usd,
+                max_gross_exposure_usd, max_unrealized_loss_usd, updated_at
+         FROM bundle_wallet_limits WHERE owner_address = ?`,
+      )
+      .get(this.ownerAddress) as
+      | {
+          max_run_drawdown_usd: number;
+          max_inventory_usd: number;
+          max_gross_exposure_usd: number;
+          max_unrealized_loss_usd: number;
+          updated_at: string;
+        }
+      | undefined;
+    return row
+      ? {
+          maxRunDrawdownUsd: row.max_run_drawdown_usd,
+          maxInventoryUsd: row.max_inventory_usd,
+          maxGrossExposureUsd: row.max_gross_exposure_usd,
+          maxUnrealizedLossUsd: row.max_unrealized_loss_usd,
+          updatedAt: row.updated_at,
+        }
+      : null;
+  }
+
+  rollbackBundleMigration(): boolean {
+    const rollback = this.db.transaction(() => {
+      const backup = this.db
+        .prepare(
+          `SELECT legacy_config_value, legacy_config_updated_at
+           FROM bundle_legacy_backups WHERE owner_address = ?`,
+        )
+        .get(this.ownerAddress) as
+        | {
+            legacy_config_value: string;
+            legacy_config_updated_at: string;
+          }
+        | undefined;
+      if (!backup) return false;
+      const now = new Date().toISOString();
+      this.db
+        .prepare(
+          `INSERT INTO tenant_settings (owner_address, key, value, updated_at)
+           VALUES (?, 'maker_config', ?, ?)
+           ON CONFLICT(owner_address, key) DO UPDATE SET
+             value = excluded.value,
+             updated_at = excluded.updated_at`,
+        )
+        .run(
+          this.ownerAddress,
+          backup.legacy_config_value,
+          backup.legacy_config_updated_at,
+        );
+      this.db
+        .prepare(
+          `UPDATE bundle_legacy_backups SET rolled_back_at = ?
+           WHERE owner_address = ?`,
+        )
+        .run(now, this.ownerAddress);
+      this.db
+        .prepare(
+          `UPDATE bundles SET status = 'stopped', updated_at = ?
+           WHERE owner_address = ?`,
+        )
+        .run(now, this.ownerAddress);
+      return true;
+    });
+    return rollback();
   }
 
   listAccountSetups(): StoredAccountSetup[] {
