@@ -37,6 +37,7 @@ const showFlattenSheet = process.argv.includes("--flatten-sheet");
 const showLiveSheet = process.argv.includes("--live-sheet");
 const showAccountEditor = process.argv.includes("--account-editor");
 const verifyConfigSave = process.argv.includes("--verify-config-save");
+const exerciseAccessRequest = process.argv.includes("--access-request");
 const outputDirectory = path.resolve(
   projectRoot,
   option("--output", defaultOutput),
@@ -115,6 +116,9 @@ function apiResponse(fixture, url) {
   );
 
   if (routePath === "api/auth/me") return fixture.auth;
+  if (routePath === "api/access-requests") {
+    return { status: 200, body: { ok: true } };
+  }
   if (routePath === "api/status") {
     return { status: 200, body: fixture.status };
   }
@@ -175,7 +179,9 @@ async function waitForFixture(page, stateName) {
   }
   if (stateName === "not-on-list") {
     await page
-      .getByRole("heading", { name: "You're not on the list yet." })
+      .getByRole("heading", {
+        name: "This wallet is not on the list yet.",
+      })
       .waitFor();
     return;
   }
@@ -313,6 +319,17 @@ async function capture(browser, stateName, captureConfig, view) {
       waitUntil: "networkidle",
     });
     await waitForFixture(page, stateName);
+    if (exerciseAccessRequest && stateName === "not-on-list") {
+      await page
+        .getByRole("textbox", { name: "Sui wallet address" })
+        .fill(`0x${"9".repeat(64)}`);
+      await page
+        .getByRole("textbox", { name: "X / Twitter" })
+        .fill("@maker_tester");
+      await page.getByRole("button", { name: "Send request" }).click();
+      await page.getByText("Request received", { exact: true }).waitFor();
+      await page.evaluate(() => window.scrollTo(0, 0));
+    }
     if (fixture.auth.status === 200) {
       const tabStops = await page
         .getByRole("navigation", { name: "Maker views" })

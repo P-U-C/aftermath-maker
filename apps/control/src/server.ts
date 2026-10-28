@@ -190,6 +190,7 @@ const publicPaths = new Set([
   "/ready",
   "/api/auth/challenge",
   "/api/auth/verify",
+  "/api/access-requests",
 ]);
 
 app.addHook("onRequest", async (request, reply) => {
@@ -311,6 +312,33 @@ app.get("/api/auth/me", async (request) => {
     registryObjectId: store.getRegistryObjectId(),
   };
 });
+
+app.post(
+  "/api/access-requests",
+  { config: { rateLimit: { max: 3, timeWindow: "1 hour" } } },
+  async (request) => {
+    const body = z
+      .object({
+        walletAddress: z.string().regex(/^0x[0-9a-fA-F]{64}$/),
+        twitterHandle: z
+          .string()
+          .trim()
+          .regex(/^@?[A-Za-z0-9_]{1,15}$/),
+        company: z.string().max(200).optional().default(""),
+      })
+      .strict()
+      .parse(request.body);
+    if (body.company) return { ok: true };
+
+    store.createAccessRequest({
+      walletAddress: body.walletAddress,
+      twitterHandle: body.twitterHandle.startsWith("@")
+        ? body.twitterHandle
+        : `@${body.twitterHandle}`,
+    });
+    return { ok: true };
+  },
+);
 
 app.get("/api/status", async (request) => {
   const active = runtime(request);
@@ -904,6 +932,16 @@ app.get("/api/operator/status", async (request) => {
   };
 });
 
+app.get("/api/operator/access-requests", async (request) => {
+  operatorAuth(request);
+  const query = z
+    .object({
+      limit: z.coerce.number().int().min(1).max(100).default(50),
+    })
+    .parse(request.query);
+  return { accessRequests: store.listAccessRequests(query.limit) };
+});
+
 app.post("/api/operator/whitelist/confirm-deployment", async (request) => {
   const identity = operatorAuth(request);
   const body = z
@@ -957,6 +995,7 @@ app.post("/api/operator/whitelist/confirm-member", async (request) => {
     throw new Error("On-chain membership does not match the requested state");
   }
   const address = body.address.toLowerCase();
+  store.setAccessRequestStatus(address, allowed ? "approved" : "pending");
   const runtimeStopped = !allowed
     ? await runtimeManager.stopTenant(address)
     : false;

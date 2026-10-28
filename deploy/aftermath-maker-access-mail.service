@@ -1,0 +1,12 @@
+[Unit]
+Description=Notify the Maker operator of access requests
+After=docker.service postfix.service
+ConditionPathExists=/var/lib/docker/volumes/aftermath-maker_maker-data/_data/maker.db
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/ubuntu/aftermath-maker
+Environment=DATABASE_PATH=/var/lib/docker/volumes/aftermath-maker_maker-data/_data/maker.db
+Environment=ACCESS_REQUEST_EMAIL=zeroexzoz@gmail.com
+Environment="ACCESS_REQUEST_EMAIL_FROM=Maker Access <maker@permanentupperclass.com>"
+ExecStart=/usr/bin/node /home/ubuntu/aftermath-maker/apps/control/dist/access-request-notifier.js

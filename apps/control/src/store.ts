@@ -71,6 +71,42 @@ export type StoredSession = {
   chainCheckedAt: string | null;
 };
 
+export type AccessRequest = {
+  id: number;
+  walletAddress: string;
+  twitterHandle: string;
+  status: "pending" | "approved" | "closed";
+  requestedAt: string;
+  updatedAt: string;
+  notifiedAt: string | null;
+  notificationAttempts: number;
+  notificationError: string | null;
+};
+
+type AccessRequestRow = {
+  id: number;
+  wallet_address: string;
+  twitter_handle: string;
+  status: AccessRequest["status"];
+  requested_at: string;
+  updated_at: string;
+  notified_at: string | null;
+  notification_attempts: number;
+  notification_error: string | null;
+};
+
+const accessRequestFromRow = (row: AccessRequestRow): AccessRequest => ({
+  id: row.id,
+  walletAddress: row.wallet_address,
+  twitterHandle: row.twitter_handle,
+  status: row.status,
+  requestedAt: row.requested_at,
+  updatedAt: row.updated_at,
+  notifiedAt: row.notified_at,
+  notificationAttempts: row.notification_attempts,
+  notificationError: row.notification_error,
+});
+
 export type ExecutionStats = {
   confirmedLiveQuotes: number;
   averageGasMist: number | null;
@@ -262,6 +298,18 @@ export class Store {
         revoked_at TEXT
       );
 
+      CREATE TABLE IF NOT EXISTS access_requests (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        wallet_address TEXT NOT NULL UNIQUE,
+        twitter_handle TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending',
+        requested_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        notified_at TEXT,
+        notification_attempts INTEGER NOT NULL DEFAULT 0,
+        notification_error TEXT
+      );
+
       CREATE INDEX IF NOT EXISTS tenant_audit_events_owner_time
         ON tenant_audit_events(owner_address, occurred_at DESC);
       CREATE INDEX IF NOT EXISTS tenant_executions_owner_time
@@ -278,6 +326,10 @@ export class Store {
         ON auth_sessions(expires_at);
       CREATE INDEX IF NOT EXISTS auth_challenges_expiry
         ON auth_challenges(expires_at);
+      CREATE INDEX IF NOT EXISTS access_requests_status_time
+        ON access_requests(status, requested_at DESC);
+      CREATE INDEX IF NOT EXISTS access_requests_notification
+        ON access_requests(notified_at, requested_at);
     `);
 
     const executionColumns = this.db
@@ -647,6 +699,135 @@ export class Store {
     this.db
       .prepare("UPDATE auth_sessions SET revoked_at = ? WHERE token_hash = ?")
       .run(new Date().toISOString(), tokenHash);
+  }
+
+  createAccessRequest(inputs: {
+    walletAddress: string;
+    twitterHandle: string;
+  }): { request: AccessRequest; created: boolean } {
+    const walletAddress = normalizeAddress(inputs.walletAddress);
+    const existing = this.db
+      .prepare(
+        `SELECT id, wallet_address, twitter_handle, status, requested_at,
+                updated_at, notified_at, notification_attempts,
+                notification_error
+         FROM access_requests WHERE wallet_address = ?`,
+      )
+      .get(walletAddress) as AccessRequestRow | undefined;
+    const now = new Date().toISOString();
+    if (existing) {
+      this.db
+        .prepare(
+          `UPDATE access_requests
+           SET twitter_handle = ?, updated_at = ?
+           WHERE wallet_address = ?`,
+        )
+        .run(inputs.twitterHandle, now, walletAddress);
+      return {
+        request: {
+          ...accessRequestFromRow(existing),
+          twitterHandle: inputs.twitterHandle,
+          updatedAt: now,
+        },
+        created: false,
+      };
+    }
+
+    const result = this.db
+      .prepare(
+        `INSERT INTO access_requests
+          (wallet_address, twitter_handle, status, requested_at, updated_at)
+         VALUES (?, ?, 'pending', ?, ?)`,
+      )
+      .run(walletAddress, inputs.twitterHandle, now, now);
+    return {
+      request: {
+        id: Number(result.lastInsertRowid),
+        walletAddress,
+        twitterHandle: inputs.twitterHandle,
+        status: "pending",
+        requestedAt: now,
+        updatedAt: now,
+        notifiedAt: null,
+        notificationAttempts: 0,
+        notificationError: null,
+      },
+      created: true,
+    };
+  }
+
+  listAccessRequests(limit = 50): AccessRequest[] {
+    if (!Number.isInteger(limit) || limit < 1 || limit > 500) {
+      throw new Error("Access request limit must be between 1 and 500");
+    }
+    const rows = this.db
+      .prepare(
+        `SELECT id, wallet_address, twitter_handle, status, requested_at,
+                updated_at, notified_at, notification_attempts,
+                notification_error
+         FROM access_requests
+         ORDER BY requested_at DESC
+         LIMIT ?`,
+      )
+      .all(limit) as AccessRequestRow[];
+    return rows.map(accessRequestFromRow);
+  }
+
+  listPendingAccessRequestNotifications(limit = 20): AccessRequest[] {
+    if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
+      throw new Error("Notification limit must be between 1 and 100");
+    }
+    const rows = this.db
+      .prepare(
+        `SELECT id, wallet_address, twitter_handle, status, requested_at,
+                updated_at, notified_at, notification_attempts,
+                notification_error
+         FROM access_requests
+         WHERE status = 'pending'
+           AND notified_at IS NULL
+           AND notification_attempts < 5
+         ORDER BY requested_at ASC
+         LIMIT ?`,
+      )
+      .all(limit) as AccessRequestRow[];
+    return rows.map(accessRequestFromRow);
+  }
+
+  markAccessRequestNotification(
+    id: number,
+    result: { ok: true } | { ok: false; error: string },
+  ): void {
+    if (result.ok) {
+      this.db
+        .prepare(
+          `UPDATE access_requests
+           SET notified_at = ?, notification_attempts = notification_attempts + 1,
+               notification_error = NULL
+           WHERE id = ?`,
+        )
+        .run(new Date().toISOString(), id);
+      return;
+    }
+    this.db
+      .prepare(
+        `UPDATE access_requests
+         SET notification_attempts = notification_attempts + 1,
+             notification_error = ?
+         WHERE id = ?`,
+      )
+      .run(result.error.slice(0, 500), id);
+  }
+
+  setAccessRequestStatus(
+    walletAddress: string,
+    status: AccessRequest["status"],
+  ): void {
+    this.db
+      .prepare(
+        `UPDATE access_requests SET status = ?, updated_at = ?
+         WHERE wallet_address = ?`,
+      )
+      .run(status, new Date().toISOString(), normalizeAddress(walletAddress));
   }
 
   close(): void {

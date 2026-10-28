@@ -40,9 +40,13 @@ import {
   useState,
 } from "react";
 import { dAppKit } from "../app/dapp-kit";
-import { walletSessionMatches } from "../lib/access";
+import {
+  deniedWalletAction,
+  shouldBeginWalletSignIn,
+  walletSessionMatches,
+} from "../lib/access";
 import { primaryVenue } from "../lib/venues";
-import { AccessScreen } from "./access-screen";
+import { AccessScreen, type AccessRequestInput } from "./access-screen";
 import { MakerShell, useMakerView, type MakerNoticeTone } from "./maker-shell";
 import { SpreadMark } from "./spread-mark";
 import { VenueChip } from "./venue-chip";
@@ -520,6 +524,15 @@ type OperatorStatus = {
   bootstrap: boolean;
 };
 
+type AccessRequest = {
+  id: number;
+  walletAddress: string;
+  twitterHandle: string;
+  status: "pending" | "approved" | "closed";
+  requestedAt: string;
+  notifiedAt: string | null;
+};
+
 const USDC =
   "0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC";
 const MAX_SELECTED_MARKETS = 64;
@@ -736,10 +749,13 @@ function DashboardBody() {
   const [identity, setIdentity] = useState<AccessIdentity | null>(null);
   const [authChecked, setAuthChecked] = useState(false);
   const [accessDenied, setAccessDenied] = useState(false);
+  const [deniedAddress, setDeniedAddress] = useState("");
+  const [requestSubmitted, setRequestSubmitted] = useState(false);
   const [builderCode, setBuilderCode] = useState<BuilderCode | null>(null);
   const [operatorStatus, setOperatorStatus] = useState<OperatorStatus | null>(
     null,
   );
+  const [accessRequests, setAccessRequests] = useState<AccessRequest[]>([]);
   const [memberAddress, setMemberAddress] = useState("");
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
   const [markets, setMarkets] = useState<Market[]>([]);
@@ -798,6 +814,7 @@ function DashboardBody() {
     checkedAt: string;
   } | null>(null);
   const onboardingRouteOwner = useRef<string | null>(null);
+  const loginAttemptedAddress = useRef<string | null>(null);
 
   const walletSessionMismatch = !walletSessionMatches(
     identity?.ownerAddress ?? null,
@@ -885,6 +902,13 @@ function DashboardBody() {
     );
   }, []);
 
+  const loadAccessRequests = useCallback(async () => {
+    const result = await request<{ accessRequests: AccessRequest[] }>(
+      "api/operator/access-requests?limit=50",
+    );
+    setAccessRequests(result.accessRequests);
+  }, []);
+
   useEffect(() => {
     let active = true;
     request<AccessIdentity>("api/auth/me")
@@ -915,6 +939,44 @@ function DashboardBody() {
   }, []);
 
   useEffect(() => {
+    const connectedAddress = account?.address;
+    if (!accessDenied || !connectedAddress) return;
+
+    const action = deniedWalletAction(deniedAddress, connectedAddress);
+    if (action === "try-new") {
+      setAccessDenied(false);
+      setDeniedAddress("");
+      setRequestSubmitted(false);
+      loginAttemptedAddress.current = null;
+      return;
+    }
+
+    if (action === "disconnect") {
+      if (!deniedAddress) setDeniedAddress(connectedAddress);
+      void wallet.disconnectWallet().catch(() => undefined);
+    }
+  }, [accessDenied, account?.address, deniedAddress, wallet]);
+
+  useEffect(() => {
+    const connectedAddress = account?.address;
+    if (
+      !shouldBeginWalletSignIn({
+        authChecked,
+        authenticated: Boolean(identity),
+        denied: accessDenied,
+        busy: Boolean(busy),
+        connectedAddress: connectedAddress ?? null,
+        attemptedAddress: loginAttemptedAddress.current,
+      }) ||
+      !connectedAddress
+    ) {
+      return;
+    }
+    loginAttemptedAddress.current = connectedAddress.toLowerCase();
+    void signIn();
+  }, [authChecked, identity, accessDenied, busy, account?.address]);
+
+  useEffect(() => {
     if (!walletSessionMismatch) return;
     void logout().then(() => {
       setNotice(
@@ -930,9 +992,10 @@ function DashboardBody() {
     void loadMarkets().catch((error) => setNotice(String(error)));
     void loadPerformance().catch(() => undefined);
     if (identity.operator) {
-      void request<OperatorStatus>("api/operator/status")
-        .then(setOperatorStatus)
-        .catch((error) => setNotice(String(error)));
+      void Promise.all([
+        request<OperatorStatus>("api/operator/status").then(setOperatorStatus),
+        loadAccessRequests(),
+      ]).catch((error) => setNotice(String(error)));
     }
     const timer = setInterval(() => {
       void refresh().catch(() => undefined);
@@ -944,7 +1007,14 @@ function DashboardBody() {
       clearInterval(timer);
       clearInterval(performanceTimer);
     };
-  }, [identity, walletSessionMismatch, refresh, loadMarkets, loadPerformance]);
+  }, [
+    identity,
+    walletSessionMismatch,
+    refresh,
+    loadMarkets,
+    loadPerformance,
+    loadAccessRequests,
+  ]);
 
   useEffect(() => {
     if (!identity || walletSessionMismatch) return;
@@ -1016,6 +1086,8 @@ function DashboardBody() {
 
   async function signIn() {
     if (!account?.address) return;
+    const connectedAddress = account.address;
+    loginAttemptedAddress.current = connectedAddress.toLowerCase();
     setBusy("sign-in");
     setNotice(null);
     try {
@@ -1024,7 +1096,7 @@ function DashboardBody() {
         message: string;
       }>("api/auth/challenge", {
         method: "POST",
-        body: JSON.stringify({ address: account.address }),
+        body: JSON.stringify({ address: connectedAddress }),
       });
       const signed = await wallet.signPersonalMessage({
         message: new TextEncoder().encode(challenge.message),
@@ -1033,7 +1105,7 @@ function DashboardBody() {
         method: "POST",
         body: JSON.stringify({
           challengeId: challenge.challengeId,
-          address: account.address,
+          address: connectedAddress,
           message: challenge.message,
           signature: signed.signature,
         }),
@@ -1041,17 +1113,38 @@ function DashboardBody() {
       const nextIdentity = await request<AccessIdentity>("api/auth/me");
       setIdentity(nextIdentity);
       setAccessDenied(false);
+      setDeniedAddress("");
+      setRequestSubmitted(false);
       setNotice("Wallet verified against the Sui access registry.", "success");
     } catch (error) {
       if (error instanceof RequestError && error.status === 403) {
+        setDeniedAddress(connectedAddress);
         setAccessDenied(true);
+        setRequestSubmitted(false);
         setNotice(null);
+        await wallet.disconnectWallet().catch(() => undefined);
       } else {
         setNotice(error instanceof Error ? error.message : String(error));
       }
     } finally {
       setBusy("");
       setAuthChecked(true);
+    }
+  }
+
+  async function submitAccessRequest(input: AccessRequestInput) {
+    setBusy("request-access");
+    setNotice(null);
+    try {
+      await request("api/access-requests", {
+        method: "POST",
+        body: JSON.stringify(input),
+      });
+      setRequestSubmitted(true);
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy("");
     }
   }
 
@@ -1068,7 +1161,11 @@ function DashboardBody() {
     setAccountsLoaded(false);
     setIdentity(null);
     setAccessDenied(false);
+    setDeniedAddress("");
+    setRequestSubmitted(false);
+    loginAttemptedAddress.current = null;
     setOperatorStatus(null);
+    setAccessRequests([]);
     setSnapshot(null);
   }
 
@@ -1175,6 +1272,7 @@ function DashboardBody() {
           expected: action === "add",
         }),
       });
+      await loadAccessRequests();
       setNotice(
         action === "add"
           ? "Wallet added on-chain."
@@ -1869,8 +1967,12 @@ function DashboardBody() {
         connected={Boolean(account?.address)}
         denied={accessDenied}
         busy={busy === "sign-in"}
+        requestBusy={busy === "request-access"}
+        requestSubmitted={requestSubmitted}
+        suggestedAddress={deniedAddress || account?.address || ""}
         notice={notice}
         onVerify={() => void signIn()}
+        onRequestAccess={(input) => void submitAccessRequest(input)}
       />
     );
   }
@@ -4709,6 +4811,58 @@ function DashboardBody() {
                     Remove
                   </button>
                 </div>
+              </div>
+
+              <div className="operator-requests">
+                <div className="operator-requests-heading">
+                  <div>
+                    <strong>Access requests</strong>
+                    <p>Stored wallet and X details from the public form.</p>
+                  </div>
+                  <span>
+                    {
+                      accessRequests.filter(
+                        (candidate) => candidate.status === "pending",
+                      ).length
+                    }{" "}
+                    pending
+                  </span>
+                </div>
+                {accessRequests.length ? (
+                  <div className="operator-request-list">
+                    {accessRequests.map((candidate) => (
+                      <div className="operator-request" key={candidate.id}>
+                        <button
+                          type="button"
+                          title={candidate.walletAddress}
+                          onClick={() =>
+                            setMemberAddress(candidate.walletAddress)
+                          }
+                        >
+                          {compact(candidate.walletAddress)}
+                        </button>
+                        <a
+                          href={`https://x.com/${candidate.twitterHandle.replace(/^@/, "")}`}
+                          target="_blank"
+                          rel="noreferrer"
+                        >
+                          {candidate.twitterHandle}
+                          <ExternalLink size={10} aria-hidden="true" />
+                        </a>
+                        <time dateTime={candidate.requestedAt}>
+                          {new Date(candidate.requestedAt).toLocaleDateString()}
+                        </time>
+                        <span className={`request-status ${candidate.status}`}>
+                          {candidate.status}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="operator-requests-empty">
+                    No access requests yet.
+                  </p>
+                )}
               </div>
             </div>
           </section>

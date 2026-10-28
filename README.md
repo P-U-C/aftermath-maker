@@ -125,6 +125,8 @@ Access membership is stored in the Sui Move package under [`move/maker_access`](
 
 Only the bootstrap operator wallet that deployed the registry and owns its `AdminCap` can see or call membership management. It can add or remove wallets through signed Sui transactions. Member wallets receive HTTP 403 from operator endpoints. Sessions are HTTP-only, expire after 12 hours, and re-check membership on-chain every 30 seconds.
 
+The public access form stores one pending request per wallet in SQLite, including the submitted X handle. It is honeypot-protected and limited to three submissions per client IP per hour. Repeated submissions update the handle without generating repeated notifications. [`deploy/aftermath-maker-access-mail.timer`](deploy/aftermath-maker-access-mail.timer) can poll for unnotified requests once a minute through the host's `sendmail`; verify that the host has a working authenticated outbound relay before enabling it.
+
 ## Operations
 
 ```bash

@@ -2791,6 +2791,90 @@ input[type="range"] {
   gap: 7px;
 }
 
+.operator-requests {
+  grid-column: 1 / -1;
+  padding: 14px;
+  border-top: 1px solid var(--hair);
+}
+
+.operator-requests-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.operator-requests-heading p,
+.operator-requests-empty {
+  margin: 4px 0 0;
+  color: #aeb6b1;
+  font-size: 11px;
+}
+
+.operator-requests-heading > span {
+  color: var(--tide);
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.operator-request-list {
+  max-height: 230px;
+  margin-top: 12px;
+  overflow-y: auto;
+  border-top: 1px solid var(--hair);
+}
+
+.operator-request {
+  min-height: 40px;
+  display: grid;
+  grid-template-columns: minmax(120px, 1.2fr) minmax(110px, 1fr) 90px 72px;
+  align-items: center;
+  gap: 12px;
+  border-bottom: 1px solid var(--hair);
+  font-size: 11px;
+}
+
+.operator-request button {
+  padding: 0;
+  overflow: hidden;
+  color: #ffffff;
+  background: none;
+  border: 0;
+  font: inherit;
+  font-weight: 620;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.operator-request a {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--tide);
+}
+
+.operator-request time {
+  color: #aeb6b1;
+}
+
+.request-status {
+  justify-self: end;
+  color: #aeb6b1;
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.request-status.pending {
+  color: var(--amber);
+}
+
+.request-status.approved {
+  color: var(--tide);
+}
+
 footer {
   max-width: 1500px;
   min-height: 50px;
@@ -3233,6 +3317,14 @@ footer a {
     grid-column: 2;
   }
 
+  .operator-request {
+    grid-template-columns: minmax(100px, 1fr) minmax(90px, 1fr) 62px;
+  }
+
+  .operator-request time {
+    display: none;
+  }
+
   .strategy-trial-heading,
   .strategy-trial-actions {
     align-items: stretch;
@@ -3325,10 +3417,95 @@ footer a {
 }
 
 .access-request-link {
+  padding: 0;
   color: var(--ink);
+  background: none;
+  border: 0;
+  font: inherit;
   font-size: 15px;
   font-weight: 560;
+  text-decoration: underline;
   text-underline-offset: 3px;
+  cursor: pointer;
+}
+
+.access-request-form {
+  width: min(535px, 100%);
+  margin-top: 28px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 0.58fr);
+  gap: 16px;
+}
+
+.access-request-form .ui-field:first-child {
+  grid-column: 1 / -1;
+}
+
+.access-request-actions {
+  align-self: end;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.access-request-actions .ui-button {
+  white-space: nowrap;
+}
+
+.access-honeypot {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+}
+
+.access-request-receipt {
+  width: min(535px, 100%);
+  margin-top: 28px;
+  padding: 16px;
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr);
+  align-items: start;
+  gap: 12px;
+  color: var(--tide-text);
+  background: var(--tide-soft);
+  border-radius: 8px;
+}
+
+.access-request-receipt div {
+  display: grid;
+  gap: 3px;
+}
+
+.access-request-receipt strong {
+  font-size: 15px;
+}
+
+.access-request-receipt span {
+  color: var(--ink-2);
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+.access-alternate-wallet {
+  width: min(535px, 100%);
+  margin-top: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  color: var(--ink-2);
+  font-size: 13px;
+}
+
+.access-connect-secondary button {
+  min-height: 40px !important;
+  padding: 0 16px !important;
+  color: var(--ink) !important;
+  background: var(--surface) !important;
+  border: 1px solid var(--line) !important;
+  font-size: 13px !important;
 }
 
 .access-notice {
@@ -3823,6 +4000,28 @@ footer a {
     align-items: flex-start;
     flex-direction: column;
     gap: 14px;
+  }
+
+  .access-request-form {
+    grid-template-columns: 1fr;
+  }
+
+  .access-request-form .ui-field:first-child {
+    grid-column: auto;
+  }
+
+  .access-request-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .access-request-actions .ui-button {
+    width: 100%;
+  }
+
+  .access-alternate-wallet {
+    align-items: flex-start;
+    flex-direction: column;
   }
 
   .access-illustration {
