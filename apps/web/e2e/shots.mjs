@@ -524,6 +524,47 @@ async function capture(browser, stateName, captureConfig, view) {
       scrollWidth: document.documentElement.scrollWidth,
       innerWidth: window.innerWidth,
     }));
+    const clippedText = await page.evaluate(() => {
+      const selectors = [
+        ".desk-market-row > *",
+        ".desk-fill-row > *",
+        ".desk-event-row > *",
+        ".market-table th",
+        ".market-table td",
+        ".reward-table th",
+        ".reward-table td",
+        ".performance-volume-table-wrap th",
+        ".performance-volume-table-wrap td",
+        ".performance-metrics strong",
+        ".performance-v3-stats strong",
+      ];
+      return selectors
+        .flatMap((selector) => Array.from(document.querySelectorAll(selector)))
+        .filter((element) => {
+          if (!(element instanceof HTMLElement)) return false;
+          const style = getComputedStyle(element);
+          const text = element.textContent?.trim() ?? "";
+          return (
+            text.length > 0 &&
+            style.display !== "none" &&
+            style.visibility !== "hidden" &&
+            element.getBoundingClientRect().width > 0 &&
+            element.scrollWidth > element.clientWidth + 1
+          );
+        })
+        .slice(0, 20)
+        .map((element) => ({
+          selector: element.className,
+          text: element.textContent?.trim().slice(0, 80),
+          scrollWidth: element.scrollWidth,
+          clientWidth: element.clientWidth,
+        }));
+    });
+    if (clippedText.length) {
+      throw new Error(
+        `${stateName}/${captureConfig.name} clips table or log text: ${JSON.stringify(clippedText)}`,
+      );
+    }
     const contrastFailures = await page.evaluate(() => {
       const style = getComputedStyle(document.documentElement);
       const rgb = (token) => {

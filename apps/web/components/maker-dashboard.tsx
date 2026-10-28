@@ -46,6 +46,12 @@ import {
   shouldBeginWalletSignIn,
   walletSessionMatches,
 } from "../lib/access";
+import {
+  formatCompactMoney,
+  formatExactMoney,
+  formatMoney,
+  moneyTone,
+} from "../lib/format";
 import { narrate } from "../lib/narrate";
 import { quickPickMarketIds, type MarketQuickPick } from "../lib/quick-picks";
 import { primaryVenue } from "../lib/venues";
@@ -704,24 +710,13 @@ const compact = (value: string | null) =>
   value ? `${value.slice(0, 6)}...${value.slice(-4)}` : "Not set";
 
 const money = (value: number | null, digits = 2) =>
-  value === null
-    ? "-"
-    : new Intl.NumberFormat("en-US", {
-        style: "currency",
-        currency: "USD",
-        minimumFractionDigits: digits,
-        maximumFractionDigits: digits,
-      }).format(value);
+  formatMoney(value, {
+    table: digits > 2,
+    minimumFractionDigits: digits,
+    maximumFractionDigits: digits,
+  });
 
-const compactUsd = (value: number | null) =>
-  value === null
-    ? "-"
-    : new Intl.NumberFormat("en-US", {
-        style: "currency",
-        currency: "USD",
-        notation: "compact",
-        maximumFractionDigits: 1,
-      }).format(value);
+const compactUsd = (value: number | null) => formatCompactMoney(value);
 
 const compactNumber = (value: number | null) =>
   value === null
@@ -4691,10 +4686,18 @@ function DashboardBody() {
               <span>Net result</span>
               <strong
                 className={
-                  (performance?.combinedNetAfterKnownCostsUsd ?? 0) < 0
+                  moneyTone(performance?.combinedNetAfterKnownCostsUsd ?? 0) ===
+                  "loss"
                     ? "negative-number"
-                    : ""
+                    : moneyTone(
+                          performance?.combinedNetAfterKnownCostsUsd ?? 0,
+                        ) === "gain"
+                      ? "positive-number"
+                      : ""
                 }
+                title={formatExactMoney(
+                  performance?.combinedNetAfterKnownCostsUsd ?? 0,
+                )}
               >
                 {money(performance?.combinedNetAfterKnownCostsUsd ?? 0)}
               </strong>

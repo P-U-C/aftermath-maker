@@ -10,6 +10,8 @@ import {
 import { useEffect, useRef } from "react";
 
 import {
+  formatEventTimestamp,
+  formatExactMoney,
   formatMoney,
   formatSignedMoney,
   formatTimestamp,
@@ -237,7 +239,10 @@ export function DeskView({
         <section className="desk-hero">
           <div>
             <span>Net known result, last 24 hours</span>
-            <strong className={`desk-pnl is-${moneyTone(pnlUsd)}`}>
+            <strong
+              className={`desk-pnl is-${moneyTone(pnlUsd)}`}
+              title={formatExactMoney(pnlUsd)}
+            >
               {formatSignedMoney(pnlUsd)}
             </strong>
             <div className="desk-facts">
@@ -525,18 +530,7 @@ export function DeskView({
                 >
                   <span className="desk-event-row">
                     <time dateTime={event.occurredAt}>
-                      <span>
-                        {new Intl.DateTimeFormat("en-US", {
-                          month: "short",
-                          day: "numeric",
-                        }).format(new Date(event.occurredAt))}
-                      </span>
-                      <span>
-                        {new Intl.DateTimeFormat("en-US", {
-                          hour: "numeric",
-                          minute: "2-digit",
-                        }).format(new Date(event.occurredAt))}
-                      </span>
+                      {formatEventTimestamp(event.occurredAt)}
                     </time>
                     <span
                       className={`desk-event-severity is-${event.severity}`}

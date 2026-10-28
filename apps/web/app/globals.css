@@ -7904,3 +7904,53 @@ mysten-dapp-kit-connect-modal,
     animation: none;
   }
 }
+
+/* F1: cells carry their words rather than hiding them. */
+.desk-market-row {
+  grid-template-columns:
+    minmax(90px, 1fr) minmax(128px, max-content) minmax(120px, 1fr)
+    64px;
+}
+
+.desk-fill-row {
+  grid-template-columns:
+    minmax(90px, 1fr) minmax(58px, max-content)
+    76px minmax(92px, 1fr);
+}
+
+.desk-event-row {
+  grid-template-columns:
+    minmax(136px, max-content) minmax(66px, max-content)
+    minmax(0, 1fr);
+}
+
+.desk-market-row > span,
+.desk-fill-row > span,
+.desk-event-row > span,
+.desk-event-row time,
+.desk-market-row strong,
+.desk-fill-row strong,
+.desk-event-row strong,
+.performance-metrics strong,
+.performance-v3-stats strong {
+  overflow: visible;
+  overflow-wrap: anywhere;
+  text-overflow: clip;
+  white-space: normal;
+}
+
+.desk-event-row time {
+  display: block;
+}
+
+@media (max-width: 700px) {
+  .desk-event-row {
+    grid-template-columns:
+      minmax(76px, max-content) minmax(58px, max-content)
+      minmax(0, 1fr);
+  }
+
+  .desk-event-row time {
+    font-size: 12px;
+  }
+}
