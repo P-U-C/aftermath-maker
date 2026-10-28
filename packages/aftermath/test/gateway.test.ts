@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  AccountFillHistoryCache,
   assertIntegratorRegistrationIntent,
   executionGasUsedMist,
   explainTransactionFailure,
@@ -146,5 +147,183 @@ describe("gateway execution evidence", () => {
     expect(isPostOnlyWouldMatch("abort code: 47 in another module")).toBe(
       false,
     );
+  });
+});
+
+type TestHistoryOrder = {
+  id: string;
+  timestamp: number;
+};
+
+const historyOrder = (id: string, timestamp: number): TestHistoryOrder => ({
+  id,
+  timestamp,
+});
+
+describe("account fill history cache", () => {
+  it("reads only the fresh page on a repeated account history request", async () => {
+    const cache = new AccountFillHistoryCache<TestHistoryOrder>();
+    let latest = {
+      orders: [historyOrder("fill-6", 6_000), historyOrder("fill-5", 5_000)],
+      nextBeforeTimestampCursor: 4_000,
+    };
+    const olderPages = new Map([
+      [
+        4_000,
+        {
+          orders: [
+            historyOrder("fill-4", 4_000),
+            historyOrder("fill-3", 3_000),
+          ],
+          nextBeforeTimestampCursor: 2_000,
+        },
+      ],
+      [
+        2_000,
+        {
+          orders: [
+            historyOrder("fill-2", 2_000),
+            historyOrder("fill-1", 1_000),
+          ],
+          nextBeforeTimestampCursor: undefined,
+        },
+      ],
+    ]);
+    const pageCalls: Array<number | undefined> = [];
+    const fetchPage = async (inputs: {
+      beforeTimestampCursor?: number;
+      limit: number;
+    }) => {
+      pageCalls.push(inputs.beforeTimestampCursor);
+      const page =
+        inputs.beforeTimestampCursor === undefined
+          ? latest
+          : olderPages.get(inputs.beforeTimestampCursor);
+      if (!page) throw new Error("unexpected history cursor");
+      return page;
+    };
+
+    const first = await cache.get({
+      accountKey: "account-a",
+      pageSize: 2,
+      orderKey: (order) => order.id,
+      fetchPage,
+    });
+    expect(pageCalls).toEqual([undefined, 4_000, 2_000]);
+    expect(first.orders.map((order) => order.id)).toEqual([
+      "fill-6",
+      "fill-5",
+      "fill-4",
+      "fill-3",
+      "fill-2",
+      "fill-1",
+    ]);
+
+    latest = {
+      orders: [historyOrder("fill-7", 7_000), historyOrder("fill-6", 6_000)],
+      nextBeforeTimestampCursor: 5_000,
+    };
+    pageCalls.length = 0;
+    const repeated = await cache.get({
+      accountKey: "account-a",
+      pageSize: 2,
+      orderKey: (order) => order.id,
+      fetchPage,
+    });
+
+    expect(pageCalls).toEqual([undefined]);
+    expect(repeated.historyComplete).toBe(true);
+    expect(repeated.orders.map((order) => order.id)).toEqual([
+      "fill-7",
+      "fill-6",
+      "fill-5",
+      "fill-4",
+      "fill-3",
+      "fill-2",
+      "fill-1",
+    ]);
+  });
+
+  it("continues from the stored cursor when a request expands its time window", async () => {
+    const cache = new AccountFillHistoryCache<TestHistoryOrder>();
+    const pages = new Map<
+      number | undefined,
+      {
+        orders: TestHistoryOrder[];
+        nextBeforeTimestampCursor: number | undefined;
+      }
+    >([
+      [
+        undefined,
+        {
+          orders: [
+            historyOrder("fill-6", 6_000),
+            historyOrder("fill-5", 5_000),
+          ],
+          nextBeforeTimestampCursor: 4_000,
+        },
+      ],
+      [
+        4_000,
+        {
+          orders: [
+            historyOrder("fill-4", 4_000),
+            historyOrder("fill-3", 3_000),
+          ],
+          nextBeforeTimestampCursor: 2_000,
+        },
+      ],
+      [
+        2_000,
+        {
+          orders: [
+            historyOrder("fill-2", 2_000),
+            historyOrder("fill-1", 1_000),
+          ],
+          nextBeforeTimestampCursor: undefined,
+        },
+      ],
+    ]);
+    const pageCalls: Array<number | undefined> = [];
+    const fetchPage = async (inputs: {
+      beforeTimestampCursor?: number;
+      limit: number;
+    }) => {
+      pageCalls.push(inputs.beforeTimestampCursor);
+      const page = pages.get(inputs.beforeTimestampCursor);
+      if (!page) throw new Error("unexpected history cursor");
+      return page;
+    };
+
+    const recent = await cache.get({
+      accountKey: "account-a",
+      pageSize: 2,
+      sinceMs: 4_500_000,
+      orderKey: (order) => order.id,
+      fetchPage,
+    });
+    expect(pageCalls).toEqual([undefined, 4_000]);
+    expect(recent.orders.map((order) => order.id)).toEqual([
+      "fill-6",
+      "fill-5",
+    ]);
+
+    pageCalls.length = 0;
+    const expanded = await cache.get({
+      accountKey: "account-a",
+      pageSize: 2,
+      sinceMs: 1_500_000,
+      orderKey: (order) => order.id,
+      fetchPage,
+    });
+    expect(pageCalls).toEqual([undefined, 2_000]);
+    expect(expanded.historyComplete).toBe(true);
+    expect(expanded.orders.map((order) => order.id)).toEqual([
+      "fill-6",
+      "fill-5",
+      "fill-4",
+      "fill-3",
+      "fill-2",
+    ]);
   });
 });
