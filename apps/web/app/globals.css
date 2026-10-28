@@ -6392,19 +6392,55 @@ mysten-dapp-kit-connect-modal,
   border-color: var(--ink);
 }
 
+.maker-tour-prompt {
+  width: min(1280px, calc(100% - 56px));
+  min-height: 44px;
+  margin: 10px auto 0;
+  padding: 6px 8px 6px 14px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--ink);
+  background: var(--tide-soft);
+  border-radius: 12px;
+  font-size: 13px;
+  font-weight: 620;
+}
+
+.maker-tour-prompt > div {
+  display: flex;
+  gap: 6px;
+}
+
+.maker-tour-prompt button {
+  min-height: 32px;
+  padding: 0 10px;
+  color: var(--ink);
+  background: var(--surface);
+  border: 1px solid var(--hair);
+  border-radius: 8px;
+  font: inherit;
+}
+
+.maker-coach-target {
+  outline: 2px solid var(--tide);
+  outline-offset: 4px;
+  border-radius: 8px;
+}
+
 .maker-coach {
   position: fixed;
-  z-index: 80;
+  z-index: 250;
   inset: 0;
   pointer-events: none;
 }
 
 .maker-coach-note {
-  position: absolute;
   width: min(260px, calc(100vw - 24px));
   padding: 12px;
   display: grid;
-  grid-template-columns: 24px 1fr;
+  grid-template-columns: 24px minmax(0, 1fr);
   gap: 9px;
   color: var(--ink);
   background: var(--canvas);
@@ -6413,7 +6449,13 @@ mysten-dapp-kit-connect-modal,
   box-shadow: 0 14px 32px color-mix(in srgb, var(--ink) 18%, transparent);
 }
 
-.maker-coach-note > span {
+.maker-coach:not(.maker-coach-phone) .maker-coach-note {
+  position: absolute;
+  animation: maker-coach-in var(--dur-2) var(--ease-out) both;
+}
+
+.maker-coach-note > span,
+.maker-coach-marker {
   width: 24px;
   height: 24px;
   display: grid;
@@ -6437,6 +6479,64 @@ mysten-dapp-kit-connect-modal,
   line-height: 1.4;
 }
 
+.maker-coach-marker {
+  position: fixed;
+  transform: translate(-50%, -50%);
+}
+
+.maker-coach-dock {
+  width: 280px;
+  max-height: calc(100dvh - 112px);
+  padding: 12px;
+  position: fixed;
+  top: 80px;
+  right: 8px;
+  display: grid;
+  gap: 8px;
+  overflow-y: auto;
+  color: var(--ink);
+  background: var(--canvas);
+  border: 1px solid var(--ink);
+  border-radius: 14px;
+  box-shadow: var(--float);
+  pointer-events: auto;
+}
+
+.maker-coach-dock > strong {
+  font-size: 14px;
+}
+
+.maker-coach-dock article {
+  padding-top: 8px;
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr);
+  gap: 8px;
+  border-top: 1px solid var(--hair);
+}
+
+.maker-coach-dock article > span {
+  width: 22px;
+  height: 22px;
+  display: grid;
+  place-items: center;
+  color: var(--canvas);
+  background: var(--ink);
+  border-radius: 50%;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.maker-coach-dock b {
+  font-size: 13px;
+}
+
+.maker-coach-dock p {
+  margin: 3px 0 0;
+  color: var(--ink-2);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
 .maker-coach-close {
   position: fixed;
   right: 18px;
@@ -6450,6 +6550,83 @@ mysten-dapp-kit-connect-modal,
   font-size: 13px;
   font-weight: 700;
   pointer-events: auto;
+}
+
+@keyframes maker-coach-in {
+  from {
+    opacity: 0;
+    transform: scale(0.98);
+  }
+}
+
+@media (max-width: 619px) {
+  .maker-tour-prompt {
+    width: calc(100% - 28px);
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .maker-tour-prompt > div,
+  .maker-tour-prompt button {
+    width: 100%;
+  }
+
+  .maker-tour-prompt button {
+    min-height: 44px;
+  }
+
+  .maker-tour-prompt > div {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .maker-coach-phone {
+    padding: 12px;
+    display: flex;
+    align-items: end;
+    background: color-mix(in srgb, var(--scrim) 60%, transparent);
+    pointer-events: auto;
+  }
+
+  .maker-coach-phone .maker-coach-note {
+    width: 100%;
+    min-height: 172px;
+    grid-template-columns: 24px minmax(0, 1fr);
+    border-radius: 20px 20px 12px 12px;
+    animation: maker-sheet-phone-in var(--dur-3) var(--ease-out) both;
+  }
+
+  .maker-coach-phone .maker-coach-note footer {
+    grid-column: 1 / -1;
+    padding-top: 10px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    color: var(--ink-2);
+    border-top: 1px solid var(--hair);
+    font-size: 12px;
+    font-weight: 650;
+  }
+
+  .maker-coach-phone .maker-coach-note footer div {
+    display: flex;
+    gap: 6px;
+  }
+
+  .maker-coach-phone .maker-coach-note footer button {
+    min-height: 36px;
+    padding: 0 10px;
+    color: var(--ink);
+    background: var(--surface);
+    border: 1px solid var(--hair);
+    border-radius: 8px;
+    font: inherit;
+  }
+
+  .maker-coach-phone .maker-coach-close {
+    right: 18px;
+    bottom: calc(184px + env(safe-area-inset-bottom));
+  }
 }
 
 @media (max-width: 760px) {
@@ -6505,6 +6682,18 @@ mysten-dapp-kit-connect-modal,
     padding-top: 20px;
   }
 
+  .learn-layout {
+    margin-top: 20px;
+    grid-template-columns: 1fr;
+    gap: 20px;
+  }
+
+  .learn-layout .learn-stage {
+    max-height: 40dvh;
+    overflow: auto;
+    top: 8px;
+  }
+
   .learn-heading > p:last-child {
     font-size: 16px;
   }
@@ -6514,12 +6703,26 @@ mysten-dapp-kit-connect-modal,
     border-radius: 20px;
   }
 
-  .learn-chapters {
+  .learn-chapters,
+  .learn-layout .learn-chapters {
     grid-template-columns: 1fr;
   }
 
   .learn-chapters button {
     min-height: 0;
+  }
+
+  .learn-glossary {
+    margin-top: 56px;
+  }
+
+  .learn-glossary dl {
+    grid-template-columns: 1fr;
+  }
+
+  .learn-glossary a {
+    min-width: 44px;
+    min-height: 44px;
   }
 }
 
@@ -7416,6 +7619,7 @@ mysten-dapp-kit-connect-modal,
 
 /* Step 8: phone desk and editing surfaces. */
 .maker-phone-heading,
+.maker-phone-explain,
 .strategy-mobile-sheet-header,
 .desk-phone-dock {
   display: none;
@@ -7514,6 +7718,31 @@ mysten-dapp-kit-connect-modal,
     min-height: 38px;
     padding: 0 15px;
     font-size: 14px;
+  }
+
+  .maker-phone-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .maker-phone-explain {
+    min-height: 44px;
+    padding: 0 10px;
+    display: inline-flex;
+    align-items: center;
+    color: var(--ink);
+    background: var(--fill);
+    border: 1px solid var(--hair);
+    border-radius: 999px;
+    font: inherit;
+    font-size: 13px;
+    font-weight: 700;
+  }
+
+  .maker-phone-explain[aria-pressed="true"] {
+    color: var(--canvas);
+    background: var(--ink);
   }
 
   .maker-nav-brand,
@@ -7778,6 +8007,29 @@ mysten-dapp-kit-connect-modal,
   .strategy-mobile-sheet-header strong {
     font-size: 20px;
     font-stretch: 112%;
+  }
+
+  .strategy-mobile-sheet-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .strategy-mobile-explain {
+    min-height: 44px;
+    padding: 0 10px;
+    color: var(--ink);
+    background: var(--fill);
+    border: 1px solid var(--hair);
+    border-radius: 999px;
+    font: inherit;
+    font-size: 13px;
+    font-weight: 700;
+  }
+
+  .strategy-mobile-explain[aria-pressed="true"] {
+    color: var(--canvas);
+    background: var(--ink);
   }
 
   .strategy-mobile-sheet-header .ui-button-icon,

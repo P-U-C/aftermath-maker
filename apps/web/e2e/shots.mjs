@@ -42,6 +42,8 @@ const verifyStrategyBuilder = process.argv.includes(
   "--verify-strategy-builder",
 );
 const verifyPerformance = process.argv.includes("--verify-performance");
+const verifyExplain = process.argv.includes("--verify-explain");
+const verifyLearn = process.argv.includes("--verify-learn");
 const verifyMotion = process.argv.includes("--verify-motion");
 const exerciseAccessRequest = process.argv.includes("--access-request");
 const outputDirectory = path.resolve(
@@ -583,6 +585,107 @@ async function capture(browser, stateName, captureConfig, view) {
       );
     }
     await page.waitForTimeout(100);
+
+    if (
+      verifyLearn &&
+      stateName === "paper-running" &&
+      view === "learn" &&
+      captureConfig.name === "desktop-light"
+    ) {
+      const expectedScenes = [
+        ["spread", "play spread"],
+        ["fills", "play fills"],
+        ["skew", "play skew"],
+        ["hedge", "play hedge"],
+        ["rewards", "rewards"],
+      ];
+      for (const [id, scene] of expectedScenes) {
+        await page
+          .locator("#" + id)
+          .getByRole("button")
+          .click();
+        await page.getByText("Scene: " + scene, { exact: true }).waitFor();
+      }
+      await page.goto(baseUrl + "#learn/hedge", { waitUntil: "networkidle" });
+      await page.locator('[data-view="learn"]:not([hidden])').waitFor();
+      await page.waitForTimeout(600);
+      const deepLinkState = await page.evaluate(() => ({
+        hash: window.location.hash,
+        active: document.querySelector(".learn-chapters button.is-active")
+          ?.parentElement?.id,
+      }));
+      if (deepLinkState.active !== "hedge") {
+        throw new Error(
+          "Learn deep link selected " + JSON.stringify(deepLinkState),
+        );
+      }
+      process.stdout.write(
+        `${stateName}/${view}/${captureConfig.name}: Learn chapters and deep link play their scenes\n`,
+      );
+    }
+
+    if (
+      verifyExplain &&
+      fixture.auth.status === 200 &&
+      ["desk", "strategy", "markets", "performance", "venues"].includes(view) &&
+      ["desktop-light", "phone-dark"].includes(captureConfig.name)
+    ) {
+      const explain =
+        view === "strategy" && captureConfig.viewport.width <= 390
+          ? page.locator(".strategy-mobile-explain")
+          : page.getByRole("button", {
+              name: "Explain",
+              exact: true,
+            });
+      if (await page.locator(".maker-coach").count()) {
+        throw new Error("Explain opened before the user opted in");
+      }
+      const notNow = page.getByRole("button", { name: "Not now", exact: true });
+      if (await notNow.count()) await notNow.click({ force: true });
+      await explain.click();
+      await page.locator(".maker-coach").waitFor();
+      await page.waitForTimeout(300);
+      const collisions = await page.evaluate(() => {
+        const overlaps = (first, second) =>
+          first.left < second.right &&
+          first.right > second.left &&
+          first.top < second.bottom &&
+          first.bottom > second.top;
+        const notes = Array.from(
+          document.querySelectorAll(".maker-coach-note"),
+        ).map((node) => node.getBoundingClientRect());
+        const targets = Array.from(
+          document.querySelectorAll(".maker-coach-target"),
+        ).map((node) => node.getBoundingClientRect());
+        const noteOverlap = notes.some((note, index) =>
+          notes.slice(index + 1).some((other) => overlaps(note, other)),
+        );
+        const targetOverlap = notes.some((note) =>
+          targets.some((target) => overlaps(note, target)),
+        );
+        return {
+          noteOverlap,
+          targetOverlap,
+          notes: notes.length,
+          targets: targets.length,
+        };
+      });
+      if (collisions.noteOverlap || collisions.targetOverlap) {
+        throw new Error(
+          `${stateName}/${view}/${captureConfig.name} Explain overlaps: ${JSON.stringify(collisions)}`,
+        );
+      }
+      await page.keyboard.press("Escape");
+      await page.locator(".maker-coach").waitFor({ state: "hidden" });
+      if (
+        !(await explain.evaluate((node) => node === document.activeElement))
+      ) {
+        throw new Error("Explain did not return focus to its switch");
+      }
+      process.stdout.write(
+        `${stateName}/${view}/${captureConfig.name}: Explain targets and notes do not overlap\n`,
+      );
+    }
 
     if (
       verifyMotion &&

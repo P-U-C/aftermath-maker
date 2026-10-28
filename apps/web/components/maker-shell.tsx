@@ -10,7 +10,9 @@ import {
   WalletCards,
 } from "lucide-react";
 import {
+  createContext,
   useCallback,
+  useContext,
   useEffect,
   useRef,
   useState,
@@ -34,8 +36,20 @@ export const makerViews = [
 export type MakerView = (typeof makerViews)[number]["id"];
 export type MakerNoticeTone = "success" | "warning" | "error";
 
+const ExplainContext = createContext<{
+  open: boolean;
+  toggle: () => void;
+} | null>(null);
+
+export function useMakerExplain() {
+  const context = useContext(ExplainContext);
+  if (!context)
+    throw new Error("useMakerExplain must be used inside MakerShell");
+  return context;
+}
+
 function viewFromHash(hash: string): MakerView {
-  const candidate = hash.replace(/^#/, "");
+  const candidate = hash.replace(/^#/, "").split("/")[0];
   return makerViews.some((view) => view.id === candidate)
     ? (candidate as MakerView)
     : "desk";
@@ -147,7 +161,7 @@ const coachNotes: Partial<Record<MakerView, CoachNote[]>> = {
   ],
   performance: [
     {
-      selector: ".performance-board",
+      selector: ".performance-v3-stats",
       title: "Performance",
       body: "Results separate what is measured from what still needs evidence.",
     },
@@ -164,7 +178,7 @@ const coachNotes: Partial<Record<MakerView, CoachNote[]>> = {
   ],
   venues: [
     {
-      selector: ".venues-board",
+      selector: ".venue-card-heading",
       title: "Venue connection",
       body: "This is the venue Maker uses and the status of your account access.",
     },
@@ -176,6 +190,24 @@ const coachNotes: Partial<Record<MakerView, CoachNote[]>> = {
   ],
 };
 
+type CoachPosition = {
+  note: CoachNote;
+  x: number;
+  y: number;
+  markerX: number;
+  markerY: number;
+  docked: boolean;
+};
+
+const coachRectOverlaps = (
+  first: { left: number; top: number; right: number; bottom: number },
+  second: { left: number; top: number; right: number; bottom: number },
+) =>
+  first.left < second.right &&
+  first.right > second.left &&
+  first.top < second.bottom &&
+  first.bottom > second.top;
+
 function CoachLayer({
   activeView,
   open,
@@ -186,30 +218,106 @@ function CoachLayer({
   onClose: () => void;
 }) {
   const dialog = useRef<HTMLElement>(null);
-  const [positions, setPositions] = useState<
-    Array<{ note: CoachNote; x: number; y: number }>
-  >([]);
+  const [positions, setPositions] = useState<CoachPosition[]>([]);
+  const [phoneIndex, setPhoneIndex] = useState(0);
 
   useEffect(() => {
     if (!open) return;
+    const highlighted: HTMLElement[] = [];
     const update = () => {
-      const root = document.querySelector(
-        `.maker-view[data-view="${activeView}"]:not([hidden])`,
+      highlighted
+        .splice(0)
+        .forEach((target) => target.classList.remove("maker-coach-target"));
+      const root = document.querySelector<HTMLElement>(
+        '.maker-view[data-view="' + activeView + '"]:not([hidden])',
       );
-      const next = (coachNotes[activeView] ?? []).flatMap((note) => {
+      const targets = (coachNotes[activeView] ?? []).flatMap((note) => {
         const target = root?.querySelector<HTMLElement>(note.selector);
         if (!target) return [];
-        const rect = target.getBoundingClientRect();
-        const x = Math.max(
-          12,
-          Math.min(window.innerWidth - 272, rect.left + 18),
-        );
-        const y = Math.max(
-          76,
-          Math.min(window.innerHeight - 132, rect.top + 14),
-        );
-        return [{ note, x, y }];
+        return [{ note, target, rect: target.getBoundingClientRect() }];
       });
+      if (window.innerWidth < 620) {
+        setPositions(
+          targets.map(({ note, rect }) => ({
+            note,
+            x: 0,
+            y: 0,
+            markerX: rect.left + rect.width / 2,
+            markerY: rect.top + rect.height / 2,
+            docked: false,
+          })),
+        );
+        const current = targets[Math.min(phoneIndex, targets.length - 1)];
+        if (current) {
+          current.target.classList.add("maker-coach-target");
+          highlighted.push(current.target);
+          current.target.scrollIntoView({ block: "center", behavior: "auto" });
+        }
+        return;
+      }
+
+      targets.forEach(({ target }) => {
+        target.classList.add("maker-coach-target");
+        highlighted.push(target);
+      });
+      const margin = 8;
+      const gap = 12;
+      const width = 260;
+      const height = 136;
+      const occupied = targets.map(({ rect }) => rect);
+      const next: CoachPosition[] = [];
+      for (const { note, rect } of targets) {
+        const candidates = [
+          { x: rect.right + gap, y: rect.top },
+          { x: rect.left - width - gap, y: rect.top },
+          { x: rect.left, y: rect.bottom + gap },
+          { x: rect.left, y: rect.top - height - gap },
+        ];
+        const candidate = candidates.find(({ x, y }) => {
+          const noteRect = {
+            left: x,
+            top: y,
+            right: x + width,
+            bottom: y + height,
+          };
+          return (
+            noteRect.left >= margin &&
+            noteRect.top >= margin &&
+            noteRect.right <= window.innerWidth - margin &&
+            noteRect.bottom <= window.innerHeight - margin &&
+            !occupied.some((targetRect) =>
+              coachRectOverlaps(noteRect, targetRect),
+            ) &&
+            !next.some((placed) =>
+              coachRectOverlaps(noteRect, {
+                left: placed.x,
+                top: placed.y,
+                right: placed.x + width,
+                bottom: placed.y + height,
+              }),
+            )
+          );
+        });
+        if (candidate) {
+          next.push({
+            note,
+            x: candidate.x,
+            y: candidate.y,
+            markerX: rect.left + rect.width / 2,
+            markerY: rect.top + rect.height / 2,
+            docked: false,
+          });
+        } else {
+          next.push({
+            note,
+            x: 0,
+            y: 0,
+            markerX: rect.left + rect.width / 2,
+            markerY: rect.top + rect.height / 2,
+            docked: true,
+          });
+        }
+      }
       setPositions(next);
     };
     update();
@@ -221,33 +329,111 @@ function CoachLayer({
     };
     window.addEventListener("keydown", keydown);
     return () => {
+      highlighted.forEach((target) =>
+        target.classList.remove("maker-coach-target"),
+      );
       window.removeEventListener("resize", update);
       window.removeEventListener("scroll", update, true);
       window.removeEventListener("keydown", keydown);
     };
-  }, [activeView, onClose, open]);
+  }, [activeView, onClose, open, phoneIndex]);
+
+  useEffect(() => {
+    if (phoneIndex < positions.length) return;
+    setPhoneIndex(0);
+  }, [phoneIndex, positions.length]);
 
   if (!open || positions.length === 0) return null;
+  const phone = window.innerWidth < 620;
+  const current = positions[phoneIndex] ?? positions[0];
+  const docked = positions.filter((position) => position.docked);
+
   return (
     <aside
       ref={dialog}
-      className="maker-coach"
+      className={phone ? "maker-coach maker-coach-phone" : "maker-coach"}
       aria-label="Explain this view"
       tabIndex={-1}
     >
-      {positions.map(({ note, x, y }, index) => (
-        <article
-          className="maker-coach-note"
-          key={note.title}
-          style={{ left: x, top: y }}
-        >
-          <span>{index + 1}</span>
+      {phone && current ? (
+        <article className="maker-coach-note" key={current.note.title}>
+          <span>{phoneIndex + 1}</span>
           <div>
-            <strong>{note.title}</strong>
-            <p>{note.body}</p>
+            <strong>{current.note.title}</strong>
+            <p>{current.note.body}</p>
           </div>
+          <footer>
+            <span>
+              {phoneIndex + 1} of {positions.length}
+            </span>
+            <div>
+              <button
+                type="button"
+                onClick={() => setPhoneIndex((index) => Math.max(0, index - 1))}
+                disabled={phoneIndex === 0}
+              >
+                Back
+              </button>
+              <button
+                type="button"
+                onClick={() =>
+                  setPhoneIndex((index) =>
+                    Math.min(positions.length - 1, index + 1),
+                  )
+                }
+                disabled={phoneIndex === positions.length - 1}
+              >
+                Next
+              </button>
+            </div>
+          </footer>
         </article>
-      ))}
+      ) : (
+        <>
+          {positions
+            .filter((position) => !position.docked)
+            .map((position, index) => (
+              <article
+                className="maker-coach-note"
+                key={position.note.title}
+                style={{
+                  left: position.x,
+                  top: position.y,
+                  animationDelay: String(index * 40) + "ms",
+                }}
+              >
+                <span>{index + 1}</span>
+                <div>
+                  <strong>{position.note.title}</strong>
+                  <p>{position.note.body}</p>
+                </div>
+              </article>
+            ))}
+          {positions.map((position, index) => (
+            <span
+              className="maker-coach-marker"
+              key={"marker-" + position.note.title}
+              style={{ left: position.markerX, top: position.markerY }}
+            >
+              {index + 1}
+            </span>
+          ))}
+          {docked.length > 0 && (
+            <section className="maker-coach-dock" aria-label="Notes">
+              <strong>Notes</strong>
+              {docked.map((position) => (
+                <article key={position.note.title}>
+                  <span>{positions.indexOf(position) + 1}</span>
+                  <div>
+                    <b>{position.note.title}</b>
+                    <p>{position.note.body}</p>
+                  </div>
+                </article>
+              ))}
+            </section>
+          )}
+        </>
+      )}
       <button className="maker-coach-close" type="button" onClick={onClose}>
         Close explain
       </button>
@@ -292,17 +478,41 @@ export function MakerShell({
 }: MakerShellProps) {
   const [addressCopied, setAddressCopied] = useState(false);
   const [explainOpen, setExplainOpen] = useState(false);
+  const [tourPrompt, setTourPrompt] = useState(false);
+  const toggleExplain = useCallback(() => setExplainOpen((open) => !open), []);
   const activeTab = useRef<HTMLAnchorElement>(null);
-  const closeCoach = useCallback(() => setExplainOpen(false), []);
+  const explainSwitch = useRef<HTMLButtonElement>(null);
+  const phoneExplainSwitch = useRef<HTMLButtonElement>(null);
+  const closeCoach = useCallback(() => {
+    setExplainOpen(false);
+    const strategySwitch = document.querySelector<HTMLButtonElement>(
+      ".strategy-mobile-explain",
+    );
+    const target =
+      window.matchMedia("(max-width: 619px)").matches &&
+      strategySwitch?.getClientRects().length
+        ? strategySwitch
+        : window.matchMedia("(max-width: 619px)").matches
+          ? phoneExplainSwitch.current
+          : explainSwitch.current;
+    target?.focus();
+  }, []);
 
   useEffect(() => {
     try {
-      if (!window.localStorage.getItem("maker:explain-seen")) {
-        setExplainOpen(true);
-        window.localStorage.setItem("maker:explain-seen", "1");
-      }
+      setTourPrompt(!window.localStorage.getItem("maker:explain-seen"));
     } catch {
-      // Explain still works when storage is unavailable.
+      setTourPrompt(true);
+    }
+  }, []);
+
+  const chooseTour = useCallback((start: boolean) => {
+    setTourPrompt(false);
+    if (start) setExplainOpen(true);
+    try {
+      window.localStorage.setItem("maker:explain-seen", "1");
+    } catch {
+      // The explicit controls remain available without storage.
     }
   }, []);
 
@@ -344,137 +554,170 @@ export function MakerShell({
         : CircleX;
 
   return (
-    <main className="shell">
-      {live && <div className="live-rail" aria-hidden="true" />}
-      <header className="maker-nav">
-        <div className="maker-phone-heading">
-          <span className="maker-phone-title">
-            <SpreadMark
-              state={markState}
-              size={30}
-              label={`Maker is ${displayedMode}`}
-            />
-            <strong>{activeLabel}</strong>
-          </span>
-          <Pill tone={modeTone} dot={running}>
-            {displayedMode[0]?.toUpperCase()}
-            {displayedMode.slice(1)}
-          </Pill>
-        </div>
-        <a
-          className="maker-nav-brand"
-          href="#desk"
-          onClick={(event) => {
-            event.preventDefault();
-            selectView("desk");
-          }}
-        >
-          <MakerWordmark state={markState} />
-        </a>
-
-        <nav className="maker-view-tabs" aria-label="Maker views">
-          {makerViews
-            .filter((view) => view.id !== "learn" && view.id !== "accounts")
-            .map((view) => (
-              <a
-                key={view.id}
-                href={`#${view.id}`}
-                ref={activeView === view.id ? activeTab : undefined}
-                className={activeView === view.id ? "is-active" : undefined}
-                aria-current={activeView === view.id ? "page" : undefined}
-                onClick={(event) => {
-                  event.preventDefault();
-                  selectView(view.id);
-                }}
+    <ExplainContext.Provider
+      value={{ open: explainOpen, toggle: toggleExplain }}
+    >
+      <main className="shell">
+        {live && <div className="live-rail" aria-hidden="true" />}
+        <header className="maker-nav">
+          <div className="maker-phone-heading">
+            <span className="maker-phone-title">
+              <SpreadMark
+                state={markState}
+                size={30}
+                label={`Maker is ${displayedMode}`}
+              />
+              <strong>{activeLabel}</strong>
+            </span>
+            <div className="maker-phone-actions">
+              <Pill tone={modeTone} dot={running}>
+                {displayedMode[0]?.toUpperCase()}
+                {displayedMode.slice(1)}
+              </Pill>
+              <button
+                ref={phoneExplainSwitch}
+                className="maker-phone-explain"
+                type="button"
+                aria-pressed={explainOpen}
+                onClick={toggleExplain}
               >
-                {view.label}
-              </a>
-            ))}
-        </nav>
-
-        <div className="maker-nav-right">
-          <button
-            className="maker-explain-toggle"
-            type="button"
-            aria-pressed={explainOpen}
-            onClick={() => setExplainOpen((open) => !open)}
+                Explain
+              </button>
+            </div>
+          </div>
+          <a
+            className="maker-nav-brand"
+            href="#desk"
+            onClick={(event) => {
+              event.preventDefault();
+              selectView("desk");
+            }}
           >
-            Explain
-          </button>
-          <Pill tone={modeTone} dot={running}>
-            {displayedMode[0]?.toUpperCase()}
-            {displayedMode.slice(1)}
-          </Pill>
-          <details className="maker-wallet-menu">
-            <summary aria-label={`Wallet ${walletLabel}`}>
-              <WalletCards size={15} aria-hidden="true" />
-              <span>{walletLabel}</span>
-              <ChevronDown size={14} aria-hidden="true" />
-            </summary>
-            <div className="maker-wallet-popover">
-              <div className="maker-wallet-heading">
-                <span>Connected wallet</span>
-                <strong>{walletLabel}</strong>
-                <small>{walletAddress}</small>
-              </div>
-              <dl className="maker-wallet-facts">
-                <div>
-                  <dt>Access</dt>
-                  <dd>{operator ? "Operator" : "Whitelisted"}</dd>
-                </div>
-                <div>
-                  <dt>Trading account</dt>
-                  <dd>{accountLabel}</dd>
-                </div>
-              </dl>
-              <div className="maker-wallet-actions">
-                <button
-                  type="button"
-                  onClick={() => {
-                    void navigator.clipboard
-                      .writeText(walletAddress)
-                      .then(() => {
-                        setAddressCopied(true);
-                        window.setTimeout(() => setAddressCopied(false), 1_500);
-                      });
+            <MakerWordmark state={markState} />
+          </a>
+
+          <nav className="maker-view-tabs" aria-label="Maker views">
+            {makerViews
+              .filter((view) => view.id !== "learn" && view.id !== "accounts")
+              .map((view) => (
+                <a
+                  key={view.id}
+                  href={`#${view.id}`}
+                  ref={activeView === view.id ? activeTab : undefined}
+                  className={activeView === view.id ? "is-active" : undefined}
+                  aria-current={activeView === view.id ? "page" : undefined}
+                  onClick={(event) => {
+                    event.preventDefault();
+                    selectView(view.id);
                   }}
                 >
-                  <Copy size={15} aria-hidden="true" />
-                  {addressCopied ? "Copied" : "Copy address"}
-                </button>
-                <button type="button" onClick={() => selectView("accounts")}>
-                  <WalletCards size={15} aria-hidden="true" />
-                  Manage accounts
-                </button>
-                <button type="button" onClick={onLogout}>
-                  <LogOut size={15} aria-hidden="true" />
-                  Disconnect
-                </button>
+                  {view.label}
+                </a>
+              ))}
+          </nav>
+
+          <div className="maker-nav-right">
+            <button
+              ref={explainSwitch}
+              className="maker-explain-toggle"
+              type="button"
+              aria-pressed={explainOpen}
+              onClick={toggleExplain}
+            >
+              Explain
+            </button>
+            <Pill tone={modeTone} dot={running}>
+              {displayedMode[0]?.toUpperCase()}
+              {displayedMode.slice(1)}
+            </Pill>
+            <details className="maker-wallet-menu">
+              <summary aria-label={`Wallet ${walletLabel}`}>
+                <WalletCards size={15} aria-hidden="true" />
+                <span>{walletLabel}</span>
+                <ChevronDown size={14} aria-hidden="true" />
+              </summary>
+              <div className="maker-wallet-popover">
+                <div className="maker-wallet-heading">
+                  <span>Connected wallet</span>
+                  <strong>{walletLabel}</strong>
+                  <small>{walletAddress}</small>
+                </div>
+                <dl className="maker-wallet-facts">
+                  <div>
+                    <dt>Access</dt>
+                    <dd>{operator ? "Operator" : "Whitelisted"}</dd>
+                  </div>
+                  <div>
+                    <dt>Trading account</dt>
+                    <dd>{accountLabel}</dd>
+                  </div>
+                </dl>
+                <div className="maker-wallet-actions">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      void navigator.clipboard
+                        .writeText(walletAddress)
+                        .then(() => {
+                          setAddressCopied(true);
+                          window.setTimeout(
+                            () => setAddressCopied(false),
+                            1_500,
+                          );
+                        });
+                    }}
+                  >
+                    <Copy size={15} aria-hidden="true" />
+                    {addressCopied ? "Copied" : "Copy address"}
+                  </button>
+                  <button type="button" onClick={() => selectView("accounts")}>
+                    <WalletCards size={15} aria-hidden="true" />
+                    Manage accounts
+                  </button>
+                  <button type="button" onClick={onLogout}>
+                    <LogOut size={15} aria-hidden="true" />
+                    Disconnect
+                  </button>
+                </div>
               </div>
+            </details>
+          </div>
+        </header>
+
+        {tourPrompt && (
+          <div className="maker-tour-prompt" role="status">
+            <span>New here? Take the 30-second tour</span>
+            <div>
+              <button type="button" onClick={() => chooseTour(true)}>
+                Start
+              </button>
+              <button type="button" onClick={() => chooseTour(false)}>
+                Not now
+              </button>
             </div>
-          </details>
-        </div>
-      </header>
+          </div>
+        )}
 
-      {notice && (
-        <div
-          className={`notice notice-${noticeTone}`}
-          role={noticeTone === "error" ? "alert" : "status"}
-        >
-          <NoticeIcon size={16} aria-hidden="true" />
-          <span>{notice}</span>
-          <button onClick={onDismissNotice} aria-label="Dismiss notice">
-            ×
-          </button>
-        </div>
-      )}
+        {notice && (
+          <div
+            className={`notice notice-${noticeTone}`}
+            role={noticeTone === "error" ? "alert" : "status"}
+          >
+            <NoticeIcon size={16} aria-hidden="true" />
+            <span>{notice}</span>
+            <button onClick={onDismissNotice} aria-label="Dismiss notice">
+              ×
+            </button>
+          </div>
+        )}
 
-      <div className="maker-view-content">{children}</div>
-      <CoachLayer
-        activeView={activeView}
-        open={explainOpen}
-        onClose={closeCoach}
-      />
-    </main>
+        <div className="maker-view-content">{children}</div>
+        <CoachLayer
+          activeView={activeView}
+          open={explainOpen}
+          onClose={closeCoach}
+        />
+      </main>
+    </ExplainContext.Provider>
   );
 }
