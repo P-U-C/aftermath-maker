@@ -5521,6 +5521,103 @@ mysten-dapp-kit-connect-modal,
   line-height: 1.45;
 }
 
+/* L1: the illustration remains in view while each chapter directs its own beat. */
+.learn-layout {
+  margin-top: 30px;
+  display: grid;
+  grid-template-columns: minmax(0, 0.95fr) minmax(300px, 0.75fr);
+  align-items: start;
+  gap: 24px;
+}
+
+.learn-layout .learn-stage {
+  margin-top: 0;
+  position: sticky;
+  top: 88px;
+}
+
+.learn-layout .learn-chapters {
+  margin-top: 0;
+  grid-template-columns: 1fr;
+  gap: 12px;
+}
+
+.learn-chapters li {
+  scroll-margin-top: 110px;
+}
+
+.learn-chapters button {
+  min-height: 144px;
+  text-align: left;
+}
+
+.learn-chapters small {
+  margin-top: 12px;
+  display: block;
+  color: var(--tide-text);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.learn-beat {
+  min-height: 20px;
+  margin: 12px 0 0;
+  color: var(--ink-2);
+  font-size: 12px;
+  font-weight: 620;
+}
+
+.learn-glossary {
+  margin-top: 72px;
+}
+
+.learn-glossary h2 {
+  margin: 4px 0 0;
+  font-size: clamp(26px, 3vw, 34px);
+  font-stretch: 122%;
+}
+
+.learn-glossary dl {
+  margin: 24px 0 0;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1px;
+  background: var(--hair);
+  border: 1px solid var(--hair);
+  border-radius: 20px;
+  overflow: hidden;
+}
+
+.learn-glossary dl > div {
+  min-width: 0;
+  padding: 18px;
+  background: var(--surface);
+}
+
+.learn-glossary dt {
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.learn-glossary dd {
+  margin: 6px 0 0;
+  display: grid;
+  gap: 9px;
+  color: var(--ink-2);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.learn-glossary a {
+  width: fit-content;
+  min-height: 32px;
+  display: inline-flex;
+  align-items: center;
+  color: var(--tide-text);
+  font-weight: 700;
+  text-underline-offset: 3px;
+}
+
 .strategy-builder {
   margin: 22px 0;
   display: grid;

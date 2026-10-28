@@ -33,6 +33,8 @@ export type MarketMotionHandle = {
   update: (value: MarketMotionUpdate) => void;
   fill: (side: "bid" | "ask") => void;
   hedge: () => void;
+  play: (name: string) => void;
+  pose: (name: string) => void;
 };
 
 type MarketMotionProps = MarketMotionUpdate & {
@@ -49,6 +51,9 @@ type MarketMotionProps = MarketMotionUpdate & {
   seed?: number;
   /** A fixed desktop lane height. The phone layout keeps the engine's compact default. */
   height?: number;
+  /** Learn turns off the engine's ambient simulated takers and directs named scenes. */
+  director?: boolean;
+  onEvent?: (event: string) => void;
 };
 
 // Under this width the engine draws its phone layout.
@@ -81,6 +86,8 @@ export const MarketMotion = forwardRef<MarketMotionHandle, MarketMotionProps>(
       spreadBps,
       seed,
       height,
+      director,
+      onEvent,
     } = props;
     const stage = useRef<HTMLDivElement>(null);
     const narration = useRef<HTMLParagraphElement>(null);
@@ -130,6 +137,8 @@ export const MarketMotion = forwardRef<MarketMotionHandle, MarketMotionProps>(
         hedgeTriggerUsd,
         spreadBps,
         seed,
+        director,
+        onEvent,
         caption: narrate ? narration.current : null,
         counters: narrate ? counters.current : null,
       });
@@ -150,6 +159,8 @@ export const MarketMotion = forwardRef<MarketMotionHandle, MarketMotionProps>(
       hedgeTriggerUsd,
       spreadBps,
       seed,
+      director,
+      onEvent,
     ]);
 
     // The book's tint depends on the surface, so follow theme changes.
@@ -180,6 +191,12 @@ export const MarketMotion = forwardRef<MarketMotionHandle, MarketMotionProps>(
         },
         hedge() {
           engine.current?.hedge();
+        },
+        play(name) {
+          engine.current?.play(name);
+        },
+        pose(name) {
+          engine.current?.pose(name);
         },
       }),
       [],

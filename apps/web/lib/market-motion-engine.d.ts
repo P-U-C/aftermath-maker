@@ -15,12 +15,14 @@ export type MarketMotionSample = {
   book?: MarketMotionBook;
 };
 
-export type MarketMotionEvent = "fill" | "queue" | "skew" | "hedge";
+export type MarketMotionEvent = string;
 
 export type MarketMotionOptions = {
   /** `false` is the desk: driven only by update(), fill() and hedge(). Defaults to true. */
   sim?: boolean | undefined;
   compact?: boolean | undefined;
+  /** false turns off the illustration's autonomous taker director for Learn. */
+  director?: boolean | undefined;
   /** A still frame with no loop. Also used under prefers-reduced-motion. */
   static?: boolean | undefined;
   mid?: number | undefined;
@@ -40,7 +42,7 @@ export type MarketMotionOptions = {
   /** The illustration writes its fill, hedge and spread counters here. */
   counters?: HTMLElement | null | undefined;
   intro?: string | undefined;
-  onEvent?: (event: MarketMotionEvent) => void | undefined;
+  onEvent?: ((event: MarketMotionEvent) => void) | undefined;
 };
 
 export type MarketMotionInstance = {
@@ -56,6 +58,10 @@ export type MarketMotionInstance = {
     earned: number;
   };
   update(sample: MarketMotionSample): void;
+  /** Runs one named Learn scene, cancelling any prior scene. */
+  play(name: string): void;
+  /** Draws a named Learn scene's key frame with no motion. */
+  pose(name: string): void;
   fill(side: "bid" | "ask"): void;
   hedge(): void;
 };
