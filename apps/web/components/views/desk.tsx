@@ -17,6 +17,7 @@ import {
 } from "../../lib/format";
 import type { VenueDescriptor } from "../../lib/venues";
 import { Button, Card, ListRow, Meter, Pill, Sheet } from "../ui/primitives";
+import { GlossaryTerm } from "../ui/glossary-term";
 import { VenueChip } from "../venue-chip";
 import { ViewFrame } from "./view-frame";
 
@@ -66,6 +67,8 @@ type DeskViewProps = {
   marketCount: number;
   startedAt: string | null;
   lastFill: DeskFill | null;
+  narration: string;
+  mode: "observe" | "paper" | "live";
   market: {
     symbol: string;
     tickSize: number | null;
@@ -156,6 +159,8 @@ export function DeskView({
   marketCount,
   startedAt,
   lastFill,
+  narration,
+  mode,
   market,
   risk,
   markets,
@@ -175,6 +180,14 @@ export function DeskView({
       ? 0
       : Math.max(0, 3 - risk.gasRunwayTransactions);
   const ladderLabel = `Your bid ${formatPrice(market.ourBid, market.tickSize)}, ask ${formatPrice(market.ourAsk, market.tickSize)}, spread ${market.spreadBps} bps`;
+  const marketCaption =
+    mode === "paper" ? "Paper" : running ? "Quoting now" : "Waiting its turn";
+  const plainMarketState = (status: DeskMarketRow["status"]) =>
+    status === "healthy"
+      ? "Quoting now"
+      : status === "queued"
+        ? "Waiting its turn"
+        : "Paused";
 
   return (
     <ViewFrame active={active} name="desk">
@@ -249,6 +262,11 @@ export function DeskView({
           </div>
         </section>
 
+        <p className="desk-narration" aria-live="polite">
+          <span>Right now</span>
+          {narration}
+        </p>
+
         <div className="desk-primary-grid">
           <Card
             className="desk-ladder-card"
@@ -317,6 +335,7 @@ export function DeskView({
                 {market.spreadBps} bps spread
               </span>
             </div>
+            <p className="desk-market-caption">{marketCaption}</p>
           </Card>
 
           <Card
@@ -353,6 +372,12 @@ export function DeskView({
                     : `${formatMoney(risk.runDrawdownUsd)} of ${formatMoney(risk.runDrawdownLimitUsd)}`
                 }
               />
+              <p className="desk-drawdown-note">
+                {risk.runDrawdownUsd === null
+                  ? "Run drawdown is not reported yet."
+                  : `Stops if it falls ${formatMoney(risk.runDrawdownLimitUsd)} from its best point this run.`}{" "}
+                <a href="#strategy">Size and limits</a>
+              </p>
               <Meter
                 label="Gas runway"
                 value={gasShortfall}
@@ -379,6 +404,17 @@ export function DeskView({
               />
             }
           >
+            <div className="desk-market-headings" aria-hidden="true">
+              <span>Market</span>
+              <span>Status</span>
+              <span>Inventory</span>
+              <span>Spread</span>
+              <span>
+                <GlossaryTerm term="unrealizedPnl">
+                  Unrealized P&amp;L
+                </GlossaryTerm>
+              </span>
+            </div>
             <div className="desk-list">
               {markets.length ? (
                 markets.map((row) => (
@@ -396,7 +432,7 @@ export function DeskView({
                     <span className="desk-market-row">
                       <strong>{row.symbol}</strong>
                       <span className={`desk-market-state is-${row.status}`}>
-                        {row.status}
+                        {plainMarketState(row.status)}
                       </span>
                       <span>
                         {formatSignedMoney(row.inventoryUsd)} inventory
@@ -439,7 +475,7 @@ export function DeskView({
                     <span className="desk-fill-row">
                       <strong>{fill.symbol}</strong>
                       <span className={`desk-fill-side is-${fill.side}`}>
-                        {fill.side}
+                        {fill.side === "bid" ? "Bought" : "Sold"}
                       </span>
                       <span>{formatMoney(fill.notionalUsd)}</span>
                       <span>{formatTimestamp(fill.occurredAt)}</span>

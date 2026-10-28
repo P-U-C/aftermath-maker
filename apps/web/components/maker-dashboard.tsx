@@ -45,6 +45,7 @@ import {
   shouldBeginWalletSignIn,
   walletSessionMatches,
 } from "../lib/access";
+import { narrate } from "../lib/narrate";
 import { primaryVenue } from "../lib/venues";
 import { AccessScreen, type AccessRequestInput } from "./access-screen";
 import { GlossaryTerm } from "./ui/glossary-term";
@@ -2237,6 +2238,27 @@ function DashboardBody() {
       realizedPnlUsd: fill.realizedPnlUsd,
       txDigest: fill.txDigest,
     })) ?? [];
+  const deskNarration = narrate({
+    name: "Maker",
+    running: Boolean(snapshot?.running),
+    mode: snapshot?.mode ?? config.mode,
+    market: {
+      symbol: snapshot?.market.symbol ?? activeMarket?.symbol ?? null,
+      bid: snapshot?.quote?.bidPrice ?? null,
+      ask: snapshot?.quote?.askPrice ?? null,
+      tickSize: activeMarket?.tickSize ?? null,
+    },
+    inventoryUsd: snapshot?.balances.inventoryUsd ?? null,
+    maxInventoryUsd: config.maxInventoryUsd,
+    lastFillAgeSeconds: deskFills[0]?.occurredAt
+      ? Math.max(
+          0,
+          Math.floor(
+            (Date.now() - Date.parse(deskFills[0].occurredAt)) / 1_000,
+          ),
+        )
+      : null,
+  });
   const venueAccountRows = accounts.map((owned) => ({
     accountId: owned.accountId,
     label: owned.label,
@@ -2753,6 +2775,8 @@ function DashboardBody() {
         marketCount={config.markets.length}
         startedAt={snapshot?.startedAt ?? null}
         lastFill={deskFills[0] ?? null}
+        narration={deskNarration}
+        mode={snapshot?.mode ?? config.mode}
         market={{
           symbol:
             snapshot?.market.symbol ?? activeMarket?.symbol ?? "Pick a market",
@@ -2776,11 +2800,14 @@ function DashboardBody() {
           grossExposureUsd: snapshot?.portfolio.grossExposureUsd ?? 0,
           grossExposureLimitUsd: config.maxGrossExposureUsd,
           worstSideFillUsd,
-          runDrawdownUsd: null,
+          runDrawdownUsd: snapshot?.risk.runDrawdownUsd ?? null,
           runDrawdownLimitUsd: config.maxRunDrawdownUsd,
           gasRunwayTransactions:
             snapshot?.execution.gasRunwayTransactions ?? null,
-          updatedAt: snapshot?.lastSuccessfulCycleAt ?? null,
+          updatedAt:
+            snapshot?.risk.measuredAt ??
+            snapshot?.lastSuccessfulCycleAt ??
+            null,
         }}
         markets={rotationRows}
         marketsUpdatedAt={latestMarketUpdate}
