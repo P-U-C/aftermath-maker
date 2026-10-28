@@ -62,10 +62,15 @@ const navigationViews = makerViews.filter(
   (view) => view !== "accounts" && view !== "learn",
 );
 
-function selectedViews() {
+function selectedViews(stateName) {
   const requested = option("--view", null);
   if (!requested) return [null];
-  if (requested === "all") return makerViews;
+  if (requested === "all") {
+    const fixture = fixtureStates[stateName];
+    return fixture.auth.status === 200 && fixture.setup.setup
+      ? makerViews
+      : [null];
+  }
   if (!makerViews.includes(requested)) {
     throw new Error(
       `Unknown view "${requested}". Choose: ${makerViews.join(", ")}, all`,
@@ -890,7 +895,7 @@ const browser = await chromium.launch({
 
 try {
   for (const stateName of selectedStates()) {
-    for (const view of selectedViews()) {
+    for (const view of selectedViews(stateName)) {
       for (const captureConfig of selectedCaptures()) {
         await capture(browser, stateName, captureConfig, view);
       }
