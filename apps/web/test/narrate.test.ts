@@ -62,9 +62,20 @@ describe("desk narration", () => {
     ).toContain("MON has 3 s left. NEAR is next.");
   });
 
-  it("uses direct paused and paper templates", () => {
-    expect(narrate({ name: "Core", running: false, mode: "live" })).toBe(
-      "Core is paused. Its orders are cancelled and it holds nothing.",
+  it("names inventory honestly after the desk stops", () => {
+    expect(
+      narrate({
+        running: false,
+        mode: "live",
+        market: { symbol: "MON" },
+        inventoryUsd: 1.04,
+      }),
+    ).toBe("Stopped. Orders are cancelled; you still hold $1.04 of MON.");
+  });
+
+  it("only says the stopped desk holds nothing when it is flat", () => {
+    expect(narrate({ running: false, mode: "live", inventoryUsd: 0 })).toBe(
+      "Stopped. Orders are cancelled; you hold nothing.",
     );
     expect(narrate({ name: "Core", running: true, mode: "paper" })).toBe(
       "Core is paper trading. Nothing it shows is a real order.",

@@ -3686,6 +3686,13 @@ mysten-dapp-kit-connect-modal,
   font-size: 13px;
 }
 
+.access-global-notice {
+  width: min(1160px, calc(100% - 40px));
+  margin: 14px auto -8px;
+  border: 1px solid var(--ember);
+  font-weight: 620;
+}
+
 .access-trust-list {
   margin-top: 38px;
   display: grid;
@@ -9424,5 +9431,123 @@ mysten-dapp-kit-connect-modal,
   .objective-evidence > div > strong,
   .objective-evidence > div > p {
     grid-column: 2;
+  }
+}
+
+/* Customer-audit refinements: preserve the existing technical instrument,
+   while making its live state and saved/draft boundary unmistakable. */
+.maker-service-banner {
+  max-width: 1500px;
+  min-height: 42px;
+  margin: 12px auto 0;
+  padding: 9px 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--amber-text);
+  background: var(--amber-soft);
+  border: 1px solid var(--amber);
+  font-size: 13px;
+  font-weight: 620;
+}
+
+.desk-primary-grid.is-wallet-total {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.access-landing-closing
+  .access-closing-connect
+  mysten-dapp-kit-connect-button::part(trigger) {
+  color: var(--ink);
+  background: var(--canvas);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ink) 14%, transparent);
+}
+
+.access-landing-closing
+  .access-closing-connect
+  mysten-dapp-kit-connect-button::part(trigger):hover {
+  color: var(--ink);
+  background: color-mix(in srgb, var(--canvas) 88%, var(--ink));
+}
+
+.maker-view-accounts .onboarding {
+  color: var(--ink);
+  background: var(--surface);
+  border: 0;
+  box-shadow: 0 1px 2px rgba(16, 18, 22, 0.06);
+}
+
+.maker-view-accounts .onboarding .eyebrow,
+.maker-view-accounts .onboarding .status-ok,
+.maker-view-accounts .onboarding .step-icon {
+  color: var(--tide-text);
+}
+
+.maker-view-accounts .onboarding .onboarding-grid,
+.maker-view-accounts .onboarding .setup-step {
+  border-color: var(--line);
+}
+
+.maker-view-accounts .onboarding .setup-step.complete {
+  background: var(--tide-soft);
+}
+
+.maker-view-accounts .onboarding .setup-step p {
+  color: var(--ink-2);
+}
+
+.maker-view-accounts .onboarding .step-icon {
+  border-color: var(--line);
+}
+
+.maker-view-accounts .onboarding .inline-controls select {
+  color: var(--ink);
+  background: var(--fill);
+  border-color: var(--line);
+}
+
+.strategy-title {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 18px;
+}
+
+.strategy-bundle-picker {
+  min-height: 36px;
+  padding: 0 10px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--ink-2);
+  background: var(--fill);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 620;
+}
+
+.strategy-bundle-picker select {
+  min-height: 28px;
+  max-width: 160px;
+  color: var(--ink);
+  background: transparent;
+  border: 0;
+  font: inherit;
+}
+
+@media (max-width: 700px) {
+  .strategy-title {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .strategy-bundle-picker {
+    width: 100%;
+    justify-content: space-between;
+  }
+
+  .strategy-bundle-picker select {
+    max-width: min(70vw, 230px);
   }
 }

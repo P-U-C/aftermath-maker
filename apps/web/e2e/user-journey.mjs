@@ -1,0 +1,448 @@
+/**
+ * Stateful customer audit for the client. It deliberately exercises the UI
+ * against a browser-local control mock: no wallet, control service, or trading
+ * endpoint is contacted.
+ *
+ * Usage:
+ *   node apps/web/e2e/user-journey.mjs --spawn-server
+ *   node apps/web/e2e/user-journey.mjs --base-url http://127.0.0.1:8899
+ */
+import { spawn } from "node:child_process";
+import fs from "node:fs/promises";
+import net from "node:net";
+import path from "node:path";
+import process from "node:process";
+import { chromium } from "playwright-core";
+
+import { apiResponse } from "./fixtures/api.mjs";
+import { fixtureStates } from "./fixtures/control.ts";
+
+const projectRoot = path.resolve(import.meta.dirname, "../../..");
+const mockWalletPath = path.join(
+  import.meta.dirname,
+  "fixtures/mock-wallet.mjs",
+);
+const executablePath =
+  process.env.CHROMIUM_PATH ??
+  path.join(
+    process.env.HOME ?? "/home/ubuntu",
+    ".cache/ms-playwright/chromium-1234/chrome-linux64/chrome",
+  );
+
+function option(name, fallback) {
+  const index = process.argv.indexOf(name);
+  return index === -1 ? fallback : process.argv[index + 1];
+}
+
+const spawnServer = process.argv.includes("--spawn-server");
+const port = Number(option("--port", "8899"));
+const baseUrl = option("--base-url", `http://127.0.0.1:${port}`);
+const outputDirectory = path.resolve(
+  projectRoot,
+  option("--output", "apps/web/e2e/shots/audit-journey"),
+);
+
+function assert(value, message) {
+  if (!value) throw new Error(message);
+}
+
+function cloneFixture() {
+  const fixture = structuredClone(fixtureStates["paper-running"]);
+  fixture.config.config.maxGrossExposureUsd = 0.9;
+  fixture.config.config.maxRunDrawdownUsd = 0.9;
+  fixture.status.snapshot.portfolio.grossExposureUsd = 0.01;
+  fixture.status.snapshot.balances.inventoryUsd = 1.04;
+  fixture.status.snapshot.lastSuccessfulCycleAt = "2026-10-27T10:08:00.000Z";
+  fixture.status.snapshot.market.updatedAt = "2026-10-27T10:08:00.000Z";
+  fixture.status.snapshot.risk.measuredAt = "2026-10-27T10:08:00.000Z";
+  fixture.accounts.accounts.push(
+    {
+      ...fixture.accounts.accounts[0],
+      accountId: "1747",
+      accountCapId: `0x${"67".repeat(32)}`,
+      label: "Rewards maker",
+    },
+    {
+      ...fixture.accounts.accounts[0],
+      accountId: "1748",
+      accountCapId: `0x${"68".repeat(32)}`,
+      label: "Rewards hedge",
+    },
+    {
+      ...fixture.accounts.accounts[0],
+      accountId: "1749",
+      accountCapId: `0x${"69".repeat(32)}`,
+      label: "Reserve",
+    },
+  );
+  return fixture;
+}
+
+function routePathFor(url) {
+  const marker = "/api/control/";
+  return url.pathname.slice(url.pathname.indexOf(marker) + marker.length);
+}
+
+async function installStatefulControl(page, state) {
+  await page.route("**/api/control/**", async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    const routePath = routePathFor(url);
+    const json = (status, body) =>
+      route.fulfill({
+        status,
+        contentType: "application/json",
+        body: JSON.stringify(body),
+      });
+
+    if (routePath === "api/auth/logout") return json(200, { ok: true });
+    if (state.sessionExpired && routePath !== "api/runtime/stop") {
+      return json(401, { error: "Session expired" });
+    }
+    if (state.serviceDown && routePath === "api/status") {
+      return json(503, { error: "Maker is temporarily unavailable" });
+    }
+    if (routePath === "api/runtime/stop" && request.method() === "POST") {
+      state.fixture.status.snapshot.running = false;
+      state.fixture.status.bundles = (state.fixture.status.bundles ?? []).map(
+        (entry) => ({
+          ...entry,
+          bundle: { ...entry.bundle, status: "stopped" },
+        }),
+      );
+      state.fixture.bundles.bundles = state.fixture.bundles.bundles.map(
+        (bundle) =>
+          bundle.status === "running"
+            ? { ...bundle, status: "stopped" }
+            : bundle,
+      );
+      return json(200, { ok: true });
+    }
+    if (routePath === "api/bundles" && request.method() === "POST") {
+      const body = JSON.parse(request.postData() ?? "{}");
+      const createdAt = "2026-10-27T17:08:32.000Z";
+      const next = {
+        id: "audit-bundle",
+        name: body.name,
+        makerAccountId: body.config.makerAccountId,
+        takerAccountId: body.config.hedge?.accountId ?? null,
+        mode: "paper",
+        status: "paused",
+        marketIds: body.config.markets.map((market) => market.marketId),
+        createdAt,
+        updatedAt: createdAt,
+        lastError: null,
+        archivedAt: null,
+      };
+      state.fixture.bundles.bundles.push(next);
+      state.fixture.status.bundles = [
+        ...(state.fixture.status.bundles ?? []),
+        { bundle: next, snapshot: null },
+      ];
+      return json(200, { bundle: next });
+    }
+    if (routePath === "api/config" && request.method() === "POST") {
+      state.fixture.config.config = JSON.parse(request.postData() ?? "{}");
+      return json(200, { config: state.fixture.config.config });
+    }
+    const response = apiResponse(state.fixture, url);
+    return json(response.status, response.body);
+  });
+
+  await page.route("**/*", async (route) => {
+    const url = new URL(route.request().url());
+    if (url.hostname === "127.0.0.1" || url.hostname === "localhost") {
+      return route.fallback();
+    }
+    return route.abort("blockedbyclient");
+  });
+}
+
+async function waitForPort(portNumber) {
+  return new Promise((resolve) => {
+    const socket = net.connect({ host: "127.0.0.1", port: portNumber });
+    socket.once("connect", () => {
+      socket.destroy();
+      resolve(true);
+    });
+    socket.once("error", () => resolve(false));
+  });
+}
+
+async function ensurePortFree(portNumber) {
+  if (await waitForPort(portNumber)) {
+    throw new Error(
+      `Port ${portNumber} is already in use; audit will not reuse an unknown server.`,
+    );
+  }
+}
+
+async function startServer() {
+  await ensurePortFree(port);
+  const next = path.join(projectRoot, "node_modules/next/dist/bin/next");
+  const child = spawn(process.execPath, [next, "start", "-p", String(port)], {
+    cwd: path.join(projectRoot, "apps/web"),
+    stdio: "inherit",
+  });
+  let output = "";
+  for (let attempt = 0; attempt < 120; attempt += 1) {
+    if (await waitForPort(port)) return child;
+    if (child.exitCode !== null) {
+      throw new Error(`Next start exited early: ${output.slice(-2_000)}`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  child.kill("SIGTERM");
+  throw new Error(`Timed out starting Next: ${output.slice(-2_000)}`);
+}
+
+async function newPage(browser, viewport) {
+  const context = await browser.newContext({
+    viewport,
+    deviceScaleFactor: 1,
+    colorScheme: "light",
+    locale: "en-US",
+    timezoneId: "UTC",
+  });
+  const page = await context.newPage();
+  page.setDefaultTimeout(5_000);
+  const state = {
+    fixture: cloneFixture(),
+    serviceDown: false,
+    sessionExpired: false,
+  };
+  await page.addInitScript({ path: mockWalletPath });
+  await page.addInitScript(() => {
+    window.confirm = () => true;
+    Object.defineProperty(document, "startViewTransition", {
+      configurable: true,
+      value: undefined,
+    });
+    const nativeSetInterval = window.setInterval;
+    window.setInterval = (handler, timeout, ...args) =>
+      nativeSetInterval(handler, Math.min(Number(timeout) || 0, 60), ...args);
+  });
+  await installStatefulControl(page, state);
+  return { context, page, state };
+}
+
+async function goToDesk(page) {
+  await page.goto(baseUrl, { waitUntil: "domcontentloaded" });
+  await page.getByRole("navigation", { name: "Maker views" }).waitFor();
+  await page.locator('.maker-view[data-view="desk"]:not([hidden])').waitFor();
+}
+
+async function capture(page, name) {
+  await page.screenshot({
+    path: path.join(outputDirectory, name),
+    fullPage: false,
+  });
+}
+
+async function stopWithInventory(browser) {
+  const { context, page } = await newPage(browser, {
+    width: 1440,
+    height: 900,
+  });
+  try {
+    await goToDesk(page);
+    await page
+      .getByRole("button", { name: "Stop all", exact: true })
+      .first()
+      .click();
+    await page
+      .locator(".desk-narration")
+      .filter({
+        hasText: "Stopped. Orders are cancelled; you still hold $1.04 of MON.",
+      })
+      .waitFor();
+    await capture(page, "v5-audit-stopped-inventory-desktop.png");
+  } finally {
+    await context.close();
+  }
+}
+
+async function savedDeskOnly(browser) {
+  const { context, page } = await newPage(browser, {
+    width: 1440,
+    height: 900,
+  });
+  try {
+    await goToDesk(page);
+    await page
+      .locator(".desk-risk-card")
+      .getByText("$0.01 of $0.90", { exact: true })
+      .first()
+      .waitFor();
+    await page.getByRole("link", { name: "Strategy", exact: true }).click();
+    await page
+      .getByRole("button", { name: /Size and limits/ })
+      .first()
+      .click();
+    await page
+      .getByRole("spinbutton", { name: "Maximum gross exposure in USD" })
+      .fill("1.50");
+    await page
+      .getByText("Unsaved changes, review and save", { exact: true })
+      .waitFor();
+    await page.getByRole("link", { name: "Desk", exact: true }).click();
+    await page
+      .locator(".desk-risk-card")
+      .getByText("$0.01 of $0.90", { exact: true })
+      .first()
+      .waitFor();
+    await page
+      .locator(".desk-hero")
+      .getByText("Markets", { exact: false })
+      .waitFor();
+    await capture(page, "v5-audit-saved-desk-desktop.png");
+  } finally {
+    await context.close();
+  }
+}
+
+async function revokeWithoutWallet(browser) {
+  const { context, page } = await newPage(browser, {
+    width: 1440,
+    height: 900,
+  });
+  try {
+    await goToDesk(page);
+    await page.evaluate(() => {
+      window.location.hash = "accounts";
+    });
+    await page
+      .locator('.maker-view[data-view="accounts"]:not([hidden])')
+      .waitFor();
+    await page
+      .getByRole("button", { name: "Revoke trading key for account 1745" })
+      .click();
+    await page
+      .getByText("Connect your owner wallet to revoke", { exact: true })
+      .waitFor();
+    await page
+      .locator("mysten-dapp-kit-connect-modal")
+      .getByText("Mock Sui Wallet", { exact: true })
+      .filter({ visible: true })
+      .waitFor();
+    await capture(page, "v5-audit-revoke-wallet-desktop.png");
+  } finally {
+    await context.close();
+  }
+}
+
+async function serviceAndSessionFailures(browser) {
+  const desktop = await newPage(browser, { width: 1440, height: 900 });
+  try {
+    await goToDesk(desktop.page);
+    desktop.state.serviceDown = true;
+    await desktop.page.waitForTimeout(300);
+    await desktop.page
+      .getByText("Can't reach Maker. Showing data from 10:08 AM.", {
+        exact: true,
+      })
+      .waitFor();
+    const stale = desktop.page.locator(".desk-freshness.is-stale");
+    assert(
+      (await stale.count()) > 0,
+      "Control outage did not turn timestamps amber.",
+    );
+    await desktop.page
+      .getByRole("button", { name: "Stop all", exact: true })
+      .first()
+      .click();
+    await desktop.page.getByText("Stopped.", { exact: false }).waitFor();
+    await capture(desktop.page, "v5-audit-service-down-desktop.png");
+  } finally {
+    await desktop.context.close();
+  }
+
+  const phone = await newPage(browser, { width: 390, height: 844 });
+  try {
+    await goToDesk(phone.page);
+    phone.state.sessionExpired = true;
+    await phone.page.waitForTimeout(300);
+    await phone.page
+      .locator(".access-notice")
+      .getByText("Your session ended. Sign in again,", { exact: true })
+      .waitFor();
+    await phone.page
+      .getByRole("heading", {
+        name: "Your own market-making desk. Working for you.",
+      })
+      .waitFor();
+    await capture(phone.page, "v5-audit-session-expired-phone.png");
+  } finally {
+    await phone.context.close();
+  }
+}
+
+async function createBundleWithFreeChoices(browser) {
+  const { context, page } = await newPage(browser, {
+    width: 1440,
+    height: 900,
+  });
+  try {
+    await goToDesk(page);
+    await page.getByRole("link", { name: "Bundles", exact: true }).click();
+    await page.getByRole("button", { name: "New bundle", exact: true }).click();
+    const dialog = page.getByRole("dialog", { name: "New Paper bundle" });
+    await dialog.waitFor();
+    const makerOptions = await dialog
+      .getByLabel("Maker account")
+      .locator("option")
+      .allTextContents();
+    const marketOptions = await dialog
+      .getByLabel("Market")
+      .locator("option")
+      .allTextContents();
+    assert(
+      !makerOptions.some((label) =>
+        /Core maker|Neutral hedge|Rewards maker|Rewards hedge/.test(label),
+      ),
+      `Taken accounts were offered: ${JSON.stringify(makerOptions)}`,
+    );
+    assert(
+      !marketOptions.some((label) => /^(MON|NEAR|ETH|BTC)$/.test(label)),
+      `Taken markets were offered: ${JSON.stringify(marketOptions)}`,
+    );
+    await dialog.getByLabel("Name").fill("Audit reserve");
+    await dialog.getByLabel("Maker account").selectOption({ label: "Reserve" });
+    await dialog.getByLabel("Market").selectOption({ label: "HYPE" });
+    await dialog.getByRole("button", { name: "Continue", exact: true }).click();
+    await page
+      .getByRole("heading", { name: "Audit reserve", exact: true })
+      .waitFor();
+    const start = page
+      .getByRole("button", { name: "Start", exact: true })
+      .last();
+    await start.waitFor();
+    await start.scrollIntoViewIfNeeded();
+    await capture(page, "v5-audit-bundle-free-options-desktop.png");
+  } finally {
+    await context.close();
+  }
+}
+
+await fs.mkdir(outputDirectory, { recursive: true });
+const server = spawnServer ? await startServer() : null;
+const browser = await chromium.launch({
+  executablePath,
+  headless: true,
+  args: ["--no-sandbox"],
+});
+
+try {
+  await stopWithInventory(browser);
+  await savedDeskOnly(browser);
+  await revokeWithoutWallet(browser);
+  await serviceAndSessionFailures(browser);
+  await createBundleWithFreeChoices(browser);
+  process.stdout.write("customer journey: all stateful audit flows passed\n");
+} finally {
+  await browser.close();
+  if (server) {
+    server.kill("SIGTERM");
+    await new Promise((resolve) => server.once("exit", resolve));
+  }
+}

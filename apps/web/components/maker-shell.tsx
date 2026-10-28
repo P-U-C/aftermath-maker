@@ -267,7 +267,17 @@ function CoachLayer({
       const gap = 12;
       const width = 260;
       const height = 136;
-      const occupied = targets.map(({ rect }) => rect);
+      // The desk result is the primary reading surface. Explain notes may point
+      // at nearby cards, but must never sit over that result.
+      const protectedRects =
+        activeView === "desk"
+          ? [
+              root
+                ?.querySelector<HTMLElement>(".desk-hero")
+                ?.getBoundingClientRect(),
+            ].filter((rect): rect is DOMRect => Boolean(rect))
+          : [];
+      const occupied = [...targets.map(({ rect }) => rect), ...protectedRects];
       const next: CoachPosition[] = [];
       for (const { note, rect } of targets) {
         const candidates = [
@@ -450,8 +460,12 @@ type MakerShellProps = {
   markState: SpreadMarkState;
   mode: "observe" | "paper" | "live";
   running: boolean;
+  canStopAll: boolean;
   phoneDeskStopAvailable: boolean;
   live: boolean;
+  canOperate: boolean;
+  serviceUnavailable: boolean;
+  lastGoodDataAt: string | null;
   walletAddress: string;
   walletLabel: string;
   accountLabel: string;
@@ -470,8 +484,12 @@ export function MakerShell({
   markState,
   mode,
   running,
+  canStopAll,
   phoneDeskStopAvailable,
   live,
+  canOperate,
+  serviceUnavailable,
+  lastGoodDataAt,
   walletAddress,
   walletLabel,
   accountLabel,
@@ -554,7 +572,7 @@ export function MakerShell({
   const activeLabel =
     makerViews.find((view) => view.id === activeView)?.label ?? "Desk";
   const showPhoneStopAll =
-    running &&
+    canStopAll &&
     activeView !== "strategy" &&
     !(activeView === "desk" && phoneDeskStopAvailable);
   const NoticeIcon =
@@ -563,6 +581,12 @@ export function MakerShell({
       : noticeTone === "warning"
         ? AlertTriangle
         : CircleX;
+  const lastGoodDataText = lastGoodDataAt
+    ? new Intl.DateTimeFormat("en-US", {
+        hour: "numeric",
+        minute: "2-digit",
+      }).format(new Date(lastGoodDataAt))
+    : "the last update";
 
   return (
     <ExplainContext.Provider
@@ -641,7 +665,7 @@ export function MakerShell({
           </nav>
 
           <div className="maker-nav-right">
-            {running && (
+            {canStopAll && (
               <button
                 className="maker-stop-all"
                 type="button"
@@ -718,7 +742,7 @@ export function MakerShell({
           </div>
         </header>
 
-        {tourPrompt && (
+        {tourPrompt && canOperate && (
           <div className="maker-tour-prompt" role="status">
             <span>New here? Take the 30-second tour</span>
             <div>
@@ -729,6 +753,15 @@ export function MakerShell({
                 Not now
               </button>
             </div>
+          </div>
+        )}
+
+        {serviceUnavailable && (
+          <div className="maker-service-banner" role="status">
+            <AlertTriangle size={16} aria-hidden="true" />
+            <span>
+              Can&apos;t reach Maker. Showing data from {lastGoodDataText}.
+            </span>
           </div>
         )}
 

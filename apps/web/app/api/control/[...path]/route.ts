@@ -74,7 +74,17 @@ async function proxy(
     ...(hasBody ? { body: await request.text() } : {}),
     cache: "no-store",
   });
-  const body = (await upstream.json()) as Record<string, unknown>;
+  const upstreamPayload = await upstream.text();
+  let body: Record<string, unknown>;
+  try {
+    body = upstreamPayload
+      ? (JSON.parse(upstreamPayload) as Record<string, unknown>)
+      : { error: `Control returned no response (${upstream.status})` };
+  } catch {
+    body = {
+      error: `Control returned an invalid response (${upstream.status})`,
+    };
+  }
   const responseBody = { ...body };
 
   const response = NextResponse.json(responseBody, {

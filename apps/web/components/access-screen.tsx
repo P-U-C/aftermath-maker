@@ -193,6 +193,12 @@ export function AccessScreen({
         )}
       </header>
 
+      {notice && (
+        <div className="access-notice access-global-notice" role="alert">
+          {notice}
+        </div>
+      )}
+
       <div
         className={`access-layout${landing ? " access-layout-landing" : ""}`}
       >
@@ -329,12 +335,6 @@ export function AccessScreen({
                 <div className="access-connect access-connect-secondary">
                   <ConnectButton>Choose another wallet</ConnectButton>
                 </div>
-              </div>
-            )}
-
-            {notice && (
-              <div className="access-notice" role="alert">
-                {notice}
               </div>
             )}
           </div>

@@ -68,7 +68,6 @@ function BundleLane({ lane }: { lane: RunningBundleLane }) {
         compact
         sim={false}
         className="bundle-lane-motion"
-        caption={(snapshot.market.symbol || "Market") + " snapshot"}
         height={220}
         mid={snapshot.market.indexPrice}
         bid={snapshot.quote?.bidPrice ?? null}
@@ -83,12 +82,12 @@ function BundleLane({ lane }: { lane: RunningBundleLane }) {
 }
 
 export function BundleDeskLanes({ lanes }: { lanes: RunningBundleLane[] }) {
-  if (lanes.length < 2) return null;
+  if (!lanes.length) return null;
   return (
     <section className="bundle-desk-lanes" aria-label="Running bundles">
       <header>
         <span className="eyebrow">Running bundles</span>
-        <h2>One lane per bundle</h2>
+        <h2>Bundles</h2>
       </header>
       <div>
         {lanes.slice(0, 4).map((lane) => (
