@@ -450,6 +450,7 @@ type MakerShellProps = {
   markState: SpreadMarkState;
   mode: "observe" | "paper" | "live";
   running: boolean;
+  phoneDeskStopAvailable: boolean;
   live: boolean;
   walletAddress: string;
   walletLabel: string;
@@ -469,6 +470,7 @@ export function MakerShell({
   markState,
   mode,
   running,
+  phoneDeskStopAvailable,
   live,
   walletAddress,
   walletLabel,
@@ -551,6 +553,10 @@ export function MakerShell({
         : "neutral";
   const activeLabel =
     makerViews.find((view) => view.id === activeView)?.label ?? "Desk";
+  const showPhoneStopAll =
+    running &&
+    activeView !== "strategy" &&
+    !(activeView === "desk" && phoneDeskStopAvailable);
   const NoticeIcon =
     noticeTone === "success"
       ? CircleCheck
@@ -575,10 +581,21 @@ export function MakerShell({
               <strong>{activeLabel}</strong>
             </span>
             <div className="maker-phone-actions">
-              <Pill tone={modeTone} dot={running}>
-                {displayedMode[0]?.toUpperCase()}
-                {displayedMode.slice(1)}
-              </Pill>
+              {showPhoneStopAll ? (
+                <button
+                  className="maker-phone-stop-all"
+                  type="button"
+                  onClick={onStopAll}
+                >
+                  <CircleStop size={17} aria-hidden="true" />
+                  Stop all
+                </button>
+              ) : (
+                <Pill tone={modeTone} dot={running}>
+                  {displayedMode[0]?.toUpperCase()}
+                  {displayedMode.slice(1)}
+                </Pill>
+              )}
               <button
                 ref={phoneExplainSwitch}
                 className="maker-phone-explain"

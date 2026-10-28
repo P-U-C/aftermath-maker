@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { X } from "lucide-react";
+import { CircleStop, X } from "lucide-react";
 
 import { formatMoney } from "../../lib/format";
 import type { VenueDescriptor } from "../../lib/venues";
@@ -10,10 +10,14 @@ import { ViewFrame } from "./view-frame";
 export function StrategyView({
   active,
   children,
+  phoneStopAll,
+  onStopAll,
   onClose,
 }: {
   active: boolean;
   children: ReactNode;
+  phoneStopAll: boolean;
+  onStopAll: () => void;
   onClose: () => void;
 }) {
   const { open: explainOpen, toggle: toggleExplain } = useMakerExplain();
@@ -30,6 +34,17 @@ export function StrategyView({
           >
             Explain
           </button>
+          {phoneStopAll && (
+            <Button
+              variant="stop"
+              size="icon"
+              onClick={onStopAll}
+              aria-label="Stop all"
+              title="Stop all"
+            >
+              <CircleStop size={18} aria-hidden="true" />
+            </Button>
+          )}
           <Button
             variant="quiet"
             size="icon"

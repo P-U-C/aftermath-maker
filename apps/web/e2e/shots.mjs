@@ -451,6 +451,28 @@ async function capture(browser, stateName, captureConfig, view) {
         .first()
         .waitFor();
     }
+    const hasRunningBundle =
+      fixture.auth.status === 200 &&
+      (fixture.status.bundles ?? []).some(
+        (entry) => entry.bundle.status === "running",
+      );
+    if (
+      captureConfig.viewport.width <= 700 &&
+      view !== null &&
+      view !== "desk" &&
+      hasRunningBundle
+    ) {
+      const stopAll = page.getByRole("button", {
+        name: "Stop all",
+        exact: true,
+      });
+      await stopAll.waitFor();
+      if (!(await stopAll.isEnabled())) {
+        throw new Error(
+          `${stateName}/${view}/${captureConfig.name} disabled Stop all while a bundle was running`,
+        );
+      }
+    }
     if (
       showAccountEditor &&
       view === "accounts" &&
@@ -1004,6 +1026,29 @@ async function capture(browser, stateName, captureConfig, view) {
     process.stdout.write(
       `${stateName}${view ? `/${view}` : ""}/${captureConfig.name}: ${file} (${dimensions.scrollWidth}px wide)\n`,
     );
+
+    if (
+      stateName === "paper-running" &&
+      view === "bundles" &&
+      captureConfig.name === "desktop-light"
+    ) {
+      await page.getByRole("button", { name: "New bundle" }).click();
+      const dialog = page.getByRole("dialog", { name: "New Paper bundle" });
+      await dialog.waitFor();
+      const availableMarkets = await dialog
+        .getByLabel("Market")
+        .locator("option")
+        .allTextContents();
+      if (
+        JSON.stringify(availableMarkets) !==
+        JSON.stringify(["Choose an available market", "HYPE"])
+      ) {
+        throw new Error(
+          `Bundle creation offered markets already assigned to another bundle: ${JSON.stringify(availableMarkets)}`,
+        );
+      }
+      await dialog.getByRole("button", { name: "Cancel" }).click();
+    }
 
     if (
       showFlattenSheet &&

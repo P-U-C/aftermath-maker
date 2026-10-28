@@ -5295,6 +5295,16 @@ mysten-dapp-kit-connect-modal,
   font: inherit;
 }
 
+.bundle-create-note {
+  margin: 14px 0 0;
+  padding: 10px 12px;
+  color: var(--amber-text);
+  background: var(--amber-soft);
+  border-radius: 9px;
+  font-size: 13px;
+  line-height: 1.4;
+}
+
 .bundle-confirm-limits {
   margin: 0;
   display: grid;
@@ -8057,6 +8067,7 @@ mysten-dapp-kit-connect-modal,
 /* Step 8: phone desk and editing surfaces. */
 .maker-phone-heading,
 .maker-phone-explain,
+.maker-phone-stop-all,
 .strategy-mobile-sheet-header,
 .desk-phone-dock {
   display: none;
@@ -8181,6 +8192,24 @@ mysten-dapp-kit-connect-modal,
   .maker-phone-explain[aria-pressed="true"] {
     color: var(--canvas);
     background: var(--ink);
+  }
+
+  .maker-phone-stop-all {
+    min-height: 44px;
+    padding: 0 12px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    color: var(--on-stop);
+    background: var(--stop);
+    border: 1px solid var(--stop);
+    border-radius: 999px;
+    font:
+      700 13px/1 var(--font-mona),
+      Arial,
+      sans-serif;
+    white-space: nowrap;
   }
 
   .maker-nav-brand,
