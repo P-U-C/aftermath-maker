@@ -703,6 +703,154 @@ describe("persistent control store", () => {
     migratedDatabase.close();
   });
 
+  it("attributes Core records and backfills only unambiguous legacy history", () => {
+    const directory = join(
+      process.env.TMPDIR ?? "/tmp",
+      `aftermath-maker-${randomBytes(8).toString("hex")}`,
+    );
+    mkdirSync(directory, { recursive: true });
+    const path = join(directory, "maker.db");
+    const ownerAddress = `0x${"f".repeat(64)}`;
+    const config = makerConfigSchema.parse({
+      markets: [{ marketId: "0x5001", symbol: "FIVE" }],
+    });
+
+    const initial = new Store(path);
+    initial.close();
+    const legacyDatabase = new Database(path);
+    legacyDatabase
+      .prepare(
+        `INSERT INTO tenant_settings
+          (owner_address, key, value, updated_at) VALUES (?, ?, ?, ?)`,
+      )
+      .run(
+        ownerAddress,
+        "maker_config",
+        JSON.stringify(config),
+        "2026-10-28T00:00:00.000Z",
+      );
+    legacyDatabase.close();
+
+    const upgraded = new Store(path);
+    const tenant = upgraded.forTenant(ownerAddress);
+    const coreId = tenant.listBundles()[0]!.id;
+    tenant.logEvent({ category: "runtime", action: "new", outcome: "ok" });
+    tenant.logExecution({
+      mode: "paper",
+      marketId: "0x5001",
+      bidPrice: 1,
+      askPrice: 2,
+      sizeUsd: 3,
+      outcome: "simulated",
+    });
+    tenant.trackMakerOrders({
+      accountId: "42",
+      marketId: "0x5001",
+      quoteDigest: "new-order",
+      orderIds: ["100"],
+    });
+    tenant.recordHedgeExecution({
+      makerAccountId: "42",
+      hedgeAccountId: "43",
+      marketId: "0x5001",
+      digest: "new-hedge",
+      side: "ask",
+      requestedNotionalUsd: 3,
+      gasUsedMist: 4,
+      fillKeys: ["new-fill"],
+    });
+    upgraded.close();
+
+    const history = new Database(path);
+    history
+      .prepare(
+        `INSERT INTO tenant_audit_events
+          (owner_address, bundle_id, occurred_at, category, action, outcome, detail)
+         VALUES (?, NULL, ?, 'runtime', 'legacy', 'ok', '{}')`,
+      )
+      .run(ownerAddress, "2026-10-27T00:00:00.000Z");
+    history
+      .prepare(
+        `INSERT INTO tenant_executions
+          (owner_address, bundle_id, occurred_at, mode, market_id, bid_price,
+           ask_price, size_usd, outcome)
+         VALUES (?, NULL, ?, 'paper', '0x5001', 1, 2, 3, 'simulated')`,
+      )
+      .run(ownerAddress, "2026-10-27T00:00:00.000Z");
+    history
+      .prepare(
+        `INSERT INTO tenant_maker_orders
+          (owner_address, bundle_id, account_id, order_id, market_id,
+           quote_digest, posted_at)
+         VALUES (?, NULL, '42', '101', '0x5001', 'legacy-order', ?)`,
+      )
+      .run(ownerAddress, "2026-10-27T00:00:00.000Z");
+    history
+      .prepare(
+        `INSERT INTO tenant_hedge_executions
+          (owner_address, bundle_id, occurred_at, maker_account_id,
+           hedge_account_id, market_id, digest, side, requested_notional_usd,
+           gas_used_mist)
+         VALUES (?, NULL, ?, '42', '43', '0x5001', 'legacy-hedge', 'ask', 3, 4)`,
+      )
+      .run(ownerAddress, "2026-10-27T00:00:00.000Z");
+    history
+      .prepare(
+        `INSERT INTO tenant_hedged_fills
+          (owner_address, bundle_id, maker_account_id, fill_key, hedge_digest,
+           processed_at)
+         VALUES (?, NULL, '42', 'legacy-fill', 'legacy-hedge', ?)`,
+      )
+      .run(ownerAddress, "2026-10-27T00:00:00.000Z");
+    history.close();
+
+    const backfilled = new Store(path);
+    backfilled.close();
+    const attributed = new Database(path, { readonly: true });
+    for (const table of [
+      "tenant_audit_events",
+      "tenant_executions",
+      "tenant_maker_orders",
+      "tenant_hedge_executions",
+      "tenant_hedged_fills",
+    ]) {
+      const rows = attributed
+        .prepare(`SELECT bundle_id FROM ${table} WHERE owner_address = ?`)
+        .all(ownerAddress) as Array<{ bundle_id: string | null }>;
+      expect(rows).not.toHaveLength(0);
+      expect(rows.every((row) => row.bundle_id === coreId)).toBe(true);
+    }
+    attributed.close();
+
+    const changed = new Store(path);
+    changed.forTenant(ownerAddress).setConfig({
+      ...config,
+      quoteSizeUsd: config.quoteSizeUsd + 1,
+    });
+    changed.close();
+    const uncertain = new Database(path);
+    uncertain
+      .prepare(
+        `INSERT INTO tenant_audit_events
+          (owner_address, bundle_id, occurred_at, category, action, outcome, detail)
+         VALUES (?, NULL, ?, 'runtime', 'before-bundles', 'ok', '{}')`,
+      )
+      .run(ownerAddress, "2026-10-26T00:00:00.000Z");
+    uncertain.close();
+
+    const reopened = new Store(path);
+    reopened.close();
+    const preservedDatabase = new Database(path, { readonly: true });
+    const preserved = preservedDatabase
+      .prepare(
+        `SELECT bundle_id FROM tenant_audit_events
+         WHERE owner_address = ? AND action = 'before-bundles'`,
+      )
+      .get(ownerAddress) as { bundle_id: string | null };
+    expect(preserved.bundle_id).toBeNull();
+    preservedDatabase.close();
+  });
+
   it("skips and audits a malformed legacy config without blocking startup", () => {
     const directory = join(
       process.env.TMPDIR ?? "/tmp",

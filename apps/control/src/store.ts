@@ -970,12 +970,70 @@ export class Store {
           );
         }
       }
+
+      // History can only be assigned to Core when the migration evidence shows
+      // that no later Core config was saved. All other legacy rows intentionally
+      // remain unassigned for B2's "Before bundles" presentation.
+      const eligibleCores = this.db
+        .prepare(
+          `SELECT bundles.id, bundles.owner_address
+           FROM bundles
+           JOIN bundle_legacy_backups
+             ON bundle_legacy_backups.owner_address = bundles.owner_address
+           WHERE bundles.name = 'Core'
+             AND bundles.created_at = bundles.updated_at
+             AND bundle_legacy_backups.legacy_config_updated_at = bundles.created_at
+             AND bundle_legacy_backups.rolled_back_at IS NULL`,
+        )
+        .all() as Array<{ id: string; owner_address: string }>;
+      const attributionTables = [
+        "tenant_audit_events",
+        "tenant_executions",
+        "tenant_maker_orders",
+        "tenant_hedge_executions",
+        "tenant_hedged_fills",
+      ];
+      for (const core of eligibleCores) {
+        for (const table of attributionTables) {
+          this.db
+            .prepare(
+              `UPDATE ${table}
+               SET bundle_id = ?
+               WHERE owner_address = ? AND bundle_id IS NULL`,
+            )
+            .run(core.id, core.owner_address);
+        }
+      }
     });
     migrate();
   }
 
   forTenant(ownerAddress: string): TenantStore {
     return new TenantStore(this.db, normalizeAddress(ownerAddress));
+  }
+
+  forBundle(ownerAddress: string, bundleId: string): TenantStore {
+    const normalizedOwner = normalizeAddress(ownerAddress);
+    const bundle = this.db
+      .prepare(
+        `SELECT id FROM bundles
+         WHERE owner_address = ? AND id = ?`,
+      )
+      .get(normalizedOwner, bundleId) as { id: string } | undefined;
+    if (!bundle) throw new Error("Bundle was not found for this wallet");
+    return new TenantStore(this.db, normalizedOwner, bundle.id);
+  }
+
+  coreRuntimeBundleId(ownerAddress: string): string | null {
+    const normalizedOwner = normalizeAddress(ownerAddress);
+    if (this.forTenant(normalizedOwner).bundlesRolledBack()) return null;
+    const bundle = this.db
+      .prepare(
+        `SELECT id FROM bundles
+         WHERE owner_address = ? AND name = 'Core'`,
+      )
+      .get(normalizedOwner) as { id: string } | undefined;
+    return bundle?.id ?? null;
   }
 
   listTenantOwners(): string[] {
@@ -1376,6 +1434,7 @@ export class TenantStore {
   constructor(
     private readonly db: Database.Database,
     public readonly ownerAddress: string,
+    public readonly bundleId: string | null = null,
   ) {}
 
   private pruneTable(table: RetentionTable, limit: number): void {
@@ -1451,6 +1510,18 @@ export class TenantStore {
         )
         .get(this.ownerAddress),
     );
+  }
+
+  private attributedBundleId(): string | null {
+    if (this.bundlesRolledBack()) return null;
+    if (this.bundleId) return this.bundleId;
+    const bundle = this.db
+      .prepare(
+        `SELECT id FROM bundles
+         WHERE owner_address = ? AND name = 'Core'`,
+      )
+      .get(this.ownerAddress) as { id: string } | undefined;
+    return bundle?.id ?? null;
   }
 
   private configSource():
@@ -1945,11 +2016,12 @@ export class TenantStore {
     this.db
       .prepare(
         `INSERT INTO tenant_audit_events
-          (owner_address, occurred_at, category, action, outcome, detail)
-         VALUES (?, ?, ?, ?, ?, ?)`,
+          (owner_address, bundle_id, occurred_at, category, action, outcome, detail)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         this.ownerAddress,
+        this.attributedBundleId(),
         new Date().toISOString(),
         inputs.category,
         inputs.action,
@@ -2000,12 +2072,13 @@ export class TenantStore {
     this.db
       .prepare(
         `INSERT INTO tenant_executions
-          (owner_address, occurred_at, mode, market_id, digest, endpoint,
+          (owner_address, bundle_id, occurred_at, mode, market_id, digest, endpoint,
            bid_price, ask_price, size_usd, outcome, error, gas_used_mist)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         this.ownerAddress,
+        this.attributedBundleId(),
         new Date().toISOString(),
         inputs.mode,
         inputs.marketId,
@@ -2029,14 +2102,17 @@ export class TenantStore {
   }): void {
     const insert = this.db.prepare(
       `INSERT OR IGNORE INTO tenant_maker_orders
-        (owner_address, account_id, order_id, market_id, quote_digest, posted_at)
-       VALUES (?, ?, ?, ?, ?, ?)`,
+        (owner_address, bundle_id, account_id, order_id, market_id, quote_digest,
+         posted_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
     );
     const postedAt = new Date().toISOString();
+    const bundleId = this.attributedBundleId();
     this.db.transaction(() => {
       for (const orderId of inputs.orderIds) {
         insert.run(
           this.ownerAddress,
+          bundleId,
           inputs.accountId,
           orderId,
           inputs.marketId,
@@ -2103,14 +2179,17 @@ export class TenantStore {
   }): void {
     const mark = this.db.prepare(
       `INSERT OR IGNORE INTO tenant_hedged_fills
-        (owner_address, maker_account_id, fill_key, hedge_digest, processed_at)
-       VALUES (?, ?, ?, ?, ?)`,
+        (owner_address, bundle_id, maker_account_id, fill_key, hedge_digest,
+         processed_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
     );
     const processedAt = new Date().toISOString();
+    const bundleId = this.attributedBundleId();
     this.db.transaction(() => {
       for (const fillKey of inputs.fillKeys) {
         mark.run(
           this.ownerAddress,
+          bundleId,
           inputs.makerAccountId,
           fillKey,
           inputs.hedgeDigest,
@@ -2136,12 +2215,14 @@ export class TenantStore {
       this.db
         .prepare(
           `INSERT OR IGNORE INTO tenant_hedge_executions
-            (owner_address, occurred_at, maker_account_id, hedge_account_id,
-             market_id, digest, side, requested_notional_usd, gas_used_mist)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            (owner_address, bundle_id, occurred_at, maker_account_id,
+             hedge_account_id, market_id, digest, side, requested_notional_usd,
+             gas_used_mist)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
         .run(
           this.ownerAddress,
+          this.attributedBundleId(),
           occurredAt,
           inputs.makerAccountId,
           inputs.hedgeAccountId,
@@ -2153,12 +2234,14 @@ export class TenantStore {
         );
       const mark = this.db.prepare(
         `INSERT OR IGNORE INTO tenant_hedged_fills
-          (owner_address, maker_account_id, fill_key, hedge_digest, processed_at)
-         VALUES (?, ?, ?, ?, ?)`,
+          (owner_address, bundle_id, maker_account_id, fill_key, hedge_digest,
+           processed_at)
+         VALUES (?, ?, ?, ?, ?, ?)`,
       );
       for (const fillKey of inputs.fillKeys) {
         mark.run(
           this.ownerAddress,
+          this.attributedBundleId(),
           inputs.makerAccountId,
           fillKey,
           inputs.digest,
