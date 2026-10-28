@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Maker bundles</title>
+<link rel="stylesheet" href="maker3.css">
+<script src="mark.js"></script>
+<style>
+  .title { display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 24px; }
+  .title h1 { margin: 0; font-size: 34px; font-weight: 640; font-stretch: 122%; letter-spacing: -0.03em; }
+  .title p { margin: 6px 0 0; color: var(--ink-2); max-width: 720px; }
+  .bgrid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 20px; }
+  .bcard { background: var(--surface); border-radius: 20px; padding: 22px 24px; display: flex; flex-direction: column; gap: 16px; }
+  .bcard h2 { margin: 0; font-size: 21px; font-weight: 650; font-stretch: 114%; letter-spacing: -0.015em; }
+  .row2 { display: flex; justify-content: space-between; align-items: center; }
+  .accs { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .accs div { background: var(--canvas); border-radius: 14px; padding: 12px 14px; }
+  .accs .k { font-size: 12.5px; color: var(--ink-2); font-weight: 600; }
+  .accs b { display: block; font-size: 15px; margin-top: 2px; }
+  .accs span { font-size: 13px; color: var(--ink-2); }
+  .kv2 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; }
+  .kv2 .k { font-size: 12.5px; color: var(--ink-2); }
+  .kv2 .v { font-weight: 620; margin-top: 2px; }
+  .mk { display: flex; flex-wrap: wrap; gap: 6px; }
+  .acts { display: flex; gap: 8px; margin-top: auto; }
+  .new { border: 1.5px dashed var(--fill-2); background: transparent; }
+  .new ol { margin: 0; padding-left: 20px; color: var(--ink-2); display: grid; gap: 8px; }
+  .rules { margin-top: 20px; display: grid; grid-template-columns: 1.2fr 1fr; gap: 20px; }
+  .pool .lr { grid-template-columns: 1.2fr 0.8fr 0.8fr 1.2fr; }
+  .rulelist { display: grid; gap: 14px; margin-top: 6px; }
+  .rulelist > div { display: grid; grid-template-columns: 26px 1fr; gap: 10px; }
+  .rulelist i { width: 26px; height: 26px; border-radius: 8px; background: var(--fill); display: grid; place-items: center; font-style: normal; font-weight: 700; font-size: 13px; }
+  .rulelist b { display: block; font-weight: 640; }
+  .rulelist span { color: var(--ink-2); font-size: 14px; }
+</style>
+</head>
+<body>
+<script>applyTheme();</script>
+<div class="rail"></div>
+<header class="nav">
+  <div class="brand"><span class="wordmark" id="wm"></span></div>
+  <div class="tabs"><span>Desk</span><span class="on">Bundles</span><span>Markets</span><span>Performance</span><span>Venues</span></div>
+  <div class="nav-right"><span class="explain-toggle">Explain<span class="switch"><i></i></span></span><span class="pill live"><span class="dot"></span>Live</span><span class="acct"><span class="ava"></span>0x00a4…7060</span></div>
+</header>
+<main class="page">
+  <div class="title"><div><h1>Bundles</h1><p>A bundle pairs a maker account with a taker account and gives them one strategy. Run several to try different goals or markets side by side.</p></div><button class="btn primary">New bundle</button></div>
+  <div class="bgrid">
+    <section class="bcard">
+      <div class="row2"><h2>Core</h2><span class="pill live"><span class="dot"></span>Live</span></div>
+      <div class="accs">
+        <div><div class="k">Maker account</div><b>#1745</b><span>$7.44 equity · quotes</span></div>
+        <div><div class="k">Taker account</div><b>#1746</b><span>$7.45 equity · hedges</span></div>
+      </div>
+      <div class="kv2">
+        <div><div class="k">Goal</div><div class="v">Both</div></div>
+        <div><div class="k">Risk</div><div class="v">Balanced</div></div>
+        <div><div class="k">Today</div><div class="v loss">−$0.01</div></div>
+      </div>
+      <div class="mk"><span class="tag">MON</span><span class="tag">NEAR</span><span class="tag">ETH</span><span class="tag">BTC</span><span class="tag">HYPE</span></div>
+      <div class="acts"><button class="btn quiet sm">Edit strategy</button><button class="btn quiet sm">Pause</button></div>
+    </section>
+    <section class="bcard">
+      <div class="row2"><h2>Rewards</h2><span class="pill paper">Paper</span></div>
+      <div class="accs">
+        <div><div class="k">Maker account</div><b>#1801</b><span>$20.00 equity · quotes</span></div>
+        <div><div class="k">Taker account</div><b>#1802</b><span>$20.00 equity · hedges</span></div>
+      </div>
+      <div class="kv2">
+        <div><div class="k">Goal</div><div class="v">Rewards</div></div>
+        <div><div class="k">Risk</div><div class="v">Cautious</div></div>
+        <div><div class="k">Would have made</div><div class="v">$0.00</div></div>
+      </div>
+      <div class="mk"><span class="tag">SUI</span><span class="tag">WAL</span><span class="tag">DEEP</span></div>
+      <div class="acts"><button class="btn quiet sm">Edit strategy</button><button class="btn primary sm">Review to go live</button></div>
+    </section>
+    <section class="bcard new">
+      <h2>New bundle</h2>
+      <ol>
+        <li>Pick a maker and a taker account, or create them</li>
+        <li>Choose a goal and markets, with one-tap picks</li>
+        <li>Set size and limits</li>
+        <li>Run it on paper, then go live</li>
+      </ol>
+      <span class="help">You have 1 unassigned account. A bundle needs two.</span>
+      <div class="acts"><button class="btn primary sm">Start a bundle</button></div>
+    </section>
+  </div>
+
+  <div class="rules">
+    <section class="card pool">
+      <div class="head"><div><h2>Accounts</h2><div class="sub">Every account Maker can trade, and the bundle it belongs to.</div></div><button class="btn quiet sm">New account</button></div>
+      <div class="list">
+        <div class="lr lh"><span>Account</span><span class="r">Equity</span><span class="r">Role</span><span class="r">Bundle</span></div>
+        <div class="lr"><span class="sym">#1745 <small>Core maker</small></span><span class="r">$7.44</span><span class="r">Maker</span><span class="r">Core</span></div>
+        <div class="lr"><span class="sym">#1746 <small>Neutral hedge</small></span><span class="r">$7.45</span><span class="r">Taker</span><span class="r">Core</span></div>
+        <div class="lr"><span class="sym">#1801</span><span class="r">$20.00</span><span class="r">Maker</span><span class="r">Rewards</span></div>
+        <div class="lr"><span class="sym">#1802</span><span class="r">$20.00</span><span class="r">Taker</span><span class="r">Rewards</span></div>
+        <div class="lr"><span class="sym">#1910</span><span class="r">$5.00</span><span class="r i2">—</span><span class="r"><span class="link">Add to a bundle</span></span></div>
+      </div>
+    </section>
+    <section class="card">
+      <div class="head"><div><h2>How bundles share the desk</h2></div></div>
+      <div class="rulelist">
+        <div><i>1</i><div><b>One account, one bundle</b><span>An account is a maker or a taker in exactly one bundle, so each bundle's inventory is its own.</span></div></div>
+        <div><i>2</i><div><b>One market, one bundle</b><span>Two of your bundles never quote the same market, so they can't trade with each other.</span></div></div>
+        <div><i>3</i><div><b>Wallet limits cap everything</b><span>Each bundle has its own limits, and your wallet limits cap the total across all of them.</span></div></div>
+        <div><i>4</i><div><b>Stop all means all</b><span>Stop all cancels every bundle's orders. Pause stops one bundle.</span></div></div>
+      </div>
+    </section>
+  </div>
+</main>
+<script>document.getElementById("wm").innerHTML = wordmarkHTML("live");</script>
+</body>
+</html>
