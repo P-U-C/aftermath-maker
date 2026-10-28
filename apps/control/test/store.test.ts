@@ -551,4 +551,149 @@ describe("persistent control store", () => {
     ).toEqual(["@maker_2", "@maker_3"]);
     databaseStore.close();
   });
+
+  it("upgrades a legacy tenant to one Core bundle, reruns idempotently, and rolls back", () => {
+    const directory = join(
+      process.env.TMPDIR ?? "/tmp",
+      `aftermath-maker-${randomBytes(8).toString("hex")}`,
+    );
+    mkdirSync(directory, { recursive: true });
+    const path = join(directory, "maker.db");
+    const ownerAddress = `0x${"b".repeat(64)}`;
+    const legacyConfig = makerConfigSchema.parse({
+      markets: [
+        { marketId: "0x1001", symbol: "ONE" },
+        { marketId: "0x1002", symbol: "TWO" },
+      ],
+      makerAccountId: "42",
+      hedge: { enabled: true, accountId: "43", thresholdUsd: 12 },
+      maxRunDrawdownUsd: 7,
+      maxInventoryUsd: 11,
+      maxGrossExposureUsd: 19,
+      maxUnrealizedLossUsd: 5,
+    });
+
+    const initial = new Store(path);
+    initial.close();
+    const legacyDatabase = new Database(path);
+    legacyDatabase
+      .prepare(
+        `INSERT INTO tenant_settings
+          (owner_address, key, value, updated_at) VALUES (?, ?, ?, ?)`,
+      )
+      .run(
+        ownerAddress,
+        "maker_config",
+        JSON.stringify(legacyConfig),
+        "2026-10-28T00:00:00.000Z",
+      );
+    legacyDatabase.close();
+
+    const upgraded = new Store(path);
+    const tenant = upgraded.forTenant(ownerAddress);
+    expect(JSON.stringify(tenant.getConfig())).toBe(
+      JSON.stringify(legacyConfig),
+    );
+    expect(tenant.listBundles()).toMatchObject([
+      {
+        name: "Core",
+        makerAccountId: "42",
+        takerAccountId: "43",
+        marketIds: ["0x1001", "0x1002"],
+        status: "stopped",
+      },
+    ]);
+    expect(tenant.getWalletLimits()).toMatchObject({
+      maxRunDrawdownUsd: 7,
+      maxInventoryUsd: 11,
+      maxGrossExposureUsd: 19,
+      maxUnrealizedLossUsd: 5,
+    });
+
+    const core = tenant.listBundles()[0]!;
+    const changed = makerConfigSchema.parse({
+      ...legacyConfig,
+      markets: [{ marketId: "0x1002", symbol: "TWO" }],
+      quoteSizeUsd: 17,
+    });
+    tenant.setConfig(changed);
+    expect(tenant.getBundleConfig(core.id)).toEqual(changed);
+    expect(JSON.stringify(tenant.getConfig())).toBe(JSON.stringify(changed));
+    upgraded.close();
+
+    const rerun = new Store(path);
+    const rerunTenant = rerun.forTenant(ownerAddress);
+    expect(
+      rerunTenant.listBundles().filter((bundle) => bundle.name === "Core"),
+    ).toHaveLength(1);
+    expect(JSON.stringify(rerunTenant.getConfig())).toBe(
+      JSON.stringify(changed),
+    );
+    expect(rerunTenant.listBundles()[0]?.marketIds).toEqual(["0x1002"]);
+    expect(rerunTenant.rollbackBundleMigration()).toBe(true);
+    expect(JSON.stringify(rerunTenant.getConfig())).toBe(
+      JSON.stringify(legacyConfig),
+    );
+    rerun.close();
+
+    const rolledBack = new Store(path);
+    expect(JSON.stringify(rolledBack.forTenant(ownerAddress).getConfig())).toBe(
+      JSON.stringify(legacyConfig),
+    );
+    rolledBack.close();
+
+    const migratedDatabase = new Database(path, { readonly: true });
+    for (const table of [
+      "tenant_audit_events",
+      "tenant_executions",
+      "tenant_maker_orders",
+      "tenant_hedge_executions",
+      "tenant_hedged_fills",
+    ]) {
+      const columns = migratedDatabase
+        .prepare(`PRAGMA table_info(${table})`)
+        .all() as Array<{ name: string }>;
+      expect(columns.some((column) => column.name === "bundle_id")).toBe(true);
+    }
+    migratedDatabase.close();
+  });
+
+  it("keeps the config API projection byte-compatible while reading and writing Core", () => {
+    const directory = join(
+      process.env.TMPDIR ?? "/tmp",
+      `aftermath-maker-${randomBytes(8).toString("hex")}`,
+    );
+    mkdirSync(directory, { recursive: true });
+    const databaseStore = new Store(join(directory, "maker.db"));
+    const tenant = databaseStore.forTenant(`0x${"c".repeat(64)}`);
+    const first = makerConfigSchema.parse({
+      markets: [{ marketId: "0x2001", symbol: "ONE" }],
+      quoteSizeUsd: 13,
+    });
+    const second = makerConfigSchema.parse({
+      ...first,
+      markets: [
+        { marketId: "0x2001", symbol: "ONE" },
+        { marketId: "0x2002", symbol: "TWO" },
+      ],
+      quoteSizeUsd: 21,
+    });
+
+    tenant.setConfig(first);
+    const core = tenant.listBundles()[0]!;
+    expect(JSON.stringify(tenant.getConfig())).toBe(JSON.stringify(first));
+    expect(JSON.stringify(tenant.getBundleConfig(core.id))).toBe(
+      JSON.stringify(first),
+    );
+
+    tenant.setConfig(second);
+    expect(JSON.stringify(tenant.getConfig())).toBe(JSON.stringify(second));
+    expect(JSON.stringify(tenant.getBundleConfig(core.id))).toBe(
+      JSON.stringify(second),
+    );
+    expect(tenant.listBundles()).toMatchObject([
+      { id: core.id, name: "Core", marketIds: ["0x2001", "0x2002"] },
+    ]);
+    databaseStore.close();
+  });
 });
