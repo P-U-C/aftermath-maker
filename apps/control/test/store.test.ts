@@ -481,4 +481,50 @@ describe("persistent control store", () => {
     expect(migrated?.strategyObjective).toBe("both");
     reopened.close();
   });
+
+  it("deduplicates access requests and tracks notification delivery", () => {
+    const directory = join(
+      process.env.TMPDIR ?? "/tmp",
+      `aftermath-maker-${randomBytes(8).toString("hex")}`,
+    );
+    mkdirSync(directory, { recursive: true });
+    const databaseStore = new Store(join(directory, "maker.db"));
+    const walletAddress = `0x${"A".repeat(64)}`;
+
+    const first = databaseStore.createAccessRequest({
+      walletAddress,
+      twitterHandle: "@first_handle",
+    });
+    const duplicate = databaseStore.createAccessRequest({
+      walletAddress: walletAddress.toLowerCase(),
+      twitterHandle: "@updated_handle",
+    });
+
+    expect(first.created).toBe(true);
+    expect(duplicate.created).toBe(false);
+    expect(databaseStore.listAccessRequests()).toHaveLength(1);
+    expect(databaseStore.listAccessRequests()[0]).toMatchObject({
+      walletAddress: walletAddress.toLowerCase(),
+      twitterHandle: "@updated_handle",
+      status: "pending",
+      notificationAttempts: 0,
+    });
+
+    databaseStore.markAccessRequestNotification(first.request.id, {
+      ok: false,
+      error: "mail unavailable",
+    });
+    expect(
+      databaseStore.listPendingAccessRequestNotifications()[0],
+    ).toMatchObject({ notificationAttempts: 1 });
+
+    databaseStore.markAccessRequestNotification(first.request.id, {
+      ok: true,
+    });
+    expect(databaseStore.listPendingAccessRequestNotifications()).toEqual([]);
+
+    databaseStore.setAccessRequestStatus(walletAddress, "approved");
+    expect(databaseStore.listAccessRequests()[0]?.status).toBe("approved");
+    databaseStore.close();
+  });
 });
