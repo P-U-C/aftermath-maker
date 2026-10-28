@@ -2864,7 +2864,11 @@ function DashboardBody() {
         onClose={() => selectView("desk")}
       >
         <section className="workspace workspace-strategy">
-          <form className="settings-panel" onSubmit={saveConfig}>
+          <form
+            className="settings-panel"
+            data-strategy-step={strategyStep}
+            onSubmit={saveConfig}
+          >
             <header className="strategy-title">
               <h1>Strategy</h1>
               <p>
@@ -2932,10 +2936,96 @@ function DashboardBody() {
                     ? `Quote ${config.markets.length} selected market${config.markets.length === 1 ? "" : "s"} with ${money(config.quoteSizeUsd)} on each side, and stop before ${money(config.maxRunDrawdownUsd)} of run drawdown.`
                     : "Choose one or more markets before saving this strategy."}
                 </p>
+                <div className="strategy-step-nav">
+                  <button
+                    type="button"
+                    className="button secondary"
+                    onClick={() =>
+                      setStrategyStep((step) => Math.max(0, step - 1))
+                    }
+                    disabled={strategyStep === 0}
+                  >
+                    Back
+                  </button>
+                  <button
+                    type="button"
+                    className="button primary"
+                    onClick={() =>
+                      setStrategyStep((step) => Math.min(4, step + 1))
+                    }
+                    disabled={strategyStep === 4}
+                  >
+                    {strategyStep === 3 ? "Review" : "Next"}
+                  </button>
+                </div>
               </aside>
             </section>
 
-            <fieldset className="objective-control">
+            <section className="strategy-review-step strategy-step strategy-step-review">
+              <h2>Review</h2>
+              <p className="strategy-section-copy">
+                Choose how this saved strategy runs. Live remains unavailable
+                until the server gates are enabled and you confirm the review.
+              </p>
+              <fieldset className="strategy-mode-fieldset">
+                <legend>Mode</legend>
+                <div className="segments">
+                  {(["observe", "paper", "live"] as const).map((mode) => (
+                    <button
+                      key={mode}
+                      type="button"
+                      className={config.mode === mode ? "selected" : ""}
+                      aria-pressed={config.mode === mode}
+                      disabled={mode === "live" && !liveAvailable}
+                      title={
+                        mode === "live" && !liveAvailable
+                          ? "Live trading is off on this server"
+                          : undefined
+                      }
+                      onClick={() => {
+                        if (mode === "live") {
+                          setLiveSheetOpen(true);
+                        } else {
+                          setConfig((current) => ({ ...current, mode }));
+                        }
+                      }}
+                    >
+                      {mode}
+                    </button>
+                  ))}
+                </div>
+                {!liveAvailable && (
+                  <small>Live trading is off on this server</small>
+                )}
+                <button
+                  className="strategy-live-review"
+                  type="button"
+                  onClick={() => setLiveSheetOpen(true)}
+                >
+                  Review live setup
+                </button>
+              </fieldset>
+              <dl className="strategy-review-summary">
+                <div>
+                  <dt>Goal</dt>
+                  <dd>{config.strategyObjective}</dd>
+                </div>
+                <div>
+                  <dt>Markets</dt>
+                  <dd>{config.markets.length} selected</dd>
+                </div>
+                <div>
+                  <dt>Size</dt>
+                  <dd>{money(config.quoteSizeUsd)} per side</dd>
+                </div>
+                <div>
+                  <dt>Limits</dt>
+                  <dd>{money(config.maxRunDrawdownUsd)} drawdown</dd>
+                </div>
+              </dl>
+            </section>
+
+            <fieldset className="objective-control strategy-step strategy-step-goal">
               <legend>Objective</legend>
               <div
                 className="objective-segments"
@@ -2974,7 +3064,7 @@ function DashboardBody() {
               </div>
             </fieldset>
 
-            <fieldset className="rotation-mode-control">
+            <fieldset className="rotation-mode-control strategy-step strategy-step-markets">
               <legend>Rotation</legend>
               <div
                 className="rotation-mode-segments"
@@ -3040,7 +3130,7 @@ function DashboardBody() {
             </fieldset>
 
             <div
-              className="strategy-trial"
+              className="strategy-trial strategy-step strategy-step-review"
               aria-label="Three-cycle strategy trial"
             >
               <div className="strategy-trial-heading">
@@ -3126,7 +3216,7 @@ function DashboardBody() {
               )}
             </div>
 
-            <fieldset className="account-pair-control strategy-section strategy-hedging">
+            <fieldset className="account-pair-control strategy-section strategy-hedging strategy-step strategy-step-hedging">
               <legend>Hedging</legend>
               <p className="strategy-section-copy">
                 Use a separate account to offset fills without giving either
@@ -3346,7 +3436,7 @@ function DashboardBody() {
               )}
             </fieldset>
 
-            <fieldset className="strategy-section strategy-profile-section">
+            <fieldset className="strategy-section strategy-profile-section strategy-step strategy-step-goal">
               <legend>Risk profile</legend>
               <p className="strategy-section-copy">
                 Pick a starting policy, then tune individual controls.
@@ -3391,7 +3481,7 @@ function DashboardBody() {
               </div>
             </fieldset>
 
-            <fieldset className="pair-picker strategy-section strategy-markets-section">
+            <fieldset className="pair-picker strategy-section strategy-markets-section strategy-step strategy-step-markets">
               <legend>Markets</legend>
               <p className="strategy-section-copy">
                 Choose the venue markets this strategy may quote.
@@ -3569,7 +3659,46 @@ function DashboardBody() {
               </div>
             </fieldset>
 
-            <details className="market-overrides strategy-market-overrides">
+            <section className="strategy-market-ranks strategy-step strategy-step-markets">
+              <header>
+                <div>
+                  <span className="eyebrow">Market rank</span>
+                  <h2>Eligible pairs</h2>
+                </div>
+                <span>{sortedRewardOpportunities.length} ranked</span>
+              </header>
+              <div className="strategy-market-ranks-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Rank</th>
+                      <th>Pair</th>
+                      <th>Score</th>
+                      <th>24h flow</th>
+                      <th>Depth</th>
+                      <th>Policy</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {sortedRewardOpportunities.map((opportunity, index) => (
+                      <tr key={opportunity.marketId}>
+                        <td>{index + 1}</td>
+                        <td>{opportunity.symbol}</td>
+                        <td>{opportunity.score}</td>
+                        <td>{compactUsd(opportunity.volume24hUsd)}</td>
+                        <td>{compactUsd(opportunity.balancedDepth50BpsUsd)}</td>
+                        <td>
+                          {money(opportunity.suggestedQuoteSizeUsd)} /{" "}
+                          {opportunity.suggestedSpreadBps} bp
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </section>
+
+            <details className="market-overrides strategy-market-overrides strategy-step strategy-step-markets">
               <summary>
                 <SlidersHorizontal size={15} />
                 <span>Per-market overrides</span>
@@ -3714,7 +3843,102 @@ function DashboardBody() {
               </div>
             </details>
 
-            <section className="strategy-section strategy-capital-section">
+            <section className="strategy-limit-sentences strategy-step strategy-step-size">
+              <h2>Size and limits</h2>
+              <p>
+                Stop this run after
+                <label>
+                  <span className="sr-only">Maximum run drawdown in USD</span>
+                  <input
+                    aria-label="Maximum run drawdown in USD"
+                    type="number"
+                    min="1"
+                    value={config.maxRunDrawdownUsd}
+                    onChange={(event) =>
+                      setConfig((current) => ({
+                        ...current,
+                        maxRunDrawdownUsd: Number(event.target.value),
+                      }))
+                    }
+                  />
+                </label>
+                of run drawdown.
+              </p>
+              <p>
+                Hold no more than
+                <label>
+                  <span className="sr-only">Maximum inventory in USD</span>
+                  <input
+                    aria-label="Maximum inventory in USD"
+                    type="number"
+                    min="0.01"
+                    step="0.01"
+                    value={config.maxInventoryUsd}
+                    onChange={(event) =>
+                      setConfig((current) => ({
+                        ...current,
+                        maxInventoryUsd: Number(event.target.value),
+                      }))
+                    }
+                  />
+                </label>
+                in one market.
+              </p>
+              <p>
+                Keep total gross exposure below
+                <label>
+                  <span className="sr-only">Maximum gross exposure in USD</span>
+                  <input
+                    aria-label="Maximum gross exposure in USD"
+                    type="number"
+                    min={config.maxInventoryUsd}
+                    step="0.01"
+                    value={config.maxGrossExposureUsd}
+                    onChange={(event) => {
+                      const maxGrossExposureUsd = Number(event.target.value);
+                      setConfig((current) => ({
+                        ...current,
+                        maxGrossExposureUsd,
+                        rebalanceGrossExposureUsd: Math.min(
+                          current.rebalanceGrossExposureUsd,
+                          maxGrossExposureUsd,
+                        ),
+                      }));
+                    }}
+                  />
+                </label>
+                across markets.
+              </p>
+              <p>
+                Pause if unrealized loss reaches
+                <label>
+                  <span className="sr-only">
+                    Maximum unrealized loss in USD
+                  </span>
+                  <input
+                    aria-label="Maximum unrealized loss in USD"
+                    type="number"
+                    min="1"
+                    value={config.maxUnrealizedLossUsd}
+                    onChange={(event) =>
+                      setConfig((current) => ({
+                        ...current,
+                        maxUnrealizedLossUsd: Number(event.target.value),
+                      }))
+                    }
+                  />
+                </label>
+                .
+              </p>
+              {quoteSizeError && (
+                <p className="field-error">{quoteSizeError}</p>
+              )}
+              {grossExposureError && (
+                <p className="field-error">{grossExposureError}</p>
+              )}
+            </section>
+
+            <section className="strategy-section strategy-capital-section strategy-step strategy-step-size">
               <h2>Capital</h2>
               <p className="strategy-section-copy">
                 Set execution mode, order size, and the minimum edge quoted on
@@ -3811,7 +4035,7 @@ function DashboardBody() {
               </div>
             </section>
 
-            <details className="strategy-section strategy-advanced">
+            <details className="strategy-section strategy-advanced strategy-step strategy-step-size">
               <summary>Advanced</summary>
               <p className="strategy-section-copy">
                 Portfolio limits, quote guards, and timing controls.
@@ -4129,7 +4353,10 @@ function DashboardBody() {
             </details>
 
             {configDirty && (
-              <div className="strategy-save-bar" role="status">
+              <div
+                className="strategy-save-bar strategy-step strategy-step-review"
+                role="status"
+              >
                 <span>Unsaved changes</span>
                 <div>
                   <button

@@ -7954,3 +7954,148 @@ mysten-dapp-kit-connect-modal,
     font-size: 12px;
   }
 }
+
+/* F2: the strategy form is a five-step builder, not a summary above a form. */
+.settings-panel > .strategy-step {
+  display: none;
+}
+
+.settings-panel[data-strategy-step="0"] > .strategy-step-goal,
+.settings-panel[data-strategy-step="1"] > .strategy-step-markets,
+.settings-panel[data-strategy-step="2"] > .strategy-step-size,
+.settings-panel[data-strategy-step="3"] > .strategy-step-hedging,
+.settings-panel[data-strategy-step="4"] > .strategy-step-review {
+  display: block;
+}
+
+.strategy-step-nav {
+  margin-top: 16px;
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.strategy-limit-sentences,
+.strategy-review-step,
+.strategy-market-ranks {
+  margin-top: 18px;
+  padding: 22px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+}
+
+.strategy-limit-sentences h2,
+.strategy-review-step h2,
+.strategy-market-ranks h2 {
+  margin: 0;
+  font-size: 20px;
+}
+
+.strategy-limit-sentences p {
+  margin: 14px 0 0;
+  color: var(--ink-2);
+  line-height: 1.6;
+}
+
+.strategy-limit-sentences label {
+  display: inline-block;
+  margin: 0 5px;
+}
+
+.strategy-limit-sentences input {
+  width: 92px;
+  min-height: 36px;
+  padding: 0 8px;
+  color: var(--ink);
+  background: var(--fill);
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  font: inherit;
+  font-variant-numeric: tabular-nums;
+}
+
+.strategy-capital-section .strategy-mode-fieldset {
+  display: none;
+}
+
+.strategy-review-summary {
+  margin: 18px 0 0;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.strategy-review-summary div {
+  min-width: 0;
+  padding: 12px;
+  background: var(--fill);
+  border-radius: 10px;
+}
+
+.strategy-review-summary dt {
+  color: var(--ink-2);
+  font-size: 12px;
+}
+
+.strategy-review-summary dd {
+  margin: 4px 0 0;
+  overflow-wrap: anywhere;
+  font-weight: 620;
+  text-transform: capitalize;
+}
+
+.strategy-market-ranks header {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.strategy-market-ranks header > span {
+  color: var(--ink-2);
+  font-size: 13px;
+}
+
+.strategy-market-ranks-wrap {
+  margin-top: 14px;
+  overflow-x: auto;
+}
+
+.strategy-market-ranks table {
+  width: 100%;
+  min-width: 680px;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.strategy-market-ranks th,
+.strategy-market-ranks td {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--line);
+  text-align: right;
+  white-space: nowrap;
+}
+
+.strategy-market-ranks th:first-child,
+.strategy-market-ranks td:first-child,
+.strategy-market-ranks th:nth-child(2),
+.strategy-market-ranks td:nth-child(2) {
+  text-align: left;
+}
+
+.maker-view-performance .reward-table-wrap {
+  display: none;
+}
+
+@media (max-width: 700px) {
+  .strategy-review-summary {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .strategy-limit-sentences,
+  .strategy-review-step,
+  .strategy-market-ranks {
+    padding: 18px;
+  }
+}

@@ -38,6 +38,9 @@ const showFlattenSheet = process.argv.includes("--flatten-sheet");
 const showLiveSheet = process.argv.includes("--live-sheet");
 const showAccountEditor = process.argv.includes("--account-editor");
 const verifyConfigSave = process.argv.includes("--verify-config-save");
+const verifyStrategyBuilder = process.argv.includes(
+  "--verify-strategy-builder",
+);
 const exerciseAccessRequest = process.argv.includes("--access-request");
 const outputDirectory = path.resolve(
   projectRoot,
@@ -462,10 +465,39 @@ async function capture(browser, stateName, captureConfig, view) {
       captureConfig.name === "desktop-light" &&
       view === "strategy"
     ) {
+      if (verifyStrategyBuilder) {
+        for (const step of [
+          "Goal",
+          "Markets",
+          "Size and limits",
+          "Hedging",
+          "Review",
+        ]) {
+          await page
+            .getByRole("button", { name: new RegExp(step) })
+            .first()
+            .click();
+          await page
+            .locator(
+              `.settings-panel[data-strategy-step="${["Goal", "Markets", "Size and limits", "Hedging", "Review"].indexOf(step)}"]`,
+            )
+            .waitFor();
+        }
+        await page
+          .getByRole("button", { name: /Size and limits/ })
+          .first()
+          .click();
+      }
       const nextSpread = fixture.config.config.spreadBps + 1;
       await page
         .getByRole("spinbutton", { name: "Spread in basis points" })
         .fill(String(nextSpread));
+      if (verifyStrategyBuilder) {
+        await page
+          .getByRole("button", { name: /Review/ })
+          .first()
+          .click();
+      }
       await page.getByRole("button", { name: "Save strategy" }).click();
       await page.getByText("Unsaved changes").waitFor({ state: "hidden" });
       const successNotice = page.locator(".notice.notice-success");
