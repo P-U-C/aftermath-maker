@@ -527,4 +527,28 @@ describe("persistent control store", () => {
     expect(databaseStore.listAccessRequests()[0]?.status).toBe("approved");
     databaseStore.close();
   });
+
+  it("retains only the newest configured number of access requests", () => {
+    const directory = join(
+      process.env.TMPDIR ?? "/tmp",
+      `aftermath-maker-${randomBytes(8).toString("hex")}`,
+    );
+    mkdirSync(directory, { recursive: true });
+    const databaseStore = new Store(join(directory, "maker.db"));
+    for (const digit of ["1", "2", "3"]) {
+      databaseStore.createAccessRequest({
+        walletAddress: `0x${digit.repeat(64)}`,
+        twitterHandle: `@maker_${digit}`,
+      });
+    }
+
+    databaseStore.enforceAccessRequestRetention(2);
+    expect(
+      databaseStore
+        .listAccessRequests()
+        .map((request) => request.twitterHandle)
+        .sort(),
+    ).toEqual(["@maker_2", "@maker_3"]);
+    databaseStore.close();
+  });
 });
