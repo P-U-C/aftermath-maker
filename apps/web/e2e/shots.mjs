@@ -508,6 +508,10 @@ async function capture(browser, stateName, captureConfig, view) {
         .locator(".performance-market-fills")
         .getByText(/ask \$1\.04/)
         .waitFor();
+      await page
+        .locator(".fill-table")
+        .getByText("−$0.0008", { exact: true })
+        .waitFor();
     }
     if (
       showLiveSheet &&

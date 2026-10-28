@@ -1999,6 +1999,17 @@ input[type="range"] {
   text-align: left;
 }
 
+.market-table .market-state-cell {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  white-space: nowrap;
+}
+
+.market-table .market-state-cell .tx-link {
+  margin-top: 0;
+}
+
 .market-table td:nth-child(3) .tx-link {
   width: fit-content;
   display: flex;
@@ -3560,6 +3571,7 @@ mysten-dapp-kit-connect-modal,
   border-radius: 999px;
   font-size: 16px;
   font-weight: 640;
+  white-space: nowrap;
   transition: background-color var(--dur-1) var(--ease-out);
 }
 
@@ -7689,7 +7701,7 @@ mysten-dapp-kit-connect-modal,
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 16px;
+    gap: 10px;
   }
 
   .maker-phone-title {
@@ -7707,8 +7719,8 @@ mysten-dapp-kit-connect-modal,
 
   .maker-phone-title strong {
     overflow: hidden;
-    font-size: 26px;
-    font-stretch: 122%;
+    font-size: 24px;
+    font-stretch: 110%;
     font-weight: 640;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -7716,7 +7728,7 @@ mysten-dapp-kit-connect-modal,
 
   .maker-phone-heading .ui-pill {
     min-height: 38px;
-    padding: 0 15px;
+    padding: 0 12px;
     font-size: 14px;
   }
 
@@ -7727,17 +7739,18 @@ mysten-dapp-kit-connect-modal,
   }
 
   .maker-phone-explain {
+    width: 44px;
     min-height: 44px;
-    padding: 0 10px;
+    padding: 0;
     display: inline-flex;
     align-items: center;
+    justify-content: center;
+    flex: none;
     color: var(--ink);
     background: var(--fill);
     border: 1px solid var(--hair);
     border-radius: 999px;
     font: inherit;
-    font-size: 13px;
-    font-weight: 700;
   }
 
   .maker-phone-explain[aria-pressed="true"] {

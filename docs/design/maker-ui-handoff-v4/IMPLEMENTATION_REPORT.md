@@ -14,7 +14,7 @@ The ui/v4 branch is based on origin/main at 361a086, because the connect-button 
 | F6 | f59b6f1 | done | Sized the desktop desk lane and preserved stable engine mount inputs. | 1440 px desk evidence has no empty lane band. |
 | F7 | 00880b4 | done | Made web tests timezone-independent, skipped viewless states, and added the root contrast command. | TZ=America/Vancouver npm run check passes. |
 | M1 | eaa479d | done | Added view, number, row, freshness, sheet, and reduced-motion animation behavior. | Motion verifier captures transition/settled states; reduced-motion and ten-second-idle checks pass. |
-| M2 | 067fe5e | partly done | Added the remaining landing sections, links, illustration replay, demos, safety/trust placement, closing CTA, and footer. | Landing screenshot/overflow checks pass; the access-request browser-path fixture is not yet exercisable, so this step is not marked done. No access-flow behavior was changed. |
+| M2 | 067fe5e, 9f03307 | done | Added the remaining landing sections, links, illustration replay, demos, safety/trust placement, closing CTA, and footer; repaired the browser fixture's visible wallet-picker selection. | Landing screenshot/overflow checks and wallet-preauth denied scenario pass. |
 | L1 | d484216 | done | Built chapter-driven Learn scenes, sticky responsive stage, glossary links, and deep links. | Learn scene/deep-link verifier passes, including reduced-motion poses and the hedge end state. |
 | L2 | 383b5ec | done | Added non-overlapping desktop Explain placement, phone note sheet, tour prompt, and Escape/focus return. | Explain verifier passes at 1440 and 390 for Desk, Strategy, Markets, Performance, and Venues. |
 | B1 | — | not done | No server change was committed. | Required migration/compatibility and byte-identical order tests were not run. |
@@ -27,6 +27,10 @@ The review baseline reported viewless-state shot timeouts and incomplete visual 
 
     node apps/web/e2e/shots.mjs --base-url http://127.0.0.1:8899 --view all
     # exited 0; captured every fixture state/view/capture combination
+
+    node apps/web/e2e/wallet-preauth.mjs --base-url http://127.0.0.1:8899 --scenario denied
+    ok   denied/desktop
+    ok   denied/phone
 
     npm run audit:ui -- --base-url http://127.0.0.1:8899
     ok   signed-out/light/desktop
@@ -58,7 +62,7 @@ The review baseline reported viewless-state shot timeouts and incomplete visual 
     ok   stopped/dark/desktop
     ok   stopped/dark/phone
 
-Committed 1× PNG evidence is in report/: signed-out landing, all requested paper-running product views at 1440 light/dark and 390 dark, plus the five Learn chapter captures. Bundle views are intentionally absent because B1 and B2 are not complete.
+Committed 1× PNG evidence is in report/: signed-out landing, denied wallet-preauth path, all requested paper-running product views at 1440 light/dark and 390 dark, plus the five Learn chapter captures. Bundle views are intentionally absent because B1 and B2 are not complete.
 
 ## Motion-engine changes
 

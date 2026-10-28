@@ -716,6 +716,13 @@ const money = (value: number | null, digits = 2) =>
     maximumFractionDigits: digits,
   });
 
+const plainMarketState = (status: "queued" | "healthy" | "error") =>
+  status === "healthy"
+    ? "Quoting now"
+    : status === "queued"
+      ? "Waiting its turn"
+      : "Paused";
+
 const compactUsd = (value: number | null) => formatCompactMoney(value);
 
 const compactNumber = (value: number | null) =>
@@ -4525,9 +4532,9 @@ function DashboardBody() {
                     <td>
                       <VenueChip venue={primaryVenue} />
                     </td>
-                    <td>
+                    <td className="market-state-cell">
                       <span className={`desk-state state-${row.status}`}>
-                        {row.status}
+                        {plainMarketState(row.status)}
                       </span>
                       {row.lastTransactionDigest && (
                         <a
@@ -5195,7 +5202,7 @@ function DashboardBody() {
                           fill.realizedPnlUsd < 0 ? "negative-number" : ""
                         }
                       >
-                        {money(fill.realizedPnlUsd)}
+                        {formatMoney(fill.realizedPnlUsd, { table: true })}
                       </td>
                       <td>
                         {money(

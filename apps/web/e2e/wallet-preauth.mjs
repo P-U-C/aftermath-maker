@@ -107,7 +107,11 @@ async function connectMockWallet(page) {
     .getByRole("button", { name: "Continue with wallet", exact: false })
     .first()
     .click();
-  await page.getByText("Mock Sui Wallet", { exact: true }).first().click();
+  await page
+    .getByText("Mock Sui Wallet", { exact: true })
+    .filter({ visible: true })
+    .first()
+    .click();
   await page.waitForFunction(
     () => Boolean(window.__makerMockWallet?.lastSignRequest),
     undefined,
@@ -179,6 +183,7 @@ async function run(scenarioName, viewport, browser) {
     const modalWallet = page
       .locator("mysten-dapp-kit-connect-modal")
       .getByText("Mock Sui Wallet", { exact: true })
+      .filter({ visible: true })
       .first();
     await modalWallet.waitFor({ timeout: 5_000 }).catch(() => {
       failures.push("connect-another-wallet did not open the wallet picker");
