@@ -350,6 +350,7 @@ export function DeskView({
               ref={motion}
               className="desk-market-motion"
               compact
+              height={300}
               sim={false}
               mid={market.indexPrice}
               bid={market.ourBid}

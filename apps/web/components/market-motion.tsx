@@ -47,6 +47,8 @@ type MarketMotionProps = MarketMotionUpdate & {
   hedgeTriggerUsd?: number;
   spreadBps?: number;
   seed?: number;
+  /** A fixed desktop lane height. The phone layout keeps the engine's compact default. */
+  height?: number;
 };
 
 // Under this width the engine draws its phone layout.
@@ -78,6 +80,7 @@ export const MarketMotion = forwardRef<MarketMotionHandle, MarketMotionProps>(
       hedgeTriggerUsd,
       spreadBps,
       seed,
+      height,
     } = props;
     const stage = useRef<HTMLDivElement>(null);
     const narration = useRef<HTMLParagraphElement>(null);
@@ -121,6 +124,7 @@ export const MarketMotion = forwardRef<MarketMotionHandle, MarketMotionProps>(
         sim,
         compact,
         static: reduced,
+        height: layout === "phone" ? undefined : height,
         mid: first.mid && first.mid > 0 ? first.mid : undefined,
         sizeUsd,
         hedgeTriggerUsd,
@@ -141,6 +145,7 @@ export const MarketMotion = forwardRef<MarketMotionHandle, MarketMotionProps>(
       sim,
       compact,
       narrate,
+      height,
       sizeUsd,
       hedgeTriggerUsd,
       spreadBps,
