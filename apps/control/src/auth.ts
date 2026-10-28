@@ -1,4 +1,10 @@
-import { createHash, randomBytes, randomUUID } from "node:crypto";
+import {
+  createHash,
+  createHmac,
+  randomBytes,
+  randomUUID,
+  timingSafeEqual,
+} from "node:crypto";
 import { verifyPersonalMessageSignature } from "@mysten/sui/verify";
 import type { OnchainAllowlist } from "./allowlist.js";
 import type { Store } from "./store.js";
@@ -14,6 +20,26 @@ function normalizeAddress(address: string): string {
 function hashToken(token: string): string {
   return createHash("sha256").update(token).digest("hex");
 }
+
+const ACCESS_REQUEST_TOKEN_TTL_MS = 15 * 60_000;
+
+type AccessRequestTokenPayload = {
+  address: string;
+  expiresAt: number;
+};
+
+type AccessRequestVerification =
+  | {
+      sessionToken: string;
+      expiresAt: string;
+      ownerAddress: string;
+      operator: boolean;
+    }
+  | {
+      accessRequestToken: string;
+      accessRequestExpiresAt: string;
+      ownerAddress: string;
+    };
 
 export class AuthError extends Error {
   constructor(
@@ -34,7 +60,88 @@ export class WalletAuth {
     private readonly sessionHours = 12,
     private readonly chainRefreshMs = 30_000,
     private readonly onAccessRevoked?: (ownerAddress: string) => Promise<void>,
+    private readonly accessRequestTokenSecret?: string,
   ) {}
+
+  private signAccessRequestToken(payload: string): string {
+    if (!this.accessRequestTokenSecret) {
+      throw new AuthError(503, "Access requests are unavailable");
+    }
+    return createHmac("sha256", this.accessRequestTokenSecret)
+      .update(payload)
+      .digest("base64url");
+  }
+
+  private issueAccessRequestToken(ownerAddress: string): {
+    accessRequestToken: string;
+    accessRequestExpiresAt: string;
+  } {
+    const expiresAt = Date.now() + ACCESS_REQUEST_TOKEN_TTL_MS;
+    const encodedPayload = Buffer.from(
+      JSON.stringify({ address: ownerAddress, expiresAt }),
+    ).toString("base64url");
+    const payload = `v1.${encodedPayload}`;
+    return {
+      accessRequestToken: `${payload}.${this.signAccessRequestToken(payload)}`,
+      accessRequestExpiresAt: new Date(expiresAt).toISOString(),
+    };
+  }
+
+  createAccessRequest(inputs: {
+    accessRequestToken: string | undefined;
+    twitterHandle: string;
+    company: string;
+  }): void {
+    const walletAddress = this.requireAccessRequestToken(
+      inputs.accessRequestToken,
+    );
+    if (inputs.company) return;
+    this.store.createAccessRequest({
+      walletAddress,
+      twitterHandle: inputs.twitterHandle,
+    });
+  }
+
+  requireAccessRequestToken(token: string | undefined): string {
+    if (!token) {
+      throw new AuthError(401, "Access request verification is required");
+    }
+    const [version, encodedPayload, signature, ...extra] = token.split(".");
+    if (version !== "v1" || !encodedPayload || !signature || extra.length) {
+      throw new AuthError(401, "Access request verification is invalid");
+    }
+    const payload = `${version}.${encodedPayload}`;
+    const expected = this.signAccessRequestToken(payload);
+    const actualBytes = Buffer.from(signature);
+    const expectedBytes = Buffer.from(expected);
+    if (
+      actualBytes.length !== expectedBytes.length ||
+      !timingSafeEqual(actualBytes, expectedBytes)
+    ) {
+      throw new AuthError(401, "Access request verification is invalid");
+    }
+
+    let decoded: AccessRequestTokenPayload;
+    try {
+      decoded = JSON.parse(
+        Buffer.from(encodedPayload, "base64url").toString("utf8"),
+      ) as AccessRequestTokenPayload;
+    } catch {
+      throw new AuthError(401, "Access request verification is invalid");
+    }
+    if (
+      !decoded ||
+      typeof decoded.address !== "string" ||
+      !Number.isSafeInteger(decoded.expiresAt)
+    ) {
+      throw new AuthError(401, "Access request verification is invalid");
+    }
+    const ownerAddress = normalizeAddress(decoded.address);
+    if (decoded.expiresAt <= Date.now()) {
+      throw new AuthError(401, "Access request verification has expired");
+    }
+    return ownerAddress;
+  }
 
   begin(address: string): {
     challengeId: string;
@@ -83,12 +190,7 @@ export class WalletAuth {
     address: string;
     message: string;
     signature: string;
-  }): Promise<{
-    sessionToken: string;
-    expiresAt: string;
-    ownerAddress: string;
-    operator: boolean;
-  }> {
+  }): Promise<AccessRequestVerification> {
     const ownerAddress = normalizeAddress(inputs.address);
     this.store.consumeChallenge({
       id: inputs.challengeId,
@@ -117,10 +219,16 @@ export class WalletAuth {
       }
     }
     if (!allowed) {
-      throw new AuthError(
-        403,
-        "This wallet is not on the on-chain access list",
-      );
+      if (!this.accessRequestTokenSecret) {
+        throw new AuthError(
+          403,
+          "This wallet is not on the on-chain access list",
+        );
+      }
+      return {
+        ownerAddress,
+        ...this.issueAccessRequestToken(ownerAddress),
+      };
     }
 
     const sessionToken = randomBytes(32).toString("base64url");

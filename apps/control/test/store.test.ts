@@ -482,7 +482,7 @@ describe("persistent control store", () => {
     reopened.close();
   });
 
-  it("deduplicates access requests and tracks notification delivery", () => {
+  it("deduplicates access requests without overwriting an existing handle", () => {
     const directory = join(
       process.env.TMPDIR ?? "/tmp",
       `aftermath-maker-${randomBytes(8).toString("hex")}`,
@@ -505,7 +505,7 @@ describe("persistent control store", () => {
     expect(databaseStore.listAccessRequests()).toHaveLength(1);
     expect(databaseStore.listAccessRequests()[0]).toMatchObject({
       walletAddress: walletAddress.toLowerCase(),
-      twitterHandle: "@updated_handle",
+      twitterHandle: "@first_handle",
       status: "pending",
       notificationAttempts: 0,
     });

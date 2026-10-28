@@ -716,19 +716,8 @@ export class Store {
       .get(walletAddress) as AccessRequestRow | undefined;
     const now = new Date().toISOString();
     if (existing) {
-      this.db
-        .prepare(
-          `UPDATE access_requests
-           SET twitter_handle = ?, updated_at = ?
-           WHERE wallet_address = ?`,
-        )
-        .run(inputs.twitterHandle, now, walletAddress);
       return {
-        request: {
-          ...accessRequestFromRow(existing),
-          twitterHandle: inputs.twitterHandle,
-          updatedAt: now,
-        },
+        request: accessRequestFromRow(existing),
         created: false,
       };
     }

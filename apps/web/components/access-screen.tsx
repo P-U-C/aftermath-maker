@@ -17,7 +17,7 @@ import { Button, Input } from "./ui/primitives";
 import { WalletControl } from "./wallet-control";
 
 export type AccessRequestInput = {
-  walletAddress: string;
+  accessRequestToken: string;
   twitterHandle: string;
   company: string;
 };
@@ -29,7 +29,8 @@ type AccessScreenProps = {
   busy: boolean;
   requestBusy: boolean;
   requestSubmitted: boolean;
-  suggestedAddress: string;
+  accessRequestToken: string | null;
+  verifiedAddress: string;
   notice: string | null;
   onVerify: () => void;
   onRequestAccess: (input: AccessRequestInput) => void;
@@ -70,31 +71,30 @@ export function AccessScreen({
   busy,
   requestBusy,
   requestSubmitted,
-  suggestedAddress,
+  accessRequestToken,
+  verifiedAddress,
   notice,
   onVerify,
   onRequestAccess,
 }: AccessScreenProps) {
-  const [requestOpen, setRequestOpen] = useState(denied);
-  const [walletAddress, setWalletAddress] = useState(suggestedAddress);
+  const [requestOpen, setRequestOpen] = useState(
+    denied && Boolean(accessRequestToken),
+  );
   const [twitterHandle, setTwitterHandle] = useState("");
   const [company, setCompany] = useState("");
 
   useEffect(() => {
-    if (denied) {
+    if (denied && accessRequestToken) {
       setRequestOpen(true);
     } else if (connected) {
       setRequestOpen(false);
     }
-  }, [connected, denied]);
-
-  useEffect(() => {
-    if (suggestedAddress) setWalletAddress(suggestedAddress);
-  }, [suggestedAddress]);
+  }, [accessRequestToken, connected, denied]);
 
   function submitRequest(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    onRequestAccess({ walletAddress, twitterHandle, company });
+    if (!accessRequestToken) return;
+    onRequestAccess({ accessRequestToken, twitterHandle, company });
   }
 
   return (
@@ -146,14 +146,10 @@ export function AccessScreen({
               <form className="access-request-form" onSubmit={submitRequest}>
                 <Input
                   label="Sui wallet address"
-                  value={walletAddress}
-                  onChange={(event) => setWalletAddress(event.target.value)}
-                  placeholder="0x..."
-                  autoComplete="off"
-                  spellCheck={false}
-                  pattern="0x[0-9a-fA-F]{64}"
-                  required
-                  hint="Use the address you want added to Maker."
+                  value={verifiedAddress}
+                  readOnly
+                  aria-readonly="true"
+                  hint="Verified by your wallet signature."
                 />
                 <Input
                   label="X / Twitter"
@@ -218,9 +214,17 @@ export function AccessScreen({
               <button
                 className="access-request-link"
                 type="button"
-                onClick={() => setRequestOpen(true)}
+                onClick={() => {
+                  if (accessRequestToken) {
+                    setRequestOpen(true);
+                  } else {
+                    onVerify();
+                  }
+                }}
               >
-                Request access
+                {accessRequestToken
+                  ? "Request access"
+                  : "Verify wallet to request access"}
               </button>
             </div>
           )}

@@ -511,6 +511,12 @@ type AccessIdentity = {
   registryObjectId: string | null;
 };
 
+type AccessRequestVerification = {
+  accessRequestToken: string;
+  accessRequestExpiresAt: string;
+  ownerAddress: string;
+};
+
 type BuilderCode = {
   integratorId: number;
   integratorFee: number;
@@ -751,6 +757,8 @@ function DashboardBody() {
   const [authChecked, setAuthChecked] = useState(false);
   const [accessDenied, setAccessDenied] = useState(false);
   const [deniedAddress, setDeniedAddress] = useState("");
+  const [accessRequestVerification, setAccessRequestVerification] =
+    useState<AccessRequestVerification | null>(null);
   const [requestSubmitted, setRequestSubmitted] = useState(false);
   const [builderCode, setBuilderCode] = useState<BuilderCode | null>(null);
   const [operatorStatus, setOperatorStatus] = useState<OperatorStatus | null>(
@@ -947,6 +955,7 @@ function DashboardBody() {
     if (action === "try-new") {
       setAccessDenied(false);
       setDeniedAddress("");
+      setAccessRequestVerification(null);
       setRequestSubmitted(false);
       loginAttemptedAddress.current = null;
       return;
@@ -1101,24 +1110,36 @@ function DashboardBody() {
       const signed = await wallet.signPersonalMessage({
         message: new TextEncoder().encode(challenge.message),
       });
-      await request("api/auth/verify", {
-        method: "POST",
-        body: JSON.stringify({
-          challengeId: challenge.challengeId,
-          address: connectedAddress,
-          message: challenge.message,
-          signature: signed.signature,
-        }),
-      });
+      const verification = await request<AccessRequestVerification>(
+        "api/auth/verify",
+        {
+          method: "POST",
+          body: JSON.stringify({
+            challengeId: challenge.challengeId,
+            address: connectedAddress,
+            message: challenge.message,
+            signature: signed.signature,
+          }),
+        },
+      );
+      if ("accessRequestToken" in verification) {
+        setAccessRequestVerification(verification);
+        setDeniedAddress(verification.ownerAddress);
+        setAccessDenied(true);
+        setRequestSubmitted(false);
+        return;
+      }
       const nextIdentity = await request<AccessIdentity>("api/auth/me");
       setIdentity(nextIdentity);
       setAccessDenied(false);
       setDeniedAddress("");
+      setAccessRequestVerification(null);
       setRequestSubmitted(false);
       setNotice("Wallet verified against the Sui access registry.", "success");
     } catch (error) {
       if (error instanceof RequestError && error.status === 403) {
         setDeniedAddress(connectedAddress);
+        setAccessRequestVerification(null);
         setAccessDenied(true);
         setRequestSubmitted(false);
         setNotice(null);
@@ -1161,6 +1182,7 @@ function DashboardBody() {
     setIdentity(null);
     setAccessDenied(false);
     setDeniedAddress("");
+    setAccessRequestVerification(null);
     setRequestSubmitted(false);
     loginAttemptedAddress.current = null;
     setOperatorStatus(null);
@@ -1968,7 +1990,10 @@ function DashboardBody() {
         busy={busy === "sign-in"}
         requestBusy={busy === "request-access"}
         requestSubmitted={requestSubmitted}
-        suggestedAddress={deniedAddress || account?.address || ""}
+        accessRequestToken={
+          accessRequestVerification?.accessRequestToken ?? null
+        }
+        verifiedAddress={accessRequestVerification?.ownerAddress ?? ""}
         notice={notice}
         onVerify={() => void signIn()}
         onRequestAccess={(input) => void submitAccessRequest(input)}
