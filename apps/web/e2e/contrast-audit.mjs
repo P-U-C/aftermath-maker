@@ -78,6 +78,13 @@ const auditInPage = (threshold) => {
     return a > b ? a / b : b / a;
   };
 
+  // Walk the flat tree, so text inside a web component's shadow root, or slotted into
+  // one, is measured against what is actually painted behind it.
+  const flatParent = (node) =>
+    node.assignedSlot ??
+    node.parentElement ??
+    (node.parentNode instanceof ShadowRoot ? node.parentNode.host : null);
+
   const backgroundFor = (element) => {
     let node = element;
     let backdrop = { r: 255, g: 255, b: 255, a: 1 };
@@ -87,30 +94,87 @@ const auditInPage = (threshold) => {
       const colour = parse(style.backgroundColor);
       if (colour && colour.a > 0) stack.push(colour);
       if (colour && colour.a === 1) break;
-      node = node.parentElement;
+      node = flatParent(node);
     }
     for (const colour of stack.reverse()) backdrop = over(colour, backdrop);
     return backdrop;
   };
 
   const findings = [];
-  const elements = document.querySelectorAll("body *");
+  const collect = (root, into) => {
+    for (const element of root.querySelectorAll("*")) {
+      into.push(element);
+      if (element.shadowRoot) collect(element.shadowRoot, into);
+    }
+    return into;
+  };
+  const elements = collect(document.body, []);
   for (const element of elements) {
     if (element.closest("[hidden]")) continue;
+    if (element.matches("svg text, svg tspan")) {
+      // SVG text: its size on screen is the font size times the drawing's scale.
+      const text = element.textContent?.trim();
+      const svg = element.ownerSVGElement;
+      if (!text || !svg || element.matches("svg text tspan")) continue;
+      const box = element.getBoundingClientRect();
+      if (box.width < 2 || box.height < 2) continue;
+      const style = getComputedStyle(element);
+      if (style.visibility === "hidden" || style.display === "none") continue;
+      const viewBox = svg.viewBox?.baseVal;
+      const scale =
+        viewBox && viewBox.width
+          ? svg.getBoundingClientRect().width / viewBox.width
+          : 1;
+      const fontSize = Number.parseFloat(style.fontSize) * scale;
+      const fill = parse(style.fill);
+      let opacity = 1;
+      for (
+        let node = element;
+        node && node !== svg;
+        node = node.parentElement
+      ) {
+        opacity *= Number(getComputedStyle(node).opacity || 1);
+      }
+      if (!fill || opacity < 0.98) continue; // still fading in
+      const background = backgroundFor(svg);
+      const ratio = contrast(over(fill, background), background);
+      if (ratio < threshold || fontSize < 12) {
+        findings.push({
+          parent: "svg",
+          selector: "svg text",
+          text: text.slice(0, 48),
+          color: style.fill,
+          background: `rgb(${Math.round(background.r)}, ${Math.round(
+            background.g,
+          )}, ${Math.round(background.b)})`,
+          ratio: Number(ratio.toFixed(2)),
+          requiredRatio: threshold,
+          fontSize: Number(fontSize.toFixed(2)),
+          reason:
+            fontSize < 12 ? "font below 12px" : "contrast below threshold",
+        });
+      }
+      continue;
+    }
     if (element.matches("script, style, svg, svg *, img, input, textarea")) {
       continue;
     }
     if (element.hasAttribute("disabled") || element.closest("[disabled]")) {
       continue;
     }
-    const ownText = [...element.childNodes]
-      .filter((node) => node.nodeType === Node.TEXT_NODE)
+    const textNodes = [...element.childNodes].filter(
+      (node) => node.nodeType === Node.TEXT_NODE && node.textContent.trim(),
+    );
+    const ownText = textNodes
       .map((node) => node.textContent.trim())
       .join(" ")
       .trim();
     if (!ownText) continue;
 
-    const style = getComputedStyle(element);
+    // Text slotted into a shadow root inherits its colour from the slot, not the host.
+    const slot = textNodes[0].assignedSlot;
+    const context = slot ?? element;
+    const style = getComputedStyle(context);
     if (
       style.visibility === "hidden" ||
       style.display === "none" ||
@@ -123,7 +187,7 @@ const auditInPage = (threshold) => {
 
     const colour = parse(style.webkitTextFillColor ?? style.color);
     if (!colour) continue;
-    const background = backgroundFor(element);
+    const background = backgroundFor(context);
     const ratio = contrast(over(colour, background), background);
     const fontSize = Number.parseFloat(style.fontSize);
     const fontWeight = Number.parseInt(style.fontWeight, 10);
@@ -165,6 +229,9 @@ async function auditState(browser, stateName, colorScheme, viewport) {
   const context = await browser.newContext({
     viewport: { width: viewport.width, height: viewport.height },
     colorScheme,
+    // Measure settled frames: entrances and the market animation's fade-ins would
+    // otherwise be caught half-transparent, and SVG text would be skipped.
+    reducedMotion: "reduce",
     locale: "en-US",
     timezoneId: "UTC",
   });

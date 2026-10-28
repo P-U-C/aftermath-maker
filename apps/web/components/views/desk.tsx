@@ -90,6 +90,7 @@ type DeskViewProps = {
   risk: {
     grossExposureUsd: number;
     grossExposureLimitUsd: number;
+    hedgeTriggerUsd: number | null;
     worstSideFillUsd: number;
     runDrawdownUsd: number | null;
     runDrawdownLimitUsd: number;
@@ -169,6 +170,11 @@ export function DeskView({
       : Math.max(0, 3 - risk.gasRunwayTransactions);
   const motion = useRef<MarketMotionHandle>(null);
   const motionReady = useRef(false);
+  // The meter shows the selected market's signed inventory, so a short reads as short. It
+  // fills toward the hedge trigger, or toward the gross limit when hedging is off.
+  const inventoryUsd =
+    markets.find((row) => row.symbol === market.symbol)?.inventoryUsd ?? 0;
+  const inventoryScaleUsd = risk.hedgeTriggerUsd ?? risk.grossExposureLimitUsd;
   const seenFillIds = useRef(new Set<string>());
   const seenHedgeDigest = useRef<string | null>(null);
 
@@ -179,7 +185,7 @@ export function DeskView({
       ask: market.ourAsk,
       bestBid: market.bestBid,
       bestAsk: market.bestAsk,
-      inventoryUsd: risk.grossExposureUsd,
+      inventoryUsd,
       book: market.book,
     };
     motion.current?.update(update);
@@ -213,7 +219,7 @@ export function DeskView({
     market.indexPrice,
     market.ourAsk,
     market.ourBid,
-    risk.grossExposureUsd,
+    inventoryUsd,
   ]);
 
   const marketCaption =
@@ -345,8 +351,9 @@ export function DeskView({
               ask={market.ourAsk}
               bestBid={market.bestBid}
               bestAsk={market.bestAsk}
-              inventoryUsd={risk.grossExposureUsd}
+              inventoryUsd={inventoryUsd}
               book={market.book}
+              hedgeTriggerUsd={inventoryScaleUsd}
             />
             <p className="desk-market-caption">{marketCaption}</p>
           </Card>

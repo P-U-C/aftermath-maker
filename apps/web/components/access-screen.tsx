@@ -92,17 +92,64 @@ export function AccessScreen({
     }
   }, [accessRequestToken, connected, denied]);
 
+  const landing = !denied && !requestOpen;
+
   function submitRequest(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!accessRequestToken) return;
     onRequestAccess({ accessRequestToken, twitterHandle, company });
   }
 
+  const trustList = (
+    <div className="access-trust-list">
+      <div>
+        <span className="access-trust-icon">
+          <LockKeyhole size={18} aria-hidden="true" />
+        </span>
+        <p>
+          <strong>Your keys stay with you</strong>
+          <span>
+            Connect once, then sign a message. Maker never holds your wallet
+            key.
+          </span>
+        </p>
+      </div>
+      <div>
+        <span className="access-trust-icon">
+          <ShieldCheck size={18} aria-hidden="true" />
+        </span>
+        <p>
+          <strong>Trade-only access per venue</strong>
+          <span>
+            Grant a trading key for each account and revoke it any time.
+          </span>
+        </p>
+      </div>
+      <div>
+        <span className="access-trust-icon">
+          <CircleMinus size={18} aria-hidden="true" />
+        </span>
+        <p>
+          <strong>{venue.feeModel}</strong>
+          <span>Shown before approval, on top of the venue's own fees.</span>
+        </p>
+      </div>
+    </div>
+  );
+
+  const venueLine = (
+    <div className="access-venue-line">
+      <span>Live on</span>
+      <VenueChip venue={venue} />
+      <span>More venues on the way.</span>
+    </div>
+  );
+
   return (
     <main className="access-shell">
       <header className="access-header">
         <div className="access-brand">
-          <SpreadMark state="stopped" />
+          <SpreadMark state="live" />
           <strong>Maker</strong>
         </div>
         {connected && (
@@ -113,192 +160,164 @@ export function AccessScreen({
       </header>
 
       <div
-        className={`access-layout${!denied && !requestOpen ? " access-layout-landing" : ""}`}
+        className={`access-layout${landing ? " access-layout-landing" : ""}`}
       >
-        <section className="access-copy">
+        <section className={`access-copy${landing ? " access-hero" : ""}`}>
           <h1>
-            {denied
-              ? "This wallet is not on the list yet."
-              : requestOpen
-                ? "Request access to Maker."
-                : "Your own market-making desk. Working for you."}
-          </h1>
-          <p className="access-lede">
-            {denied
-              ? connected
-                ? "Request access below if this is the address you want to use, or switch wallets from the control in the top right."
-                : "Connect another wallet, or request access below if this is the address you want to use."
-              : requestOpen
-                ? "Send the wallet you will use and your X account. Requests are reviewed before a wallet is added to the on-chain access list."
-                : "Maker runs a desk from your own accounts. It keeps a bid and ask resting on the markets you choose, hedges what fills, and stops itself at your limits. You set the strategy; it tells you what it is doing in plain words."}
-          </p>
-
-          {requestOpen ? (
-            requestSubmitted ? (
-              <div className="access-request-receipt" role="status">
-                <CheckCircle2 size={22} aria-hidden="true" />
-                <div>
-                  <strong>Request received</strong>
-                  <span>
-                    We saved your wallet and X account for review. You can
-                    return and sign in after the wallet is approved.
-                  </span>
-                </div>
-              </div>
+            {denied ? (
+              "This wallet is not on the list yet."
+            ) : requestOpen ? (
+              "Request access to Maker."
             ) : (
-              <form className="access-request-form" onSubmit={submitRequest}>
-                <Input
-                  label="Sui wallet address"
-                  value={verifiedAddress}
-                  readOnly
-                  aria-readonly="true"
-                  hint="Verified by your wallet signature."
-                />
-                <Input
-                  label="X / Twitter"
-                  value={twitterHandle}
-                  onChange={(event) => setTwitterHandle(event.target.value)}
-                  placeholder="@handle"
-                  autoComplete="off"
-                  spellCheck={false}
-                  pattern="@?[A-Za-z0-9_]{1,15}"
-                  required
-                />
-                <label className="access-honeypot" aria-hidden="true">
-                  Company
-                  <input
-                    value={company}
-                    onChange={(event) => setCompany(event.target.value)}
-                    autoComplete="off"
-                    tabIndex={-1}
+              <>
+                Your own <span className="access-nowrap">market-making</span>{" "}
+                desk.{" "}
+                <span className="access-hero-quiet">Working for you.</span>
+              </>
+            )}
+          </h1>
+          <div className="access-hero-side">
+            <p className="access-lede">
+              {denied
+                ? connected
+                  ? "Request access below if this is the address you want to use, or switch wallets from the control in the top right."
+                  : "Connect another wallet, or request access below if this is the address you want to use."
+                : requestOpen
+                  ? "Send the wallet you will use and your X account. Requests are reviewed before a wallet is added to the on-chain access list."
+                  : "Maker runs a desk from your own accounts. It keeps a bid and ask resting on the markets you choose, hedges what fills, and stops itself at your limits. You set the strategy; it tells you what it is doing in plain words."}
+            </p>
+
+            {requestOpen ? (
+              requestSubmitted ? (
+                <div className="access-request-receipt" role="status">
+                  <CheckCircle2 size={22} aria-hidden="true" />
+                  <div>
+                    <strong>Request received</strong>
+                    <span>
+                      We saved your wallet and X account for review. You can
+                      return and sign in after the wallet is approved.
+                    </span>
+                  </div>
+                </div>
+              ) : (
+                <form className="access-request-form" onSubmit={submitRequest}>
+                  <Input
+                    label="Sui wallet address"
+                    value={verifiedAddress}
+                    readOnly
+                    aria-readonly="true"
+                    hint="Verified by your wallet signature."
                   />
-                </label>
-                <div className="access-request-actions">
+                  <Input
+                    label="X / Twitter"
+                    value={twitterHandle}
+                    onChange={(event) => setTwitterHandle(event.target.value)}
+                    placeholder="@handle"
+                    autoComplete="off"
+                    spellCheck={false}
+                    pattern="@?[A-Za-z0-9_]{1,15}"
+                    required
+                  />
+                  <label className="access-honeypot" aria-hidden="true">
+                    Company
+                    <input
+                      value={company}
+                      onChange={(event) => setCompany(event.target.value)}
+                      autoComplete="off"
+                      tabIndex={-1}
+                    />
+                  </label>
+                  <div className="access-request-actions">
+                    <Button
+                      variant="primary"
+                      size="large"
+                      type="submit"
+                      disabled={requestBusy}
+                    >
+                      <ArrowRight size={18} aria-hidden="true" />
+                      {requestBusy ? "Sending request..." : "Send request"}
+                    </Button>
+                    {!denied && (
+                      <Button
+                        variant="quiet"
+                        size="large"
+                        onClick={() => setRequestOpen(false)}
+                      >
+                        Back to sign in
+                      </Button>
+                    )}
+                  </div>
+                </form>
+              )
+            ) : (
+              <div className="access-actions">
+                {connected ? (
                   <Button
                     variant="primary"
                     size="large"
-                    type="submit"
-                    disabled={requestBusy}
+                    onClick={onVerify}
+                    disabled={busy}
                   >
-                    <ArrowRight size={18} aria-hidden="true" />
-                    {requestBusy ? "Sending request..." : "Send request"}
+                    <ShieldCheck size={18} aria-hidden="true" />
+                    {busy
+                      ? "Sign the message in your wallet..."
+                      : "Retry sign in"}
                   </Button>
-                  {!denied && (
-                    <Button
-                      variant="quiet"
-                      size="large"
-                      onClick={() => setRequestOpen(false)}
-                    >
-                      Back to sign in
-                    </Button>
-                  )}
-                </div>
-              </form>
-            )
-          ) : (
-            <div className="access-actions">
-              {connected ? (
-                <Button
-                  variant="primary"
-                  size="large"
-                  onClick={onVerify}
-                  disabled={busy}
+                ) : (
+                  <div className="access-connect">
+                    <ConnectButton>Continue with wallet</ConnectButton>
+                  </div>
+                )}
+                <button
+                  className="access-request-link"
+                  type="button"
+                  onClick={() => {
+                    if (accessRequestToken) {
+                      setRequestOpen(true);
+                    } else {
+                      onVerify();
+                    }
+                  }}
                 >
-                  <ShieldCheck size={18} aria-hidden="true" />
-                  {busy
-                    ? "Sign the message in your wallet..."
-                    : "Retry sign in"}
-                </Button>
-              ) : (
-                <div className="access-connect">
-                  <ConnectButton>Continue with wallet</ConnectButton>
-                </div>
-              )}
-              <button
-                className="access-request-link"
-                type="button"
-                onClick={() => {
-                  if (accessRequestToken) {
-                    setRequestOpen(true);
-                  } else {
-                    onVerify();
-                  }
-                }}
-              >
-                {accessRequestToken
-                  ? "Request access"
-                  : "Verify wallet to request access"}
-              </button>
-            </div>
-          )}
-
-          {(denied || requestSubmitted) && !connected && (
-            <div className="access-alternate-wallet">
-              <span>Already have access with another wallet?</span>
-              <div className="access-connect access-connect-secondary">
-                <ConnectButton>Choose another wallet</ConnectButton>
+                  {accessRequestToken
+                    ? "Request access"
+                    : "Verify wallet to request access"}
+                </button>
               </div>
-            </div>
-          )}
+            )}
 
-          {notice && (
-            <div className="access-notice" role="alert">
-              {notice}
-            </div>
-          )}
+            {(denied || requestSubmitted) && !connected && (
+              <div className="access-alternate-wallet">
+                <span>Already have access with another wallet?</span>
+                <div className="access-connect access-connect-secondary">
+                  <ConnectButton>Choose another wallet</ConnectButton>
+                </div>
+              </div>
+            )}
 
-          <div className="access-trust-list">
-            <div>
-              <span className="access-trust-icon">
-                <LockKeyhole size={18} aria-hidden="true" />
-              </span>
-              <p>
-                <strong>Your keys stay with you</strong>
-                <span>
-                  Connect once, then sign a message. Maker never holds your
-                  wallet key.
-                </span>
-              </p>
-            </div>
-            <div>
-              <span className="access-trust-icon">
-                <ShieldCheck size={18} aria-hidden="true" />
-              </span>
-              <p>
-                <strong>Trade-only access per venue</strong>
-                <span>
-                  Grant a trading key for each account and revoke it any time.
-                </span>
-              </p>
-            </div>
-            <div>
-              <span className="access-trust-icon">
-                <CircleMinus size={18} aria-hidden="true" />
-              </span>
-              <p>
-                <strong>{venue.feeModel}</strong>
-                <span>
-                  Shown before approval, on top of the venue's own fees.
-                </span>
-              </p>
-            </div>
+            {notice && (
+              <div className="access-notice" role="alert">
+                {notice}
+              </div>
+            )}
           </div>
 
-          <div className="access-venue-line">
-            <span>Live on</span>
-            <VenueChip venue={venue} />
-            <span>More venues on the way.</span>
-          </div>
+          {!landing && trustList}
+          {!landing && venueLine}
         </section>
 
         {(denied || requestOpen) && <SpreadIllustration />}
       </div>
 
-      {!denied && !requestOpen && (
+      {landing && (
         <>
-          <section className="access-landing-stage">
+          <section
+            className="access-landing-stage"
+            aria-label="How a market is made"
+          >
             <MarketMotion
               sim
+              narrate
               mid={0.021441}
               bid={0.021407}
               ask={0.021475}
@@ -306,6 +325,10 @@ export function AccessScreen({
               bestAsk={0.021484}
               inventoryUsd={0}
               book={null}
+              sizeUsd={100}
+              hedgeTriggerUsd={200}
+              spreadBps={32}
+              seed={31}
               caption="Illustration. Your desk draws the same picture from your real quotes and fills."
             />
           </section>
@@ -337,6 +360,8 @@ export function AccessScreen({
               </li>
             </ol>
           </section>
+          <section className="access-landing-trust">{trustList}</section>
+          <footer className="access-landing-foot">{venueLine}</footer>
         </>
       )}
 
