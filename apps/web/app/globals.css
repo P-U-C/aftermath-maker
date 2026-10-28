@@ -6747,6 +6747,7 @@ mysten-dapp-kit-connect-modal,
 }
 
 .glossary-tip {
+  display: none;
   width: max-content;
   max-width: min(260px, 70vw);
   padding: 8px 10px;
@@ -6776,6 +6777,7 @@ mysten-dapp-kit-connect-modal,
 
 .glossary-term:hover > .glossary-tip,
 .glossary-term:focus-visible > .glossary-tip {
+  display: block;
   opacity: 1;
   visibility: visible;
   transform: translateY(0);
@@ -6786,6 +6788,10 @@ mysten-dapp-kit-connect-modal,
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .maker-view-tabs {
+    scroll-behavior: auto;
+  }
+
   .glossary-tip {
     transition: none;
   }
@@ -7133,7 +7139,22 @@ mysten-dapp-kit-connect-modal,
     grid-column: 1;
     grid-row: 2;
     justify-content: flex-start;
+    scroll-behavior: smooth;
     scroll-padding: 4px;
+    -webkit-mask-image: linear-gradient(
+      90deg,
+      transparent,
+      #000 14px,
+      #000 calc(100% - 14px),
+      transparent
+    );
+    mask-image: linear-gradient(
+      90deg,
+      transparent,
+      #000 14px,
+      #000 calc(100% - 14px),
+      transparent
+    );
   }
 
   .maker-view-tabs a {
@@ -7144,7 +7165,7 @@ mysten-dapp-kit-connect-modal,
   }
 
   .desk-page {
-    padding: 12px 14px 116px;
+    padding: 12px 14px calc(116px + env(safe-area-inset-bottom));
   }
 
   .desk-hero {
@@ -7187,6 +7208,12 @@ mysten-dapp-kit-connect-modal,
 
   .desk-hero-actions .ui-button {
     min-height: 44px;
+  }
+
+  .desk-drawdown-note a {
+    min-height: 44px;
+    display: inline-flex;
+    align-items: center;
   }
 
   .desk-primary-grid,
@@ -7487,6 +7514,8 @@ mysten-dapp-kit-connect-modal,
 
   .market-venue-filters button,
   .venue-card-actions .ui-button,
+  .reward-command > a,
+  .performance-market-expand,
   .reward-claim-link,
   .reward-focus button,
   .reward-table th button,
@@ -7495,7 +7524,8 @@ mysten-dapp-kit-connect-modal,
     min-height: 44px;
   }
 
-  .reward-table th button {
+  .reward-table th button,
+  .performance-market-expand {
     min-width: 44px;
   }
 

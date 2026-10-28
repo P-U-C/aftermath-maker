@@ -279,6 +279,7 @@ export function MakerShell({
 }: MakerShellProps) {
   const [addressCopied, setAddressCopied] = useState(false);
   const [explainOpen, setExplainOpen] = useState(false);
+  const activeTab = useRef<HTMLAnchorElement>(null);
   const closeCoach = useCallback(() => setExplainOpen(false), []);
 
   useEffect(() => {
@@ -291,6 +292,16 @@ export function MakerShell({
       // Explain still works when storage is unavailable.
     }
   }, []);
+
+  useEffect(() => {
+    activeTab.current?.scrollIntoView({
+      block: "nearest",
+      inline: "center",
+      behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches
+        ? "auto"
+        : "smooth",
+    });
+  }, [activeView]);
 
   useEffect(() => {
     let icon = document.querySelector<HTMLLinkElement>('link[rel="icon"]');
@@ -355,6 +366,7 @@ export function MakerShell({
               <a
                 key={view.id}
                 href={`#${view.id}`}
+                ref={activeView === view.id ? activeTab : undefined}
                 className={activeView === view.id ? "is-active" : undefined}
                 aria-current={activeView === view.id ? "page" : undefined}
                 onClick={(event) => {
