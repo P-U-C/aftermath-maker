@@ -5093,7 +5093,7 @@ mysten-dapp-kit-connect-modal,
 
 .bundles-title,
 .bundle-card-heading,
-.bundle-wallet-limits > div,
+.bundle-wallet-limit-heading,
 .bundle-card-select,
 .bundle-actions {
   display: flex;
@@ -5149,7 +5149,12 @@ mysten-dapp-kit-connect-modal,
   border-radius: 16px;
 }
 
-.bundle-wallet-limits > div > span,
+.bundle-wallet-limit-copy {
+  display: grid;
+  gap: 2px;
+}
+
+.bundle-wallet-limit-copy > span,
 .bundle-wallet-limits dt,
 .bundle-card-select > span {
   color: var(--ink-2);
@@ -5461,7 +5466,7 @@ mysten-dapp-kit-connect-modal,
   }
 
   .bundles-title,
-  .bundle-wallet-limits > div {
+  .bundle-wallet-limit-heading {
     align-items: flex-start;
     flex-direction: column;
     gap: 8px;

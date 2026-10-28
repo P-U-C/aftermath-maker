@@ -141,6 +141,24 @@ async function installStatefulControl(page, state) {
       ];
       return json(200, { bundle: next });
     }
+    if (
+      routePath === "api/bundles/wallet-limits" &&
+      request.method() === "POST"
+    ) {
+      const body = JSON.parse(request.postData() ?? "{}");
+      if (body.confirmed !== true) {
+        return json(400, { error: "Confirm the wallet limits before saving" });
+      }
+      state.fixture.bundles.walletLimits = {
+        maxRunDrawdownUsd: body.maxRunDrawdownUsd,
+        maxInventoryUsd: body.maxInventoryUsd,
+        maxGrossExposureUsd: body.maxGrossExposureUsd,
+        maxUnrealizedLossUsd: body.maxUnrealizedLossUsd,
+        updatedAt: "2026-10-27T17:09:00.000Z",
+        confirmedAt: state.fixture.bundles.walletLimits.confirmedAt,
+      };
+      return json(200, { walletLimits: state.fixture.bundles.walletLimits });
+    }
     if (routePath === "api/config" && request.method() === "POST") {
       state.fixture.config.config = JSON.parse(request.postData() ?? "{}");
       return json(200, { config: state.fixture.config.config });
@@ -424,6 +442,46 @@ async function createBundleWithFreeChoices(browser) {
   }
 }
 
+async function editWalletLimits(browser) {
+  const { context, page } = await newPage(browser, {
+    width: 1440,
+    height: 900,
+  });
+  try {
+    await goToDesk(page);
+    await page.getByRole("link", { name: "Bundles", exact: true }).click();
+    await page
+      .getByRole("button", { name: "Edit wallet limits", exact: true })
+      .click();
+    const editor = page.getByRole("dialog", { name: "Edit wallet limits" });
+    await editor.waitFor();
+    await editor.getByLabel("Gross exposure").fill("18.25");
+    await editor.getByRole("button", { name: "Continue", exact: true }).click();
+    const confirmation = page.getByRole("dialog", {
+      name: "Confirm wallet limits",
+    });
+    await confirmation.waitFor();
+    await confirmation.getByText("$18.25", { exact: true }).waitFor();
+    await page.waitForTimeout(300);
+    await capture(page, "v5-wallet-limits-confirm-desktop.png");
+    await confirmation
+      .getByRole("button", { name: "Confirm changes", exact: true })
+      .click();
+    await page
+      .getByText("Wallet limits updated across your bundles.", {
+        exact: true,
+      })
+      .waitFor();
+    await page
+      .locator(".bundle-wallet-limits")
+      .getByText("$18.25", { exact: true })
+      .waitFor();
+    await capture(page, "v5-wallet-limits-edit-desktop.png");
+  } finally {
+    await context.close();
+  }
+}
+
 await fs.mkdir(outputDirectory, { recursive: true });
 const server = spawnServer ? await startServer() : null;
 const browser = await chromium.launch({
@@ -438,6 +496,7 @@ try {
   await revokeWithoutWallet(browser);
   await serviceAndSessionFailures(browser);
   await createBundleWithFreeChoices(browser);
+  await editWalletLimits(browser);
   process.stdout.write("customer journey: all stateful audit flows passed\n");
 } finally {
   await browser.close();

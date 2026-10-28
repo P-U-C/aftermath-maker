@@ -35,6 +35,16 @@ const optionalIntegratorId = z.preprocess(
   z.coerce.number().int().nonnegative().optional(),
 );
 
+const walletLimitsSchema = z
+  .object({
+    maxRunDrawdownUsd: z.number().positive().max(10_000),
+    maxInventoryUsd: z.number().positive().max(10_000),
+    maxGrossExposureUsd: z.number().positive().max(100_000),
+    maxUnrealizedLossUsd: z.number().positive().max(10_000),
+    confirmed: z.literal(true),
+  })
+  .strict();
+
 const envSchema = z.object({
   NODE_ENV: z
     .enum(["development", "test", "production"])
@@ -415,6 +425,28 @@ app.get("/api/bundles/:bundleId/config", async (request) => {
   const config = scoped.getBundleConfig(params.bundleId);
   if (!config) throw new AuthError(404, "Bundle was not found");
   return { config };
+});
+
+app.post("/api/bundles/wallet-limits", async (request) => {
+  const scoped = tenant(request);
+  if (scoped.bundlesRolledBack()) {
+    throw new AuthError(409, "Bundles rolled back");
+  }
+  const body = walletLimitsSchema.parse(request.body);
+  const ownerAddress = requestAuth(request).ownerAddress;
+  const walletLimits = scoped.updateWalletLimits({
+    maxRunDrawdownUsd: body.maxRunDrawdownUsd,
+    maxInventoryUsd: body.maxInventoryUsd,
+    maxGrossExposureUsd: body.maxGrossExposureUsd,
+    maxUnrealizedLossUsd: body.maxUnrealizedLossUsd,
+    usage: runtimeManager.runningWalletUsage(ownerAddress),
+  });
+  scoped.logEvent({
+    category: "bundles",
+    action: "wallet-limits.update",
+    outcome: "success",
+  });
+  return { walletLimits };
 });
 
 app.post("/api/bundles", async (request) => {

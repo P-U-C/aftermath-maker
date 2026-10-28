@@ -86,6 +86,106 @@ describe("runtime endpoint management", () => {
     store.close();
   });
 
+  it("reports aggregate use from running bundles before wallet limits change", async () => {
+    const store = storeHarness();
+    const ownerAddress = `0x${"2".repeat(64)}`;
+    const tenant = store.forTenant(ownerAddress);
+    const core = makerConfigSchema.parse({
+      markets: [{ marketId: "0x2001", symbol: "CORE" }],
+    });
+    tenant.setConfig(core);
+    tenant.confirmWalletLimits();
+    const paper = tenant.createBundle({
+      name: "Paper",
+      config: makerConfigSchema.parse({
+        ...core,
+        markets: [{ marketId: "0x2002", symbol: "PAPER" }],
+        mode: "paper",
+      }),
+    });
+    const coreBundle = tenant
+      .listBundles()
+      .find((bundle) => bundle.name === "Core")!;
+    const manager = new RuntimeManager(
+      store,
+      {} as never,
+      {},
+      vi.fn().mockResolvedValue(gateway("https://shared.example")),
+    );
+    await manager.initialize();
+    const runtimeValues = (bundleId: string) =>
+      manager.getBundle(ownerAddress, bundleId) as unknown as {
+        snapshotValue: {
+          portfolio: { grossExposureUsd: number; unrealizedPnlUsd: number };
+          balances: { inventoryUsd: number };
+          risk: { runDrawdownUsd: number | null };
+        };
+      };
+    const coreRuntime = runtimeValues(coreBundle.id).snapshotValue;
+    coreRuntime.portfolio.grossExposureUsd = 12;
+    coreRuntime.portfolio.unrealizedPnlUsd = -3;
+    coreRuntime.balances.inventoryUsd = -4;
+    coreRuntime.risk.runDrawdownUsd = 2;
+    const paperRuntime = runtimeValues(paper.id).snapshotValue;
+    paperRuntime.portfolio.grossExposureUsd = -5;
+    paperRuntime.portfolio.unrealizedPnlUsd = 1;
+    paperRuntime.balances.inventoryUsd = 6;
+    paperRuntime.risk.runDrawdownUsd = 1;
+    tenant.setBundleStatus(coreBundle.id, "running");
+    tenant.setBundleStatus(paper.id, "running");
+
+    expect(manager.runningWalletUsage(ownerAddress)).toEqual({
+      grossExposureUsd: 17,
+      inventoryUsd: 10,
+      unrealizedLossUsd: 3,
+      runDrawdownUsd: 3,
+    });
+    manager.close();
+    store.close();
+  });
+
+  it("does not start a paused bundle outside an edited wallet envelope", async () => {
+    const store = storeHarness();
+    const ownerAddress = `0x${"5".repeat(64)}`;
+    const tenant = store.forTenant(ownerAddress);
+    tenant.setConfig(
+      makerConfigSchema.parse({
+        markets: [{ marketId: "0x5001", symbol: "CORE" }],
+        maxRunDrawdownUsd: 100,
+        maxInventoryUsd: 100,
+        maxGrossExposureUsd: 100,
+        maxUnrealizedLossUsd: 100,
+      }),
+    );
+    const core = tenant.listBundles()[0]!;
+    tenant.updateWalletLimits({
+      maxRunDrawdownUsd: 90,
+      maxInventoryUsd: 90,
+      maxGrossExposureUsd: 90,
+      maxUnrealizedLossUsd: 90,
+      usage: {
+        runDrawdownUsd: 0,
+        inventoryUsd: 0,
+        grossExposureUsd: 0,
+        unrealizedLossUsd: 0,
+      },
+    });
+    const manager = new RuntimeManager(
+      store,
+      {} as never,
+      {},
+      vi.fn().mockResolvedValue(gateway("https://shared.example")),
+    );
+    await manager.initialize();
+
+    expect(() => manager.startBundle(ownerAddress, core.id)).toThrow(
+      "exceeds this wallet's confirmed envelope",
+    );
+    expect(tenant.getStoredBundle(core.id)?.status).toBe("stopped");
+    manager.close();
+    store.close();
+  });
+
   it("keeps the last healthy gateway when a later probe fails", async () => {
     const store = storeHarness();
     const factory = vi
