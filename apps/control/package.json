@@ -8,6 +8,7 @@
     "build": "tsc -b tsconfig.json --force",
     "dev": "tsx watch src/server.ts",
     "start": "node dist/server.js",
+    "bundles:rollback": "node dist/bundles-rollback.js",
     "notify:access": "node dist/access-request-notifier.js",
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.json --noEmit"
