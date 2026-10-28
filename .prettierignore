@@ -1,2 +1,4 @@
 deploy/*.service
 deploy/*.timer
+# Design handoff bundles are vendored reference files; keep them byte-for-byte.
+docs/design/

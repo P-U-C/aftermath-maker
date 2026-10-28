@@ -2830,6 +2830,9 @@ function DashboardBody() {
         risk={{
           grossExposureUsd: snapshot?.portfolio.grossExposureUsd ?? 0,
           grossExposureLimitUsd: config.maxGrossExposureUsd,
+          hedgeTriggerUsd: config.hedge.enabled
+            ? config.hedge.thresholdUsd
+            : null,
           worstSideFillUsd,
           runDrawdownUsd: snapshot?.risk.runDrawdownUsd ?? null,
           runDrawdownLimitUsd: config.maxRunDrawdownUsd,

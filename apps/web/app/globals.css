@@ -47,6 +47,16 @@
   color-scheme: light;
 }
 
+/* Motion: one ease, four durations. Reduced motion turns them all off (end of file). */
+:root {
+  --ease-out: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+  --dur-1: 120ms;
+  --dur-2: 200ms;
+  --dur-3: 320ms;
+  --dur-4: 520ms;
+}
+
 [data-theme="dark"] {
   --canvas: #0b0c0e;
   --surface: #15171b;
@@ -3417,10 +3427,15 @@ footer a {
   font-size: 18px;
 }
 
+/* dapp-kit's elements read shadcn-style names (--primary, --primary-foreground, --muted...)
+   inside their shadow roots. Map them to Maker's tokens on the elements themselves, so the
+   button and modal follow the theme wherever they render. --primary already holds Maker's
+   value; never write --primary: var(--primary), which is a cycle and resets it. */
+mysten-dapp-kit-connect-button,
+mysten-dapp-kit-connect-modal,
 .access-header-wallet {
   --background: var(--surface);
   --foreground: var(--ink);
-  --primary: var(--primary);
   --primary-foreground: var(--on-primary);
   --secondary: var(--fill);
   --secondary-foreground: var(--ink);
@@ -3534,15 +3549,22 @@ footer a {
   gap: 22px;
 }
 
-.access-connect button {
-  min-height: 52px !important;
-  padding: 0 28px !important;
-  color: var(--on-primary) !important;
-  background: var(--primary) !important;
-  border: 0 !important;
-  border-radius: 999px !important;
-  font-size: 16px !important;
-  font-weight: 640 !important;
+/* The connect button lives in dapp-kit's shadow root. Style it through the part it exports;
+   a plain "button" selector never reaches it. */
+.access-connect mysten-dapp-kit-connect-button::part(trigger) {
+  height: 52px;
+  padding: 0 28px;
+  color: var(--on-primary);
+  background-color: var(--primary);
+  border: 0;
+  border-radius: 999px;
+  font-size: 16px;
+  font-weight: 640;
+  transition: background-color var(--dur-1) var(--ease-out);
+}
+
+.access-connect mysten-dapp-kit-connect-button::part(trigger):hover {
+  background-color: color-mix(in oklab, var(--primary) 86%, var(--canvas));
 }
 
 .access-request-link {
@@ -3628,13 +3650,17 @@ footer a {
   font-size: 13px;
 }
 
-.access-connect-secondary button {
-  min-height: 40px !important;
-  padding: 0 16px !important;
-  color: var(--ink) !important;
-  background: var(--surface) !important;
-  border: 1px solid var(--line) !important;
-  font-size: 13px !important;
+.access-connect-secondary mysten-dapp-kit-connect-button::part(trigger) {
+  height: 40px;
+  padding: 0 16px;
+  color: var(--ink);
+  background-color: var(--surface);
+  border: 1px solid var(--line);
+  font-size: 13px;
+}
+
+.access-connect-secondary mysten-dapp-kit-connect-button::part(trigger):hover {
+  background-color: var(--fill);
 }
 
 .access-notice {
@@ -5291,64 +5317,48 @@ footer a {
 }
 
 .market-motion {
+  --motion-font: var(--font-mona), Arial, sans-serif;
   margin: 18px 0 0;
 }
 
-.market-motion svg {
-  width: 100%;
-  height: auto;
-  display: block;
-  overflow: visible;
-  font-family: var(--font-mona), Arial, sans-serif;
+.market-motion-narration {
+  max-width: 76ch;
+  min-height: 2.9em;
+  margin: 8px 0 0;
+  color: var(--ink);
+  font-size: 15.5px;
+  line-height: 1.45;
 }
 
-.market-motion-axis {
-  stroke: var(--ink-3);
-  stroke-opacity: 0.4;
+.market-motion-narration b {
+  font-weight: 640;
 }
 
-.market-motion-mid {
-  stroke: var(--ink-2);
-  stroke-dasharray: 3 3;
-}
-
-.market-motion-book {
-  opacity: 0.34;
-}
-
-.market-motion-ask {
-  fill: var(--ember);
-}
-
-.market-motion-bid {
-  fill: var(--tide);
-}
-
-.market-motion-readout text,
-.market-motion-inventory text {
-  fill: var(--ink-2);
-  font-size: 12px;
-}
-
-.market-motion-readout .market-motion-value,
-.market-motion-inventory .market-motion-value {
-  fill: var(--ink);
+.market-motion-foot {
+  margin-top: 10px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 22px;
+  color: var(--ink-2);
   font-size: 13px;
-  font-weight: 650;
 }
 
-.market-motion-inventory rect:first-of-type {
-  fill: var(--fill-2);
+.market-motion-counters {
+  display: flex;
+  gap: 22px;
 }
 
-.market-motion-hedge {
-  fill: var(--ink);
+.market-motion-counters:empty {
+  display: none;
 }
 
-.market-motion figcaption {
-  margin-top: 8px;
-  color: var(--ink-3);
-  font-size: 12px;
+.market-motion-counters b {
+  margin-right: 3px;
+  color: var(--ink);
+  font-weight: 660;
+  font-stretch: 118%;
 }
 
 .learn-view {
@@ -5805,19 +5815,98 @@ footer a {
   width: min(100%, 1160px);
 }
 
+/* The landing hero: the headline on the left, the lede and the way in on the right, and
+   the market animation full width under both. */
+.access-hero {
+  display: grid;
+  grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr);
+  align-items: end;
+  gap: 64px;
+}
+
 .access-layout-landing .access-copy h1 {
-  max-width: 760px;
+  max-width: none;
   font-size: clamp(42px, 5vw, 68px);
+  font-weight: 660;
+  line-height: 0.98;
   letter-spacing: -0.04em;
+}
+
+.access-hero .access-hero-quiet {
+  color: var(--ink-2);
+}
+
+.access-nowrap {
+  white-space: nowrap;
 }
 
 .access-layout-landing .access-lede {
   max-width: 620px;
+  margin-top: 0;
 }
 
-.access-layout-landing .access-trust-list {
+.access-hero-side .access-actions {
+  margin-top: 26px;
+}
+
+.access-landing-trust,
+.access-landing-foot {
+  width: min(1160px, 100%);
+  margin: 0 auto;
+}
+
+.access-landing-trust {
+  padding-top: 56px;
+}
+
+.access-landing-trust .access-trust-list {
+  margin-top: 0;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 20px;
+}
+
+.access-landing-foot {
+  padding: 40px 0 14px;
+}
+
+.access-landing-foot .access-venue-line {
+  margin-top: 0;
+}
+
+/* One orchestrated entrance, once per load: the headline, then the lede and the way in,
+   then the stage, whose animation opens on the mark by itself. */
+@keyframes maker-enter {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+}
+
+@keyframes maker-fade {
+  from {
+    opacity: 0;
+  }
+}
+
+.access-hero h1,
+.access-hero-side > * {
+  animation: maker-enter var(--dur-4) var(--ease-out) both;
+}
+
+.access-hero h1 {
+  animation-delay: 60ms;
+}
+
+.access-hero-side > :nth-child(1) {
+  animation-delay: 180ms;
+}
+
+.access-hero-side > :nth-child(n + 2) {
+  animation-delay: 260ms;
+}
+
+.access-landing-stage {
+  animation: maker-fade var(--dur-4) var(--ease-out) 360ms both;
 }
 
 .access-landing-stage,
@@ -6002,7 +6091,12 @@ footer a {
     padding-top: 20px;
   }
 
-  .access-layout-landing .access-trust-list,
+  .access-hero {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 20px;
+  }
+
+  .access-landing-trust .access-trust-list,
   .access-landing-moves ol {
     grid-template-columns: 1fr;
   }
@@ -7793,5 +7887,20 @@ footer a {
     scroll-behavior: auto !important;
     animation: none !important;
     transition: none !important;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --dur-1: 0ms;
+    --dur-2: 0ms;
+    --dur-3: 0ms;
+    --dur-4: 0ms;
+  }
+
+  .access-hero h1,
+  .access-hero-side > *,
+  .access-landing-stage {
+    animation: none;
   }
 }
