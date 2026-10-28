@@ -344,6 +344,27 @@ describe("runtime execution boundaries", () => {
     harness.store.close();
   });
 
+  it("keeps Paper and Observe bundle cycles out of the transaction queue", async () => {
+    for (const mode of ["observe", "paper"] as const) {
+      const harness = createHarness();
+      harness.tenant.setConfig(
+        makerConfigSchema.parse({
+          ...harness.tenant.getConfig(),
+          mode,
+        }),
+      );
+      harness.runtime.start();
+      await harness.runtime.cycle();
+
+      expect(harness.executions()).toBe(0);
+      expect(harness.hedgeExecutions()).toBe(0);
+      expect(harness.cancellations()).toBe(0);
+      expect(harness.executionSequence).toEqual([]);
+      await harness.runtime.stop();
+      harness.store.close();
+    }
+  });
+
   it("submits byte-identical Core quote intents and gateway payloads", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-10-28T20:00:00.000Z"));

@@ -102,4 +102,105 @@ describe("runtime endpoint management", () => {
     manager.close();
     store.close();
   });
+
+  it("keeps bundle failures isolated and Stop all available while one bundle is in error", async () => {
+    const store = storeHarness();
+    const ownerAddress = `0x${"3".repeat(64)}`;
+    const tenant = store.forTenant(ownerAddress);
+    const core = makerConfigSchema.parse({
+      markets: [{ marketId: "0x3001", symbol: "CORE" }],
+      maxRunDrawdownUsd: 100,
+      maxInventoryUsd: 100,
+      maxGrossExposureUsd: 100,
+      maxUnrealizedLossUsd: 100,
+    });
+    tenant.setConfig(core);
+    tenant.confirmWalletLimits();
+    const paper = tenant.createBundle({
+      name: "Paper",
+      config: makerConfigSchema.parse({
+        ...core,
+        markets: [{ marketId: "0x3002", symbol: "PAPER" }],
+        mode: "paper",
+      }),
+    });
+    const sharedGateway = gateway("https://shared.example");
+    const manager = new RuntimeManager(
+      store,
+      {
+        liveEnabled: false,
+        mainnetAllowed: false,
+        builderCode: () => null,
+      },
+      {},
+      vi.fn().mockResolvedValue(sharedGateway),
+    );
+
+    await manager.initialize();
+    const paperRuntime = manager.getBundle(ownerAddress, paper.id);
+    paperRuntime.start();
+    await paperRuntime.cycle();
+    expect(tenant.getStoredBundle(paper.id)).toMatchObject({
+      status: "error",
+      lastError: expect.stringContaining("paused"),
+    });
+
+    const coreId = tenant
+      .listBundles()
+      .find((bundle) => bundle.name === "Core")!.id;
+    tenant.setBundleStatus(coreId, "running");
+    expect(await manager.stopTenant(ownerAddress)).toBe(true);
+    expect(tenant.getStoredBundle(paper.id)?.status).toBe("stopped");
+    expect(tenant.getStoredBundle(coreId)?.status).toBe("stopped");
+    manager.close();
+    store.close();
+  });
+
+  it("rejects a second bundle start below the shared cancellation reserve", async () => {
+    const store = storeHarness();
+    const ownerAddress = `0x${"4".repeat(64)}`;
+    const tenant = store.forTenant(ownerAddress);
+    const core = makerConfigSchema.parse({
+      markets: [{ marketId: "0x4001", symbol: "CORE" }],
+    });
+    tenant.setConfig(core);
+    tenant.confirmWalletLimits();
+    const paper = tenant.createBundle({
+      name: "Paper",
+      config: makerConfigSchema.parse({
+        ...core,
+        markets: [{ marketId: "0x4002", symbol: "PAPER" }],
+        mode: "paper",
+      }),
+    });
+    const sharedGateway = gateway("https://shared.example");
+    const manager = new RuntimeManager(
+      store,
+      {
+        liveEnabled: false,
+        mainnetAllowed: false,
+        builderCode: () => null,
+      },
+      {},
+      vi.fn().mockResolvedValue(sharedGateway),
+    );
+    await manager.initialize();
+    const coreBundle = tenant
+      .listBundles()
+      .find((bundle) => bundle.name === "Core")!;
+    const coreRuntime = manager.getBundle(ownerAddress, coreBundle.id);
+    (
+      coreRuntime as unknown as {
+        snapshotValue: { balances: { gasSui: number | null } };
+      }
+    ).snapshotValue.balances.gasSui = 0.1;
+    tenant.setBundleStatus(coreBundle.id, "running");
+
+    expect(() => manager.startBundle(ownerAddress, paper.id)).toThrow(
+      "gas reserve",
+    );
+    expect(tenant.getStoredBundle(paper.id)?.status).toBe("paused");
+    manager.close();
+    store.close();
+  });
 });

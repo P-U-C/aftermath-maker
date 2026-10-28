@@ -15,6 +15,15 @@ export function apiResponse(fixture, url) {
   if (routePath === "api/config") {
     return { status: 200, body: fixture.config };
   }
+  if (routePath === "api/bundles") {
+    return { status: 200, body: fixture.bundles };
+  }
+  if (/^api\/bundles\/[^/]+\/config$/.test(routePath)) {
+    return { status: 200, body: fixture.config };
+  }
+  if (/^api\/bundles\/[^/]+\/(start|pause|resume|archive)$/.test(routePath)) {
+    return { status: 200, body: { ok: true } };
+  }
   if (routePath === "api/setup") {
     return { status: 200, body: fixture.setup };
   }

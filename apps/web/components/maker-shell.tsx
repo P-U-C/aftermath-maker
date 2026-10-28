@@ -6,6 +6,7 @@ import {
   CircleCheck,
   CircleHelp,
   CircleX,
+  CircleStop,
   Copy,
   LogOut,
   WalletCards,
@@ -28,6 +29,7 @@ export const makerViews = [
   { id: "desk", label: "Desk" },
   { id: "strategy", label: "Strategy" },
   { id: "markets", label: "Markets" },
+  { id: "bundles", label: "Bundles" },
   { id: "performance", label: "Performance" },
   { id: "accounts", label: "Accounts" },
   { id: "venues", label: "Venues" },
@@ -457,6 +459,7 @@ type MakerShellProps = {
   noticeTone: MakerNoticeTone;
   onDismissNotice: () => void;
   onLogout: () => void;
+  onStopAll: () => void;
   children: ReactNode;
 };
 
@@ -475,6 +478,7 @@ export function MakerShell({
   noticeTone,
   onDismissNotice,
   onLogout,
+  onStopAll,
   children,
 }: MakerShellProps) {
   const [addressCopied, setAddressCopied] = useState(false);
@@ -620,6 +624,16 @@ export function MakerShell({
           </nav>
 
           <div className="maker-nav-right">
+            {running && (
+              <button
+                className="maker-stop-all"
+                type="button"
+                onClick={onStopAll}
+              >
+                <CircleStop size={15} aria-hidden="true" />
+                Stop all
+              </button>
+            )}
             <button
               ref={explainSwitch}
               className="maker-explain-toggle"

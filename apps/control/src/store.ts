@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import Database from "better-sqlite3";
@@ -197,6 +198,7 @@ export type BundleWalletLimits = {
   maxGrossExposureUsd: number;
   maxUnrealizedLossUsd: number;
   updatedAt: string;
+  confirmedAt: string | null;
 };
 
 export type StoredBundle = {
@@ -206,10 +208,12 @@ export type StoredBundle = {
   makerAccountId: string | null;
   takerAccountId: string | null;
   mode: MakerConfig["mode"];
+  status: BundleStatus;
   marketIds: string[];
   createdAt: string;
   updatedAt: string;
   lastError: string | null;
+  archivedAt: string | null;
 };
 
 type BundleRow = {
@@ -224,6 +228,7 @@ type BundleRow = {
   created_at: string;
   updated_at: string;
   last_error: string | null;
+  archived_at: string | null;
 };
 
 export const RETENTION_LIMITS = {
@@ -617,6 +622,7 @@ export class Store {
           created_at TEXT NOT NULL,
           updated_at TEXT NOT NULL,
           last_error TEXT,
+          archived_at TEXT,
           CHECK (
             maker_account_id IS NULL OR taker_account_id IS NULL OR
             maker_account_id <> taker_account_id
@@ -650,7 +656,8 @@ export class Store {
           max_inventory_usd REAL NOT NULL,
           max_gross_exposure_usd REAL NOT NULL,
           max_unrealized_loss_usd REAL NOT NULL,
-          updated_at TEXT NOT NULL
+          updated_at TEXT NOT NULL,
+          confirmed_at TEXT
         );
 
         CREATE TABLE IF NOT EXISTS bundle_legacy_backups (
@@ -731,6 +738,8 @@ export class Store {
         "owner_address",
         "owner_address TEXT NOT NULL DEFAULT ''",
       );
+      ensureColumn("bundles", "archived_at", "archived_at TEXT");
+      ensureColumn("bundle_wallet_limits", "confirmed_at", "confirmed_at TEXT");
       this.db.exec(`
         UPDATE bundle_markets
         SET owner_address = (
@@ -741,6 +750,15 @@ export class Store {
 
         CREATE UNIQUE INDEX IF NOT EXISTS bundle_markets_owner_market_unique
           ON bundle_markets(owner_address, market_id);
+
+        DROP INDEX IF EXISTS bundles_owner_maker_account_unique;
+        DROP INDEX IF EXISTS bundles_owner_taker_account_unique;
+        CREATE UNIQUE INDEX bundles_owner_maker_account_unique
+          ON bundles(owner_address, maker_account_id)
+          WHERE maker_account_id IS NOT NULL AND archived_at IS NULL;
+        CREATE UNIQUE INDEX bundles_owner_taker_account_unique
+          ON bundles(owner_address, taker_account_id)
+          WHERE taker_account_id IS NOT NULL AND archived_at IS NULL;
 
         CREATE INDEX IF NOT EXISTS tenant_audit_events_owner_bundle_time
           ON tenant_audit_events(owner_address, bundle_id, occurred_at DESC);
@@ -842,7 +860,7 @@ export class Store {
       const existingBundles = this.db
         .prepare(
           `SELECT id, owner_address, name, maker_account_id, taker_account_id,
-                  config, updated_at
+                  config, updated_at, archived_at
            FROM bundles`,
         )
         .all() as Array<{
@@ -853,8 +871,10 @@ export class Store {
         taker_account_id: string | null;
         config: string;
         updated_at: string;
+        archived_at: string | null;
       }>;
       for (const bundle of existingBundles) {
+        if (bundle.archived_at) continue;
         if (bundle.maker_account_id) {
           insertRole.run(
             bundle.id,
@@ -1017,7 +1037,7 @@ export class Store {
     const bundle = this.db
       .prepare(
         `SELECT id FROM bundles
-         WHERE owner_address = ? AND id = ?`,
+         WHERE owner_address = ? AND id = ? AND archived_at IS NULL`,
       )
       .get(normalizedOwner, bundleId) as { id: string } | undefined;
     if (!bundle) throw new Error("Bundle was not found for this wallet");
@@ -1493,7 +1513,8 @@ export class TenantStore {
     const row = this.db
       .prepare(
         `SELECT id, owner_address, name, maker_account_id, taker_account_id,
-                config, mode, status, created_at, updated_at, last_error
+                config, mode, status, created_at, updated_at, last_error,
+                archived_at
          FROM bundles
          WHERE owner_address = ? AND name = 'Core'`,
       )
@@ -1525,7 +1546,20 @@ export class TenantStore {
   }
 
   private configSource():
-    { kind: "core"; value: string } | { kind: "legacy"; value: string } | null {
+    | { kind: "bundle"; value: string }
+    | { kind: "core"; value: string }
+    | { kind: "legacy"; value: string }
+    | null {
+    if (this.bundleId) {
+      const row = this.db
+        .prepare(
+          `SELECT config FROM bundles
+           WHERE owner_address = ? AND id = ? AND archived_at IS NULL`,
+        )
+        .get(this.ownerAddress, this.bundleId) as
+        { config: string } | undefined;
+      return row ? { kind: "bundle", value: row.config } : null;
+    }
     const core = this.getCoreRow();
     if (core && !this.bundlesRolledBack()) {
       return { kind: "core", value: core.config };
@@ -1573,12 +1607,163 @@ export class TenantStore {
     }
   }
 
+  private nextBundleUpdatedAt(bundleId: string): string {
+    const current = this.db
+      .prepare("SELECT updated_at FROM bundles WHERE id = ?")
+      .get(bundleId) as { updated_at: string } | undefined;
+    const currentMs = current ? Date.parse(current.updated_at) : Number.NaN;
+    return new Date(
+      Number.isFinite(currentMs)
+        ? Math.max(Date.now(), currentMs + 1)
+        : Date.now(),
+    ).toISOString();
+  }
+
+  private assertConfigFitsWallet(
+    config: MakerConfig,
+    walletLimits: BundleWalletLimits,
+  ): void {
+    const maximumInventoryUsd = Math.max(
+      config.maxInventoryUsd,
+      ...config.markets.map(
+        (market) => market.overrides?.maxInventoryUsd ?? config.maxInventoryUsd,
+      ),
+    );
+    const limits: Array<[string, number, number]> = [
+      [
+        "Run drawdown",
+        config.maxRunDrawdownUsd,
+        walletLimits.maxRunDrawdownUsd,
+      ],
+      ["Inventory", maximumInventoryUsd, walletLimits.maxInventoryUsd],
+      [
+        "Gross exposure",
+        config.maxGrossExposureUsd,
+        walletLimits.maxGrossExposureUsd,
+      ],
+      [
+        "Unrealized loss",
+        config.maxUnrealizedLossUsd,
+        walletLimits.maxUnrealizedLossUsd,
+      ],
+    ];
+    const overLimit = limits.find(([, value, envelope]) => value > envelope);
+    if (overLimit) {
+      throw new Error(
+        `${overLimit[0]} limit exceeds this wallet's confirmed envelope`,
+      );
+    }
+  }
+
+  private assertBundleAssignmentsAvailable(
+    bundleId: string,
+    config: MakerConfig,
+  ): void {
+    if (
+      config.makerAccountId &&
+      config.makerAccountId === config.hedge.accountId
+    ) {
+      throw new Error("Maker and Taker accounts must be different");
+    }
+    const accountIds = [config.makerAccountId, config.hedge.accountId].filter(
+      (accountId): accountId is string => Boolean(accountId),
+    );
+    const assignedAccount = this.db.prepare(
+      `SELECT 1
+       FROM bundle_account_roles roles
+       JOIN bundles ON bundles.id = roles.bundle_id
+       WHERE roles.owner_address = ?
+         AND roles.account_id = ?
+         AND roles.bundle_id <> ?
+         AND bundles.archived_at IS NULL`,
+    );
+    for (const accountId of accountIds) {
+      if (assignedAccount.get(this.ownerAddress, accountId, bundleId)) {
+        throw new Error("Each account can hold one bundle role per wallet");
+      }
+    }
+    const assignedMarket = this.db.prepare(
+      `SELECT 1
+       FROM bundle_markets markets
+       JOIN bundles ON bundles.id = markets.bundle_id
+       WHERE markets.owner_address = ?
+         AND markets.market_id = ?
+         AND markets.bundle_id <> ?
+         AND bundles.archived_at IS NULL`,
+    );
+    for (const market of config.markets) {
+      if (assignedMarket.get(this.ownerAddress, market.marketId, bundleId)) {
+        throw new Error("A market can belong to one bundle per wallet");
+      }
+    }
+  }
+
+  private writeBundleConfig(bundleId: string, config: MakerConfig): void {
+    const write = this.db.transaction(() => {
+      const bundle = this.db
+        .prepare(
+          `SELECT id, name, archived_at FROM bundles
+           WHERE owner_address = ? AND id = ?`,
+        )
+        .get(this.ownerAddress, bundleId) as
+        { id: string; name: string; archived_at: string | null } | undefined;
+      if (!bundle || bundle.archived_at) {
+        throw new Error("Bundle was not found");
+      }
+      if (bundle.name !== "Core" && config.mode === "live") {
+        throw new Error(
+          "Additional bundles can only use Observe or Paper mode",
+        );
+      }
+      const walletLimits = this.getWalletLimits();
+      if (!walletLimits) {
+        throw new Error("Configure Core before creating another bundle");
+      }
+      this.assertConfigFitsWallet(config, walletLimits);
+      this.assertBundleAssignmentsAvailable(bundleId, config);
+      this.db
+        .prepare(
+          `UPDATE bundles
+           SET maker_account_id = ?, taker_account_id = ?, config = ?, mode = ?,
+               updated_at = ?
+           WHERE owner_address = ? AND id = ?`,
+        )
+        .run(
+          config.makerAccountId ?? null,
+          config.hedge.accountId ?? null,
+          stringify(config),
+          config.mode,
+          this.nextBundleUpdatedAt(bundleId),
+          this.ownerAddress,
+          bundleId,
+        );
+      this.replaceBundleMarkets(bundleId, config);
+      this.replaceBundleAccountRoles(bundleId, config);
+    });
+    write();
+  }
+
   private writeCoreConfig(config: MakerConfig): void {
     const existing = this.getCoreRow();
-    const now = new Date().toISOString();
     const id = existing?.id ?? coreBundleId(this.ownerAddress);
+    const now = this.nextBundleUpdatedAt(id);
     const serialized = stringify(config);
     const write = this.db.transaction(() => {
+      const walletLimits = this.getWalletLimits();
+      const activeBundles = this.db
+        .prepare(
+          `SELECT COUNT(*) AS count FROM bundles
+           WHERE owner_address = ? AND archived_at IS NULL`,
+        )
+        .get(this.ownerAddress) as { count: number };
+      const mayAdjustInitialEnvelope =
+        Boolean(walletLimits) &&
+        !walletLimits!.confirmedAt &&
+        activeBundles.count <= 1;
+      if (walletLimits && !mayAdjustInitialEnvelope) {
+        this.assertConfigFitsWallet(config, walletLimits);
+      }
+      this.assertBundleAssignmentsAvailable(id, config);
       if (existing) {
         this.db
           .prepare(
@@ -1614,27 +1799,29 @@ export class TenantStore {
             now,
           );
       }
-      this.db
-        .prepare(
-          `INSERT INTO bundle_wallet_limits
-            (owner_address, max_run_drawdown_usd, max_inventory_usd,
-             max_gross_exposure_usd, max_unrealized_loss_usd, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?)
-           ON CONFLICT(owner_address) DO UPDATE SET
-             max_run_drawdown_usd = excluded.max_run_drawdown_usd,
-             max_inventory_usd = excluded.max_inventory_usd,
-             max_gross_exposure_usd = excluded.max_gross_exposure_usd,
-             max_unrealized_loss_usd = excluded.max_unrealized_loss_usd,
-             updated_at = excluded.updated_at`,
-        )
-        .run(
-          this.ownerAddress,
-          config.maxRunDrawdownUsd,
-          config.maxInventoryUsd,
-          config.maxGrossExposureUsd,
-          config.maxUnrealizedLossUsd,
-          now,
-        );
+      if (!walletLimits || mayAdjustInitialEnvelope) {
+        this.db
+          .prepare(
+            `INSERT INTO bundle_wallet_limits
+              (owner_address, max_run_drawdown_usd, max_inventory_usd,
+               max_gross_exposure_usd, max_unrealized_loss_usd, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?)
+             ON CONFLICT(owner_address) DO UPDATE SET
+               max_run_drawdown_usd = excluded.max_run_drawdown_usd,
+               max_inventory_usd = excluded.max_inventory_usd,
+               max_gross_exposure_usd = excluded.max_gross_exposure_usd,
+               max_unrealized_loss_usd = excluded.max_unrealized_loss_usd,
+               updated_at = excluded.updated_at`,
+          )
+          .run(
+            this.ownerAddress,
+            config.maxRunDrawdownUsd,
+            config.maxInventoryUsd,
+            config.maxGrossExposureUsd,
+            config.maxUnrealizedLossUsd,
+            now,
+          );
+      }
       this.replaceBundleMarkets(id, config);
       this.replaceBundleAccountRoles(id, config);
       this.db
@@ -1667,21 +1854,46 @@ export class TenantStore {
       parse<StoredMakerConfig>(source.value),
     );
     if (migrated) {
-      if (source.kind === "core") this.writeCoreConfig(config);
+      if (source.kind === "bundle")
+        this.writeBundleConfig(this.bundleId!, config);
+      else if (source.kind === "core") this.writeCoreConfig(config);
       else this.setSetting("maker_config", config);
     }
     return config;
   }
 
   setConfig(config: MakerConfig): void {
+    if (this.bundleId) {
+      this.writeBundleConfig(this.bundleId, config);
+      return;
+    }
     this.writeCoreConfig(config);
+  }
+
+  updateBundleConfig(inputs: {
+    bundleId: string;
+    config: MakerConfig;
+    expectedUpdatedAt?: string;
+  }): StoredBundle {
+    const current = this.getStoredBundle(inputs.bundleId);
+    if (!current || current.archivedAt) throw new Error("Bundle was not found");
+    if (
+      inputs.expectedUpdatedAt !== undefined &&
+      inputs.expectedUpdatedAt !== current.updatedAt
+    ) {
+      throw new Error("Bundle changed elsewhere; refresh before saving");
+    }
+    if (current.name === "Core") this.writeCoreConfig(inputs.config);
+    else this.writeBundleConfig(inputs.bundleId, inputs.config);
+    return this.getStoredBundle(inputs.bundleId)!;
   }
 
   listBundles(): StoredBundle[] {
     const rows = this.db
       .prepare(
         `SELECT id, owner_address, name, maker_account_id, taker_account_id,
-                config, mode, status, created_at, updated_at, last_error
+                config, mode, status, created_at, updated_at, last_error,
+                archived_at
          FROM bundles
          WHERE owner_address = ?
          ORDER BY created_at ASC, id ASC`,
@@ -1698,12 +1910,14 @@ export class TenantStore {
       makerAccountId: row.maker_account_id,
       takerAccountId: row.taker_account_id,
       mode: row.mode,
+      status: row.status,
       marketIds: (markets.all(row.id) as Array<{ market_id: string }>).map(
         (market) => market.market_id,
       ),
       createdAt: row.created_at,
       updatedAt: row.updated_at,
       lastError: row.last_error,
+      archivedAt: row.archived_at,
     }));
   }
 
@@ -1722,6 +1936,7 @@ export class TenantStore {
       .prepare(
         `SELECT max_run_drawdown_usd, max_inventory_usd,
                 max_gross_exposure_usd, max_unrealized_loss_usd, updated_at
+                , confirmed_at
          FROM bundle_wallet_limits WHERE owner_address = ?`,
       )
       .get(this.ownerAddress) as
@@ -1731,6 +1946,7 @@ export class TenantStore {
           max_gross_exposure_usd: number;
           max_unrealized_loss_usd: number;
           updated_at: string;
+          confirmed_at: string | null;
         }
       | undefined;
     return row
@@ -1740,8 +1956,150 @@ export class TenantStore {
           maxGrossExposureUsd: row.max_gross_exposure_usd,
           maxUnrealizedLossUsd: row.max_unrealized_loss_usd,
           updatedAt: row.updated_at,
+          confirmedAt: row.confirmed_at,
         }
       : null;
+  }
+
+  confirmWalletLimits(): BundleWalletLimits {
+    const current = this.getWalletLimits();
+    if (!current) {
+      throw new Error("Configure Core before confirming wallet limits");
+    }
+    if (!current.confirmedAt) {
+      const confirmedAt = new Date().toISOString();
+      this.db
+        .prepare(
+          `UPDATE bundle_wallet_limits
+           SET confirmed_at = ? WHERE owner_address = ?`,
+        )
+        .run(confirmedAt, this.ownerAddress);
+      return { ...current, confirmedAt };
+    }
+    return current;
+  }
+
+  createBundle(inputs: {
+    name: string;
+    config: MakerConfig;
+    confirmWalletLimits?: boolean;
+  }): StoredBundle {
+    const create = this.db.transaction(() => {
+      const name = inputs.name.trim();
+      if (!name || name.length > 80 || name.toLowerCase() === "core") {
+        throw new Error("Bundle name must be between 1 and 80 characters");
+      }
+      if (inputs.config.mode === "live") {
+        throw new Error(
+          "Additional bundles can only use Observe or Paper mode",
+        );
+      }
+      const active = this.db
+        .prepare(
+          `SELECT COUNT(*) AS count FROM bundles
+           WHERE owner_address = ? AND archived_at IS NULL`,
+        )
+        .get(this.ownerAddress) as { count: number };
+      if (active.count >= 4) {
+        throw new Error("A wallet can have at most four active bundles");
+      }
+      const walletLimits = this.getWalletLimits();
+      if (!walletLimits) {
+        throw new Error("Configure Core before creating another bundle");
+      }
+      if (active.count >= 1 && !walletLimits.confirmedAt) {
+        if (!inputs.confirmWalletLimits) {
+          throw new Error(
+            "Confirm the wallet limits before creating a second bundle",
+          );
+        }
+        this.confirmWalletLimits();
+      }
+      this.assertConfigFitsWallet(inputs.config, walletLimits);
+      const id = `bundle-${randomUUID()}`;
+      this.assertBundleAssignmentsAvailable(id, inputs.config);
+      const now = new Date().toISOString();
+      this.db
+        .prepare(
+          `INSERT INTO bundles
+            (id, owner_address, name, maker_account_id, taker_account_id,
+             config, mode, status, created_at, updated_at, last_error, archived_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, 'paused', ?, ?, NULL, NULL)`,
+        )
+        .run(
+          id,
+          this.ownerAddress,
+          name,
+          inputs.config.makerAccountId ?? null,
+          inputs.config.hedge.accountId ?? null,
+          stringify(inputs.config),
+          inputs.config.mode,
+          now,
+          now,
+        );
+      this.replaceBundleMarkets(id, inputs.config);
+      this.replaceBundleAccountRoles(id, inputs.config);
+      return this.getStoredBundle(id)!;
+    });
+    return create();
+  }
+
+  getStoredBundle(bundleId: string): StoredBundle | null {
+    return this.listBundles().find((bundle) => bundle.id === bundleId) ?? null;
+  }
+
+  setBundleStatus(
+    bundleId: string,
+    status: BundleStatus,
+    lastError: string | null = null,
+  ): StoredBundle {
+    const now = this.nextBundleUpdatedAt(bundleId);
+    const result = this.db
+      .prepare(
+        `UPDATE bundles
+         SET status = ?, last_error = ?, updated_at = ?
+         WHERE owner_address = ? AND id = ? AND archived_at IS NULL`,
+      )
+      .run(
+        status,
+        lastError ? lastError.slice(0, 500) : null,
+        now,
+        this.ownerAddress,
+        bundleId,
+      );
+    if (result.changes !== 1) throw new Error("Bundle was not found");
+    return this.getStoredBundle(bundleId)!;
+  }
+
+  archiveBundle(bundleId: string): StoredBundle {
+    const archive = this.db.transaction(() => {
+      const current = this.db
+        .prepare(
+          `SELECT name FROM bundles
+           WHERE owner_address = ? AND id = ? AND archived_at IS NULL`,
+        )
+        .get(this.ownerAddress, bundleId) as { name: string } | undefined;
+      if (!current) throw new Error("Bundle was not found");
+      if (current.name === "Core") {
+        throw new Error("Core cannot be archived");
+      }
+      const now = this.nextBundleUpdatedAt(bundleId);
+      this.db
+        .prepare(
+          `UPDATE bundles
+           SET status = 'stopped', archived_at = ?, updated_at = ?, last_error = NULL
+           WHERE owner_address = ? AND id = ?`,
+        )
+        .run(now, now, this.ownerAddress, bundleId);
+      this.db
+        .prepare("DELETE FROM bundle_markets WHERE bundle_id = ?")
+        .run(bundleId);
+      this.db
+        .prepare("DELETE FROM bundle_account_roles WHERE bundle_id = ?")
+        .run(bundleId);
+      return this.getStoredBundle(bundleId)!;
+    });
+    return archive();
   }
 
   rollbackBundleMigration(): boolean {
@@ -2031,15 +2389,30 @@ export class TenantStore {
     this.pruneTable("tenant_audit_events", RETENTION_LIMITS.auditEvents);
   }
 
-  listEvents(limit = 50): AuditEvent[] {
+  listEvents(
+    limit = 50,
+    bundleId: string | null | undefined = this.bundleId,
+  ): AuditEvent[] {
+    const beforeBundles = bundleId === "before";
     const rows = this.db
       .prepare(
         `SELECT id, occurred_at, category, action, outcome, detail
          FROM tenant_audit_events
          WHERE owner_address = ?
+           AND (
+             ? IS NULL OR
+             (? = 'before' AND bundle_id IS NULL) OR
+             bundle_id = ?
+           )
          ORDER BY id DESC LIMIT ?`,
       )
-      .all(this.ownerAddress, limit) as Array<{
+      .all(
+        this.ownerAddress,
+        bundleId ?? null,
+        beforeBundles ? "before" : (bundleId ?? null),
+        beforeBundles ? "before" : (bundleId ?? null),
+        limit,
+      ) as Array<{
       id: number;
       occurred_at: string;
       category: string;
@@ -2136,12 +2509,15 @@ export class TenantStore {
         `SELECT account_id, order_id, market_id, quote_digest, posted_at
          FROM tenant_maker_orders
          WHERE owner_address = ?
+           AND (? IS NULL OR bundle_id = ?)
            AND (? IS NULL OR account_id = ? OR account_id = '')
          ORDER BY posted_at DESC
          LIMIT ?`,
       )
       .all(
         this.ownerAddress,
+        this.bundleId,
+        this.bundleId,
         inputs.accountId ?? null,
         inputs.accountId ?? null,
         limit,
@@ -2161,14 +2537,33 @@ export class TenantStore {
     }));
   }
 
+  countTrackedMakerOrders(bundleId: string | null = this.bundleId): number {
+    const row = this.db
+      .prepare(
+        `SELECT COUNT(*) AS count
+         FROM tenant_maker_orders
+         WHERE owner_address = ? AND (? IS NULL OR bundle_id = ?)`,
+      )
+      .get(this.ownerAddress, bundleId, bundleId) as { count: number };
+    return row.count;
+  }
+
   isHedgeFillProcessed(makerAccountId: string, fillKey: string): boolean {
     return Boolean(
       this.db
         .prepare(
           `SELECT 1 FROM tenant_hedged_fills
-           WHERE owner_address = ? AND maker_account_id = ? AND fill_key = ?`,
+           WHERE owner_address = ?
+             AND (? IS NULL OR bundle_id = ?)
+             AND maker_account_id = ? AND fill_key = ?`,
         )
-        .get(this.ownerAddress, makerAccountId, fillKey),
+        .get(
+          this.ownerAddress,
+          this.bundleId,
+          this.bundleId,
+          makerAccountId,
+          fillKey,
+        ),
     );
   }
 
@@ -2263,10 +2658,11 @@ export class TenantStore {
                 digest, side, requested_notional_usd, gas_used_mist
          FROM tenant_hedge_executions
          WHERE owner_address = ?
+           AND (? IS NULL OR bundle_id = ?)
          ORDER BY occurred_at DESC
          LIMIT ?`,
       )
-      .all(this.ownerAddress, limit) as Array<{
+      .all(this.ownerAddress, this.bundleId, this.bundleId, limit) as Array<{
       occurred_at: string;
       maker_account_id: string;
       hedge_account_id: string;
@@ -2296,10 +2692,11 @@ export class TenantStore {
                 MAX(occurred_at) AS last_execution_at
          FROM tenant_executions
          WHERE owner_address = ?
+           AND (? IS NULL OR bundle_id = ?)
            AND mode = 'live'
            AND outcome = 'confirmed'`,
       )
-      .get(this.ownerAddress) as {
+      .get(this.ownerAddress, this.bundleId, this.bundleId) as {
       confirmed_live_quotes: number;
       average_gas_mist: number | null;
       last_execution_at: string | null;

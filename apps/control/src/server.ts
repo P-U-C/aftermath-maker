@@ -17,7 +17,7 @@ import { OnchainAllowlist } from "./allowlist.js";
 import { AuthError, WalletAuth } from "./auth.js";
 import { classifyHttpError } from "./http-error.js";
 import { RuntimeManager } from "./runtime-manager.js";
-import { Store } from "./store.js";
+import { Store, type TenantStore } from "./store.js";
 
 const optionalUrl = z.preprocess(
   (value) => (value === "" ? undefined : value),
@@ -261,6 +261,38 @@ function runtime(request: FastifyRequest) {
   return runtimeManager.get(requestAuth(request).ownerAddress);
 }
 
+function assertConfiguredAccounts(
+  scoped: TenantStore,
+  config: ReturnType<typeof makerConfigSchema.parse>,
+): void {
+  if (config.makerAccountId) {
+    const makerAccount = scoped.getAccountSetup(config.makerAccountId);
+    if (!makerAccount?.agentCapId) {
+      throw new Error("The selected Maker account is not authorized");
+    }
+  }
+  if (config.hedge.enabled && config.hedge.accountId) {
+    const hedgeAccount = scoped.getAccountSetup(config.hedge.accountId);
+    if (!hedgeAccount?.agentCapId) {
+      throw new Error("The selected hedge account is not authorized");
+    }
+  }
+}
+
+function assertLiveModeEnabled(
+  config: ReturnType<typeof makerConfigSchema.parse>,
+): void {
+  if (
+    config.mode === "live" &&
+    (!env.LIVE_TRADING_ENABLED || !env.ALLOW_MAINNET)
+  ) {
+    throw new AuthError(
+      409,
+      "Live mode requires LIVE_TRADING_ENABLED=true and ALLOW_MAINNET=true",
+    );
+  }
+}
+
 app.get("/health", async () => ({
   ok: true,
   service: "aftermath-maker-control",
@@ -343,8 +375,10 @@ app.post(
 
 app.get("/api/status", async (request) => {
   const active = runtime(request);
+  const identity = requestAuth(request);
   return {
     snapshot: active.snapshot,
+    bundles: runtimeManager.bundleSnapshots(identity.ownerAddress),
     activeEndpoint: active.activeEndpoint,
     endpoints: active.endpointHealth,
     liveGates: {
@@ -383,11 +417,151 @@ app.get("/api/bundles/:bundleId/config", async (request) => {
   return { config };
 });
 
+app.post("/api/bundles", async (request) => {
+  const scoped = tenant(request);
+  if (scoped.bundlesRolledBack()) {
+    throw new AuthError(409, "Bundles rolled back");
+  }
+  const body = z
+    .object({
+      name: z.string().trim().min(1).max(80),
+      config: z.unknown(),
+      confirmWalletLimits: z.boolean().optional(),
+    })
+    .strict()
+    .parse(request.body);
+  const config = makerConfigSchema.parse(body.config);
+  assertLiveModeEnabled(config);
+  assertConfiguredAccounts(scoped, config);
+  const bundle = scoped.createBundle({
+    name: body.name,
+    config,
+    ...(body.confirmWalletLimits !== undefined
+      ? { confirmWalletLimits: body.confirmWalletLimits }
+      : {}),
+  });
+  store.forBundle(requestAuth(request).ownerAddress, bundle.id).logEvent({
+    category: "bundles",
+    action: "create",
+    outcome: "success",
+    detail: { mode: bundle.mode, marketIds: bundle.marketIds },
+  });
+  return { bundle, walletLimits: scoped.getWalletLimits() };
+});
+
+app.post("/api/bundles/:bundleId/config", async (request) => {
+  const scoped = tenant(request);
+  if (scoped.bundlesRolledBack()) {
+    throw new AuthError(409, "Bundles rolled back");
+  }
+  const params = z
+    .object({ bundleId: z.string().min(1).max(200) })
+    .parse(request.params);
+  const body = z
+    .object({
+      config: z.unknown(),
+      updatedAt: z.string().datetime().optional(),
+    })
+    .strict()
+    .parse(request.body);
+  const config = makerConfigSchema.parse(body.config);
+  assertLiveModeEnabled(config);
+  assertConfiguredAccounts(scoped, config);
+  const bundle = await runtimeManager.reconfigureBundle({
+    ownerAddress: requestAuth(request).ownerAddress,
+    bundleId: params.bundleId,
+    config,
+    ...(body.updatedAt ? { expectedUpdatedAt: body.updatedAt } : {}),
+  });
+  store.forBundle(requestAuth(request).ownerAddress, bundle.id).logEvent({
+    category: "bundles",
+    action: "configure",
+    outcome: "success",
+    detail: { mode: bundle.mode, marketIds: bundle.marketIds },
+  });
+  return { bundle, config: scoped.getBundleConfig(bundle.id) };
+});
+
+app.post("/api/bundles/:bundleId/start", async (request) => {
+  const scoped = tenant(request);
+  if (scoped.bundlesRolledBack()) {
+    throw new AuthError(409, "Bundles rolled back");
+  }
+  const params = z
+    .object({ bundleId: z.string().min(1).max(200) })
+    .parse(request.params);
+  const config = scoped.getBundleConfig(params.bundleId);
+  if (!config) throw new AuthError(404, "Bundle was not found");
+  assertLiveModeEnabled(config);
+  const started = runtimeManager.startBundle(
+    requestAuth(request).ownerAddress,
+    params.bundleId,
+  );
+  return started;
+});
+
+app.post("/api/bundles/:bundleId/resume", async (request) => {
+  const scoped = tenant(request);
+  if (scoped.bundlesRolledBack()) {
+    throw new AuthError(409, "Bundles rolled back");
+  }
+  const params = z
+    .object({ bundleId: z.string().min(1).max(200) })
+    .parse(request.params);
+  const config = scoped.getBundleConfig(params.bundleId);
+  if (!config) throw new AuthError(404, "Bundle was not found");
+  assertLiveModeEnabled(config);
+  return runtimeManager.startBundle(
+    requestAuth(request).ownerAddress,
+    params.bundleId,
+  );
+});
+
+app.post("/api/bundles/:bundleId/pause", async (request) => {
+  const scoped = tenant(request);
+  if (scoped.bundlesRolledBack()) {
+    throw new AuthError(409, "Bundles rolled back");
+  }
+  const params = z
+    .object({ bundleId: z.string().min(1).max(200) })
+    .parse(request.params);
+  return runtimeManager.pauseBundle(
+    requestAuth(request).ownerAddress,
+    params.bundleId,
+  );
+});
+
+app.post("/api/bundles/:bundleId/archive", async (request) => {
+  const scoped = tenant(request);
+  if (scoped.bundlesRolledBack()) {
+    throw new AuthError(409, "Bundles rolled back");
+  }
+  const params = z
+    .object({ bundleId: z.string().min(1).max(200) })
+    .parse(request.params);
+  return {
+    bundle: await runtimeManager.archiveBundle(
+      requestAuth(request).ownerAddress,
+      params.bundleId,
+    ),
+  };
+});
+
 app.get("/api/events", async (request) => {
   const query = z
-    .object({ limit: z.coerce.number().int().min(1).max(200).default(50) })
+    .object({
+      limit: z.coerce.number().int().min(1).max(200).default(50),
+      bundle: z.string().min(1).max(200).optional(),
+    })
     .parse(request.query);
-  return { events: tenant(request).listEvents(query.limit) };
+  if (
+    query.bundle &&
+    query.bundle !== "before" &&
+    !tenant(request).getStoredBundle(query.bundle)
+  ) {
+    throw new AuthError(404, "Bundle was not found");
+  }
+  return { events: tenant(request).listEvents(query.limit, query.bundle) };
 });
 
 app.get("/api/performance", async (request) => {
@@ -395,14 +569,25 @@ app.get("/api/performance", async (request) => {
     .object({
       period: z.enum(["1D", "EPOCH", "ALL"]).default("1D"),
       since: z.string().datetime().optional(),
+      bundle: z.string().min(1).max(200).optional(),
     })
     .strict()
     .parse(request.query);
   if (query.period === "EPOCH" && !query.since) {
     throw new AuthError(400, "Epoch performance requires a start time");
   }
+  if (query.bundle === "before") {
+    return {
+      performance: null,
+      group: "Before bundles",
+      events: tenant(request).listEvents(200, "before"),
+    };
+  }
+  const active = query.bundle
+    ? runtimeManager.getBundle(requestAuth(request).ownerAddress, query.bundle)
+    : runtime(request);
   return {
-    performance: await runtime(request).performance({
+    performance: await active.performance({
       period: query.period,
       ...(query.since ? { since: query.since } : {}),
     }),
@@ -614,27 +799,8 @@ app.post("/api/accounts/withdraw-transaction", async (request) => {
 app.post("/api/config", async (request) => {
   const scoped = tenant(request);
   const config = makerConfigSchema.parse(request.body);
-  if (
-    config.mode === "live" &&
-    (!env.LIVE_TRADING_ENABLED || !env.ALLOW_MAINNET)
-  ) {
-    throw new AuthError(
-      409,
-      "Live mode requires LIVE_TRADING_ENABLED=true and ALLOW_MAINNET=true",
-    );
-  }
-  if (config.makerAccountId) {
-    const makerAccount = scoped.getAccountSetup(config.makerAccountId);
-    if (!makerAccount?.agentCapId) {
-      throw new Error("The selected Maker account is not authorized");
-    }
-  }
-  if (config.hedge.enabled && config.hedge.accountId) {
-    const hedgeAccount = scoped.getAccountSetup(config.hedge.accountId);
-    if (!hedgeAccount?.agentCapId) {
-      throw new Error("The selected hedge account is not authorized");
-    }
-  }
+  assertLiveModeEnabled(config);
+  assertConfiguredAccounts(scoped, config);
   await runtime(request).reconfigure(config);
   scoped.logEvent({
     category: "configuration",
@@ -878,7 +1044,7 @@ app.post("/api/runtime/start", async (request) => {
 });
 
 app.post("/api/runtime/stop", async (request) => {
-  await runtime(request).stop();
+  await runtimeManager.stopTenant(requestAuth(request).ownerAddress);
   return { snapshot: runtime(request).snapshot };
 });
 

@@ -35,6 +35,19 @@ export type RuntimeOptions = {
   mainnetAllowed: boolean;
   builderCode: () => BuilderFeePolicy | null;
   sleep?: (milliseconds: number) => Promise<void>;
+  pauseOnError?: boolean;
+  onBundleError?: () => Promise<void> | void;
+  admitBundleProposal?: (proposal: {
+    worstCaseGrossExposureDeltaUsd: number;
+    worstCaseInventoryDeltaUsd: number;
+    worstCaseUnrealizedLossDeltaUsd: number;
+    worstCaseRunDrawdownDeltaUsd: number;
+  }) =>
+    | Promise<{ accepted: boolean; reason: string | null }>
+    | {
+        accepted: boolean;
+        reason: string | null;
+      };
 };
 
 export type MakerFill = {
@@ -2245,6 +2258,24 @@ export class MakerRuntime {
         return;
       }
 
+      const admission = await this.options.admitBundleProposal?.({
+        worstCaseGrossExposureDeltaUsd:
+          quote.sizeUsd * marketConfig.maxLeverage,
+        worstCaseInventoryDeltaUsd: quote.sizeUsd,
+        worstCaseUnrealizedLossDeltaUsd: quote.sizeUsd,
+        worstCaseRunDrawdownDeltaUsd: quote.sizeUsd,
+      });
+      if (admission && !admission.accepted) {
+        this.store.logEvent({
+          category: "risk",
+          action: "wallet-limit",
+          outcome: "rejected",
+          detail: { reason: admission.reason, marketId: selected.marketId },
+        });
+        this.snapshotValue.lastSuccessfulCycleAt = updatedAt;
+        return;
+      }
+
       if (config.mode === "paper") {
         this.store.logExecution({
           mode: "paper",
@@ -2488,7 +2519,10 @@ export class MakerRuntime {
           ...(selected ? { marketId: selected.marketId } : {}),
         },
       });
-      if (!cancelled && this.snapshotValue.mode === "live") {
+      if (
+        !cancelled &&
+        (this.snapshotValue.mode === "live" || this.options.pauseOnError)
+      ) {
         this.stopScheduling();
         if (config) {
           const cancelledOrders = await this.cancelOpenOrders(config, {
@@ -2496,6 +2530,9 @@ export class MakerRuntime {
             retryDelayMs: 2_000,
           });
           if (cancelledOrders) this.clearActiveQuoteState();
+        }
+        if (this.options.pauseOnError) {
+          await this.options.onBundleError?.();
         }
       }
     } finally {

@@ -61,6 +61,8 @@ import { MakerShell, useMakerView, type MakerNoticeTone } from "./maker-shell";
 import { SpreadMark } from "./spread-mark";
 import { VenueChip } from "./venue-chip";
 import { AccountsView } from "./views/accounts";
+import { BundleDeskLanes } from "./views/bundle-desk-lanes";
+import { BundlesView } from "./views/bundles";
 import { DeskView } from "./views/desk";
 import { LearnView } from "./views/learn";
 import { MarketsView } from "./views/markets";
@@ -317,6 +319,36 @@ type MakerConfig = {
   maxGasMist: number;
   staleBookMs: number;
   inventorySkewBps: number;
+};
+
+type BundleStatus = "stopped" | "running" | "paused" | "error";
+
+type MakerBundle = {
+  id: string;
+  name: string;
+  makerAccountId: string | null;
+  takerAccountId: string | null;
+  mode: Mode;
+  status: BundleStatus;
+  marketIds: string[];
+  createdAt: string;
+  updatedAt: string;
+  lastError: string | null;
+  archivedAt: string | null;
+};
+
+type BundleWalletLimits = {
+  maxRunDrawdownUsd: number;
+  maxInventoryUsd: number;
+  maxGrossExposureUsd: number;
+  maxUnrealizedLossUsd: number;
+  updatedAt: string;
+  confirmedAt: string | null;
+};
+
+type BundleSnapshot = {
+  bundle: MakerBundle;
+  snapshot: Snapshot | null;
 };
 
 type AccountCap = {
@@ -793,6 +825,12 @@ function DashboardBody() {
   const [accessRequests, setAccessRequests] = useState<AccessRequest[]>([]);
   const [memberAddress, setMemberAddress] = useState("");
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
+  const [bundleSnapshots, setBundleSnapshots] = useState<BundleSnapshot[]>([]);
+  const [bundles, setBundles] = useState<MakerBundle[]>([]);
+  const [walletLimits, setWalletLimits] = useState<BundleWalletLimits | null>(
+    null,
+  );
+  const [selectedBundleId, setSelectedBundleId] = useState<string | null>(null);
   const [markets, setMarkets] = useState<Market[]>([]);
   const [marketQuery, setMarketQuery] = useState("");
   const [config, setConfig] = useState<MakerConfig>(defaultConfig);
@@ -811,6 +849,7 @@ function DashboardBody() {
   const [performance, setPerformance] = useState<Performance | null>(null);
   const [performancePeriod, setPerformancePeriod] =
     useState<PerformancePeriod>("1D");
+  const [performanceBundle, setPerformanceBundle] = useState<string>("all");
   const [expandedPerformanceMarket, setExpandedPerformanceMarket] = useState<
     string | null
   >(null);
@@ -869,18 +908,32 @@ function DashboardBody() {
   );
 
   const refresh = useCallback(async () => {
-    const [statusResult, configResult, setupResult, eventResult] =
+    const [statusResult, configResult, setupResult, eventResult, bundleResult] =
       await Promise.all([
         request<{
           snapshot: Snapshot;
           builderCode: BuilderCode | null;
           liveGates: LiveGates;
+          bundles?: BundleSnapshot[];
         }>("api/status"),
         request<{ config: MakerConfig | null }>("api/config"),
         request<SetupState>("api/setup"),
         request<{ events: AuditEvent[] }>("api/events?limit=12"),
+        request<{
+          bundles: MakerBundle[];
+          walletLimits: BundleWalletLimits | null;
+        }>("api/bundles"),
       ]);
     setSnapshot(statusResult.snapshot);
+    setBundleSnapshots(statusResult.bundles ?? []);
+    setBundles(bundleResult.bundles);
+    setWalletLimits(bundleResult.walletLimits);
+    setSelectedBundleId((current) =>
+      current && bundleResult.bundles.some((bundle) => bundle.id === current)
+        ? current
+        : (bundleResult.bundles.find((bundle) => bundle.name === "Core")?.id ??
+          null),
+    );
     setBuilderCode(statusResult.builderCode);
     setLiveGates(statusResult.liveGates);
     setSetup(setupResult);
@@ -909,11 +962,12 @@ function DashboardBody() {
     if (performancePeriod === "EPOCH" && rewards?.epoch.startedAt) {
       params.set("since", rewards.epoch.startedAt);
     }
-    const result = await request<{ performance: Performance }>(
+    if (performanceBundle !== "all") params.set("bundle", performanceBundle);
+    const result = await request<{ performance: Performance | null }>(
       `api/performance?${params.toString()}`,
     );
     setPerformance(result.performance);
-  }, [performancePeriod, rewards?.epoch.startedAt]);
+  }, [performancePeriod, performanceBundle, rewards?.epoch.startedAt]);
 
   const loadRewards = useCallback(async (objective: StrategyObjective) => {
     const result = await request<{ rewards: RewardDashboard }>(
@@ -940,6 +994,93 @@ function DashboardBody() {
           },
     );
   }, []);
+
+  async function selectBundle(bundleId: string) {
+    const selected = bundles.find((bundle) => bundle.id === bundleId);
+    if (!selected) return;
+    setSelectedBundleId(bundleId);
+    if (selected.name === "Core") {
+      const core = await request<{ config: MakerConfig | null }>("api/config");
+      if (core.config) {
+        setConfig(core.config);
+        setSavedConfig(core.config);
+      }
+      return;
+    }
+    const result = await request<{ config: MakerConfig }>(
+      `api/bundles/${encodeURIComponent(bundleId)}/config`,
+    );
+    setConfig(result.config);
+    setSavedConfig(result.config);
+  }
+
+  async function bundleAction(
+    bundleId: string,
+    action: "start" | "pause" | "resume" | "archive",
+  ) {
+    await mutate(`bundle-${action}-${bundleId}`, async () => {
+      await request(`api/bundles/${encodeURIComponent(bundleId)}/${action}`, {
+        method: "POST",
+        body: "{}",
+      });
+      setNotice(
+        action === "archive"
+          ? "Bundle archived. Its accounts and markets are available again."
+          : action === "pause"
+            ? "Bundle paused. Its own orders are being cancelled."
+            : action === "resume"
+              ? "Bundle resumed."
+              : "Bundle started.",
+        "success",
+      );
+    });
+  }
+
+  async function createBundle(draft: {
+    name: string;
+    makerAccountId: string;
+    takerAccountId: string;
+    marketId: string;
+    confirmWalletLimits: boolean;
+  }) {
+    const market = markets.find((candidate) => candidate.id === draft.marketId);
+    if (!market) {
+      setNotice("Choose a market before creating a bundle.", "warning");
+      return;
+    }
+    if (draft.takerAccountId && draft.takerAccountId === draft.makerAccountId) {
+      setNotice("Maker and Taker accounts must be different.", "warning");
+      return;
+    }
+    const nextConfig: MakerConfig = {
+      ...config,
+      markets: [{ marketId: market.id, symbol: market.symbol }],
+      makerAccountId: draft.makerAccountId,
+      hedge: {
+        ...config.hedge,
+        enabled: Boolean(draft.takerAccountId),
+        accountId: draft.takerAccountId || null,
+      },
+      mode: "paper",
+    };
+    await mutate("create-bundle", async () => {
+      const result = await request<{ bundle: MakerBundle }>("api/bundles", {
+        method: "POST",
+        body: JSON.stringify({
+          name: draft.name,
+          config: nextConfig,
+          confirmWalletLimits: draft.confirmWalletLimits,
+        }),
+      });
+      setSelectedBundleId(result.bundle.id);
+      setConfig(nextConfig);
+      setSavedConfig(nextConfig);
+      setNotice(
+        "Paper bundle created paused. Review it, then start it.",
+        "success",
+      );
+    });
+  }
 
   const loadAccessRequests = useCallback(async () => {
     const result = await request<{ accessRequests: AccessRequest[] }>(
@@ -1838,10 +1979,18 @@ function DashboardBody() {
   async function saveConfig(event: FormEvent) {
     event.preventDefault();
     await mutate("save", async () => {
-      await request("api/config", {
-        method: "POST",
-        body: JSON.stringify(config),
-      });
+      const selected = bundles.find((bundle) => bundle.id === selectedBundleId);
+      if (selected && selected.name !== "Core") {
+        await request(`api/bundles/${encodeURIComponent(selected.id)}/config`, {
+          method: "POST",
+          body: JSON.stringify({ config, updatedAt: selected.updatedAt }),
+        });
+      } else {
+        await request("api/config", {
+          method: "POST",
+          body: JSON.stringify(config),
+        });
+      }
       setSavedConfig(config);
       setNotice(
         snapshot?.running
@@ -1854,10 +2003,18 @@ function DashboardBody() {
 
   async function saveAccountAssignments() {
     await mutate("save-accounts", async () => {
-      await request("api/config", {
-        method: "POST",
-        body: JSON.stringify(config),
-      });
+      const selected = bundles.find((bundle) => bundle.id === selectedBundleId);
+      if (selected && selected.name !== "Core") {
+        await request(`api/bundles/${encodeURIComponent(selected.id)}/config`, {
+          method: "POST",
+          body: JSON.stringify({ config, updatedAt: selected.updatedAt }),
+        });
+      } else {
+        await request("api/config", {
+          method: "POST",
+          body: JSON.stringify(config),
+        });
+      }
       setSavedConfig(config);
       setNotice(
         snapshot?.running
@@ -1874,10 +2031,16 @@ function DashboardBody() {
       return;
     }
     await mutate("start", async () => {
-      await request("api/runtime/start", {
-        method: "POST",
-        body: "{}",
-      });
+      const selected = bundles.find((bundle) => bundle.id === selectedBundleId);
+      await request(
+        selected && selected.name !== "Core"
+          ? `api/bundles/${encodeURIComponent(selected.id)}/start`
+          : "api/runtime/start",
+        {
+          method: "POST",
+          body: "{}",
+        },
+      );
     });
   }
 
@@ -2347,9 +2510,29 @@ function DashboardBody() {
   const liveAvailable =
     liveGates.liveTradingEnabled && liveGates.mainnetAllowed;
 
-  const markState = !snapshot?.running
+  const bundleCards = bundles.map((bundle) => {
+    const runtime = bundleSnapshots.find(
+      (candidate) => candidate.bundle.id === bundle.id,
+    )?.snapshot;
+    return {
+      ...bundle,
+      marketIds: bundle.marketIds.map(
+        (marketId) =>
+          markets.find((market) => market.id === marketId)?.symbol ?? marketId,
+      ),
+      resultUsd: runtime?.portfolio.unrealizedPnlUsd ?? null,
+    };
+  });
+  const anyBundleRunning = bundles.some(
+    (bundle) => bundle.status === "running",
+  );
+  const selectedBundle = bundles.find(
+    (bundle) => bundle.id === selectedBundleId,
+  );
+
+  const markState = !(snapshot?.running || anyBundleRunning)
     ? "stopped"
-    : snapshot.mode === "live"
+    : snapshot?.mode === "live"
       ? "live"
       : "paper";
   const displayedView = activeView;
@@ -2360,7 +2543,7 @@ function DashboardBody() {
       selectView={selectView}
       markState={markState}
       mode={snapshot?.mode ?? "observe"}
-      running={Boolean(snapshot?.running)}
+      running={Boolean(snapshot?.running || anyBundleRunning)}
       live={Boolean(snapshot?.running && snapshot.mode === "live")}
       walletAddress={identity.ownerAddress}
       walletLabel={compact(identity.ownerAddress)}
@@ -2374,6 +2557,7 @@ function DashboardBody() {
       noticeTone={noticeTone}
       onDismissNotice={() => setNotice(null)}
       onLogout={() => void logout(true)}
+      onStopAll={() => void stopRuntime()}
     >
       <AccountsView active={displayedView === "accounts"}>
         <header className="accounts-title">
@@ -2813,6 +2997,22 @@ function DashboardBody() {
         )}
       </AccountsView>
 
+      {displayedView === "desk" && (
+        <BundleDeskLanes
+          lanes={bundleSnapshots.flatMap((entry) =>
+            entry.bundle.status === "running" && entry.snapshot
+              ? [
+                  {
+                    id: entry.bundle.id,
+                    name: entry.bundle.name,
+                    snapshot: entry.snapshot,
+                  },
+                ]
+              : [],
+          )}
+        />
+      )}
+
       <DeskView
         active={displayedView === "desk"}
         venue={primaryVenue}
@@ -2906,10 +3106,14 @@ function DashboardBody() {
             onSubmit={saveConfig}
           >
             <header className="strategy-title">
-              <h1>Strategy</h1>
+              <h1>
+                {selectedBundle
+                  ? `${selectedBundle.name} strategy`
+                  : "Strategy"}
+              </h1>
               <p>
-                Set how Maker allocates capital, controls inventory, and moves
-                between markets.
+                Set how this bundle allocates capital, controls inventory, and
+                moves between markets.
               </p>
             </header>
 
@@ -4427,6 +4631,28 @@ function DashboardBody() {
         </section>
       </StrategyView>
 
+      <BundlesView
+        active={displayedView === "bundles"}
+        bundles={bundleCards}
+        walletLimits={walletLimits}
+        selectedBundleId={selectedBundleId}
+        busy={Boolean(busy)}
+        onSelect={(bundleId) => void selectBundle(bundleId)}
+        onStart={(bundleId) => void bundleAction(bundleId, "start")}
+        onPause={(bundleId) => void bundleAction(bundleId, "pause")}
+        onResume={(bundleId) => void bundleAction(bundleId, "resume")}
+        onArchive={(bundleId) => void bundleAction(bundleId, "archive")}
+        accounts={accounts.map((account) => ({
+          accountId: account.accountId,
+          label: account.label,
+        }))}
+        markets={markets.map((market) => ({
+          id: market.id,
+          symbol: market.symbol,
+        }))}
+        onCreate={(draft) => void createBundle(draft)}
+      />
+
       <MarketsView active={displayedView === "markets"}>
         <header className="markets-title">
           <div>
@@ -4456,6 +4682,21 @@ function DashboardBody() {
               <VenueChip venue={primaryVenue} />
             </button>
           </div>
+          <label className="markets-bundle-picker">
+            <span>Bundle</span>
+            <select
+              value={selectedBundleId ?? ""}
+              onChange={(event) => void selectBundle(event.target.value)}
+            >
+              {bundles
+                .filter((bundle) => !bundle.archivedAt)
+                .map((bundle) => (
+                  <option key={bundle.id} value={bundle.id}>
+                    {bundle.name}
+                  </option>
+                ))}
+            </select>
+          </label>
         </header>
         <section className="rotation-board">
           <div className="section-heading compact rotation-heading">
@@ -4524,7 +4765,7 @@ function DashboardBody() {
                               if (!selected) selectView("strategy");
                             }}
                           >
-                            {selected ? "In strategy" : "Add to strategy"}
+                            {selected ? "In bundle" : "Add to bundle"}
                           </button>
                         );
                       })()}
@@ -4938,6 +5179,52 @@ function DashboardBody() {
                   </button>
                 ))}
               </div>
+              <div
+                className="performance-period performance-bundle"
+                role="group"
+                aria-label="Performance bundle"
+              >
+                <button
+                  type="button"
+                  className={performanceBundle === "all" ? "selected" : ""}
+                  aria-pressed={performanceBundle === "all"}
+                  onClick={() => {
+                    setPerformance(null);
+                    setPerformanceBundle("all");
+                  }}
+                >
+                  By wallet
+                </button>
+                {bundles
+                  .filter((bundle) => !bundle.archivedAt)
+                  .map((bundle) => (
+                    <button
+                      key={bundle.id}
+                      type="button"
+                      className={
+                        performanceBundle === bundle.id ? "selected" : ""
+                      }
+                      aria-pressed={performanceBundle === bundle.id}
+                      onClick={() => {
+                        setPerformance(null);
+                        setPerformanceBundle(bundle.id);
+                      }}
+                    >
+                      {bundle.name}
+                    </button>
+                  ))}
+                <button
+                  type="button"
+                  className={performanceBundle === "before" ? "selected" : ""}
+                  aria-pressed={performanceBundle === "before"}
+                  onClick={() => {
+                    setPerformance(null);
+                    setPerformanceBundle("before");
+                  }}
+                >
+                  Before bundles
+                </button>
+              </div>
               <span className="coverage-badge">
                 {performance?.attributed.makerVolumeCoveragePct === null ||
                 performance?.attributed.makerVolumeCoveragePct === undefined
@@ -4946,6 +5233,12 @@ function DashboardBody() {
               </span>
             </div>
           </div>
+          {performanceBundle === "before" && (
+            <p className="performance-before-bundles" role="status">
+              Before bundles: this unassigned history counts in wallet totals,
+              never in an individual bundle.
+            </p>
+          )}
           <div className="performance-v3-stats">
             <div>
               <span>Net result</span>
