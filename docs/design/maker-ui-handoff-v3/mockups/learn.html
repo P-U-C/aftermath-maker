@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>How Maker works</title>
+<link rel="stylesheet" href="maker3.css">
+<script src="mark.js"></script>
+<script src="motion.js"></script>
+<style>
+  :root { --motion-font: "Mona", system-ui, sans-serif; }
+  .top { display: flex; justify-content: space-between; align-items: center; height: 68px; padding: 0 40px; max-width: 1200px; margin: 0 auto; }
+  .wrap { max-width: 1200px; margin: 0 auto; padding: 28px 40px 60px; }
+  h1 { font-size: 50px; line-height: 1.02; font-weight: 650; font-stretch: 125%; letter-spacing: -0.04em; margin: 0 0 14px; text-wrap: balance; }
+  .lede { font-size: 18px; color: var(--ink-2); max-width: 660px; margin: 0 0 30px; line-height: 1.5; }
+  .stage { background: var(--surface); border-radius: 28px; padding: 22px 26px 22px; }
+  .cap { font-size: 16px; min-height: 48px; line-height: 1.45; margin-top: 14px; color: var(--ink); }
+  .cap b { font-weight: 660; }
+  .foot { display: flex; justify-content: space-between; align-items: center; gap: 16px; margin-top: 10px; font-size: 13px; color: var(--ink-2); flex-wrap: wrap; }
+  .counters { display: flex; gap: 22px; }
+  .counters b { color: var(--ink); font-weight: 660; font-stretch: 118%; font-size: 16px; margin-right: 4px; }
+  .legend { display: flex; gap: 16px; flex-wrap: wrap; }
+  .legend i { display: inline-block; width: 12px; height: 6px; border-radius: 3px; margin-right: 7px; vertical-align: 2px; }
+  .legend i.line { height: 1.5px; background: var(--ink-2); vertical-align: 4px; }
+  .legend i.bars { width: 13px; height: 9px; border-radius: 0; vertical-align: 0; background: repeating-linear-gradient(90deg, var(--ink-3) 0 3px, transparent 3px 5px); opacity: .55; }
+  .chapters { display: grid; grid-template-columns: repeat(5, 1fr); gap: 14px; margin-top: 20px; }
+  .ch { background: var(--surface); border-radius: 18px; padding: 16px 16px 18px; transition: box-shadow .2s; }
+  .ch .n { font-size: 12.5px; font-weight: 640; color: var(--ink-2); }
+  .ch b { display: block; font-size: 16px; font-weight: 660; font-stretch: 112%; margin: 4px 0 6px; }
+  .ch p { margin: 0; font-size: 14px; color: var(--ink-2); line-height: 1.45; }
+  .ch.on { box-shadow: inset 0 0 0 2px var(--ink); }
+  @media (max-width: 760px) { .wrap, .top { padding-left: 16px; padding-right: 16px; } h1 { font-size: 34px; } .stage { padding: 14px; border-radius: 20px; } .chapters { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<script>applyTheme();</script>
+<div class="top"><span class="wordmark" style="font-size:20px" id="wm"></span><span class="explain-toggle">Illustration</span></div>
+<main class="wrap">
+  <h1>Watch a market being made.</h1>
+  <p class="lede">Your ask rests above the price and your bid below it, in front of everyone else's orders. Takers trade with them, you earn the gap, and when too much piles up on one side your taker account hedges it. On your desk the same picture is drawn from your real quotes, fills and the live book.</p>
+  <section class="stage">
+    <div id="motion"></div>
+    <div class="cap" id="cap" aria-live="polite"></div>
+    <div class="foot">
+      <div class="legend"><span><i style="background:var(--ember)"></i>Your ask</span><span><i class="line"></i>Market price</span><span><i style="background:var(--tide)"></i>Your bid</span><span><i class="bars"></i>Everyone else's orders</span></div>
+      <div class="counters" id="cnt"></div>
+    </div>
+  </section>
+  <div class="chapters">
+    <div class="ch on"><div class="n">1</div><b>The spread</b><p>Your bid and ask rest either side of the price. The gap between the two capsules is the spread you earn.</p></div>
+    <div class="ch"><div class="n">2</div><b>Fills</b><p>Sellers come down to hit bids and buyers come up to lift asks. When yours fills, it drops into your inventory.</p></div>
+    <div class="ch"><div class="n">3</div><b>Inventory and skew</b><p>Fills leave you holding some of the asset. Maker re-quotes both sides leaning away from it, to bring you back to flat.</p></div>
+    <div class="ch"><div class="n">4</div><b>Hedging</b><p>Past your trigger, the taker account sends a market order the other way, so a move can't run away with you.</p></div>
+    <div class="ch"><div class="n">5</div><b>Rewards</b><p>Venues pay makers for resting good quotes near the price. Time and size near the price earn a share.</p></div>
+  </div>
+</main>
+<script>
+  document.getElementById("wm").innerHTML = wordmarkHTML("live");
+  document.fonts.ready.then(() => MakerMotion.mount(document.getElementById("motion"), {
+    caption: document.getElementById("cap"), counters: document.getElementById("cnt"),
+    sizeUsd: 100, hedgeTriggerUsd: 200, spreadBps: 32, mid: 0.021441, seed: 23,
+    onEvent(kind) { const map = { fill: 1, queue: 1, skew: 2, hedge: 3 }; document.querySelectorAll(".ch").forEach((c, i) => c.classList.toggle("on", i === map[kind])); },
+  }));
+</script>
+</body>
+</html>

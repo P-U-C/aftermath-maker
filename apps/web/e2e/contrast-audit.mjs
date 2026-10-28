@@ -4,7 +4,7 @@
  * as the access-header rule that painted menu items white on white.
  *
  * Usage: node apps/web/e2e/contrast-audit.mjs [--base-url http://127.0.0.1:8790]
- *                                             [--state <fixture>] [--min 2.6]
+ *                                             [--state <fixture>] [--min 4.5]
  */
 import path from "node:path";
 import process from "node:process";
@@ -29,8 +29,10 @@ const baseUrl = option(
   "--base-url",
   process.env.MAKER_SHOTS_URL ?? "http://127.0.0.1:8790",
 );
-const minimumContrast = Number(option("--min", "2.6"));
+const minimumContrast = Number(option("--min", "4.5"));
 const requestedState = option("--state", null);
+const requestedScheme = option("--scheme", null);
+const requestedViewport = option("--viewport", null);
 const views = [
   "desk",
   "strategy",
@@ -38,6 +40,10 @@ const views = [
   "performance",
   "accounts",
   "venues",
+];
+const viewports = [
+  { name: "desktop", width: 1440, height: 900 },
+  { name: "phone", width: 390, height: 844 },
 ];
 
 const auditInPage = (threshold) => {
@@ -119,7 +125,13 @@ const auditInPage = (threshold) => {
     if (!colour) continue;
     const background = backgroundFor(element);
     const ratio = contrast(over(colour, background), background);
-    if (ratio < threshold) {
+    const fontSize = Number.parseFloat(style.fontSize);
+    const fontWeight = Number.parseInt(style.fontWeight, 10);
+    const largeText =
+      fontSize >= 24 ||
+      (fontSize >= 18.66 && Number.isFinite(fontWeight) && fontWeight >= 700);
+    const requiredRatio = largeText ? 3 : threshold;
+    if (ratio < requiredRatio || fontSize < 12) {
       const describe = (node) =>
         `${node.tagName.toLowerCase()}${
           node.className && typeof node.className === "string"
@@ -139,16 +151,19 @@ const auditInPage = (threshold) => {
           background.g,
         )}, ${Math.round(background.b)})`,
         ratio: Number(ratio.toFixed(2)),
+        requiredRatio,
+        fontSize: Number(fontSize.toFixed(2)),
+        reason: fontSize < 12 ? "font below 12px" : "contrast below threshold",
       });
     }
   }
   return findings;
 };
 
-async function auditState(browser, stateName, colorScheme) {
+async function auditState(browser, stateName, colorScheme, viewport) {
   const fixture = fixtureStates[stateName];
   const context = await browser.newContext({
-    viewport: { width: 1440, height: 900 },
+    viewport: { width: viewport.width, height: viewport.height },
     colorScheme,
     locale: "en-US",
     timezoneId: "UTC",
@@ -185,7 +200,7 @@ async function auditState(browser, stateName, colorScheme) {
       });
       if (signedIn) {
         await page.getByRole("navigation", { name: "Maker views" }).waitFor();
-        await page.getByRole("link", { name: view, exact: false }).click();
+        await page.locator(`[data-view="${view}"]:not([hidden])`).waitFor();
       }
       await page.waitForTimeout(400);
       const found = await page.evaluate(auditInPage, minimumContrast);
@@ -203,15 +218,34 @@ const browser = await chromium.launch({ executablePath });
 const all = [];
 try {
   const states = requestedState ? [requestedState] : Object.keys(fixtureStates);
+  const schemes = requestedScheme ? [requestedScheme] : ["light", "dark"];
+  const selectedViewports = requestedViewport
+    ? viewports.filter((viewport) => viewport.name === requestedViewport)
+    : viewports;
+  if (!selectedViewports.length) {
+    throw new Error(`Unknown viewport "${requestedViewport}"`);
+  }
+  if (schemes.some((scheme) => !["light", "dark"].includes(scheme))) {
+    throw new Error(`Unknown scheme "${requestedScheme}"`);
+  }
   for (const stateName of states) {
-    for (const colorScheme of ["light", "dark"]) {
-      const findings = await auditState(browser, stateName, colorScheme);
-      for (const entry of findings) all.push({ ...entry, state: stateName });
-      console.log(
-        `${findings.length ? "FAIL" : "ok  "} ${stateName}/${colorScheme}${
-          findings.length ? ` ${findings.length} low-contrast nodes` : ""
-        }`,
-      );
+    for (const colorScheme of schemes) {
+      for (const viewport of selectedViewports) {
+        const findings = await auditState(
+          browser,
+          stateName,
+          colorScheme,
+          viewport,
+        );
+        for (const entry of findings) {
+          all.push({ ...entry, state: stateName, viewport: viewport.name });
+        }
+        console.log(
+          `${findings.length ? "FAIL" : "ok  "} ${stateName}/${colorScheme}/${viewport.name}${
+            findings.length ? ` ${findings.length} failures` : ""
+          }`,
+        );
+      }
     }
   }
 } finally {
@@ -220,13 +254,13 @@ try {
 
 const seen = new Map();
 for (const entry of all) {
-  const key = `${entry.selector}|${entry.color}|${entry.background}`;
+  const key = `${entry.selector}|${entry.color}|${entry.background}|${entry.reason}`;
   if (!seen.has(key)) seen.set(key, { ...entry, count: 0 });
   seen.get(key).count += 1;
 }
 for (const entry of seen.values()) {
   console.log(
-    `  ${entry.ratio}:1 ${entry.state}/${entry.colorScheme}/${entry.view} ${entry.parent} > ${entry.selector} "${entry.text}" ${entry.color} on ${entry.background} (x${entry.count})`,
+    `  ${entry.reason}; ${entry.ratio}:1 (needs ${entry.requiredRatio}:1), ${entry.fontSize}px ${entry.state}/${entry.colorScheme}/${entry.viewport}/${entry.view} ${entry.parent} > ${entry.selector} "${entry.text}" ${entry.color} on ${entry.background} (x${entry.count})`,
   );
 }
 if (all.length) process.exit(1);

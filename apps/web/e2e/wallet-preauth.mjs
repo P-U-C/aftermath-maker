@@ -43,9 +43,12 @@ const SECOND_ADDRESS = `0x${"b2".repeat(32)}`;
 
 const scenarios = {
   // Wallet connected, signature prompt still open in the wallet.
-  pending: { signPersonalMessage: "pending", verifyStatus: 200 },
+  pending: { signPersonalMessage: "pending" },
   // Wallet connected, signature given, wallet not on the access list.
-  denied: { signPersonalMessage: "resolve", verifyStatus: 403 },
+  denied: {
+    signPersonalMessage: "resolve",
+    accessRequestToken: "fixture-access-request-token",
+  },
 };
 
 const viewports = [
@@ -79,9 +82,11 @@ async function routeControlApi(page, scenario) {
       });
     }
     if (routePath === "api/auth/verify") {
-      return scenario.verifyStatus === 200
-        ? json(200, { ok: true })
-        : json(403, { error: "Wallet is not on the access list" });
+      return json(200, {
+        accessRequestToken: scenario.accessRequestToken,
+        accessRequestExpiresAt: "2026-10-28T00:15:00.000Z",
+        ownerAddress: FIRST_ADDRESS,
+      });
     }
     if (routePath === "api/auth/logout") return json(200, { ok: true });
     return json(501, { error: `No preauth fixture for ${routePath}` });

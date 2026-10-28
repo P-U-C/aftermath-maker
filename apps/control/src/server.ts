@@ -144,6 +144,7 @@ const auth = new WalletAuth(
       outcome: "completed",
     });
   },
+  env.CONTROL_TOKEN,
 );
 
 type RequestAuth = {
@@ -160,6 +161,7 @@ const app = Fastify({
       "req.headers.x-control-token",
       "req.headers.x-maker-session",
       "body.signature",
+      "body.accessRequestToken",
       "body.encryptedSecret",
     ],
   },
@@ -319,7 +321,7 @@ app.post(
   async (request) => {
     const body = z
       .object({
-        walletAddress: z.string().regex(/^0x[0-9a-fA-F]{64}$/),
+        accessRequestToken: z.string().min(1).max(1_024),
         twitterHandle: z
           .string()
           .trim()
@@ -328,13 +330,12 @@ app.post(
       })
       .strict()
       .parse(request.body);
-    if (body.company) return { ok: true };
-
-    store.createAccessRequest({
-      walletAddress: body.walletAddress,
+    auth.createAccessRequest({
+      accessRequestToken: body.accessRequestToken,
       twitterHandle: body.twitterHandle.startsWith("@")
         ? body.twitterHandle
         : `@${body.twitterHandle}`,
+      company: body.company,
     });
     return { ok: true };
   },

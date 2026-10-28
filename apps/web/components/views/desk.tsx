@@ -7,16 +7,22 @@ import {
   Play,
   RefreshCw,
 } from "lucide-react";
+import { useEffect, useRef } from "react";
 
 import {
   formatMoney,
-  formatPrice,
   formatSignedMoney,
   formatTimestamp,
   moneyTone,
 } from "../../lib/format";
 import type { VenueDescriptor } from "../../lib/venues";
-import { Button, Card, ListRow, Meter, Pill, Sheet } from "../ui/primitives";
+import { Button, Card, ListRow, Meter, Sheet } from "../ui/primitives";
+import { GlossaryTerm } from "../ui/glossary-term";
+import {
+  MarketMotion,
+  type MarketBook,
+  type MarketMotionHandle,
+} from "../market-motion";
 import { VenueChip } from "../venue-chip";
 import { ViewFrame } from "./view-frame";
 
@@ -66,6 +72,8 @@ type DeskViewProps = {
   marketCount: number;
   startedAt: string | null;
   lastFill: DeskFill | null;
+  narration: string;
+  mode: "observe" | "paper" | "live";
   market: {
     symbol: string;
     tickSize: number | null;
@@ -76,6 +84,7 @@ type DeskViewProps = {
     ourAsk: number | null;
     spreadBps: number;
     updatedAt: string | null;
+    book: MarketBook;
     subtitle: string;
   };
   risk: {
@@ -93,6 +102,7 @@ type DeskViewProps = {
   fillsUpdatedAt: string | null;
   events: DeskEvent[];
   staleAfterMs: number;
+  lastHedgeDigest: string | null;
   onRefresh: () => void;
   onStart: () => void;
   onStop: () => void;
@@ -118,26 +128,6 @@ function Freshness({
   );
 }
 
-function PricePoint({
-  className,
-  label,
-  value,
-  tickSize,
-}: {
-  className?: string;
-  label: string;
-  value: number | null;
-  tickSize: number | null;
-}) {
-  return (
-    <div className={className}>
-      <span>{label}</span>
-      <strong>{formatPrice(value, tickSize)}</strong>
-      <i aria-hidden="true" />
-    </div>
-  );
-}
-
 export function DeskView({
   active,
   venue,
@@ -156,6 +146,8 @@ export function DeskView({
   marketCount,
   startedAt,
   lastFill,
+  narration,
+  mode,
   market,
   risk,
   markets,
@@ -164,6 +156,7 @@ export function DeskView({
   fillsUpdatedAt,
   events,
   staleAfterMs,
+  lastHedgeDigest,
   onRefresh,
   onStart,
   onStop,
@@ -174,7 +167,63 @@ export function DeskView({
     risk.gasRunwayTransactions === null
       ? 0
       : Math.max(0, 3 - risk.gasRunwayTransactions);
-  const ladderLabel = `Your bid ${formatPrice(market.ourBid, market.tickSize)}, ask ${formatPrice(market.ourAsk, market.tickSize)}, spread ${market.spreadBps} bps`;
+  const motion = useRef<MarketMotionHandle>(null);
+  const motionReady = useRef(false);
+  const seenFillIds = useRef(new Set<string>());
+  const seenHedgeDigest = useRef<string | null>(null);
+
+  useEffect(() => {
+    const update = {
+      mid: market.indexPrice,
+      bid: market.ourBid,
+      ask: market.ourAsk,
+      bestBid: market.bestBid,
+      bestAsk: market.bestAsk,
+      inventoryUsd: risk.grossExposureUsd,
+      book: market.book,
+    };
+    motion.current?.update(update);
+
+    if (!motionReady.current) {
+      motionReady.current = true;
+      fills.forEach((fill) => seenFillIds.current.add(fill.id));
+      seenHedgeDigest.current = lastHedgeDigest;
+      return;
+    }
+
+    const newFills = fills.filter((fill) => !seenFillIds.current.has(fill.id));
+    newFills.forEach((fill) => {
+      seenFillIds.current.add(fill.id);
+      motion.current?.fill(fill.side);
+    });
+    if (
+      lastHedgeDigest &&
+      seenHedgeDigest.current &&
+      lastHedgeDigest !== seenHedgeDigest.current
+    ) {
+      motion.current?.hedge();
+    }
+    seenHedgeDigest.current = lastHedgeDigest;
+  }, [
+    fills,
+    lastHedgeDigest,
+    market.bestAsk,
+    market.bestBid,
+    market.book,
+    market.indexPrice,
+    market.ourAsk,
+    market.ourBid,
+    risk.grossExposureUsd,
+  ]);
+
+  const marketCaption =
+    mode === "paper" ? "Paper" : running ? "Quoting now" : "Waiting its turn";
+  const plainMarketState = (status: DeskMarketRow["status"]) =>
+    status === "healthy"
+      ? "Quoting now"
+      : status === "queued"
+        ? "Waiting its turn"
+        : "Paused";
 
   return (
     <ViewFrame active={active} name="desk">
@@ -249,6 +298,11 @@ export function DeskView({
           </div>
         </section>
 
+        <p className="desk-narration" aria-live="polite">
+          <span>Right now</span>
+          {narration}
+        </p>
+
         <div className="desk-primary-grid">
           <Card
             className="desk-ladder-card"
@@ -281,42 +335,20 @@ export function DeskView({
               </div>
             }
           >
-            <div className="desk-ladder" role="img" aria-label={ladderLabel}>
-              <span className="desk-ladder-line" aria-hidden="true" />
-              <PricePoint
-                className="desk-price-point is-our is-bid"
-                label="Your bid"
-                value={market.ourBid}
-                tickSize={market.tickSize}
-              />
-              <PricePoint
-                className="desk-price-point is-best is-bid"
-                label="Best bid"
-                value={market.bestBid}
-                tickSize={market.tickSize}
-              />
-              <PricePoint
-                className="desk-price-point is-index"
-                label="Index"
-                value={market.indexPrice}
-                tickSize={market.tickSize}
-              />
-              <PricePoint
-                className="desk-price-point is-best is-ask"
-                label="Best ask"
-                value={market.bestAsk}
-                tickSize={market.tickSize}
-              />
-              <PricePoint
-                className="desk-price-point is-our is-ask"
-                label="Your ask"
-                value={market.ourAsk}
-                tickSize={market.tickSize}
-              />
-              <span className="desk-spread-pill">
-                {market.spreadBps} bps spread
-              </span>
-            </div>
+            <MarketMotion
+              ref={motion}
+              className="desk-market-motion"
+              compact
+              sim={false}
+              mid={market.indexPrice}
+              bid={market.ourBid}
+              ask={market.ourAsk}
+              bestBid={market.bestBid}
+              bestAsk={market.bestAsk}
+              inventoryUsd={risk.grossExposureUsd}
+              book={market.book}
+            />
+            <p className="desk-market-caption">{marketCaption}</p>
           </Card>
 
           <Card
@@ -353,6 +385,12 @@ export function DeskView({
                     : `${formatMoney(risk.runDrawdownUsd)} of ${formatMoney(risk.runDrawdownLimitUsd)}`
                 }
               />
+              <p className="desk-drawdown-note">
+                {risk.runDrawdownUsd === null
+                  ? "Run drawdown is not reported yet."
+                  : `Stops if it falls ${formatMoney(risk.runDrawdownLimitUsd)} from its best point this run.`}{" "}
+                <a href="#strategy">Size and limits</a>
+              </p>
               <Meter
                 label="Gas runway"
                 value={gasShortfall}
@@ -379,6 +417,17 @@ export function DeskView({
               />
             }
           >
+            <div className="desk-market-headings" aria-hidden="true">
+              <span>Market</span>
+              <span>Status</span>
+              <span>Inventory</span>
+              <span>Spread</span>
+              <span>
+                <GlossaryTerm term="unrealizedPnl">
+                  Unrealized P&amp;L
+                </GlossaryTerm>
+              </span>
+            </div>
             <div className="desk-list">
               {markets.length ? (
                 markets.map((row) => (
@@ -396,7 +445,7 @@ export function DeskView({
                     <span className="desk-market-row">
                       <strong>{row.symbol}</strong>
                       <span className={`desk-market-state is-${row.status}`}>
-                        {row.status}
+                        {plainMarketState(row.status)}
                       </span>
                       <span>
                         {formatSignedMoney(row.inventoryUsd)} inventory
@@ -439,7 +488,7 @@ export function DeskView({
                     <span className="desk-fill-row">
                       <strong>{fill.symbol}</strong>
                       <span className={`desk-fill-side is-${fill.side}`}>
-                        {fill.side}
+                        {fill.side === "bid" ? "Bought" : "Sold"}
                       </span>
                       <span>{formatMoney(fill.notionalUsd)}</span>
                       <span>{formatTimestamp(fill.occurredAt)}</span>
@@ -518,7 +567,7 @@ export function DeskView({
       <Sheet
         open={flattenArmed}
         title="Flatten positions?"
-        description="This cancels Maker orders, then uses reduce-only market orders across the Maker and hedge accounts."
+        description="This cancels Maker orders, then uses reduce-only market orders across the Maker and Taker accounts."
         onClose={() => {
           if (!flattenBusy) onCancelFlatten();
         }}

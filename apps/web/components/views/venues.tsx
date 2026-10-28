@@ -24,7 +24,7 @@ export type VenueAccountRow = {
   accountId: string;
   label: string | null;
   equityUsd: number;
-  role: "Maker" | "Hedge" | "Available";
+  role: "Maker" | "Taker" | "Available";
 };
 
 type VenueBoardProps = {
@@ -193,7 +193,7 @@ export function VenueBoard({
       <Card
         className="venue-exposure-card"
         title="Exposure by venue"
-        subtitle="Gross limits are shared across venues; equity counts Maker and hedge accounts."
+        subtitle="Gross limits are shared across venues; equity counts Maker and Taker accounts."
       >
         <div
           className="venue-exposure-table"

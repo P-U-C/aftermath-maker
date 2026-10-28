@@ -2,7 +2,7 @@ import { randomBytes } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { Ed25519Keypair } from "@mysten/sui/keypairs/ed25519";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { WalletAuth } from "../src/auth.js";
 import { Store } from "../src/store.js";
 
@@ -24,6 +24,8 @@ function harness() {
     true,
     12,
     0,
+    undefined,
+    "access-request-test-secret",
   );
   return { store, auth };
 }
@@ -96,8 +98,76 @@ describe("wallet authentication", () => {
       if (shouldPass) {
         await expect(verification).resolves.toMatchObject({ operator: true });
       } else {
-        await expect(verification).rejects.toThrow("not on the on-chain");
+        await expect(verification).resolves.toMatchObject({
+          ownerAddress: address,
+          accessRequestToken: expect.any(String),
+        });
       }
+    }
+    store.close();
+  });
+
+  it("binds access requests to a signed wallet for fifteen minutes", async () => {
+    const directory = join(
+      process.env.TMPDIR ?? "/tmp",
+      "aftermath-maker-auth-" + randomBytes(8).toString("hex"),
+    );
+    mkdirSync(directory, { recursive: true });
+    const store = new Store(join(directory, "maker.db"));
+    const auth = new WalletAuth(
+      store,
+      { configured: true, isAllowed: async () => false } as never,
+      "https://maker.permanentupperclass.com",
+      false,
+      12,
+      0,
+      undefined,
+      "access-request-test-secret",
+    );
+    const keypair = new Ed25519Keypair();
+    const address = keypair.toSuiAddress();
+    const challenge = auth.begin(address);
+    const signed = await keypair.signPersonalMessage(
+      new TextEncoder().encode(challenge.message),
+    );
+    const verified = await auth.verify({
+      challengeId: challenge.challengeId,
+      address,
+      message: challenge.message,
+      signature: signed.signature,
+    });
+
+    expect(verified).toMatchObject({ ownerAddress: address });
+    expect("sessionToken" in verified).toBe(false);
+    if (!("accessRequestToken" in verified)) throw new Error("missing token");
+
+    expect(() => auth.requireAccessRequestToken(undefined)).toThrow(
+      "verification is required",
+    );
+    expect(auth.requireAccessRequestToken(verified.accessRequestToken)).toBe(
+      address,
+    );
+    expect(() =>
+      auth.requireAccessRequestToken(`${verified.accessRequestToken}x`),
+    ).toThrow("verification is invalid");
+
+    auth.createAccessRequest({
+      accessRequestToken: verified.accessRequestToken,
+      twitterHandle: "@maker_user",
+      company: "",
+    });
+    expect(store.listAccessRequests()).toMatchObject([
+      { walletAddress: address, twitterHandle: "@maker_user" },
+    ]);
+
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date(verified.accessRequestExpiresAt));
+      expect(() =>
+        auth.requireAccessRequestToken(verified.accessRequestToken),
+      ).toThrow("verification has expired");
+    } finally {
+      vi.useRealTimers();
     }
     store.close();
   });

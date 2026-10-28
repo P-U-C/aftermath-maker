@@ -26,6 +26,10 @@ export const metadata: Metadata = {
   description:
     "A wallet-gated market-making desk for controlled quoting across venues.",
   applicationName: "Maker",
+  icons: {
+    icon: "/icon-stopped.svg",
+    apple: "/apple-touch-icon.png",
+  },
   robots: { index: true, follow: true },
 };
 

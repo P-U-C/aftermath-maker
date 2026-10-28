@@ -108,7 +108,7 @@ export function GoLiveSheet({
           <dd>{formatMoney(maxRunDrawdownUsd)} run drawdown</dd>
         </div>
         <div>
-          <dt>Hedge</dt>
+          <dt>Taker</dt>
           <dd>
             {hedgeAccountId
               ? `Account ${hedgeAccountId}, up to ${(hedgeSlippageBps / 100).toFixed(2)}% slippage`

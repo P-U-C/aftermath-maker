@@ -126,6 +126,16 @@ export type PerformanceSnapshot = {
     netAfterKnownCostsUsd: number;
   };
   combinedNetAfterKnownCostsUsd: number;
+  volumeByMarket: Array<{
+    marketId: string;
+    symbol: string;
+    makerNotionalUsd: number;
+    makerFills: number;
+    takerNotionalUsd: number;
+    takerFills: number;
+    realizedPnlUsd: number;
+    feesUsd: number;
+  }>;
   fills: MakerFill[];
   note: string;
 };
@@ -161,6 +171,22 @@ const emptyRuntimeMarket = (
   };
 };
 
+const snapshotBookLevels = (
+  levels: ReadonlyArray<{ price: unknown; size: unknown }>,
+): Array<[price: number, size: number]> =>
+  levels
+    .flatMap((level) =>
+      typeof level.price === "number" &&
+      Number.isFinite(level.price) &&
+      level.price > 0 &&
+      typeof level.size === "number" &&
+      Number.isFinite(level.size) &&
+      level.size > 0
+        ? ([[level.price, level.size]] as Array<[number, number]>)
+        : [],
+    )
+    .slice(0, 50);
+
 const initialSnapshot = (): RuntimeSnapshot => ({
   mode: "observe",
   running: false,
@@ -179,6 +205,12 @@ const initialSnapshot = (): RuntimeSnapshot => ({
     bestBid: null,
     bestAsk: null,
     updatedAt: null,
+    book: null,
+  },
+  risk: {
+    runDrawdownUsd: null,
+    runHighEquityUsd: null,
+    measuredAt: null,
   },
   markets: [],
   portfolio: {
@@ -985,6 +1017,7 @@ export class MakerRuntime {
           netAfterKnownCostsUsd: 0,
         },
         combinedNetAfterKnownCostsUsd: 0,
+        volumeByMarket: [],
         fills: [],
         note: "Authorize an agent to begin account and fill reconciliation.",
       };
@@ -1005,6 +1038,33 @@ export class MakerRuntime {
     const symbols = new Map(
       config?.markets.map((market) => [market.marketId, market.symbol]) ?? [],
     );
+    const volumeByMarket = new Map<
+      string,
+      PerformanceSnapshot["volumeByMarket"][number]
+    >();
+    for (const order of history.orders) {
+      const current = volumeByMarket.get(order.marketId) ?? {
+        marketId: order.marketId,
+        symbol: symbols.get(order.marketId) ?? order.marketId.slice(0, 10),
+        makerNotionalUsd: 0,
+        makerFills: 0,
+        takerNotionalUsd: 0,
+        takerFills: 0,
+        realizedPnlUsd: 0,
+        feesUsd: 0,
+      };
+      const notionalUsd = Math.abs(order.size * order.price);
+      if (order.maker) {
+        current.makerNotionalUsd += notionalUsd;
+        current.makerFills += 1;
+      } else {
+        current.takerNotionalUsd += notionalUsd;
+        current.takerFills += 1;
+      }
+      current.realizedPnlUsd += order.realizedPnlUsd;
+      current.feesUsd += order.feesUsd;
+      volumeByMarket.set(order.marketId, current);
+    }
     const builderFeeRate = this.options.builderCode()?.integratorFee ?? 0;
     const fills = history.orders
       .filter(
@@ -1138,6 +1198,9 @@ export class MakerRuntime {
       hedge,
       combinedNetAfterKnownCostsUsd:
         makerNetAfterKnownCostsUsd + hedge.netAfterKnownCostsUsd,
+      volumeByMarket: [...volumeByMarket.values()].sort((left, right) =>
+        left.symbol.localeCompare(right.symbol),
+      ),
       fills,
       note: `Maker attribution uses recorded order IDs. Hedge attribution uses confirmed hedge transaction digests. Builder fees are deterministic estimates from filled notional; account metrics come from Aftermath's ${period === "1D" ? "24-hour" : period === "EPOCH" ? "current-epoch" : "all-time"} history.`,
     };
@@ -1997,6 +2060,15 @@ export class MakerRuntime {
       const inventoryUsd = position?.inventoryUsd ?? 0;
       const marketPnlUsd = position?.unrealizedPnlUsd ?? 0;
       const observedAt = new Date();
+      const updatedAt = observedAt.toISOString();
+      const book =
+        Array.isArray(orderbook.bids) && Array.isArray(orderbook.asks)
+          ? {
+              bids: snapshotBookLevels(orderbook.bids),
+              asks: snapshotBookLevels(orderbook.asks),
+              observedAt: updatedAt,
+            }
+          : null;
       const quote = buildQuoteIntent({
         config: marketConfig,
         observation: {
@@ -2066,7 +2138,6 @@ export class MakerRuntime {
       );
       const openInterestBase = Math.abs(market.marketState.openInterest);
       const maxOpenInterestBase = market.marketParams.maxOpenInterest;
-      const updatedAt = observedAt.toISOString();
 
       if (inputs.executeLive && !executionIsCurrent()) return;
 
@@ -2086,6 +2157,16 @@ export class MakerRuntime {
           bestBid,
           bestAsk,
           updatedAt,
+          book,
+        },
+        risk: {
+          runDrawdownUsd:
+            setup && account?.agentCapId && agent ? runDrawdownUsd : null,
+          runHighEquityUsd:
+            setup && account?.agentCapId && agent
+              ? this.runPeakEquityUsd
+              : null,
+          measuredAt: setup && account?.agentCapId && agent ? updatedAt : null,
         },
         markets: this.snapshotValue.markets.map((row) => {
           const rowPosition = portfolio.positions.find(

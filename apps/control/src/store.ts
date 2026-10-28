@@ -138,6 +138,7 @@ export const RETENTION_LIMITS = {
   makerOrders: 2_000,
   hedgeExecutions: 10_000,
   hedgedFills: 20_000,
+  accessRequests: 10_000,
 } as const;
 
 type RetentionTable =
@@ -307,7 +308,8 @@ export class Store {
         updated_at TEXT NOT NULL,
         notified_at TEXT,
         notification_attempts INTEGER NOT NULL DEFAULT 0,
-        notification_error TEXT
+        notification_error TEXT,
+        last_notification_attempt_at TEXT
       );
 
       CREATE INDEX IF NOT EXISTS tenant_audit_events_owner_time
@@ -349,6 +351,23 @@ export class Store {
         "ALTER TABLE tenant_maker_orders ADD COLUMN account_id TEXT NOT NULL DEFAULT ''",
       );
     }
+
+    const accessRequestColumns = this.db
+      .prepare("PRAGMA table_info(access_requests)")
+      .all() as Array<{ name: string }>;
+    if (
+      !accessRequestColumns.some(
+        (column) => column.name === "last_notification_attempt_at",
+      )
+    ) {
+      this.db.exec(
+        "ALTER TABLE access_requests ADD COLUMN last_notification_attempt_at TEXT",
+      );
+    }
+    this.db.exec(
+      `CREATE INDEX IF NOT EXISTS access_requests_notification_attempt
+       ON access_requests(last_notification_attempt_at)`,
+    );
   }
 
   private getSystemSetting<T>(key: string): T | null {
@@ -716,19 +735,8 @@ export class Store {
       .get(walletAddress) as AccessRequestRow | undefined;
     const now = new Date().toISOString();
     if (existing) {
-      this.db
-        .prepare(
-          `UPDATE access_requests
-           SET twitter_handle = ?, updated_at = ?
-           WHERE wallet_address = ?`,
-        )
-        .run(inputs.twitterHandle, now, walletAddress);
       return {
-        request: {
-          ...accessRequestFromRow(existing),
-          twitterHandle: inputs.twitterHandle,
-          updatedAt: now,
-        },
+        request: accessRequestFromRow(existing),
         created: false,
       };
     }
@@ -740,6 +748,7 @@ export class Store {
          VALUES (?, ?, 'pending', ?, ?)`,
       )
       .run(walletAddress, inputs.twitterHandle, now, now);
+    this.enforceAccessRequestRetention();
     return {
       request: {
         id: Number(result.lastInsertRowid),
@@ -798,24 +807,28 @@ export class Store {
     result: { ok: true } | { ok: false; error: string },
   ): void {
     if (result.ok) {
+      const now = new Date().toISOString();
       this.db
         .prepare(
           `UPDATE access_requests
-           SET notified_at = ?, notification_attempts = notification_attempts + 1,
+           SET notified_at = ?, last_notification_attempt_at = ?,
+               notification_attempts = notification_attempts + 1,
                notification_error = NULL
            WHERE id = ?`,
         )
-        .run(new Date().toISOString(), id);
+        .run(now, now, id);
       return;
     }
+    const now = new Date().toISOString();
     this.db
       .prepare(
         `UPDATE access_requests
-         SET notification_attempts = notification_attempts + 1,
+         SET last_notification_attempt_at = ?,
+             notification_attempts = notification_attempts + 1,
              notification_error = ?
          WHERE id = ?`,
       )
-      .run(result.error.slice(0, 500), id);
+      .run(now, result.error.slice(0, 500), id);
   }
 
   setAccessRequestStatus(
@@ -828,6 +841,39 @@ export class Store {
          WHERE wallet_address = ?`,
       )
       .run(status, new Date().toISOString(), normalizeAddress(walletAddress));
+  }
+
+  countAccessRequestNotificationAttemptsSince(since: string): number {
+    return Number(
+      (
+        this.db
+          .prepare(
+            `SELECT COUNT(*) AS count
+             FROM access_requests
+             WHERE last_notification_attempt_at IS NOT NULL
+               AND last_notification_attempt_at >= ?`,
+          )
+          .get(since) as { count: number }
+      ).count,
+    );
+  }
+
+  enforceAccessRequestRetention(limit = RETENTION_LIMITS.accessRequests): void {
+    if (!Number.isInteger(limit) || limit < 1) {
+      throw new Error(
+        "Access request retention limit must be a positive integer",
+      );
+    }
+    this.db
+      .prepare(
+        `DELETE FROM access_requests
+         WHERE id IN (
+           SELECT id FROM access_requests
+           ORDER BY id DESC
+           LIMIT -1 OFFSET ?
+         )`,
+      )
+      .run(limit);
   }
 
   close(): void {

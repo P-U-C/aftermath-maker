@@ -50,6 +50,16 @@ export type Snapshot = {
     bestBid: number | null;
     bestAsk: number | null;
     updatedAt: string | null;
+    book: {
+      bids: Array<[number, number]>;
+      asks: Array<[number, number]>;
+      observedAt: string;
+    } | null;
+  };
+  risk: {
+    runDrawdownUsd: number | null;
+    runHighEquityUsd: number | null;
+    measuredAt: string | null;
   };
   markets: RuntimeMarket[];
   portfolio: {
@@ -202,6 +212,16 @@ export type Performance = {
     netAfterKnownCostsUsd: number;
   };
   combinedNetAfterKnownCostsUsd: number;
+  volumeByMarket: Array<{
+    marketId: string;
+    symbol: string;
+    makerNotionalUsd: number;
+    makerFills: number;
+    takerNotionalUsd: number;
+    takerFills: number;
+    realizedPnlUsd: number;
+    feesUsd: number;
+  }>;
   fills: Array<{
     occurredAt: string;
     txDigest: string;
@@ -374,6 +394,15 @@ const marketIds = {
   BTC: `0x${"a4".repeat(32)}`,
   HYPE: `0x${"a5".repeat(32)}`,
 } as const;
+
+const monBook = {
+  bids: fixtureBook.bids.map(
+    ([price, size]) => [price!, size!] as [number, number],
+  ),
+  asks: fixtureBook.asks.map(
+    ([price, size]) => [price!, size!] as [number, number],
+  ),
+};
 
 const marketRows: FixtureState["markets"]["markets"] = [
   {
@@ -609,6 +638,7 @@ function snapshot(
   mode: Mode,
   running: boolean,
   setupComplete = true,
+  bookAvailable = true,
 ): Snapshot {
   return {
     mode,
@@ -628,6 +658,18 @@ function snapshot(
       bestBid: 0.02141,
       bestAsk: 0.02147,
       updatedAt: "2026-10-27T17:08:30.000Z",
+      book:
+        setupComplete && bookAvailable
+          ? {
+              ...monBook,
+              observedAt: "2026-10-27T17:08:30.000Z",
+            }
+          : null,
+    },
+    risk: {
+      runDrawdownUsd: setupComplete ? 0.01 : null,
+      runHighEquityUsd: setupComplete ? 7.45246 : null,
+      measuredAt: setupComplete ? "2026-10-27T17:08:30.000Z" : null,
     },
     markets: setupComplete ? runtimeMarkets(running) : [],
     portfolio: {
@@ -728,6 +770,18 @@ const performance: Performance = {
     netAfterKnownCostsUsd: -0.008479,
   },
   combinedNetAfterKnownCostsUsd: -0.01541,
+  volumeByMarket: [
+    {
+      marketId: marketIds.MON,
+      symbol: "MON",
+      makerNotionalUsd: 14.51,
+      makerFills: 14,
+      takerNotionalUsd: 4.2,
+      takerFills: 4,
+      realizedPnlUsd: -0.0062,
+      feesUsd: -0.00072,
+    },
+  ],
   fills: [
     {
       occurredAt: "2026-10-27T17:08:20.000Z",
@@ -945,6 +999,13 @@ const paperRunning = fixture(
   setupReady,
 );
 
+const paperRunningNoBook = fixture(
+  { status: 200, body: identity },
+  snapshot("paper", true, true, false),
+  { ...config, mode: "paper" },
+  setupReady,
+);
+
 const liveRunning = fixture(
   { status: 200, body: identity },
   snapshot("live", true),
@@ -964,8 +1025,10 @@ export const fixtureStates = {
   "not-on-list": notOnList,
   onboarding,
   "paper-running": paperRunning,
+  "paper-running-no-book": paperRunningNoBook,
   "live-running": liveRunning,
   stopped,
 } satisfies Record<string, FixtureState>;
 
 export type FixtureName = keyof typeof fixtureStates;
+import fixtureBook from "../../../../docs/design/maker-ui-handoff-v3/mockups/fixture-book.json" with { type: "json" };

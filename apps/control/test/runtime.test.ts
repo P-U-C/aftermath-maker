@@ -131,6 +131,17 @@ function createHarness(options: { configured?: boolean } = {}) {
     orders: [],
     marginHistory: [],
   };
+  let orderbook: {
+    bestBidPrice: number;
+    bestAskPrice: number;
+    bids?: Array<{ price: number; size: number }>;
+    asks?: Array<{ price: number; size: number }>;
+  } = {
+    bestBidPrice: 9.99,
+    bestAskPrice: 10.01,
+    bids: [],
+    asks: [],
+  };
   const performanceRequests: Array<{
     timeframe?: "1D" | "1W" | "1M" | "ALL";
     sinceMs?: number;
@@ -172,10 +183,7 @@ function createHarness(options: { configured?: boolean } = {}) {
         estimatedFundingRate: () => 0.0001,
         tickSize: () => 0.01,
       },
-      orderbook: {
-        bestBidPrice: 9.99,
-        bestAskPrice: 10.01,
-      },
+      orderbook,
     }),
     getAgentPortfolioSnapshot: async (inputs: {
       setup: { accountId: string };
@@ -300,6 +308,9 @@ function createHarness(options: { configured?: boolean } = {}) {
     setPerformanceHistory: (value: AccountPerformanceHistory) => {
       performanceHistory = value;
     },
+    setOrderbook: (value: typeof orderbook) => {
+      orderbook = value;
+    },
   };
 }
 
@@ -328,6 +339,93 @@ describe("runtime execution boundaries", () => {
 
     expect(harness.runtime.snapshot.quote).not.toBeNull();
     expect(harness.executions()).toBe(0);
+    harness.store.close();
+  });
+
+  it("exposes only the fresh selected-market book and run risk without changing quotes", async () => {
+    const harness = createHarness();
+    const config = harness.tenant.getConfig()!;
+    harness.tenant.setConfig({ ...config, markets: [config.markets[0]!] });
+    expect(harness.runtime.snapshot.market.book).toBeNull();
+    let equityUsd = 100;
+    harness.setPortfolioResolver((inputs) => ({
+      markedAt: new Date().toISOString(),
+      equityUsd,
+      availableCollateralUsd: 80,
+      allocatedCollateralUsd: 20,
+      freeMarginUsd: 70,
+      withdrawableCollateralUsd: 75,
+      grossExposureUsd: 0,
+      unrealizedPnlUsd: 0,
+      gasSui: 1,
+      positions: inputs.marketIds.map((marketId) => ({
+        marketId,
+        baseAssetAmount: 0,
+        pendingOrderCount: 0,
+        inventoryUsd: 0,
+        unrealizedPnlUsd: 0,
+        collateralUsd: 0,
+        freeMarginUsd: 0,
+        makerOrderIds: [],
+        hasPosition: false,
+      })),
+    }));
+    await harness.runtime.cycle();
+    const quoteBefore = harness.runtime.snapshot.quote;
+    const quoteDecision = quoteBefore
+      ? { ...quoteBefore, observedAt: "ignored" }
+      : null;
+
+    harness.setOrderbook({
+      bestBidPrice: 9.99,
+      bestAskPrice: 10.01,
+      bids: [
+        { price: 0, size: 1 },
+        ...Array.from({ length: 55 }, (_, index) => ({
+          price: 9.99 - index * 0.01,
+          size: index === 3 ? Number.NaN : index + 1,
+        })),
+      ],
+      asks: Array.from({ length: 55 }, (_, index) => ({
+        price: 10.01 + index * 0.01,
+        size: index + 1,
+      })),
+    });
+    equityUsd = 90;
+    await harness.runtime.cycle();
+
+    const snapshot = harness.runtime.snapshot;
+    expect(
+      snapshot.quote ? { ...snapshot.quote, observedAt: "ignored" } : null,
+    ).toEqual(quoteDecision);
+    expect(snapshot.market.book?.observedAt).toBe(snapshot.market.updatedAt);
+    expect(snapshot.market.book?.bids.slice(0, 2)).toEqual([
+      [9.99, 1],
+      [9.98, 2],
+    ]);
+    expect(snapshot.market.book?.asks.slice(0, 2)).toEqual([
+      [10.01, 1],
+      [10.02, 2],
+    ]);
+    expect(snapshot.market.book?.bids).toHaveLength(50);
+    expect(snapshot.market.book?.asks).toHaveLength(50);
+    expect(snapshot.risk).toMatchObject({
+      runDrawdownUsd: 10,
+      runHighEquityUsd: 100,
+      measuredAt: snapshot.market.updatedAt,
+    });
+
+    harness.setOrderbook({
+      bestBidPrice: 9.99,
+      bestAskPrice: 10.01,
+    });
+    await harness.runtime.cycle();
+    expect(harness.runtime.snapshot.market.book).toBeNull();
+    expect(
+      harness.runtime.snapshot.quote
+        ? { ...harness.runtime.snapshot.quote, observedAt: "ignored" }
+        : null,
+    ).toEqual(quoteDecision);
     harness.store.close();
   });
 
@@ -487,6 +585,18 @@ describe("runtime execution boundaries", () => {
       netAfterKnownCostsUsd: 0.978,
     });
     expect(performance.fills[0]?.orderId).toBe("tracked");
+    expect(performance.volumeByMarket).toEqual([
+      {
+        marketId: "0x5678",
+        symbol: "SUI",
+        makerNotionalUsd: 120,
+        makerFills: 2,
+        takerNotionalUsd: 0,
+        takerFills: 0,
+        realizedPnlUsd: 100,
+        feesUsd: 0.02,
+      },
+    ]);
     expect(performance).toMatchObject({
       period: "1D",
       historyComplete: true,
