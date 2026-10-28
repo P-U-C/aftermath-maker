@@ -5572,8 +5572,8 @@ footer a {
 }
 
 .strategy-quick-picks button {
-  min-height: 32px;
-  padding: 0 10px;
+  min-height: 44px;
+  padding: 0 12px;
   color: var(--ink-2);
   background: var(--surface);
   border: 1px solid var(--line);
@@ -5907,8 +5907,8 @@ footer a {
   position: fixed;
   right: 18px;
   bottom: 18px;
-  min-height: 36px;
-  padding: 0 14px;
+  min-height: 44px;
+  padding: 0 16px;
   color: var(--canvas);
   background: var(--ink);
   border: 0;
