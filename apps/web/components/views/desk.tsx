@@ -7,7 +7,7 @@ import {
   Play,
   RefreshCw,
 } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 
 import {
   formatEventTimestamp,
@@ -108,6 +108,9 @@ type DeskViewProps = {
   events: DeskEvent[];
   staleAfterMs: number;
   lastHedgeDigest: string | null;
+  unavailable: boolean;
+  showMarketLane: boolean;
+  bundleLanes?: ReactNode;
   onRefresh: () => void;
   onStart: () => void;
   onStop: () => void;
@@ -118,13 +121,17 @@ type DeskViewProps = {
 function Freshness({
   timestamp,
   staleAfterMs,
+  unavailable = false,
 }: {
   timestamp: string | null;
   staleAfterMs: number;
+  unavailable?: boolean;
 }) {
   const parsed = timestamp ? Date.parse(timestamp) : Number.NaN;
   const stale =
-    Number.isFinite(parsed) && Date.now() - parsed > Math.max(1, staleAfterMs);
+    unavailable ||
+    (Number.isFinite(parsed) &&
+      Date.now() - parsed > Math.max(1, staleAfterMs));
   const lastTimestamp = useRef(timestamp);
   const [fresh, setFresh] = useState(false);
 
@@ -181,6 +188,9 @@ export function DeskView({
   events,
   staleAfterMs,
   lastHedgeDigest,
+  unavailable,
+  showMarketLane,
+  bundleLanes,
   onRefresh,
   onStart,
   onStop,
@@ -326,7 +336,7 @@ export function DeskView({
             {running ? (
               <Button variant="stop" onClick={onStop}>
                 <CircleStop size={17} aria-hidden="true" />
-                Stop
+                Stop all
               </Button>
             ) : (
               <Button onClick={onStart} disabled={startDisabled}>
@@ -341,66 +351,79 @@ export function DeskView({
             )}
             {stopError && (
               <span className="desk-stop-error" role="alert">
-                Stop failed: {stopError}. Try Stop again.
+                Stop failed: {stopError}. Try Stop all again.
               </span>
             )}
           </div>
         </section>
+
+        {bundleLanes}
 
         <p className="desk-narration" aria-live="polite">
           <span>Right now</span>
           {narration}
         </p>
 
-        <div className="desk-primary-grid">
-          <Card
-            className="desk-ladder-card"
-            title={
-              <span className="desk-card-title">
-                <span className="desk-card-title-prefix">Quoting </span>
-                {market.symbol}
-                <VenueChip venue={venue} />
-              </span>
-            }
-            subtitle={market.subtitle}
-            action={
-              <div className="desk-card-action">
-                <Freshness
-                  timestamp={market.updatedAt}
-                  staleAfterMs={staleAfterMs}
-                />
-                <Button
-                  size="icon"
-                  variant="quiet"
-                  onClick={onRefresh}
-                  aria-label="Refresh market"
-                >
-                  <RefreshCw
-                    size={17}
-                    className={refreshBusy ? "spin" : undefined}
-                    aria-hidden="true"
+        <div
+          className={
+            showMarketLane
+              ? "desk-primary-grid"
+              : "desk-primary-grid is-wallet-total"
+          }
+        >
+          {showMarketLane && (
+            <Card
+              className="desk-ladder-card"
+              title={
+                <span className="desk-card-title">
+                  {running && (
+                    <span className="desk-card-title-prefix">Quoting </span>
+                  )}
+                  {market.symbol}
+                  <VenueChip venue={venue} />
+                </span>
+              }
+              subtitle={market.subtitle}
+              action={
+                <div className="desk-card-action">
+                  <Freshness
+                    timestamp={market.updatedAt}
+                    staleAfterMs={staleAfterMs}
+                    unavailable={unavailable}
                   />
-                </Button>
-              </div>
-            }
-          >
-            <MarketMotion
-              ref={motion}
-              className="desk-market-motion"
-              compact
-              height={300}
-              sim={false}
-              mid={market.indexPrice}
-              bid={market.ourBid}
-              ask={market.ourAsk}
-              bestBid={market.bestBid}
-              bestAsk={market.bestAsk}
-              inventoryUsd={inventoryUsd}
-              book={market.book}
-              hedgeTriggerUsd={inventoryScaleUsd}
-            />
-            <p className="desk-market-caption">{marketCaption}</p>
-          </Card>
+                  <Button
+                    size="icon"
+                    variant="quiet"
+                    onClick={onRefresh}
+                    aria-label="Refresh market"
+                  >
+                    <RefreshCw
+                      size={17}
+                      className={refreshBusy ? "spin" : undefined}
+                      aria-hidden="true"
+                    />
+                  </Button>
+                </div>
+              }
+            >
+              <MarketMotion
+                ref={motion}
+                className="desk-market-motion"
+                compact
+                height={300}
+                sim={false}
+                mid={market.indexPrice}
+                bid={market.ourBid}
+                ask={market.ourAsk}
+                bestBid={market.bestBid}
+                bestAsk={market.bestAsk}
+                inventoryUsd={inventoryUsd}
+                book={market.book}
+                hedgeTriggerUsd={inventoryScaleUsd}
+              />
+              <p className="desk-market-caption">{marketCaption}</p>
+            </Card>
+          )}
 
           <Card
             className="desk-risk-card"
@@ -410,6 +433,7 @@ export function DeskView({
               <Freshness
                 timestamp={risk.updatedAt}
                 staleAfterMs={staleAfterMs}
+                unavailable={unavailable}
               />
             }
           >
@@ -465,6 +489,7 @@ export function DeskView({
               <Freshness
                 timestamp={marketsUpdatedAt}
                 staleAfterMs={staleAfterMs}
+                unavailable={unavailable}
               />
             }
           >
@@ -519,6 +544,7 @@ export function DeskView({
               <Freshness
                 timestamp={fillsUpdatedAt}
                 staleAfterMs={staleAfterMs}
+                unavailable={unavailable}
               />
             }
           >

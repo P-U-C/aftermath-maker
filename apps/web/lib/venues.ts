@@ -21,7 +21,7 @@ export const aftermathVenue: VenueDescriptor = {
   glyph: "A",
   network: "Sui mainnet",
   collateral: "USDC",
-  feeModel: "1 bp on filled orders",
+  feeModel: "1 bps on filled orders",
   gasUnit: "SUI",
   accountRoles: {
     maker: "Quotes both sides",

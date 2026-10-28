@@ -23,6 +23,8 @@ export type BundleCard = {
   lastError: string | null;
   resultUsd: number | null;
   archivedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
 };
 
 type BundlesViewProps = {
@@ -171,8 +173,12 @@ export function BundlesView({
         <div className="bundle-card-grid">
           {visible.map((bundle) => {
             const selected = selectedBundleId === bundle.id;
+            const hasRun =
+              bundle.status !== "paused" ||
+              bundle.updatedAt !== bundle.createdAt;
             const resumable =
-              bundle.status === "paused" || bundle.status === "error";
+              bundle.status === "error" ||
+              (bundle.status === "paused" && hasRun);
             return (
               <Card
                 key={bundle.id}
@@ -182,6 +188,7 @@ export function BundlesView({
                   className="bundle-card-select"
                   type="button"
                   onClick={() => onSelect(bundle.id)}
+                  aria-label={`Select ${bundle.name}`}
                   aria-pressed={selected}
                 >
                   <span className={"bundle-mode mode-" + bundle.mode}>

@@ -13,9 +13,10 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "audit:ui": "node apps/web/e2e/contrast-audit.mjs",
+    "audit:journey": "node apps/web/e2e/user-journey.mjs --spawn-server",
     "test": "npm run test -w @puc/core && npm run test -w @puc/aftermath && npm run test -w @puc/control && npm run test -w @puc/web",
     "typecheck": "tsc -b packages/core packages/aftermath apps/control --pretty false && npm run typecheck -w @puc/web",
-    "check": "npm run format:check && npm run typecheck && npm test && npm run build"
+    "check": "npm run format:check && npm run typecheck && npm test && npm run build && npm run audit:journey"
   },
   "engines": {
     "node": ">=22"

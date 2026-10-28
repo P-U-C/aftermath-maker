@@ -689,9 +689,10 @@ async function capture(browser, stateName, captureConfig, view) {
         const notes = Array.from(
           document.querySelectorAll(".maker-coach-note"),
         ).map((node) => node.getBoundingClientRect());
-        const targets = Array.from(
-          document.querySelectorAll(".maker-coach-target"),
-        ).map((node) => node.getBoundingClientRect());
+        const targets = [
+          ...Array.from(document.querySelectorAll(".maker-coach-target")),
+          ...Array.from(document.querySelectorAll(".desk-hero")),
+        ].map((node) => node.getBoundingClientRect());
         const noteOverlap = notes.some((note, index) =>
           notes.slice(index + 1).some((other) => overlaps(note, other)),
         );
@@ -1081,14 +1082,16 @@ async function capture(browser, stateName, captureConfig, view) {
     if (exerciseStop) {
       await page.getByRole("button", { name: "Refresh market" }).click();
       await page.waitForTimeout(50);
-      const stop = page.getByRole("button", { name: "Stop", exact: true });
+      const stop = page
+        .getByRole("button", { name: "Stop all", exact: true })
+        .first();
       if (!(await stop.isEnabled())) {
         throw new Error("Stop became disabled while a refresh was in flight");
       }
       await stop.click();
       await page
         .getByText(
-          "Stop failed: Stop is already reconciling orders. Try Stop again.",
+          "Stop failed: Stop is already reconciling orders. Try Stop all again.",
         )
         .waitFor();
       if (!(await stop.isEnabled())) {

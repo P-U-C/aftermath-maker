@@ -30,7 +30,11 @@ const finite = (value: number | null | undefined): value is number =>
 export function narrate(input: NarrationInput): string {
   const name = input.name ?? "Maker";
   if (!input.running) {
-    return `${name} is paused. Its orders are cancelled and it holds nothing.`;
+    if (finite(input.inventoryUsd) && input.inventoryUsd !== 0) {
+      const market = input.market?.symbol ? ` of ${input.market.symbol}` : "";
+      return `Stopped. Orders are cancelled; you still hold ${formatMoney(Math.abs(input.inventoryUsd))}${market}.`;
+    }
+    return "Stopped. Orders are cancelled; you hold nothing.";
   }
   if (input.mode === "paper") {
     return `${name} is paper trading. Nothing it shows is a real order.`;

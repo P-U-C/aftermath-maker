@@ -5,6 +5,8 @@ import {
   useCurrentAccount,
   useDAppKit,
 } from "@mysten/dapp-kit-react";
+import { ConnectModal } from "@mysten/dapp-kit-react/ui";
+import type { DAppKitConnectModal } from "@mysten/dapp-kit-core/web";
 import { Transaction } from "@mysten/sui/transactions";
 import {
   assertOwnerTransactionIntent,
@@ -49,6 +51,7 @@ import {
 import { selectedActiveBundleId } from "../lib/bundle-options";
 import {
   formatCompactMoney,
+  formatEventTimestamp,
   formatExactMoney,
   formatMoney,
   moneyTone,
@@ -729,7 +732,15 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
     },
     cache: "no-store",
   });
-  const data = (await response.json()) as T & { error?: string };
+  const payload = await response.text();
+  let data: T & { error?: string } = {} as T & { error?: string };
+  if (payload) {
+    try {
+      data = JSON.parse(payload) as T & { error?: string };
+    } catch {
+      data = { error: payload } as T & { error?: string };
+    }
+  }
   if (!response.ok) {
     throw new RequestError(
       data.error ?? `Request failed: ${response.status}`,
@@ -886,6 +897,9 @@ function DashboardBody() {
   const [liveSheetOpen, setLiveSheetOpen] = useState(false);
   const [notice, setNoticeMessage] = useState<string | null>(null);
   const [noticeTone, setNoticeTone] = useState<MakerNoticeTone>("error");
+  const noticeTimer = useRef<number | null>(null);
+  const [controlUnavailable, setControlUnavailable] = useState(false);
+  const [lastGoodDataAt, setLastGoodDataAt] = useState<string | null>(null);
   const [stopError, setStopError] = useState<string | null>(null);
   const [integratorId, setIntegratorId] = useState("");
   const [inspection, setInspection] = useState<{
@@ -895,6 +909,7 @@ function DashboardBody() {
   } | null>(null);
   const onboardingRouteOwner = useRef<string | null>(null);
   const loginAttemptedAddress = useRef<string | null>(null);
+  const walletPickerRef = useRef<DAppKitConnectModal>(null);
 
   const walletSessionMismatch = !walletSessionMatches(
     identity?.ownerAddress ?? null,
@@ -903,11 +918,38 @@ function DashboardBody() {
 
   const setNotice = useCallback(
     (message: string | null, tone: MakerNoticeTone = "error") => {
+      if (noticeTimer.current !== null) {
+        window.clearTimeout(noticeTimer.current);
+        noticeTimer.current = null;
+      }
       setNoticeMessage(message);
-      if (message) setNoticeTone(tone);
+      if (!message) return;
+      setNoticeTone(tone);
+      if (tone === "success") {
+        noticeTimer.current = window.setTimeout(() => {
+          setNoticeMessage(null);
+          noticeTimer.current = null;
+        }, 6_000);
+      }
     },
     [],
   );
+
+  useEffect(
+    () => () => {
+      if (noticeTimer.current !== null) {
+        window.clearTimeout(noticeTimer.current);
+      }
+    },
+    [],
+  );
+
+  function requestOwnerWallet(action: string): string | null {
+    if (account?.address) return account.address;
+    setNotice(`Connect your owner wallet to ${action}`, "warning");
+    walletPickerRef.current?.show();
+    return null;
+  }
 
   const refresh = useCallback(async () => {
     const [statusResult, configResult, setupResult, eventResult, bundleResult] =
@@ -927,6 +969,13 @@ function DashboardBody() {
         }>("api/bundles"),
       ]);
     setSnapshot(statusResult.snapshot);
+    setControlUnavailable(false);
+    setLastGoodDataAt(
+      statusResult.snapshot.lastSuccessfulCycleAt ??
+        statusResult.snapshot.market.updatedAt ??
+        statusResult.snapshot.risk.measuredAt ??
+        null,
+    );
     setBundleSnapshots(statusResult.bundles ?? []);
     setBundles(bundleResult.bundles);
     setWalletLimits(bundleResult.walletLimits);
@@ -1201,17 +1250,17 @@ function DashboardBody() {
 
   useEffect(() => {
     if (!identity || walletSessionMismatch) return;
-    void refresh().catch((error) => setNotice(String(error)));
-    void loadMarkets().catch((error) => setNotice(String(error)));
+    void refresh().catch(handlePollingFailure);
+    void loadMarkets().catch(handlePollingFailure);
     void loadPerformance().catch(() => undefined);
     if (identity.operator) {
       void Promise.all([
         request<OperatorStatus>("api/operator/status").then(setOperatorStatus),
         loadAccessRequests(),
-      ]).catch((error) => setNotice(String(error)));
+      ]).catch(handlePollingFailure);
     }
     const timer = setInterval(() => {
-      void refresh().catch(() => undefined);
+      void refresh().catch(handlePollingFailure);
     }, 5_000);
     const performanceTimer = setInterval(() => {
       void loadPerformance().catch(() => undefined);
@@ -1231,11 +1280,9 @@ function DashboardBody() {
 
   useEffect(() => {
     if (!identity || walletSessionMismatch) return;
-    void loadRewards(config.strategyObjective).catch((error) =>
-      setNotice(String(error)),
-    );
+    void loadRewards(config.strategyObjective).catch(handlePollingFailure);
     const rewardsTimer = setInterval(() => {
-      void loadRewards(config.strategyObjective).catch(() => undefined);
+      void loadRewards(config.strategyObjective).catch(handlePollingFailure);
     }, 60_000);
     return () => clearInterval(rewardsTimer);
   }, [identity, walletSessionMismatch, config.strategyObjective, loadRewards]);
@@ -1298,8 +1345,8 @@ function DashboardBody() {
   );
 
   async function signIn() {
-    if (!account?.address) return;
-    const connectedAddress = account.address;
+    const connectedAddress = requestOwnerWallet("sign in");
+    if (!connectedAddress) return;
     loginAttemptedAddress.current = connectedAddress.toLowerCase();
     setBusy("sign-in");
     setNotice(null);
@@ -1392,10 +1439,28 @@ function DashboardBody() {
     setOperatorStatus(null);
     setAccessRequests([]);
     setSnapshot(null);
+    setBundleSnapshots([]);
+    setBundles([]);
+    setControlUnavailable(false);
+  }
+
+  function handlePollingFailure(error: unknown) {
+    if (error instanceof RequestError && error.status === 401) {
+      void logout().then(() => {
+        setNotice("Your session ended. Sign in again,", "warning");
+      });
+      return;
+    }
+    if (error instanceof RequestError && error.status === 503) {
+      setControlUnavailable(true);
+      return;
+    }
+    setNotice(error instanceof Error ? error.message : String(error));
   }
 
   async function deployWhitelist() {
-    if (!account?.address) return;
+    const ownerAddress = requestOwnerWallet("deploy the access registry");
+    if (!ownerAddress) return;
     await mutate("deploy-whitelist", async () => {
       const manifest = (await fetch("/maker-access.json").then((response) =>
         response.json(),
@@ -1405,7 +1470,7 @@ function DashboardBody() {
         modules: manifest.modules,
         dependencies: manifest.dependencies,
       });
-      tx.transferObjects([upgradeCap], account.address);
+      tx.transferObjects([upgradeCap], ownerAddress);
       const result = await wallet.signAndExecuteTransaction({
         transaction: tx,
       });
@@ -1433,6 +1498,7 @@ function DashboardBody() {
   }
 
   async function registerBuilderCode() {
+    if (!requestOwnerWallet("register the venue fee code")) return;
     await mutate("register-builder", async () => {
       const built = await request<{
         transaction: string;
@@ -1465,7 +1531,7 @@ function DashboardBody() {
         current ? { ...current, builderCode: confirmed.builderCode } : current,
       );
       setNotice(
-        `Venue fee code #${confirmed.builderCode.integratorId} registered at 1 bp.`,
+        `Venue fee code #${confirmed.builderCode.integratorId} registered at 1 bps.`,
         "success",
       );
     });
@@ -1473,6 +1539,7 @@ function DashboardBody() {
 
   async function updateMember(action: "add" | "remove") {
     if (!memberAddress) return;
+    if (!requestOwnerWallet(`${action} a wallet`)) return;
     await mutate(`member-${action}`, async () => {
       const built = await request<{ transaction: string }>(
         "api/operator/whitelist/transaction",
@@ -1574,7 +1641,8 @@ function DashboardBody() {
   }
 
   async function createVenueAccount() {
-    if (!account?.address) return;
+    const ownerAddress = requestOwnerWallet("create an account");
+    if (!ownerAddress) return;
     await mutate("create-account", async () => {
       const built = await request<PreparedOwnerTransactionResponse>(
         "api/accounts/create-transaction",
@@ -1585,7 +1653,7 @@ function DashboardBody() {
       );
       const transaction = verifiedOwnerTransaction(built, {
         kind: "create-account",
-        sender: account.address,
+        sender: ownerAddress,
       });
       const result = await wallet.signAndExecuteTransaction({ transaction });
       if (result.$kind === "FailedTransaction") {
@@ -1626,7 +1694,8 @@ function DashboardBody() {
     accountId: string,
     direction: "deposit" | "withdraw",
   ) {
-    if (!account?.address) return;
+    const ownerAddress = requestOwnerWallet(direction);
+    if (!ownerAddress) return;
     const amountUsdc = collateralAmounts[accountId] ?? "10";
     if (!/^(0|[1-9]\d*)(?:\.\d{1,6})?$/.test(amountUsdc)) {
       setNotice("Enter a plain USDC amount with no more than six decimals.");
@@ -1648,9 +1717,9 @@ function DashboardBody() {
       const amount = usdcBaseUnits(amountUsdc);
       const transaction = verifiedOwnerTransaction(built, {
         kind: direction,
-        sender: account.address,
+        sender: ownerAddress,
         amount,
-        ...(direction === "withdraw" ? { recipient: account.address } : {}),
+        ...(direction === "withdraw" ? { recipient: ownerAddress } : {}),
       });
       const result = await wallet.signAndExecuteTransaction({ transaction });
       if (result.$kind === "FailedTransaction") {
@@ -1673,15 +1742,17 @@ function DashboardBody() {
   }
 
   async function provision(accountId = selectedAccount) {
+    const ownerAddress = requestOwnerWallet("create a trading key");
+    if (!ownerAddress) return;
     const accountCap = accounts.find(
       (candidate) => candidate.accountId === accountId,
     );
-    if (!account?.address || !accountCap) return;
+    if (!accountCap) return;
     await mutate(`provision-${accountId}`, async () => {
       await request("api/setup/provision", {
         method: "POST",
         body: JSON.stringify({
-          ownerAddress: account.address,
+          ownerAddress,
           accountId: accountCap.accountId,
           accountCapId: accountCap.accountCapId,
           collateralCoinType: accountCap.collateralCoinType,
@@ -1696,7 +1767,8 @@ function DashboardBody() {
   }
 
   async function authorizeAgent(accountId = selectedAccount) {
-    if (!account?.address || !accountId) return;
+    const ownerAddress = requestOwnerWallet("authorize a trading key");
+    if (!ownerAddress || !accountId) return;
     await mutate(`authorize-${accountId}`, async () => {
       const built = await request<
         PreparedOwnerTransactionResponse & {
@@ -1711,7 +1783,7 @@ function DashboardBody() {
       });
       const transaction = verifiedOwnerTransaction(built, {
         kind: "grant-agent",
-        sender: account.address,
+        sender: ownerAddress,
         agentAddress: built.agentAddress,
         gasMist: 100_000_000n,
       });
@@ -1741,7 +1813,8 @@ function DashboardBody() {
   }
 
   async function revokeAgent(accountId: string) {
-    if (!account?.address) return;
+    const ownerAddress = requestOwnerWallet("revoke");
+    if (!ownerAddress) return;
     await mutate(`revoke-${accountId}`, async () => {
       const built = await request<
         PreparedOwnerTransactionResponse & { agentCapId: string }
@@ -1751,7 +1824,7 @@ function DashboardBody() {
       });
       const transaction = verifiedOwnerTransaction(built, {
         kind: "revoke-agent",
-        sender: account.address,
+        sender: ownerAddress,
         agentCapId: built.agentCapId,
       });
       const result = await wallet.signAndExecuteTransaction({ transaction });
@@ -2084,7 +2157,25 @@ function DashboardBody() {
         method: "POST",
         body: "{}",
       });
-      await refresh();
+      // A successful Stop is authoritative even if the following read poll is
+      // unavailable. Keep the control honest while preserving the last data.
+      setSnapshot((current) =>
+        current ? { ...current, running: false, startedAt: null } : current,
+      );
+      setBundles((current) =>
+        current.map((bundle) =>
+          bundle.status === "running"
+            ? { ...bundle, status: "stopped" }
+            : bundle,
+        ),
+      );
+      await refresh().catch((error) => {
+        if (error instanceof RequestError && error.status === 503) {
+          handlePollingFailure(error);
+          return;
+        }
+        throw error;
+      });
     } catch (error) {
       setStopError(error instanceof Error ? error.message : String(error));
     }
@@ -2213,6 +2304,49 @@ function DashboardBody() {
     });
   }
 
+  const configDirty =
+    savedConfig === undefined ||
+    JSON.stringify(config) !== JSON.stringify(savedConfig);
+
+  useEffect(() => {
+    if (
+      !identity ||
+      savedConfig === undefined ||
+      savedConfig === null ||
+      !configDirty
+    )
+      return;
+    const warnBeforeUnload = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = "";
+    };
+    window.addEventListener("beforeunload", warnBeforeUnload);
+    return () => window.removeEventListener("beforeunload", warnBeforeUnload);
+  }, [configDirty]);
+
+  useEffect(() => {
+    if (
+      !identity ||
+      savedConfig === undefined ||
+      savedConfig === null ||
+      !configDirty ||
+      activeView !== "strategy"
+    )
+      return;
+    const warnBeforeLeavingStrategy = (event: MouseEvent) => {
+      const target = event.target;
+      if (!(target instanceof Element)) return;
+      const link = target.closest<HTMLAnchorElement>('a[href^="#"]');
+      if (!link || link.getAttribute("href") === "#strategy") return;
+      if (window.confirm("Leave Strategy without saving your changes?")) return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+    };
+    document.addEventListener("click", warnBeforeLeavingStrategy, true);
+    return () =>
+      document.removeEventListener("click", warnBeforeLeavingStrategy, true);
+  }, [activeView, configDirty]);
+
   if (!authChecked) {
     return (
       <main className="loading-shell">
@@ -2224,27 +2358,30 @@ function DashboardBody() {
 
   if (!identity || walletSessionMismatch) {
     return (
-      <AccessScreen
-        venue={primaryVenue}
-        connected={Boolean(account?.address)}
-        denied={accessDenied}
-        busy={busy === "sign-in"}
-        requestBusy={busy === "request-access"}
-        requestSubmitted={requestSubmitted}
-        accessRequestToken={
-          accessRequestVerification?.accessRequestToken ?? null
-        }
-        verifiedAddress={accessRequestVerification?.ownerAddress ?? ""}
-        notice={notice}
-        onVerify={() => void signIn()}
-        onRequestAccess={(input) => void submitAccessRequest(input)}
-      />
+      <>
+        <AccessScreen
+          venue={primaryVenue}
+          connected={Boolean(account?.address)}
+          denied={accessDenied}
+          busy={busy === "sign-in"}
+          requestBusy={busy === "request-access"}
+          requestSubmitted={requestSubmitted}
+          accessRequestToken={
+            accessRequestVerification?.accessRequestToken ?? null
+          }
+          verifiedAddress={accessRequestVerification?.ownerAddress ?? ""}
+          notice={notice}
+          onVerify={() => void signIn()}
+          onRequestAccess={(input) => void submitAccessRequest(input)}
+        />
+        <ConnectModal ref={walletPickerRef} />
+      </>
     );
   }
 
-  const configDirty =
-    savedConfig === undefined ||
-    JSON.stringify(config) !== JSON.stringify(savedConfig);
+  // The desk is a report of the strategy the engine can actually use. Keep a
+  // draft local to Strategy until its explicit save succeeds.
+  const deskConfig = savedConfig ?? defaultConfig;
   const quoteSizeError =
     config.quoteSizeUsd <= 0
       ? "Size must be greater than zero."
@@ -2421,47 +2558,51 @@ function DashboardBody() {
       market.displayName.toLowerCase().includes(query)
     );
   });
-  const rotationRows = config.markets.map((selected) => {
-    const runtimeMarket = snapshot?.markets.find(
-      (market) => market.id === selected.marketId,
-    );
-    const listed = markets.find((market) => market.id === selected.marketId);
-    return {
-      id: selected.marketId,
-      symbol: selected.symbol,
-      status: runtimeMarket?.status ?? "queued",
-      indexPrice: runtimeMarket?.indexPrice ?? listed?.indexPrice ?? null,
-      openInterestBase:
-        runtimeMarket?.openInterestBase ?? listed?.openInterestBase ?? null,
-      openInterestUsd:
-        runtimeMarket?.openInterestUsd ?? listed?.openInterestUsd ?? null,
-      openInterestUtilizationPct:
-        runtimeMarket?.openInterestUtilizationPct ??
-        listed?.openInterestUtilizationPct ??
-        null,
-      volume24hUsd: runtimeMarket?.volume24hUsd ?? listed?.volume24hUsd ?? null,
-      fundingRate:
-        runtimeMarket?.fundingRate === null ||
-        runtimeMarket?.fundingRate === undefined
-          ? (listed?.fundingRate ?? null)
-          : runtimeMarket.fundingRate,
-      inventoryUsd: runtimeMarket?.inventoryUsd ?? 0,
-      unrealizedPnlUsd: runtimeMarket?.unrealizedPnlUsd ?? 0,
-      effectiveSpreadBps:
-        runtimeMarket?.effectiveSpreadBps ??
-        selected.overrides?.spreadBps ??
-        config.spreadBps,
-      effectiveQuoteSizeUsd:
-        runtimeMarket?.effectiveQuoteSizeUsd ??
-        selected.overrides?.quoteSizeUsd ??
-        config.quoteSizeUsd,
-      lastTransactionDigest: runtimeMarket?.lastTransactionDigest ?? null,
-      updatedAt: runtimeMarket?.updatedAt ?? null,
-      error: runtimeMarket?.error ?? null,
-    };
-  });
+  const rotationRowsFor = (strategy: MakerConfig) =>
+    strategy.markets.map((selected) => {
+      const runtimeMarket = snapshot?.markets.find(
+        (market) => market.id === selected.marketId,
+      );
+      const listed = markets.find((market) => market.id === selected.marketId);
+      return {
+        id: selected.marketId,
+        symbol: selected.symbol,
+        status: runtimeMarket?.status ?? "queued",
+        indexPrice: runtimeMarket?.indexPrice ?? listed?.indexPrice ?? null,
+        openInterestBase:
+          runtimeMarket?.openInterestBase ?? listed?.openInterestBase ?? null,
+        openInterestUsd:
+          runtimeMarket?.openInterestUsd ?? listed?.openInterestUsd ?? null,
+        openInterestUtilizationPct:
+          runtimeMarket?.openInterestUtilizationPct ??
+          listed?.openInterestUtilizationPct ??
+          null,
+        volume24hUsd:
+          runtimeMarket?.volume24hUsd ?? listed?.volume24hUsd ?? null,
+        fundingRate:
+          runtimeMarket?.fundingRate === null ||
+          runtimeMarket?.fundingRate === undefined
+            ? (listed?.fundingRate ?? null)
+            : runtimeMarket.fundingRate,
+        inventoryUsd: runtimeMarket?.inventoryUsd ?? 0,
+        unrealizedPnlUsd: runtimeMarket?.unrealizedPnlUsd ?? 0,
+        effectiveSpreadBps:
+          runtimeMarket?.effectiveSpreadBps ??
+          selected.overrides?.spreadBps ??
+          strategy.spreadBps,
+        effectiveQuoteSizeUsd:
+          runtimeMarket?.effectiveQuoteSizeUsd ??
+          selected.overrides?.quoteSizeUsd ??
+          strategy.quoteSizeUsd,
+        lastTransactionDigest: runtimeMarket?.lastTransactionDigest ?? null,
+        updatedAt: runtimeMarket?.updatedAt ?? null,
+        error: runtimeMarket?.error ?? null,
+      };
+    });
+  const rotationRows = rotationRowsFor(config);
+  const deskRotationRows = rotationRowsFor(deskConfig);
 
-  const latestMarketUpdate = rotationRows.reduce<string | null>(
+  const deskLatestMarketUpdate = deskRotationRows.reduce<string | null>(
     (latest, row) => {
       if (!row.updatedAt) return latest;
       if (!latest || Date.parse(row.updatedAt) > Date.parse(latest)) {
@@ -2471,13 +2612,13 @@ function DashboardBody() {
     },
     null,
   );
-  const selectedMarketIndex = config.markets.findIndex(
+  const deskSelectedMarketIndex = deskConfig.markets.findIndex(
     (market) => market.marketId === snapshot?.market.id,
   );
-  const nextSelectedMarket =
-    config.markets.length > 1
-      ? config.markets[
-          (Math.max(0, selectedMarketIndex) + 1) % config.markets.length
+  const deskNextSelectedMarket =
+    deskConfig.markets.length > 1
+      ? deskConfig.markets[
+          (Math.max(0, deskSelectedMarketIndex) + 1) % deskConfig.markets.length
         ]
       : null;
   const worstSideFillUsd =
@@ -2497,8 +2638,11 @@ function DashboardBody() {
     })) ?? [];
   const deskNarration = narrate({
     name: "Maker",
-    running: Boolean(snapshot?.running),
-    mode: snapshot?.mode ?? config.mode,
+    running: Boolean(
+      snapshot?.running ||
+      bundles.some((bundle) => bundle.status === "running"),
+    ),
+    mode: snapshot?.mode ?? deskConfig.mode,
     market: {
       symbol: snapshot?.market.symbol ?? activeMarket?.symbol ?? null,
       bid: snapshot?.quote?.bidPrice ?? null,
@@ -2506,7 +2650,7 @@ function DashboardBody() {
       tickSize: activeMarket?.tickSize ?? null,
     },
     inventoryUsd: snapshot?.balances.inventoryUsd ?? null,
-    maxInventoryUsd: config.maxInventoryUsd,
+    maxInventoryUsd: deskConfig.maxInventoryUsd,
     lastFillAgeSeconds: deskFills[0]?.occurredAt
       ? Math.max(
           0,
@@ -2564,6 +2708,9 @@ function DashboardBody() {
     : snapshot?.mode === "live"
       ? "live"
       : "paper";
+  const canOperate = onboardingComplete && deskConfig.markets.length > 0;
+  const canStopAll =
+    canOperate && Boolean(snapshot?.running || anyBundleRunning);
   const displayedView = activeView;
 
   return (
@@ -2573,8 +2720,12 @@ function DashboardBody() {
       markState={markState}
       mode={snapshot?.mode ?? "observe"}
       running={Boolean(snapshot?.running || anyBundleRunning)}
-      phoneDeskStopAvailable={Boolean(snapshot?.running)}
+      canStopAll={canStopAll}
+      phoneDeskStopAvailable={canStopAll}
       live={Boolean(snapshot?.running && snapshot.mode === "live")}
+      canOperate={canOperate}
+      serviceUnavailable={controlUnavailable}
+      lastGoodDataAt={lastGoodDataAt}
       walletAddress={identity.ownerAddress}
       walletLabel={compact(identity.ownerAddress)}
       accountLabel={
@@ -2628,12 +2779,15 @@ function DashboardBody() {
                 <div>
                   <strong>Owner wallet</strong>
                   <p>
-                    Connect the wallet that holds the {primaryVenue.name}{" "}
-                    account capability.
+                    {account
+                      ? "Connected and ready for owner confirmations."
+                      : `Connect the wallet that holds the ${primaryVenue.name} account capability.`}
                   </p>
                 </div>
                 {account && (
-                  <span className="status-ok">{compact(account.address)}</span>
+                  <span className="status-ok">
+                    Connected · {compact(account.address)}
+                  </span>
                 )}
               </div>
 
@@ -3027,33 +3181,17 @@ function DashboardBody() {
         )}
       </AccountsView>
 
-      {displayedView === "desk" && (
-        <BundleDeskLanes
-          lanes={bundleSnapshots.flatMap((entry) =>
-            entry.bundle.status === "running" && entry.snapshot
-              ? [
-                  {
-                    id: entry.bundle.id,
-                    name: entry.bundle.name,
-                    snapshot: entry.snapshot,
-                  },
-                ]
-              : [],
-          )}
-        />
-      )}
-
       <DeskView
         active={displayedView === "desk"}
         venue={primaryVenue}
-        running={Boolean(snapshot?.running)}
+        running={Boolean(snapshot?.running || anyBundleRunning)}
         configDirty={configDirty}
         refreshBusy={busy === "refresh"}
         startBusy={busy === "start"}
         flattenBusy={busy === "flatten"}
         startDisabled={!config.markets.length || Boolean(busy) || configDirty}
         flattenDisabled={
-          config.mode !== "live" ||
+          deskConfig.mode !== "live" ||
           !onboardingComplete ||
           (snapshot?.portfolio.grossExposureUsd ?? 0) <= 0 ||
           Boolean(busy)
@@ -3063,11 +3201,11 @@ function DashboardBody() {
         pnlUsd={performance?.combinedNetAfterKnownCostsUsd ?? null}
         equityUsd={makerEquityUsd}
         grossExposureUsd={snapshot?.portfolio.grossExposureUsd ?? null}
-        marketCount={config.markets.length}
+        marketCount={deskConfig.markets.length}
         startedAt={snapshot?.startedAt ?? null}
         lastFill={deskFills[0] ?? null}
         narration={deskNarration}
-        mode={snapshot?.mode ?? config.mode}
+        mode={snapshot?.mode ?? deskConfig.mode}
         market={{
           symbol:
             snapshot?.market.symbol ?? activeMarket?.symbol ?? "Pick a market",
@@ -3078,25 +3216,25 @@ function DashboardBody() {
           ourBid: snapshot?.quote?.bidPrice ?? null,
           ourAsk: snapshot?.quote?.askPrice ?? null,
           spreadBps:
-            activeRuntimeMarket?.effectiveSpreadBps ?? config.spreadBps,
+            activeRuntimeMarket?.effectiveSpreadBps ?? deskConfig.spreadBps,
           updatedAt: snapshot?.market.updatedAt ?? null,
           book: snapshot?.market.book ?? null,
           subtitle:
-            config.rotationMode === "single-slot"
-              ? nextSelectedMarket
-                ? `One live pair at a time. ${nextSelectedMarket.symbol} is next.`
+            deskConfig.rotationMode === "single-slot"
+              ? deskNextSelectedMarket
+                ? `One live pair at a time. ${deskNextSelectedMarket.symbol} is next.`
                 : "One live pair at a time."
-              : "Quotes remain active across the selected markets.",
+              : "Quotes remain active across the saved markets.",
         }}
         risk={{
           grossExposureUsd: snapshot?.portfolio.grossExposureUsd ?? 0,
-          grossExposureLimitUsd: config.maxGrossExposureUsd,
-          hedgeTriggerUsd: config.hedge.enabled
-            ? config.hedge.thresholdUsd
+          grossExposureLimitUsd: deskConfig.maxGrossExposureUsd,
+          hedgeTriggerUsd: deskConfig.hedge.enabled
+            ? deskConfig.hedge.thresholdUsd
             : null,
           worstSideFillUsd,
           runDrawdownUsd: snapshot?.risk.runDrawdownUsd ?? null,
-          runDrawdownLimitUsd: config.maxRunDrawdownUsd,
+          runDrawdownLimitUsd: deskConfig.maxRunDrawdownUsd,
           gasRunwayTransactions:
             snapshot?.execution.gasRunwayTransactions ?? null,
           updatedAt:
@@ -3104,13 +3242,32 @@ function DashboardBody() {
             snapshot?.lastSuccessfulCycleAt ??
             null,
         }}
-        markets={rotationRows}
-        marketsUpdatedAt={latestMarketUpdate}
+        markets={deskRotationRows}
+        marketsUpdatedAt={deskLatestMarketUpdate}
         fills={deskFills}
         fillsUpdatedAt={performance?.asOf ?? null}
         events={events.map(deskEvent)}
-        staleAfterMs={config.refreshMs * 2}
+        staleAfterMs={deskConfig.refreshMs * 2}
         lastHedgeDigest={snapshot?.hedge.lastDigest ?? null}
+        unavailable={controlUnavailable}
+        showMarketLane={
+          bundles.filter((bundle) => !bundle.archivedAt).length <= 1
+        }
+        bundleLanes={
+          <BundleDeskLanes
+            lanes={bundleSnapshots.flatMap((entry) =>
+              entry.bundle.status === "running" && entry.snapshot
+                ? [
+                    {
+                      id: entry.bundle.id,
+                      name: entry.bundle.name,
+                      snapshot: entry.snapshot,
+                    },
+                  ]
+                : [],
+            )}
+          />
+        }
         onRefresh={() =>
           void mutate("refresh", async () => {
             await request("api/runtime/cycle", {
@@ -3127,9 +3284,17 @@ function DashboardBody() {
 
       <StrategyView
         active={displayedView === "strategy"}
-        phoneStopAll={Boolean(snapshot?.running || anyBundleRunning)}
+        phoneStopAll={canStopAll}
         onStopAll={() => void stopRuntime()}
-        onClose={() => selectView("desk")}
+        onClose={() => {
+          if (
+            configDirty &&
+            !window.confirm("Leave Strategy without saving your changes?")
+          ) {
+            return;
+          }
+          selectView("desk");
+        }}
       >
         <section className="workspace workspace-strategy">
           <form
@@ -3138,15 +3303,32 @@ function DashboardBody() {
             onSubmit={saveConfig}
           >
             <header className="strategy-title">
-              <h1>
-                {selectedBundle
-                  ? `${selectedBundle.name} strategy`
-                  : "Strategy"}
-              </h1>
-              <p>
-                Set how this bundle allocates capital, controls inventory, and
-                moves between markets.
-              </p>
+              <div>
+                <h1>
+                  {selectedBundle
+                    ? `${selectedBundle.name} strategy`
+                    : "Strategy"}
+                </h1>
+                <p>
+                  Set how this bundle allocates capital, controls inventory, and
+                  moves between markets.
+                </p>
+              </div>
+              <label className="strategy-bundle-picker">
+                <span>Bundle</span>
+                <select
+                  value={selectedBundleId ?? ""}
+                  onChange={(event) => void selectBundle(event.target.value)}
+                >
+                  {bundles
+                    .filter((bundle) => !bundle.archivedAt)
+                    .map((bundle) => (
+                      <option key={bundle.id} value={bundle.id}>
+                        {bundle.name}
+                      </option>
+                    ))}
+                </select>
+              </label>
             </header>
 
             <div
@@ -3280,7 +3462,9 @@ function DashboardBody() {
               <dl className="strategy-review-summary">
                 <div>
                   <dt>Goal</dt>
-                  <dd>{config.strategyObjective}</dd>
+                  <dd>
+                    {`${config.strategyObjective[0]?.toUpperCase()}${config.strategyObjective.slice(1)}`}
+                  </dd>
                 </div>
                 <div>
                   <dt>Markets</dt>
@@ -3406,8 +3590,8 @@ function DashboardBody() {
               aria-label="Three-cycle strategy trial"
             >
               <div className="strategy-trial-heading">
-                <span>3-cycle canary</span>
-                <strong>Farming / Profit / Both</strong>
+                <span>Test run: 3 cycles</span>
+                <strong>Farming / profit / both</strong>
               </div>
               <div className="strategy-trial-actions">
                 <div
@@ -3457,7 +3641,7 @@ function DashboardBody() {
                     ? "Running..."
                     : trialArmed
                       ? "Confirm live"
-                      : "Run 3 x 2s"}
+                      : "Test run: 3 cycles"}
                 </button>
                 {trialArmed && (
                   <button
@@ -3477,7 +3661,7 @@ function DashboardBody() {
                       <span>{index + 1}</span>
                       <strong>{round.objective}</strong>
                       <small>
-                        {round.spreadBps} bp / ${round.quoteSizeUsd.toFixed(2)}
+                        {round.spreadBps} bps / ${round.quoteSizeUsd.toFixed(2)}
                       </small>
                       <b>
                         {round.digest ? compact(round.digest) : round.outcome}
@@ -3914,7 +4098,8 @@ function DashboardBody() {
                             </span>
                             <span>
                               Edge{" "}
-                              {opportunity.preRiskEdgeBps?.toFixed(1) ?? "—"} bp
+                              {opportunity.preRiskEdgeBps?.toFixed(1) ?? "—"}{" "}
+                              bps
                             </span>
                             <span>
                               {compactUsd(opportunity.volume24hUsd)} 24h
@@ -3961,7 +4146,7 @@ function DashboardBody() {
                         <td>{compactUsd(opportunity.balancedDepth50BpsUsd)}</td>
                         <td>
                           {money(opportunity.suggestedQuoteSizeUsd)} /{" "}
-                          {opportunity.suggestedSpreadBps} bp
+                          {opportunity.suggestedSpreadBps} bps
                         </td>
                       </tr>
                     ))}
@@ -4012,7 +4197,7 @@ function DashboardBody() {
                           />
                         </label>
                         <label>
-                          <span>Spread bp</span>
+                          <span>Spread bps</span>
                           <input
                             type="number"
                             min="8"
@@ -4067,7 +4252,7 @@ function DashboardBody() {
                           />
                         </label>
                         <label>
-                          <span>Skew bp</span>
+                          <span>Skew bps</span>
                           <input
                             type="number"
                             min="0"
@@ -4625,11 +4810,8 @@ function DashboardBody() {
             </details>
 
             {configDirty && (
-              <div
-                className="strategy-save-bar strategy-step strategy-step-review"
-                role="status"
-              >
-                <span>Unsaved changes</span>
+              <div className="strategy-save-bar" role="status">
+                <span>Unsaved changes, review and save</span>
                 <div>
                   <button
                     type="button"
@@ -4714,21 +4896,6 @@ function DashboardBody() {
               <VenueChip venue={primaryVenue} />
             </button>
           </div>
-          <label className="markets-bundle-picker">
-            <span>Bundle</span>
-            <select
-              value={selectedBundleId ?? ""}
-              onChange={(event) => void selectBundle(event.target.value)}
-            >
-              {bundles
-                .filter((bundle) => !bundle.archivedAt)
-                .map((bundle) => (
-                  <option key={bundle.id} value={bundle.id}>
-                    {bundle.name}
-                  </option>
-                ))}
-            </select>
-          </label>
         </header>
         <section className="rotation-board">
           <div className="section-heading compact rotation-heading">
@@ -4826,7 +4993,7 @@ function DashboardBody() {
                     </td>
                     <td className="dual-value">
                       <strong>{money(row.effectiveQuoteSizeUsd, 0)}</strong>
-                      <span>{row.effectiveSpreadBps} bp</span>
+                      <span>{row.effectiveSpreadBps} bps</span>
                     </td>
                     <td>{money(row.indexPrice, 4)}</td>
                     <td className="dual-value">
@@ -5040,7 +5207,7 @@ function DashboardBody() {
                       aria-pressed={marketSort === "depth"}
                       onClick={() => setMarketSort("depth")}
                     >
-                      Depth +/-50bp
+                      Depth +/-50 bps
                     </button>
                   </th>
                   <th>Flow / depth</th>
@@ -5095,7 +5262,7 @@ function DashboardBody() {
                       <td>
                         {opportunity.observedSpreadBps === null
                           ? "-"
-                          : `${opportunity.observedSpreadBps.toFixed(1)} bp`}
+                          : `${opportunity.observedSpreadBps.toFixed(1)} bps`}
                       </td>
                       <td
                         className={
@@ -5107,7 +5274,7 @@ function DashboardBody() {
                       >
                         {opportunity.preRiskEdgeBps === null
                           ? "-"
-                          : `${opportunity.preRiskEdgeBps.toFixed(1)} bp`}
+                          : `${opportunity.preRiskEdgeBps.toFixed(1)} bps`}
                       </td>
                       <td
                         className={
@@ -5115,8 +5282,8 @@ function DashboardBody() {
                         }
                       >
                         {opportunity.knownCostBps <= 0
-                          ? `${Math.abs(opportunity.knownCostBps).toFixed(1)} bp rebate`
-                          : `${opportunity.knownCostBps.toFixed(1)} bp`}
+                          ? `${Math.abs(opportunity.knownCostBps).toFixed(1)} bps rebate`
+                          : `${opportunity.knownCostBps.toFixed(1)} bps`}
                       </td>
                       <td className="dual-value">
                         <strong>
@@ -5132,7 +5299,7 @@ function DashboardBody() {
                           )}
                         </strong>
                         <span>
-                          {opportunity.suggestedSpreadBps} bp / min{" "}
+                          {opportunity.suggestedSpreadBps} bps / min{" "}
                           {money(opportunity.minimumQuoteSizeUsd, 2)}
                         </span>
                       </td>
@@ -5466,10 +5633,9 @@ function DashboardBody() {
                                     <span
                                       key={`${fill.txDigest}:${fill.orderId}`}
                                     >
-                                      {new Date(
-                                        fill.occurredAt,
-                                      ).toLocaleString()}{" "}
-                                      · {fill.side} {money(fill.notionalUsd)}
+                                      {formatEventTimestamp(fill.occurredAt)} ·{" "}
+                                      {fill.side === "bid" ? "Bought" : "Sold"}{" "}
+                                      {money(fill.notionalUsd)}
                                     </span>
                                   ))}
                                 {!(performance?.fills ?? []).some(
@@ -5517,9 +5683,9 @@ function DashboardBody() {
                 {performance?.fills.length ? (
                   performance.fills.slice(0, 20).map((fill) => (
                     <tr key={`${fill.txDigest}:${fill.orderId}`}>
-                      <td>{new Date(fill.occurredAt).toLocaleTimeString()}</td>
+                      <td>{formatEventTimestamp(fill.occurredAt)}</td>
                       <td>{fill.symbol}</td>
-                      <td>{fill.side}</td>
+                      <td>{fill.side === "bid" ? "Bought" : "Sold"}</td>
                       <td>{money(fill.price, 4)}</td>
                       <td>{money(fill.notionalUsd)}</td>
                       <td
@@ -5581,7 +5747,7 @@ function DashboardBody() {
           tradingKeyReady={Boolean(activeMakerAccount?.agentCapId)}
           feeText={
             builderCode
-              ? `${(builderCode.integratorFee * 10_000).toFixed(0)} bp on filled orders`
+              ? `${(builderCode.integratorFee * 10_000).toFixed(0)} bps on filled orders`
               : "Not approved"
           }
           gasText={venueGasText}
@@ -5614,13 +5780,13 @@ function DashboardBody() {
               </div>
               <p className="panel-copy">
                 {builderCode
-                  ? `Venue code #${builderCode.integratorId} charges ${(builderCode.integratorFee * 10_000).toFixed(1)} bp on filled notional. Your one-time approval caps it at that exact rate and remains revocable.`
+                  ? `Venue code #${builderCode.integratorId} charges ${(builderCode.integratorFee * 10_000).toFixed(1)} bps on filled notional. Your one-time approval caps it at that exact rate and remains revocable.`
                   : "Venue incentives are not active. Orders carry no venue fee code until the operator completes on-chain registration."}
               </p>
               {builderCode && (
                 <p className="fee-caveat">
                   Each market's current maker fee is included in its known fill
-                  cost. A 1 bp venue fee can reduce a rebate or turn a narrow
+                  cost. A 1 bps venue fee can reduce a rebate or turn a narrow
                   spread negative. Maker reports it separately from strategy
                   PnL.
                 </p>
@@ -5700,8 +5866,8 @@ function DashboardBody() {
                   <strong>Venue incentive</strong>
                   <p>
                     {operatorStatus?.builderCode
-                      ? `Code #${operatorStatus.builderCode.integratorId} / 1 bp`
-                      : `Register once with ${primaryVenue.name}. Users approve the 1 bp cap.`}
+                      ? `Code #${operatorStatus.builderCode.integratorId} / 1 bps`
+                      : `Register once with ${primaryVenue.name}. Users approve the 1 bps cap.`}
                   </p>
                 </div>
                 {!operatorStatus?.builderCode && (
@@ -5843,6 +6009,7 @@ function DashboardBody() {
           {primaryVenue.name} <ExternalLink size={13} />
         </a>
       </footer>
+      <ConnectModal ref={walletPickerRef} />
     </MakerShell>
   );
 }
