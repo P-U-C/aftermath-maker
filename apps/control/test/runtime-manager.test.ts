@@ -3,6 +3,7 @@ import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import type { AftermathGateway } from "@puc/aftermath";
+import { makerConfigSchema } from "@puc/core";
 import { RuntimeManager } from "../src/runtime-manager.js";
 import { Store } from "../src/store.js";
 
@@ -53,6 +54,33 @@ describe("runtime endpoint management", () => {
     await manager.refreshEndpoints();
     expect(manager.activeEndpoint).toBe("https://preferred.example");
     expect(factory).toHaveBeenCalledTimes(2);
+
+    manager.close();
+    store.close();
+  });
+
+  it("keys Core runtime state by owner and bundle while sharing one gateway", async () => {
+    const store = storeHarness();
+    const ownerAddress = `0x${"1".repeat(64)}`;
+    const tenant = store.forTenant(ownerAddress);
+    tenant.setConfig(
+      makerConfigSchema.parse({
+        markets: [{ marketId: "0x1001", symbol: "ONE" }],
+      }),
+    );
+    const coreId = tenant.listBundles()[0]!.id;
+    const sharedGateway = gateway("https://shared.example");
+    const factory = vi.fn().mockResolvedValue(sharedGateway);
+    const manager = new RuntimeManager(store, {} as never, {}, factory);
+
+    await manager.initialize();
+    const runtime = manager.get(ownerAddress);
+    expect(manager.get(ownerAddress)).toBe(runtime);
+    expect(runtime.requireGateway()).toBe(sharedGateway);
+    const keys = (manager as unknown as { runtimes: Map<string, unknown> })
+      .runtimes;
+    expect(keys.has(`${ownerAddress}:${coreId}`)).toBe(true);
+    expect(await manager.stopAll()).toEqual([{ ownerAddress, stopped: true }]);
 
     manager.close();
     store.close();

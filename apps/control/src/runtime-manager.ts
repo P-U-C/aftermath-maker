@@ -61,15 +61,46 @@ export class RuntimeManager {
     this.endpointTimer = null;
   }
 
+  private runtimeKey(ownerAddress: string, bundleId: string | null): string {
+    return `${ownerAddress.toLowerCase()}:${bundleId ?? "legacy"}`;
+  }
+
   get(ownerAddress: string): MakerRuntime {
     if (!this.gateway) {
       throw new Error(this.gatewayError ?? "Aftermath gateway is unavailable");
     }
-    const key = ownerAddress.toLowerCase();
+    const owner = ownerAddress.toLowerCase();
+    const bundleId = this.store.coreRuntimeBundleId(owner);
+    const key = this.runtimeKey(owner, bundleId);
     const existing = this.runtimes.get(key);
     if (existing) return existing;
+    if (!bundleId) {
+      const priorRuntime = [...this.runtimes.entries()].find(([runtimeKey]) =>
+        runtimeKey.startsWith(`${owner}:`),
+      )?.[1];
+      // A logical rollback leaves an already-running runtime in memory. Its
+      // tenant projection reads legacy config after rollback, so reuse it rather
+      // than creating a second loop for the same wallet.
+      if (priorRuntime) return priorRuntime;
+    }
+
+    // A wallet can reach the runtime before its first config creates Core. Once
+    // Core exists, preserve that runtime object while moving its manager key to
+    // the owner-and-bundle form used by B1 and later bundle phases.
+    if (bundleId) {
+      const legacyKey = this.runtimeKey(owner, null);
+      const legacy = this.runtimes.get(legacyKey);
+      if (legacy) {
+        this.runtimes.delete(legacyKey);
+        this.runtimes.set(key, legacy);
+        return legacy;
+      }
+    }
+
     const runtime = new MakerRuntime(
-      this.store.forTenant(key),
+      bundleId
+        ? this.store.forBundle(owner, bundleId)
+        : this.store.forTenant(owner),
       this.gateway,
       this.runtimeOptions,
     );
@@ -90,14 +121,18 @@ export class RuntimeManager {
   }
 
   async stopTenant(ownerAddress: string): Promise<boolean> {
-    const key = ownerAddress.toLowerCase();
-    let runtime = this.runtimes.get(key);
-    if (!runtime) {
-      if (!this.store.listTenantOwners().includes(key)) return false;
-      runtime = this.get(key);
+    const owner = ownerAddress.toLowerCase();
+    const runtimes = [...this.runtimes.entries()]
+      .filter(([key]) => key.startsWith(`${owner}:`))
+      .map(([, runtime]) => runtime);
+    if (!runtimes.length) {
+      if (!this.store.listTenantOwners().includes(owner)) return false;
+      runtimes.push(this.get(owner));
     }
-    await runtime.stop();
-    if (this.gateway) runtime.replaceGateway(this.gateway);
+    await Promise.all(runtimes.map((runtime) => runtime.stop()));
+    if (this.gateway) {
+      for (const runtime of runtimes) runtime.replaceGateway(this.gateway);
+    }
     return true;
   }
 
@@ -106,7 +141,7 @@ export class RuntimeManager {
   > {
     const owners = new Set([
       ...this.store.listTenantOwners(),
-      ...this.runtimes.keys(),
+      ...[...this.runtimes.keys()].map((key) => key.split(":", 1)[0]!),
     ]);
     return Promise.all(
       [...owners].map(async (ownerAddress) => {

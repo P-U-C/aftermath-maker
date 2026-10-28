@@ -277,16 +277,18 @@ function createHarness(options: { configured?: boolean } = {}) {
     },
   };
 
-  const runtime = new MakerRuntime(store, gateway as never, {
+  const runtimeOptions = {
     masterKey,
     liveEnabled: true,
     mainnetAllowed: true,
     builderCode: () => ({ integratorId: 7, integratorFee: 0.0001 }),
     sleep: async () => undefined,
-  });
+  };
+  const runtime = new MakerRuntime(store, gateway as never, runtimeOptions);
 
   return {
     runtime,
+    runtimeOptions,
     store: databaseStore,
     tenant: store,
     gateway,
@@ -340,6 +342,88 @@ describe("runtime execution boundaries", () => {
     expect(harness.runtime.snapshot.quote).not.toBeNull();
     expect(harness.executions()).toBe(0);
     harness.store.close();
+  });
+
+  it("submits byte-identical Core quote intents and gateway payloads", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-10-28T20:00:00.000Z"));
+    const legacy = createHarness();
+    const core = createHarness();
+    const coreId = core.tenant.listBundles()[0]!.id;
+    const coreRuntime = new MakerRuntime(
+      core.store.forBundle(core.tenant.ownerAddress, coreId),
+      core.gateway as never,
+      core.runtimeOptions,
+    );
+
+    type QuoteSubmissionGateway = {
+      executeQuote: (inputs: {
+        setup: unknown;
+        config: unknown;
+        quote: unknown;
+        builderCode: unknown;
+        shouldContinue: () => boolean;
+        knownMakerOrderIds?: bigint[];
+        cancelMarketIds?: string[];
+        expectedCancelOrderIds?: Record<string, bigint[]>;
+      }) => Promise<{
+        digest: string;
+        endpoint: string;
+        gasUsedMist: number;
+        postedOrderIds: string[];
+      }>;
+    };
+    const captureSubmission = async (
+      runtime: MakerRuntime,
+      gateway: QuoteSubmissionGateway,
+    ) => {
+      let captured: { intent: string; submission: string } | undefined;
+      let capturedResolve!: () => void;
+      const capturedPromise = new Promise<void>((resolve) => {
+        capturedResolve = resolve;
+      });
+      gateway.executeQuote = async (inputs) => {
+        captured = {
+          intent: JSON.stringify({
+            config: inputs.config,
+            quote: inputs.quote,
+          }),
+          submission: JSON.stringify({
+            setup: inputs.setup,
+            config: inputs.config,
+            quote: inputs.quote,
+            builderCode: inputs.builderCode,
+            knownMakerOrderIds: (inputs.knownMakerOrderIds ?? []).map(String),
+            cancelMarketIds: inputs.cancelMarketIds ?? [],
+            expectedCancelOrderIds: Object.fromEntries(
+              Object.entries(inputs.expectedCancelOrderIds ?? {}).map(
+                ([marketId, orderIds]) => [marketId, orderIds.map(String)],
+              ),
+            ),
+          }),
+        };
+        capturedResolve();
+        return {
+          digest: "core-compatibility-digest",
+          endpoint: "test",
+          gasUsedMist: 20,
+          postedOrderIds: ["101", "102"],
+        };
+      };
+      runtime.start();
+      await capturedPromise;
+      await runtime.stop();
+      return captured!;
+    };
+
+    const legacySubmission = await captureSubmission(
+      legacy.runtime,
+      legacy.gateway,
+    );
+    const coreSubmission = await captureSubmission(coreRuntime, core.gateway);
+    expect(coreSubmission).toEqual(legacySubmission);
+    legacy.store.close();
+    core.store.close();
   });
 
   it("exposes only the fresh selected-market book and run risk without changing quotes", async () => {
