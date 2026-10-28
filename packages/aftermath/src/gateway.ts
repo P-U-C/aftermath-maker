@@ -5,6 +5,7 @@ import {
   type PerpetualsAccountCap,
   type PerpetualsAccountMarginHistoryData,
   type PerpetualsAccountMarginHistoryTimeframeKey,
+  type PerpetualsAccountOrderHistoryData,
   type PerpetualsMarket,
   type SdkPerpetualsCancelAndPlaceOrdersInputs,
 } from "aftermath-ts-sdk";
@@ -440,6 +441,181 @@ function timestampMs(value: number | bigint): number {
   return numeric < 1_000_000_000_000 ? numeric * 1_000 : numeric;
 }
 
+type TimestampedHistoryOrder = {
+  timestamp: number | bigint;
+};
+
+export type AccountFillHistoryPage<T extends TimestampedHistoryOrder> = {
+  orders: T[];
+  nextBeforeTimestampCursor: number | undefined;
+};
+
+type AccountFillHistoryCacheEntry<T extends TimestampedHistoryOrder> = {
+  orders: T[];
+  nextBeforeTimestampCursor: number | undefined;
+  sourceComplete: boolean;
+};
+
+/**
+ * Keeps the immutable tail of each account's fill history in memory. Every
+ * request still reads the newest page, so fresh fills are never hidden.
+ */
+export class AccountFillHistoryCache<T extends TimestampedHistoryOrder> {
+  private readonly entries = new Map<string, AccountFillHistoryCacheEntry<T>>();
+  private readonly pending = new Map<string, Promise<void>>();
+
+  constructor(
+    private readonly maxOrders = 10_000,
+    private readonly maxAccounts = 16,
+  ) {}
+
+  async get(inputs: {
+    accountKey: string;
+    pageSize: number;
+    sinceMs?: number;
+    orderKey: (order: T) => string;
+    fetchPage: (inputs: {
+      beforeTimestampCursor?: number;
+      limit: number;
+    }) => Promise<AccountFillHistoryPage<T>>;
+  }): Promise<{ orders: T[]; historyComplete: boolean }> {
+    const pending = this.pending.get(inputs.accountKey);
+    if (pending) {
+      await pending;
+      return this.get(inputs);
+    }
+
+    let release: (() => void) | undefined;
+    const lock = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    this.pending.set(inputs.accountKey, lock);
+
+    try {
+      return await this.read(inputs);
+    } finally {
+      release?.();
+      if (this.pending.get(inputs.accountKey) === lock) {
+        this.pending.delete(inputs.accountKey);
+      }
+    }
+  }
+
+  private async read(inputs: {
+    accountKey: string;
+    pageSize: number;
+    sinceMs?: number;
+    orderKey: (order: T) => string;
+    fetchPage: (inputs: {
+      beforeTimestampCursor?: number;
+      limit: number;
+    }) => Promise<AccountFillHistoryPage<T>>;
+  }): Promise<{ orders: T[]; historyComplete: boolean }> {
+    const firstPage = await inputs.fetchPage({ limit: inputs.pageSize });
+    const cached = this.entries.get(inputs.accountKey);
+    const merged = cached
+      ? this.mergeOrders(cached.orders, firstPage.orders, inputs.orderKey)
+      : firstPage.orders;
+    const overlapsCache =
+      cached !== undefined &&
+      firstPage.orders.some((order) =>
+        cached.orders.some(
+          (cachedOrder) =>
+            inputs.orderKey(cachedOrder) === inputs.orderKey(order),
+        ),
+      );
+    const mustRebuild =
+      !cached ||
+      merged.length > this.maxOrders ||
+      (cached.orders.length > 0 &&
+        firstPage.orders.length > 0 &&
+        !overlapsCache);
+
+    let entry: AccountFillHistoryCacheEntry<T>;
+    if (mustRebuild) {
+      entry = {
+        orders: this.mergeOrders([], firstPage.orders, inputs.orderKey),
+        nextBeforeTimestampCursor: firstPage.nextBeforeTimestampCursor,
+        sourceComplete: firstPage.nextBeforeTimestampCursor === undefined,
+      };
+    } else {
+      entry = cached;
+      entry.orders = merged;
+      if (firstPage.nextBeforeTimestampCursor === undefined) {
+        entry.nextBeforeTimestampCursor = undefined;
+        entry.sourceComplete = true;
+      }
+    }
+
+    const seenCursors = new Set<number>();
+    while (!this.coversWindow(entry, inputs.sinceMs)) {
+      const cursor = entry.nextBeforeTimestampCursor;
+      if (cursor === undefined || seenCursors.has(cursor)) break;
+      seenCursors.add(cursor);
+
+      const remaining = this.maxOrders - entry.orders.length;
+      if (remaining <= 0) break;
+      const page = await inputs.fetchPage({
+        beforeTimestampCursor: cursor,
+        limit: Math.min(inputs.pageSize, remaining),
+      });
+      entry.orders = this.mergeOrders(
+        entry.orders,
+        page.orders,
+        inputs.orderKey,
+      );
+      entry.nextBeforeTimestampCursor = page.nextBeforeTimestampCursor;
+      entry.sourceComplete = page.nextBeforeTimestampCursor === undefined;
+    }
+
+    this.touch(inputs.accountKey, entry);
+    return {
+      orders: entry.orders.filter(
+        (order) =>
+          inputs.sinceMs === undefined ||
+          timestampMs(order.timestamp) >= inputs.sinceMs,
+      ),
+      historyComplete: this.coversWindow(entry, inputs.sinceMs),
+    };
+  }
+
+  private coversWindow(
+    entry: AccountFillHistoryCacheEntry<T>,
+    sinceMs: number | undefined,
+  ): boolean {
+    if (entry.sourceComplete) return true;
+    if (entry.orders.length >= this.maxOrders) return false;
+    return (
+      sinceMs !== undefined &&
+      entry.orders.some((order) => timestampMs(order.timestamp) < sinceMs)
+    );
+  }
+
+  private mergeOrders(
+    cached: T[],
+    fresh: T[],
+    orderKey: (order: T) => string,
+  ): T[] {
+    const orders = new Map<string, T>();
+    for (const order of cached) orders.set(orderKey(order), order);
+    for (const order of fresh) orders.set(orderKey(order), order);
+    return [...orders.values()].sort(
+      (left, right) =>
+        timestampMs(right.timestamp) - timestampMs(left.timestamp),
+    );
+  }
+
+  private touch(accountKey: string, entry: AccountFillHistoryCacheEntry<T>) {
+    this.entries.delete(accountKey);
+    this.entries.set(accountKey, entry);
+    while (this.entries.size > this.maxAccounts) {
+      const oldest = this.entries.keys().next().value;
+      if (oldest === undefined) break;
+      this.entries.delete(oldest);
+    }
+  }
+}
+
 export function decodeIntegratorId(bytes: Uint8Array): number {
   if (bytes.byteLength !== 4) {
     throw new Error("Integrator ID must be a four-byte u32");
@@ -574,6 +750,8 @@ export class AftermathGateway {
   private ownerTrustPromise:
     | Promise<{ protocolPackageId: string; registryObjectId: string }>
     | undefined;
+  private readonly accountFillHistory =
+    new AccountFillHistoryCache<PerpetualsAccountOrderHistoryData>();
   private readonly mutationQueues = new Map<string, PriorityMutationQueue>();
 
   private mutationQueue(address: string): PriorityMutationQueue {
@@ -1316,41 +1494,38 @@ export class AftermathGateway {
       accountCap: cap,
     });
     const pageSize = Math.min(200, Math.max(1, inputs.limit ?? 200));
-    const maxOrders = 10_000;
     const eventTypes = ["FilledMakerOrder", "FilledTakerOrder"] as const;
-    const [firstPage, margin] = await Promise.all([
-      account.getOrderHistory({ limit: pageSize, eventTypes: [...eventTypes] }),
+    const [history, margin] = await Promise.all([
+      this.accountFillHistory.get({
+        accountKey: inputs.setup.accountId.toLowerCase(),
+        pageSize,
+        ...(inputs.sinceMs === undefined ? {} : { sinceMs: inputs.sinceMs }),
+        orderKey: (order) =>
+          [
+            order.txDigest,
+            order.orderId ?? "",
+            order.eventType,
+            order.timestamp,
+            order.marketId,
+            order.side,
+            order.price,
+            order.size,
+          ].join(":"),
+        fetchPage: (pageInputs) =>
+          account.getOrderHistory({
+            limit: pageInputs.limit,
+            eventTypes: [...eventTypes],
+            ...(pageInputs.beforeTimestampCursor === undefined
+              ? {}
+              : {
+                  beforeTimestampCursor: pageInputs.beforeTimestampCursor,
+                }),
+          }),
+      }),
       account.getMarginHistory({ timeframe: inputs.timeframe ?? "1D" }),
     ]);
-    const orderRows = [...firstPage.orders];
-    let cursor = firstPage.nextBeforeTimestampCursor;
-    let historyComplete = !cursor;
-    const seenCursors = new Set<string>();
 
-    while (cursor && orderRows.length < maxOrders) {
-      const cursorKey = String(cursor);
-      if (seenCursors.has(cursorKey)) break;
-      seenCursors.add(cursorKey);
-      if (
-        inputs.sinceMs !== undefined &&
-        orderRows.some(
-          (order) => timestampMs(order.timestamp) < inputs.sinceMs!,
-        )
-      ) {
-        historyComplete = true;
-        break;
-      }
-      const page = await account.getOrderHistory({
-        limit: pageSize,
-        eventTypes: [...eventTypes],
-        beforeTimestampCursor: cursor,
-      });
-      orderRows.push(...page.orders);
-      cursor = page.nextBeforeTimestampCursor;
-      historyComplete = !cursor;
-    }
-
-    const orders = orderRows
+    const orders = history.orders
       .map((order) => ({
         timestampMs: timestampMs(order.timestamp),
         txDigest: order.txDigest,
@@ -1379,7 +1554,7 @@ export class AftermathGateway {
           inputs.sinceMs === undefined ||
           timestampMs(point.timestamp) >= inputs.sinceMs,
       ),
-      historyComplete,
+      historyComplete: history.historyComplete,
     };
   }
 
