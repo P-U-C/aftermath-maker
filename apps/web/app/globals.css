@@ -4577,6 +4577,24 @@ mysten-dapp-kit-connect-modal,
   display: none;
 }
 
+.ui-list-row.row-enter {
+  animation:
+    maker-row-open var(--dur-2) var(--ease-out),
+    maker-row-tint 1.2s var(--ease-out) var(--dur-2);
+}
+
+.ui-list-row.row-enter-bid {
+  --row-enter-tint: var(--tide-soft);
+}
+
+.ui-list-row.row-enter-ask {
+  --row-enter-tint: var(--ember-soft);
+}
+
+.ui-list-row.row-enter-neutral {
+  --row-enter-tint: var(--fill-2);
+}
+
 .ui-list-leading,
 .ui-list-trailing {
   display: inline-flex;
@@ -4647,6 +4665,7 @@ mysten-dapp-kit-connect-modal,
   place-items: center;
   background: var(--scrim);
   backdrop-filter: blur(10px);
+  animation: maker-sheet-scrim var(--dur-3) var(--ease-out) both;
 }
 
 .ui-sheet {
@@ -4659,6 +4678,7 @@ mysten-dapp-kit-connect-modal,
   background: var(--raised);
   border-radius: 30px;
   box-shadow: var(--float);
+  animation: maker-sheet-in var(--dur-3) var(--ease-out) both;
 }
 
 .ui-sheet-header {
@@ -4883,9 +4903,14 @@ mysten-dapp-kit-connect-modal,
   font-weight: 520;
   text-decoration: none;
   white-space: nowrap;
+  transition:
+    color var(--dur-2) var(--ease-out),
+    background-color var(--dur-2) var(--ease-out),
+    transform var(--dur-2) var(--ease-out);
 }
 
 .maker-view-tabs a.is-active {
+  animation: maker-tab-select 240ms var(--ease-out);
   color: var(--ink);
   background: var(--surface);
   box-shadow: 0 1px 2px rgba(16, 18, 22, 0.08);
@@ -5147,8 +5172,23 @@ mysten-dapp-kit-connect-modal,
   white-space: nowrap;
 }
 
+.desk-freshness::before {
+  width: 6px;
+  height: 6px;
+  margin-right: 6px;
+  display: inline-block;
+  content: "";
+  border-radius: 50%;
+  background: currentColor;
+  vertical-align: 1px;
+}
+
 .desk-freshness.is-stale {
   color: var(--amber-text);
+}
+
+.desk-freshness.is-fresh::before {
+  animation: maker-freshness 400ms var(--ease-out);
 }
 
 .desk-ladder {
@@ -7934,6 +7974,123 @@ mysten-dapp-kit-connect-modal,
   .access-hero-side > *,
   .access-landing-stage {
     animation: none;
+  }
+}
+
+/* M1: data-led motion settles quickly and is wholly disabled by reduced motion. */
+@keyframes maker-number-out {
+  to {
+    opacity: 0;
+    transform: translateY(-2px);
+  }
+}
+
+@keyframes maker-number-in {
+  from {
+    opacity: 0;
+    transform: translateY(2px);
+  }
+}
+
+@keyframes maker-row-open {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+}
+
+@keyframes maker-row-tint {
+  0% {
+    background: var(--row-enter-tint);
+  }
+
+  100% {
+    background: transparent;
+  }
+}
+
+@keyframes maker-freshness {
+  50% {
+    transform: scale(1.7);
+    opacity: 0.45;
+  }
+}
+
+@keyframes maker-sheet-scrim {
+  from {
+    opacity: 0;
+  }
+}
+
+@keyframes maker-sheet-in {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+}
+
+@keyframes maker-tab-select {
+  from {
+    transform: translateY(2px);
+  }
+}
+
+.animated-number {
+  display: inline-grid;
+  font-variant-numeric: tabular-nums;
+}
+
+.animated-number > span {
+  grid-area: 1 / 1;
+}
+
+.animated-number-old {
+  animation: maker-number-out var(--dur-2) var(--ease-out) both;
+}
+
+.animated-number-current {
+  animation: maker-number-in var(--dur-2) var(--ease-out) both;
+}
+
+.animated-number:not(.is-changing) .animated-number-current {
+  animation: none;
+}
+
+::view-transition-old(root) {
+  animation: maker-view-out 160ms var(--ease-out) both;
+}
+
+::view-transition-new(root) {
+  animation: maker-view-in 220ms var(--ease-out) both;
+}
+
+@keyframes maker-view-out {
+  to {
+    opacity: 0;
+  }
+}
+
+@keyframes maker-view-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+}
+
+@media (max-width: 700px) {
+  .ui-sheet-scrim {
+    align-items: end;
+  }
+
+  .ui-sheet {
+    animation-name: maker-sheet-phone-in;
+  }
+}
+
+@keyframes maker-sheet-phone-in {
+  from {
+    opacity: 0;
+    transform: translateY(100%);
   }
 }
 

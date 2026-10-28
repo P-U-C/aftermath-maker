@@ -42,6 +42,7 @@ const verifyStrategyBuilder = process.argv.includes(
   "--verify-strategy-builder",
 );
 const verifyPerformance = process.argv.includes("--verify-performance");
+const verifyMotion = process.argv.includes("--verify-motion");
 const exerciseAccessRequest = process.argv.includes("--access-request");
 const outputDirectory = path.resolve(
   projectRoot,
@@ -164,6 +165,7 @@ async function capture(browser, stateName, captureConfig, view) {
   const browserErrors = [];
   const remoteRequests = [];
   let capturedConfigBody = null;
+  let motionChangeArmed = false;
   const exerciseStop =
     stateName === "live-running" &&
     captureConfig.name === "desktop-light" &&
@@ -225,6 +227,19 @@ async function capture(browser, stateName, captureConfig, view) {
       return;
     }
     if (
+      verifyMotion &&
+      request.method() === "POST" &&
+      url.pathname.endsWith("/api/runtime/cycle")
+    ) {
+      motionChangeArmed = true;
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: "{}",
+      });
+      return;
+    }
+    if (
       exerciseStop &&
       request.method() === "POST" &&
       url.pathname.endsWith("/api/runtime/cycle")
@@ -253,6 +268,24 @@ async function capture(browser, stateName, captureConfig, view) {
     }
 
     const response = apiResponse(fixture, url);
+    if (
+      verifyMotion &&
+      motionChangeArmed &&
+      stateName === "paper-running" &&
+      url.pathname.endsWith("/api/status") &&
+      response.status === 200
+    ) {
+      const body = structuredClone(response.body);
+      body.snapshot.balances.equityUsd =
+        (body.snapshot.balances.equityUsd ?? 0) + 1;
+      body.snapshot.portfolio.grossExposureUsd += 1;
+      await route.fulfill({
+        status: response.status,
+        contentType: "application/json",
+        body: JSON.stringify(body),
+      });
+      return;
+    }
     await route.fulfill({
       status: response.status,
       contentType: "application/json",
@@ -550,6 +583,46 @@ async function capture(browser, stateName, captureConfig, view) {
       );
     }
     await page.waitForTimeout(100);
+
+    if (
+      verifyMotion &&
+      stateName === "paper-running" &&
+      captureConfig.name === "desktop-light" &&
+      view === "desk"
+    ) {
+      const number = page.locator('[data-motion-number="maker-exposure"]');
+      await page.getByRole("button", { name: "Refresh market" }).click();
+      await number.locator("..").waitFor();
+      await page
+        .locator('[data-motion-number="maker-exposure"].is-changing')
+        .waitFor();
+      await page.screenshot({
+        path: path.join(outputDirectory, "motion-number-mid.png"),
+        fullPage: false,
+      });
+      await page.waitForTimeout(260);
+      if (
+        await number.evaluate((node) => node.classList.contains("is-changing"))
+      ) {
+        throw new Error("Number transition did not settle after 200ms");
+      }
+      await page.screenshot({
+        path: path.join(outputDirectory, "motion-number-settled.png"),
+        fullPage: false,
+      });
+      await page.waitForTimeout(10_000);
+      const lingeringAnimations = await page.evaluate(() =>
+        document.getAnimations().map((animation) => animation.animationName),
+      );
+      if (lingeringAnimations.length) {
+        throw new Error(
+          `Motion remained after ten seconds without data: ${lingeringAnimations.join(", ")}`,
+        );
+      }
+      process.stdout.write(
+        `${stateName}/${view}/${captureConfig.name}: captured number mid-transition and settled; no idle motion after ten seconds\n`,
+      );
+    }
 
     if (
       fixture.auth.status === 200 &&

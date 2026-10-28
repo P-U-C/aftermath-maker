@@ -60,10 +60,23 @@ export function useMakerView() {
   }, [activeView]);
 
   const selectView = useCallback((view: MakerView) => {
-    if (window.location.hash !== `#${view}`) {
-      window.history.pushState(null, "", `#${view}`);
+    const update = () => {
+      if (window.location.hash !== `#${view}`) {
+        window.history.pushState(null, "", `#${view}`);
+      }
+      setActiveView(view);
+    };
+    const transitions = document as Document & {
+      startViewTransition?: (callback: () => void) => unknown;
+    };
+    if (
+      transitions.startViewTransition &&
+      !window.matchMedia("(prefers-reduced-motion: reduce)").matches
+    ) {
+      transitions.startViewTransition(update);
+      return;
     }
-    setActiveView(view);
+    update();
   }, []);
 
   return { activeView, selectView };
