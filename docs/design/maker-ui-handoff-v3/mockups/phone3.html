@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Maker phone</title>
+<link rel="stylesheet" href="maker3.css">
+<script src="mark.js"></script>
+<script src="motion.js"></script>
+<script src="fixture-book.js"></script>
+<style>
+  body { height: 844px; overflow: hidden; position: relative; }
+  .pbar { display: flex; justify-content: space-between; align-items: center; padding: 54px 16px 4px; }
+  .pbar .t { display: flex; align-items: center; gap: 10px; }
+  .pbar h1 { margin: 0; font-size: 32px; font-weight: 660; font-stretch: 122%; letter-spacing: -0.035em; }
+  .ptabs { display: flex; gap: 6px; padding: 10px 16px 4px; overflow: hidden; }
+  .ptabs span { flex: none; height: 32px; padding: 0 14px; border-radius: 16px; background: var(--fill); display: grid; place-items: center; font-size: 14px; font-weight: 600; color: var(--ink-2); }
+  .ptabs span.on { background: var(--ink); color: var(--canvas); }
+  .wrap { padding: 10px 14px 140px; }
+  .pc { background: var(--surface); border-radius: 18px; padding: 16px; margin-bottom: 12px; }
+  .k { font-size: 13px; color: var(--ink-2); }
+  .pnl { font-size: 42px; font-weight: 640; font-stretch: 125%; letter-spacing: -0.035em; margin: 4px 0 8px; }
+  .two { display: flex; gap: 18px; font-size: 14px; color: var(--ink-2); flex-wrap: wrap; }
+  .two b { color: var(--ink); font-weight: 620; margin-left: 5px; }
+  .say { font-size: 14px; line-height: 1.45; }
+  .mini { display: flex; justify-content: space-between; align-items: center; }
+  .mini h2 { margin: 0; font-size: 17px; font-weight: 640; font-stretch: 112%; }
+  .motion-caption { font-size: 13.5px; }
+  .dock { position: absolute; left: 0; right: 0; bottom: 0; padding: 12px 14px 34px; background: var(--surface); border-top: 1px solid var(--hair); display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .dock .btn { height: 52px; border-radius: 16px; font-size: 17px; }
+</style>
+</head>
+<body>
+<script>const Q = applyTheme();</script>
+<div class="rail" style="position:absolute"></div>
+<div class="pbar"><div class="t"><span class="mark" id="mark"></span><h1>Desk</h1></div><span class="pill live"><span class="dot"></span>Live</span></div>
+<div class="ptabs"><span class="on">Desk</span><span>Bundles</span><span>Markets</span><span>Performance</span></div>
+<div class="wrap">
+  <div class="pc">
+    <div class="k">Net result today, all bundles</div>
+    <div class="pnl loss">−$0.02</div>
+    <div class="two"><span>Volume<b>$14.51</b></span><span>Exposure<b>$1.04 of $3.00</b></span></div>
+  </div>
+  <div class="pc say"><b>Right now:</b> Core is quoting MON and holds $1.04 from a fill 12 s ago. Rewards is paper trading SUI. Nothing is near a limit.</div>
+  <div class="pc">
+    <div class="mini"><h2>Core · MON</h2><span class="venue"><i>A</i>Aftermath</span></div>
+    <div class="motion-wrap" id="m1"></div>
+    <div class="motion-caption" id="c1"></div>
+  </div>
+</div>
+<div class="dock"><button class="btn quiet">Flatten all…</button><button class="btn stop">Stop all</button></div>
+<script>
+  document.getElementById("mark").innerHTML = markSVG("live", 30);
+  document.fonts.ready.then(() => MakerMotion.mount(document.getElementById("m1"), { compact: true, caption: document.getElementById("c1"), sizeUsd: 1.04, hedgeTriggerUsd: 2, spreadBps: 42, mid: 0.021441, seed: 10, sim: false, static: Q.get("still") === "1", 
+    intro: "<b>Your bid and ask are resting.</b> The gap between them is your spread." })).then((m) => m.update({ mid: 0.021441, bid: 0.021393, ask: 0.021484, bestBid: 0.02141, bestAsk: 0.02147, inventoryUsd: 1.04, book: Q.get("book") === "0" ? null : window.FIXTURE_BOOK }));
+</script>
+</body>
+</html>

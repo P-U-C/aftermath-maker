@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Maker strategy</title>
+<link rel="stylesheet" href="maker3.css">
+<script src="mark.js"></script>
+<style>
+  .crumb { font-size: 14px; color: var(--ink-2); font-weight: 560; }
+  .title h1 { margin: 4px 0 0; font-size: 34px; font-weight: 640; font-stretch: 122%; letter-spacing: -0.03em; }
+  .layout { display: grid; grid-template-columns: 300px minmax(0, 1fr); gap: 24px; margin-top: 24px; align-items: start; }
+  .leftcol { display: grid; gap: 18px; position: sticky; top: 84px; }
+  .panel { background: var(--surface); border-radius: 20px; padding: 24px 26px; }
+  .panel h2 { margin: 0; font-size: 22px; font-weight: 650; font-stretch: 114%; letter-spacing: -0.015em; }
+  .panel .sub { margin: 6px 0 20px; color: var(--ink-2); }
+  .pickline { margin: 14px 0 18px; font-size: 14px; color: var(--ink-2); }
+  .pickline b { color: var(--ink); }
+  .mtable .lr { grid-template-columns: 26px 1.1fr 1.4fr 0.9fr 0.9fr 2fr; gap: 12px; height: 60px; }
+  .mtable .lr.off { opacity: 1; }
+  .mtable .lr.off .sym, .mtable .lr.off .i2 { color: var(--ink-3); }
+  .pot { display: grid; grid-template-columns: 30px 1fr; gap: 8px; align-items: center; font-weight: 640; }
+  .why { font-size: 13.5px; color: var(--ink-2); line-height: 1.35; }
+  .rot { margin-top: 22px; padding-top: 18px; border-top: 1px solid var(--hair); display: flex; justify-content: space-between; align-items: center; gap: 20px; }
+  .rot p { margin: 4px 0 0; color: var(--ink-2); font-size: 14px; max-width: 420px; }
+  .preview { display: grid; gap: 16px; }
+  .pv { background: var(--surface); border-radius: 20px; padding: 20px 22px; }
+  .pv h3 { margin: 0 0 10px; font-size: 16px; font-weight: 650; font-stretch: 112%; }
+  .pv p { margin: 0 0 10px; font-size: 14.5px; line-height: 1.5; }
+  .pv p:last-child { margin-bottom: 0; }
+  .nextbar { display: flex; justify-content: space-between; align-items: center; margin-top: 18px; }
+  .profiles { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-bottom: 22px; }
+  .prof { border-radius: 16px; background: var(--canvas); padding: 16px; }
+  .prof.on { box-shadow: inset 0 0 0 2px var(--ink); background: var(--surface); }
+  .prof b { font-size: 16px; font-weight: 650; }
+  .prof .d { font-size: 13.5px; color: var(--ink-2); margin: 3px 0 10px; }
+  .prof .s { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; font-size: 13px; }
+  .prof .s span { color: var(--ink-2); }
+  .prof .s em { font-style: normal; font-weight: 620; color: var(--ink); display: block; }
+  .two { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 24px; }
+  .limits { display: grid; gap: 12px; }
+  .limit { background: var(--canvas); border-radius: 16px; padding: 14px 16px; }
+  .limit .sentence { font-size: 16px; }
+  .limit .help { margin-top: 4px; }
+  .adv { margin-top: 18px; display: flex; justify-content: space-between; align-items: center; padding: 14px 16px; border-radius: 16px; background: var(--canvas); font-weight: 620; }
+  [data-step="3"] .s2, [data-step="2"] .s3 { display: none; }
+</style>
+</head>
+<body>
+<script>const Q = applyTheme(); document.body.dataset.step = Q.get("step") || "2";</script>
+<div class="rail"></div>
+<header class="nav">
+  <div class="brand"><span class="wordmark" id="wm"></span></div>
+  <div class="tabs"><span>Desk</span><span class="on">Bundles</span><span>Markets</span><span>Performance</span><span>Venues</span></div>
+  <div class="nav-right"><span class="explain-toggle">Explain<span class="switch"><i></i></span></span><span class="pill live"><span class="dot"></span>Live</span><span class="acct"><span class="ava"></span>0x00a4…7060</span></div>
+</header>
+<main class="page">
+  <div class="title"><div class="crumb">Bundles › Core</div><h1>Strategy</h1></div>
+  <div class="layout">
+    <div class="leftcol">
+    <nav class="steps-v">
+      <div class="step done"><span class="num">1</span><div><b>Goal</b><span>Both: rewards and spread</span></div></div>
+      <div class="step s2c"><span class="num">2</span><div><b>Markets</b><span>5 picked, one at a time</span></div></div>
+      <div class="step s3c"><span class="num">3</span><div><b>Size and limits</b><span>$1.04 per side, Balanced</span></div></div>
+      <div class="step"><span class="num">4</span><div><b>Hedging</b><span>Taker #1746 above $1.00</span></div></div>
+      <div class="step"><span class="num">5</span><div><b>Review</b><span>Paper first</span></div></div>
+    </nav>
+    <aside class="preview">
+      <div class="pv"><h3>What Core will do</h3>
+        <p>Quote <b>5 markets</b>, one at a time for 15 s each, starting with MON.</p>
+        <p>Rest a <b>$1.04</b> buy and a <b>$1.04</b> sell, <b>42 bps</b> apart, around the market price.</p>
+        <p>When fills leave it holding more than <b>$1.00</b>, the taker account hedges.</p>
+        <p>Stop by itself if it's down <b>$1.00</b> from its best point, or exposure passes <b>$3.00</b>.</p></div>
+      <div class="pv"><h3>Your wallet limits</h3><p>Core and Rewards together can't pass <b>$5.00</b> of exposure. <span class="link">Change</span></p></div>
+    </aside>
+    </div>
+
+    <section class="panel s2">
+      <h2>Which markets should Core quote?</h2>
+      <div class="sub">Ranked for your goal, Both. Tap a pick, or tick markets by hand.</div>
+      <div class="chips">
+        <span class="chip"><b>Best for rewards</b><span>Top 3 by reward potential</span></span>
+        <span class="chip on"><b>Balanced</b><span>Top 5 for rewards and edge</span></span>
+        <span class="chip"><b>Quiet books</b><span>Less competing size near the price</span></span>
+        <span class="chip"><b>Steadiest</b><span>Smallest 24 h moves</span></span>
+        <span class="chip"><b>Clear</b><span>Start from nothing</span></span>
+      </div>
+      <div class="pickline"><b>Balanced</b> picked MON, NEAR, ETH, BTC and HYPE. SUI and WAL are in your Rewards bundle, so they're skipped.</div>
+      <div class="list mtable">
+        <div class="lr lh"><span></span><span>Market</span><span>Reward potential <span class="qmark">?</span></span><span class="r">Edge after fees</span><span class="r">24 h volume</span><span>Why it ranks here</span></div>
+        <div class="lr"><span class="check on"></span><span class="sym">MON<small>PERP</small></span><span class="pot"><span>92</span><span class="bar"><i style="width:92%"></i></span></span><span class="r gain">36 bps</span><span class="r">$86.2K</span><span class="why">Lots of flow for the size resting near the price</span></div>
+        <div class="lr"><span class="check on"></span><span class="sym">NEAR<small>PERP</small></span><span class="pot"><span>86</span><span class="bar"><i style="width:86%"></i></span></span><span class="r gain">19 bps</span><span class="r">$61.2K</span><span class="why">Thin book, so your quotes are a big share</span></div>
+        <div class="lr"><span class="check on"></span><span class="sym">ETH<small>PERP</small></span><span class="pot"><span>80</span><span class="bar"><i style="width:80%"></i></span></span><span class="r gain">20 bps</span><span class="r">$18.4M</span><span class="why">Deep and steady; plenty of two-sided exit</span></div>
+        <div class="lr"><span class="check on"></span><span class="sym">BTC<small>PERP</small></span><span class="pot"><span>74</span><span class="bar"><i style="width:74%"></i></span></span><span class="r gain">21 bps</span><span class="r">$41.9M</span><span class="why">Lowest 24 h movement of the list</span></div>
+        <div class="lr"><span class="check on"></span><span class="sym">HYPE<small>PERP</small></span><span class="pot"><span>68</span><span class="bar"><i style="width:68%"></i></span></span><span class="r gain">22 bps</span><span class="r">$7.5M</span><span class="why">Positive half-spread after known costs</span></div>
+        <div class="lr off"><span class="check"></span><span class="sym">SUI<small>PERP</small></span><span class="pot"><span class="i2">71</span><span class="bar"><i style="width:71%;opacity:.4"></i></span></span><span class="r i2">18 bps</span><span class="r i2">$9.9M</span><span class="why">In your Rewards bundle</span></div>
+        <div class="lr"><span class="check"></span><span class="sym">XMR<small>PERP</small></span><span class="pot"><span>61</span><span class="bar"><i style="width:61%"></i></span></span><span class="r gain">12 bps</span><span class="r">$2.1M</span><span class="why">Elevated funding adds holding cost</span></div>
+      </div>
+      <div class="rot">
+        <div><b>How many at once?</b><p>One at a time spends less gas and keeps exposure small: each market gets 15 s, then Maker moves on. All at once quotes every market together.</p></div>
+        <div class="seg"><span class="on">One at a time</span><span>All at once</span></div>
+      </div>
+      <div class="nextbar"><span class="help">Reward potential compares how much reward-qualifying flow a dollar of your quotes is likely to meet, against the other markets on this venue. It is a ranking, not a forecast.</span><button class="btn primary">Next: size and limits</button></div>
+    </section>
+
+    <section class="panel s3">
+      <h2>How big, and when to stop?</h2>
+      <div class="sub">Start from a profile, then adjust anything. Every limit stops Core before it's crossed.</div>
+      <div class="profiles">
+        <div class="prof"><b>Cautious</b><div class="d">Wider and slower</div><div class="s"><span>Size<em>$5.00</em></span><span>Spread<em>50 bps</em></span><span>Checks<em>every 15 s</em></span><span>Max held<em>$30</em></span></div></div>
+        <div class="prof on"><b>Balanced</b><div class="d">The default</div><div class="s"><span>Size<em>$10.00</em></span><span>Spread<em>30 bps</em></span><span>Checks<em>every 8 s</em></span><span>Max held<em>$50</em></span></div></div>
+        <div class="prof"><b>Active</b><div class="d">Tighter and faster</div><div class="s"><span>Size<em>$10.00</em></span><span>Spread<em>18 bps</em></span><span>Checks<em>every 4 s</em></span><span>Max held<em>$50</em></span></div></div>
+      </div>
+      <div class="two">
+        <div class="field"><label>Quote size, each side</label><div class="input"><span class="u2">$</span><b>1.04</b></div><span class="help">14% of the maker account. Each fill buys or sells this much.</span></div>
+        <div class="field"><label>Spread</label><div class="input"><b>42</b><span class="u2">bps</span></div><span class="help">Wider earns more per fill but fills less often.</span></div>
+      </div>
+      <div class="limits">
+        <div class="limit"><div class="sentence">Stop Core if it falls <b>$1.00</b> from its best point this run.</div><div class="help">This is run drawdown, the limit on the desk's Limits card.</div></div>
+        <div class="limit"><div class="sentence">Never hold more than <b>$2.50</b> of any one market.</div><div class="help">Maximum inventory. Past it, Maker only quotes the side that reduces it.</div></div>
+        <div class="limit"><div class="sentence">Keep Core's total exposure under <b>$3.00</b>.</div><div class="help">Gross exposure across every market in this bundle.</div></div>
+        <div class="limit"><div class="sentence">Close out if an open position is down <b>$1.00</b>.</div><div class="help">Maximum unrealized loss.</div></div>
+      </div>
+      <div class="adv"><span>Advanced: refresh speed, stale-book cutoff, price divergence, leverage</span><span class="chev"></span></div>
+      <div class="nextbar"><button class="btn quiet">Back</button><button class="btn primary">Next: hedging</button></div>
+    </section>
+
+
+  </div>
+</main>
+<script>
+  document.getElementById("wm").innerHTML = wordmarkHTML("live");
+  const st = document.body.dataset.step;
+  document.querySelector(st === "3" ? ".s3c" : ".s2c").classList.add("on");
+  if (st === "3") document.querySelector(".s2c").classList.add("done");
+</script>
+</body>
+</html>

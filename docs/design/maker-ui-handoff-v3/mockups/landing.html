@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Maker</title>
+<link rel="stylesheet" href="maker3.css">
+<script src="mark.js"></script>
+<script src="motion.js"></script>
+<style>
+  .top { height: 68px; display: flex; align-items: center; justify-content: space-between; padding: 0 48px; max-width: 1360px; margin: 0 auto; }
+  .top nav { display: flex; align-items: center; gap: 26px; font-size: 14.5px; font-weight: 560; color: var(--ink-2); }
+  .top .btn { height: 38px; font-size: 14.5px; padding: 0 18px; }
+  .lhero { max-width: 1360px; margin: 0 auto; padding: 40px 48px 0; display: block; }
+  .hero-top { display: grid; grid-template-columns: 1.3fr 1fr; gap: 64px; align-items: end; margin-bottom: 34px; }
+  h1 { font-size: 68px; line-height: 0.98; font-weight: 660; font-stretch: 125%; letter-spacing: -0.04em; margin: 0; }
+  h1 span { color: var(--ink-2); }
+  .lede { font-size: 18px; line-height: 1.52; color: var(--ink-2); margin: 0 0 30px; }
+  .cta { display: flex; align-items: center; gap: 22px; }
+  .stage { background: var(--surface); border-radius: 32px; padding: 30px 40px 24px; }
+  .stage .motion-caption { color: var(--ink); font-size: 15.5px; min-height: 46px; line-height: 1.45; margin-top: 6px; }
+  .stage-foot { display: flex; justify-content: space-between; align-items: center; margin-top: 8px; font-size: 13px; color: var(--ink-2); }
+  .counters { display: flex; gap: 22px; }
+  .counters b { color: var(--ink); font-weight: 660; font-stretch: 118%; margin-right: 3px; }
+  .sec { max-width: 1360px; margin: 0 auto; padding: 88px 48px 0; }
+  .sec h2 { font-size: 36px; font-weight: 650; font-stretch: 122%; letter-spacing: -0.03em; margin: 0 0 8px; }
+  .sec > p { color: var(--ink-2); font-size: 17px; margin: 0 0 30px; max-width: 680px; }
+  .three { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; }
+  .four { display: grid; grid-template-columns: repeat(4, 1fr); gap: 20px; }
+  .box { background: var(--surface); border-radius: 24px; padding: 26px 26px 28px; }
+  .box .n { width: 30px; height: 30px; border-radius: 50%; background: var(--ink); color: var(--canvas); display: grid; place-items: center; font-weight: 700; font-size: 14px; margin-bottom: 18px; }
+  .box h3 { margin: 0 0 8px; font-size: 20px; font-weight: 650; font-stretch: 114%; letter-spacing: -0.015em; }
+  .box p { margin: 0; color: var(--ink-2); line-height: 1.5; }
+  .mini { margin-top: 20px; background: var(--canvas); border-radius: 16px; padding: 14px; }
+  .pairdemo { display: flex; gap: 10px; align-items: center; }
+  .acc { flex: 1; border-radius: 12px; background: var(--surface); padding: 10px 12px; }
+  .acc b { display: block; font-size: 14px; }
+  .acc span { font-size: 12.5px; color: var(--ink-2); }
+  .plus { font-weight: 700; color: var(--ink-2); }
+  .picks { display: flex; flex-wrap: wrap; gap: 8px; }
+  .picks span { height: 30px; padding: 0 12px; border-radius: 15px; background: var(--surface); display: inline-flex; align-items: center; font-size: 13px; font-weight: 600; }
+  .picks span.on { background: var(--ink); color: var(--canvas); }
+  .modes { display: flex; gap: 8px; }
+  .modes span { flex: 1; text-align: center; height: 34px; border-radius: 10px; background: var(--surface); display: grid; place-items: center; font-size: 13.5px; font-weight: 620; }
+  .modes span.on { background: var(--ink); color: var(--canvas); }
+  .ic { width: 38px; height: 38px; border-radius: 12px; background: var(--canvas); display: grid; place-items: center; margin-bottom: 16px; }
+  .say { margin-top: 16px; font-size: 14px; background: var(--canvas); border-radius: 12px; padding: 10px 12px; line-height: 1.45; }
+  .trust { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; }
+  .trust > div { display: grid; grid-template-columns: 34px 1fr; gap: 12px; align-items: start; }
+  .trust b { display: block; font-weight: 640; }
+  .trust span { color: var(--ink-2); font-size: 14.5px; }
+  .final { max-width: 1264px; margin: 88px auto 0; background: var(--ink); color: var(--canvas); border-radius: 32px; padding: 48px 56px; display: flex; justify-content: space-between; align-items: center; }
+  .final h2 { margin: 0; font-size: 38px; font-weight: 650; font-stretch: 122%; letter-spacing: -0.03em; }
+  .final p { margin: 8px 0 0; opacity: .78; font-size: 16px; }
+  .final .btn { background: var(--canvas); color: var(--ink); }
+  .fine { max-width: 1360px; margin: 26px auto 0; padding: 0 48px 48px; display: flex; justify-content: space-between; font-size: 13px; color: var(--ink-2); }
+  .venues { display: flex; align-items: center; gap: 10px; }
+  @media (max-width: 760px) {
+    .top { padding: 0 16px; }
+    .top nav a, .top nav > span:not(.btn) { display: none; }
+    .lhero { padding: 20px 16px 0; }
+    .hero-top { grid-template-columns: minmax(0, 1fr); gap: 20px; margin-bottom: 22px; }
+    h1 { font-size: 40px; }
+    .lede { font-size: 16.5px; margin-bottom: 22px; }
+    .cta { flex-wrap: wrap; gap: 14px; }
+    .stage { padding: 14px 14px 16px; border-radius: 22px; }
+    .stage-foot { flex-direction: column; align-items: flex-start; gap: 8px; }
+    .sec { padding: 56px 16px 0; }
+    .sec h2 { font-size: 28px; }
+    .three, .four, .trust { grid-template-columns: minmax(0, 1fr); }
+    .final { margin: 56px 16px 0; padding: 28px 22px; flex-direction: column; align-items: flex-start; gap: 18px; }
+    .final h2 { font-size: 30px; }
+    .fine { padding: 0 16px 32px; flex-direction: column; gap: 10px; }
+  }
+</style>
+</head>
+<body>
+<script>applyTheme();</script>
+<header class="top">
+  <div class="brand"><span class="wordmark" id="wm"></span></div>
+  <nav><span>How it works</span><span>Safety</span><span>Request access</span><button class="btn primary">Sign in</button></nav>
+</header>
+
+<section class="lhero">
+  <div class="hero-top">
+    <h1>Your own market&#8209;making desk. <span>Working for you.</span></h1>
+    <div><p class="lede">Maker runs a desk from your own accounts. It keeps a bid and an ask resting on the markets you choose, earns the spread and maker rewards, hedges what fills, and stops itself at your limits. You set the strategy. It does the shifts, and tells you what it's doing in plain words.</p>
+    <div class="cta"><button class="btn primary lg">Continue with wallet</button><span class="u">Watch how it works</span></div></div>
+  </div>
+  <div class="stage">
+    <div class="motion-wrap" id="motion"></div>
+    <div class="motion-caption" id="cap" aria-live="polite"></div>
+    <div class="stage-foot"><div class="counters" id="cnt"></div><span>Illustration. Your desk draws the same picture from your real quotes and fills.</span></div>
+  </div>
+</section>
+
+<section class="sec">
+  <h2>Set up your desk in three moves.</h2>
+  <p>Each desk runs one or more bundles. A bundle is a pair of accounts with one strategy, so you can run a few strategies side by side.</p>
+  <div class="three">
+    <div class="box"><div class="n">1</div><h3>Pair two accounts</h3><p>One account makes the market. The other takes the hedge when fills pile up on one side.</p>
+      <div class="mini"><div class="pairdemo"><div class="acc"><b>Maker</b><span>Rests your bid and ask</span></div><span class="plus">+</span><div class="acc"><b>Taker</b><span>Hedges at market</span></div></div></div></div>
+    <div class="box"><div class="n">2</div><h3>Pick a goal and markets</h3><p>Earn rewards, earn the spread, or both. One tap picks the markets that fit, ranked by reward potential.</p>
+      <div class="mini"><div class="picks"><span class="on">Best for rewards</span><span>Balanced</span><span>Quiet books</span><span>Steadiest</span></div></div></div>
+    <div class="box"><div class="n">3</div><h3>Paper first, then live</h3><p>Run on paper against the real book to see what would have filled. Go live when you like what you see.</p>
+      <div class="mini"><div class="modes"><span>Observe</span><span class="on">Paper</span><span>Live</span></div></div></div>
+  </div>
+</section>
+
+<section class="sec">
+  <h2>While you're away.</h2>
+  <p>The desk keeps working within the limits you set, and keeps a running account of why it did each thing.</p>
+  <div class="four">
+    <div class="box"><div class="ic"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--ink)" stroke-width="1.75" stroke-linecap="round"><path d="M4 15h6M14 9h6"/><path d="M4 9h3M17 15h3"/></svg></div><h3>Quotes both sides</h3><p>A bid under the price and an ask over it, refreshed as the price moves.</p></div>
+    <div class="box"><div class="ic"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--ink)" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M4 17c4 0 4-10 8-10s4 10 8 10"/></svg></div><h3>Hedges what fills</h3><p>Past your trigger, the taker account trades the other way so a move can't run away with you.</p></div>
+    <div class="box"><div class="ic"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--ink)" stroke-width="1.75" stroke-linecap="round"><rect x="6" y="6" width="12" height="12" rx="3"/></svg></div><h3>Stops at your limits</h3><p>Exposure, inventory and drawdown caps stop it before they're crossed. One Stop ends everything.</p></div>
+    <div class="box"><div class="ic"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--ink)" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M5 6h14v9H9l-4 3z"/></svg></div><h3>Explains itself</h3><p>Every number has a line of plain English, and Explain mode walks you through the desk.</p>
+      <div class="say">"Your bid at 0.021393 is waiting for a seller. If it fills you'll hold $1.04 of MON."</div></div>
+  </div>
+</section>
+
+<section class="sec">
+  <div class="trust">
+    <div><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="var(--ink)" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="10" width="16" height="11" rx="3"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg><div><b>Your keys stay with you</b><span>Sign in with a message. Maker never holds your wallet key.</span></div></div>
+    <div><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="var(--ink)" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l7 3v5c0 4.5-3 8-7 10-4-2-7-5.5-7-10V6l7-3z"/><path d="M9 12l2 2 4-4"/></svg><div><b>Trade-only access</b><span>A trading key per account that can quote and hedge, never withdraw. Revoke it any time.</span></div></div>
+    <div><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="var(--ink)" stroke-width="1.75" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M8 12h8"/></svg><div><b>1 bp on filled orders</b><span>Shown before you approve it, on top of each venue's own fees.</span></div></div>
+  </div>
+</section>
+
+<section class="final">
+  <div><h2>Open your desk.</h2><p>Invite only for now. Connect a wallet to check, or request access.</p></div>
+  <button class="btn lg">Continue with wallet</button>
+</section>
+<div class="fine"><span class="venues">Live on <span class="venue"><i>A</i>Aftermath</span> More venues on the way.</span><span>Perpetuals trading can lose money. Maker's limits reduce that risk but do not remove it.</span></div>
+<script>
+  document.getElementById("wm").innerHTML = wordmarkHTML("live");
+  document.fonts.ready.then(() => MakerMotion.mount(document.getElementById("motion"), {
+    caption: document.getElementById("cap"), counters: document.getElementById("cnt"),
+    sizeUsd: 100, hedgeTriggerUsd: 200, spreadBps: 32, mid: 0.021441, seed: 31,
+  }));
+</script>
+</body>
+</html>
