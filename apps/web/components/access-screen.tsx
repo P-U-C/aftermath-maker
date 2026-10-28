@@ -103,6 +103,11 @@ export function AccessScreen({
           <SpreadMark state="stopped" />
           <strong>Maker</strong>
         </div>
+        {connected && (
+          <div className="access-header-wallet" aria-label="Connected wallet">
+            <ConnectButton />
+          </div>
+        )}
       </header>
 
       <div className="access-layout">

@@ -3369,6 +3369,36 @@ footer a {
   font-size: 18px;
 }
 
+.access-header-wallet {
+  --background: var(--surface);
+  --foreground: var(--ink);
+  --primary: var(--primary);
+  --primary-foreground: var(--on-primary);
+  --secondary: var(--fill);
+  --secondary-foreground: var(--ink);
+  --border: var(--hair);
+  --accent: var(--tide-soft);
+  --accent-foreground: var(--tide-text);
+  --muted: var(--fill);
+  --muted-foreground: var(--ink-2);
+  --popover: var(--surface);
+  --popover-foreground: var(--ink);
+  --ring: var(--tide);
+  --radius: 8px;
+  --font-sans: var(--font-mona), Arial, sans-serif;
+  --cursor-button: pointer;
+  --cursor-menu-item: pointer;
+}
+
+.access-header-wallet mysten-dapp-kit-connect-button::part(trigger) {
+  min-height: 44px;
+  padding: 0 14px;
+  border: 1px solid var(--hair);
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 620;
+}
+
 .access-layout {
   width: min(1160px, 100%);
   min-height: calc(100vh - 180px);
