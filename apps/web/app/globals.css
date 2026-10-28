@@ -854,9 +854,9 @@ button:disabled {
 .role-button {
   height: 32px;
   padding: 0 10px;
-  color: var(--muted);
+  color: var(--ink);
   background: var(--surface);
-  border: 1px solid var(--line);
+  border: 1px solid var(--line-strong);
 }
 
 .role-button.selected {
@@ -5669,20 +5669,21 @@ mysten-dapp-kit-connect-modal,
 }
 
 .market-add-strategy {
-  min-height: 30px;
-  padding: 0 9px;
+  min-height: 32px;
+  padding: 0 10px;
   color: var(--ink);
   background: var(--surface);
-  border: 1px solid var(--line);
+  border: 1px solid var(--line-strong);
   border-radius: 999px;
   font-size: 12px;
   font-weight: 650;
   white-space: nowrap;
 }
 
-.market-add-strategy:disabled {
-  color: var(--ink-3);
-  background: var(--fill);
+.market-add-strategy.is-selected {
+  color: var(--ink);
+  background: var(--tide-soft);
+  border-color: var(--tide);
 }
 
 .performance-v3-stats {
@@ -7803,7 +7804,8 @@ mysten-dapp-kit-connect-modal,
   .accounts-title .button,
   .account-row .button,
   .account-row .role-button,
-  .account-row input {
+  .account-row input,
+  .market-add-strategy {
     min-height: 44px;
     height: 44px;
   }

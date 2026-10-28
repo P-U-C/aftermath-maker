@@ -1601,7 +1601,6 @@ function DashboardBody() {
       );
       let nextMarkets = current.markets;
       if (selected) {
-        if (current.markets.length === 1) return current;
         nextMarkets = current.markets.filter(
           (item) => item.marketId !== market.id,
         );
@@ -4497,28 +4496,31 @@ function DashboardBody() {
                       <span>{compact(row.id)}</span>
                     </td>
                     <td>
-                      <button
-                        className="market-add-strategy"
-                        type="button"
-                        disabled={
-                          config.markets.some(
-                            (market) => market.marketId === row.id,
-                          ) || config.markets.length >= MAX_SELECTED_MARKETS
-                        }
-                        onClick={() => {
-                          const market = markets.find(
-                            (item) => item.id === row.id,
-                          );
-                          if (market) toggleMarket(market);
-                          selectView("strategy");
-                        }}
-                      >
-                        {config.markets.some(
+                      {(() => {
+                        const selected = config.markets.some(
                           (market) => market.marketId === row.id,
-                        )
-                          ? "In strategy"
-                          : "Add to strategy"}
-                      </button>
+                        );
+                        return (
+                          <button
+                            className={
+                              selected
+                                ? "market-add-strategy is-selected"
+                                : "market-add-strategy"
+                            }
+                            type="button"
+                            aria-pressed={selected}
+                            onClick={() => {
+                              const market = markets.find(
+                                (item) => item.id === row.id,
+                              );
+                              if (market) toggleMarket(market);
+                              if (!selected) selectView("strategy");
+                            }}
+                          >
+                            {selected ? "In strategy" : "Add to strategy"}
+                          </button>
+                        );
+                      })()}
                     </td>
                     <td>
                       <VenueChip venue={primaryVenue} />
@@ -5268,59 +5270,62 @@ function DashboardBody() {
             : {})}
         />
 
-        <section className="lower-grid lower-grid-venues">
-          <div className="fee-panel">
-            <div className="section-heading compact">
-              <div>
-                <span className="eyebrow">Account inspection</span>
-                <h2>Venue fee</h2>
+        {identity.operator && (
+          <section className="lower-grid lower-grid-venues">
+            <div className="fee-panel">
+              <div className="section-heading compact">
+                <div>
+                  <span className="eyebrow">Account inspection</span>
+                  <h2>Venue fee</h2>
+                </div>
+                <Search size={18} />
               </div>
-              <Search size={18} />
-            </div>
-            <p className="panel-copy">
-              {builderCode
-                ? `Venue code #${builderCode.integratorId} charges ${(builderCode.integratorFee * 10_000).toFixed(1)} bp on filled notional. Your one-time approval caps it at that exact rate and remains revocable.`
-                : "Venue incentives are not active. Orders carry no venue fee code until the operator completes on-chain registration."}
-            </p>
-            {builderCode && (
-              <p className="fee-caveat">
-                Each market's current maker fee is included in its known fill
-                cost. A 1 bp venue fee can reduce a rebate or turn a narrow
-                spread negative. Maker reports it separately from strategy PnL.
+              <p className="panel-copy">
+                {builderCode
+                  ? `Venue code #${builderCode.integratorId} charges ${(builderCode.integratorFee * 10_000).toFixed(1)} bp on filled notional. Your one-time approval caps it at that exact rate and remains revocable.`
+                  : "Venue incentives are not active. Orders carry no venue fee code until the operator completes on-chain registration."}
               </p>
-            )}
-            <form className="fee-form" onSubmit={inspectFee}>
-              <input
-                aria-label="Integrator ID"
-                type="number"
-                min="0"
-                placeholder="Integrator ID"
-                value={integratorId}
-                onChange={(event) => setIntegratorId(event.target.value)}
-              />
-              <button
-                className="button secondary"
-                disabled={!setup.setup || !integratorId || Boolean(busy)}
-              >
-                Inspect
-              </button>
-            </form>
-            {inspection && (
-              <div
-                className={
-                  inspection.exists ? "fee-result warning" : "fee-result"
-                }
-              >
-                <strong>
-                  {inspection.exists
-                    ? `Approved up to ${((inspection.maxIntegratorFee ?? 0) * 100).toFixed(3)}%`
-                    : "No approval found"}
-                </strong>
-                <span>{new Date(inspection.checkedAt).toLocaleString()}</span>
-              </div>
-            )}
-          </div>
-        </section>
+              {builderCode && (
+                <p className="fee-caveat">
+                  Each market's current maker fee is included in its known fill
+                  cost. A 1 bp venue fee can reduce a rebate or turn a narrow
+                  spread negative. Maker reports it separately from strategy
+                  PnL.
+                </p>
+              )}
+              <form className="fee-form" onSubmit={inspectFee}>
+                <input
+                  aria-label="Integrator ID"
+                  type="number"
+                  min="0"
+                  placeholder="Integrator ID"
+                  value={integratorId}
+                  onChange={(event) => setIntegratorId(event.target.value)}
+                />
+                <button
+                  className="button secondary"
+                  disabled={!setup.setup || !integratorId || Boolean(busy)}
+                >
+                  Inspect
+                </button>
+              </form>
+              {inspection && (
+                <div
+                  className={
+                    inspection.exists ? "fee-result warning" : "fee-result"
+                  }
+                >
+                  <strong>
+                    {inspection.exists
+                      ? `Approved up to ${((inspection.maxIntegratorFee ?? 0) * 100).toFixed(3)}%`
+                      : "No approval found"}
+                  </strong>
+                  <span>{new Date(inspection.checkedAt).toLocaleString()}</span>
+                </div>
+              )}
+            </div>
+          </section>
+        )}
 
         {identity.operator && (
           <section className="operator-panel">
