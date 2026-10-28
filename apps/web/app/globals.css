@@ -8099,3 +8099,73 @@ mysten-dapp-kit-connect-modal,
     padding: 18px;
   }
 }
+
+/* F3: performance evidence is a readable line per objective. */
+.objective-evidence {
+  display: block;
+  margin-top: 18px;
+  padding: 20px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+}
+
+.objective-evidence > div {
+  min-height: 0;
+  padding: 13px 0;
+  display: grid;
+  grid-template-columns: 24px 76px minmax(180px, 0.8fr) minmax(0, 1.5fr);
+  align-items: center;
+  gap: 12px;
+  border: 0;
+  border-top: 1px solid var(--line);
+}
+
+.objective-evidence > div.is-active {
+  background: var(--tide-soft);
+}
+
+.objective-evidence > div > b {
+  color: var(--tide-text);
+  font-size: 17px;
+}
+
+.objective-evidence > div > span {
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.objective-evidence > div > strong {
+  overflow: visible;
+  color: var(--ink);
+  font:
+    620 13px/1.35 var(--font-mona),
+    Arial,
+    sans-serif;
+  text-overflow: clip;
+  white-space: normal;
+}
+
+.objective-evidence > div > p {
+  margin: 0;
+  color: var(--ink-2);
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+@media (max-width: 700px) {
+  .objective-evidence {
+    padding: 18px;
+  }
+
+  .objective-evidence > div {
+    grid-template-columns: 22px 1fr;
+    align-items: start;
+  }
+
+  .objective-evidence > div > strong,
+  .objective-evidence > div > p {
+    grid-column: 2;
+  }
+}

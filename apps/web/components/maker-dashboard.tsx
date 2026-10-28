@@ -2152,35 +2152,65 @@ function DashboardBody() {
   const rewardRotationBlocked =
     Boolean(snapshot?.running) ||
     (snapshot?.portfolio.grossExposureUsd ?? 0) > 0;
-  const objectiveEvidence =
-    config.strategyObjective === "farming"
-      ? {
-          test: "Rewards per collateral-day rise",
-          evidence: rewards
-            ? `${rewards.account.makerRewardsSui.toFixed(2)} SUI / ${compactUsd(rewards.account.makerVolumeUsd)} flow`
-            : "Awaiting reward data",
-          blindSpot: "Reward USD value and pool denominator",
-        }
-      : config.strategyObjective === "profit"
-        ? {
-            test: "Complete net trading PnL is positive",
-            evidence:
-              performance &&
-              performance.attributed.fills + performance.hedge.fills > 0
-                ? `${money(performance.combinedNetAfterKnownCostsUsd)} known result`
-                : "Awaiting attributed fills",
-            blindSpot: "Markouts, gas, funding, and carry",
-          }
-        : {
-            test: "Farming and profit tests both pass",
-            evidence:
-              rewards &&
-              performance &&
-              performance.attributed.fills + performance.hedge.fills > 0
-                ? `${rewards.account.makerRewardsSui.toFixed(2)} SUI + ${money(performance.combinedNetAfterKnownCostsUsd)} known`
-                : "Rewards live; attributed fills pending",
-            blindSpot: "Reward valuation and complete net costs",
-          };
+  const hasAttributedFills =
+    (performance?.attributed.fills ?? 0) + (performance?.hedge.fills ?? 0) > 0;
+  const objectiveEvidence = [
+    {
+      name: "Farming",
+      mark: rewards ? "✓" : "?",
+      headline: "Rewards per collateral-day rise",
+      evidence: rewards
+        ? `${rewards.account.makerRewardsSui.toFixed(2)} SUI across ${compactUsd(rewards.account.makerVolumeUsd)} of maker flow`
+        : "Awaiting reward data",
+    },
+    {
+      name: "Profit",
+      mark: hasAttributedFills
+        ? (performance?.combinedNetAfterKnownCostsUsd ?? 0) >= 0
+          ? "✓"
+          : "–"
+        : "?",
+      headline: "Known result stays positive after known costs",
+      evidence: hasAttributedFills
+        ? `${money(performance?.combinedNetAfterKnownCostsUsd ?? null)} known result; markouts, gas, funding, and carry remain outside this line`
+        : "Awaiting attributed fills",
+    },
+    {
+      name: "Both",
+      mark:
+        rewards && hasAttributedFills
+          ? (performance?.combinedNetAfterKnownCostsUsd ?? 0) >= 0
+            ? "✓"
+            : "–"
+          : "?",
+      headline: "Rewards and known result both clear their checks",
+      evidence:
+        rewards && hasAttributedFills
+          ? `${rewards.account.makerRewardsSui.toFixed(2)} SUI and ${money(performance?.combinedNetAfterKnownCostsUsd ?? null)} known result`
+          : "Needs both reward and attributed-fill evidence",
+    },
+  ];
+  const performanceVolumeByMarket = (() => {
+    const rows = new Map(
+      (performance?.volumeByMarket ?? []).map((row) => [row.marketId, row]),
+    );
+    for (const fill of performance?.fills ?? []) {
+      if (rows.has(fill.marketId)) continue;
+      rows.set(fill.marketId, {
+        marketId: fill.marketId,
+        symbol: fill.symbol,
+        makerNotionalUsd: Math.abs(fill.notionalUsd),
+        makerFills: 1,
+        takerNotionalUsd: 0,
+        takerFills: 0,
+        realizedPnlUsd: fill.realizedPnlUsd,
+        feesUsd: fill.protocolFeesUsd + fill.estimatedBuilderFeeUsd,
+      });
+    }
+    return [...rows.values()].sort((left, right) =>
+      left.symbol.localeCompare(right.symbol),
+    );
+  })();
   const visibleMarkets = markets.filter((market) => {
     const query = marketQuery.trim().toLowerCase();
     return (
@@ -4649,27 +4679,26 @@ function DashboardBody() {
           >
             <header>
               <h3>Is the goal working?</h3>
-              <p>What the desk can show today, and what is still unmeasured.</p>
+              <p>
+                Each goal keeps its measured evidence separate from what still
+                needs a longer observation window.
+              </p>
             </header>
-            <div>
-              <span>Active objective</span>
-              <strong>
-                {config.strategyObjective[0]?.toUpperCase()}
-                {config.strategyObjective.slice(1)}
-              </strong>
-            </div>
-            <div>
-              <span>Pass condition</span>
-              <strong>{objectiveEvidence.test}</strong>
-            </div>
-            <div>
-              <span>Current evidence</span>
-              <strong>{objectiveEvidence.evidence}</strong>
-            </div>
-            <div>
-              <span>Still unmeasured</span>
-              <strong>{objectiveEvidence.blindSpot}</strong>
-            </div>
+            {objectiveEvidence.map((objective) => (
+              <div
+                key={objective.name}
+                className={
+                  config.strategyObjective === objective.name.toLowerCase()
+                    ? "is-active"
+                    : undefined
+                }
+              >
+                <b aria-hidden="true">{objective.mark}</b>
+                <span>{objective.name}</span>
+                <strong>{objective.headline}</strong>
+                <p>{objective.evidence}</p>
+              </div>
+            ))}
           </section>
 
           <div className="reward-command">
@@ -5050,10 +5079,10 @@ function DashboardBody() {
                   </tr>
                 </thead>
                 <tbody>
-                  {performance?.volumeByMarket.length ? (
-                    performance.volumeByMarket.map((row) => {
+                  {performanceVolumeByMarket.length ? (
+                    performanceVolumeByMarket.map((row) => {
                       const totalVolume =
-                        (performance?.volumeByMarket ?? []).reduce(
+                        performanceVolumeByMarket.reduce(
                           (sum, value) =>
                             sum +
                             value.makerNotionalUsd +
@@ -5095,7 +5124,7 @@ function DashboardBody() {
                           {expanded && (
                             <tr className="performance-market-fills">
                               <td colSpan={5}>
-                                {performance.fills
+                                {(performance?.fills ?? [])
                                   .filter(
                                     (fill) => fill.marketId === row.marketId,
                                   )
@@ -5109,7 +5138,7 @@ function DashboardBody() {
                                       · {fill.side} {money(fill.notionalUsd)}
                                     </span>
                                   ))}
-                                {!performance.fills.some(
+                                {!(performance?.fills ?? []).some(
                                   (fill) => fill.marketId === row.marketId,
                                 ) && (
                                   <span>

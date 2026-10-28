@@ -41,6 +41,7 @@ const verifyConfigSave = process.argv.includes("--verify-config-save");
 const verifyStrategyBuilder = process.argv.includes(
   "--verify-strategy-builder",
 );
+const verifyPerformance = process.argv.includes("--verify-performance");
 const exerciseAccessRequest = process.argv.includes("--access-request");
 const outputDirectory = path.resolve(
   projectRoot,
@@ -440,6 +441,25 @@ async function capture(browser, stateName, captureConfig, view) {
           throw new Error("Flatten sheet allowed focus to escape");
         }
       }
+    }
+    if (
+      verifyPerformance &&
+      stateName === "paper-running" &&
+      captureConfig.name === "desktop-light" &&
+      view === "performance"
+    ) {
+      await page.getByRole("button", { name: "MON", exact: true }).click();
+      const monFills = page.locator(".performance-market-fills");
+      await monFills.waitFor();
+      const monText = await monFills.textContent();
+      if (monText?.includes("NEAR")) {
+        throw new Error("MON volume row included a fill from NEAR");
+      }
+      await page.getByRole("button", { name: "NEAR", exact: true }).click();
+      await page
+        .locator(".performance-market-fills")
+        .getByText(/ask \$1\.04/)
+        .waitFor();
     }
     if (
       showLiveSheet &&
