@@ -3,30 +3,30 @@ export const glossary = {
     term: "Spread",
     definition:
       "The gap between Maker's bid and ask; it is the price paid for immediacy.",
-    animation: "#learn",
+    animation: "#learn/spread",
   },
   bps: {
     term: "Basis points",
     definition: "A basis point is one hundredth of one percent.",
-    animation: "#learn",
+    animation: "#learn/spread",
   },
   inventory: {
     term: "Inventory",
     definition:
       "The position Maker holds after fills, measured here in dollars.",
-    animation: "#learn",
+    animation: "#learn/fills",
   },
   skew: {
     term: "Skew",
     definition:
       "A shift in both quotes that encourages fills reducing inventory.",
-    animation: "#learn",
+    animation: "#learn/skew",
   },
   taker: {
     term: "Taker",
     definition:
       "The paired account that uses a market order to reduce Maker inventory.",
-    animation: "#learn",
+    animation: "#learn/hedge",
   },
   unrealizedPnl: {
     term: "Unrealized P&L",
@@ -52,7 +52,7 @@ export const glossary = {
     term: "Maker",
     definition:
       "The account that leaves buy and sell orders resting in the order book.",
-    animation: "#learn",
+    animation: "#learn/spread",
   },
   observe: {
     term: "Observe",

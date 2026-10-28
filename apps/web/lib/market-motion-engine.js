@@ -328,7 +328,10 @@ export function mountMarketMotion(host, o = {}) {
     hedges = 0,
     earned = 0,
     busy = 0,
-    hedging = false;
+    hedging = false,
+    rewardQualified = null;
+  // Learn disables the autonomous director and invokes named scenes explicitly.
+  const director = o.director !== false;
   const A = [5 + rand() * 2, 2.4 + rand(), 1 + rand() * 0.5],
     Wv = [0.27, 0.71, 1.63],
     P = [rand() * 6.28, rand() * 6.28, rand() * 6.28];
@@ -343,7 +346,7 @@ export function mountMarketMotion(host, o = {}) {
   };
   const count = () => {
     if (!counters) return;
-    counters.innerHTML = `<span><b>${fills}</b> ${fills === 1 ? "fill" : "fills"}</span><span><b>${hedges}</b> ${hedges === 1 ? "hedge" : "hedges"}</span><span><b>${usd(earned)}</b> spread earned</span>`;
+    counters.innerHTML = `<span><b>${fills}</b> ${fills === 1 ? "fill" : "fills"}</span><span><b>${hedges}</b> ${hedges === 1 ? "hedge" : "hedges"}</span><span><b>${usd(earned)}</b> spread earned</span>${rewardQualified === null ? "" : `<span><b>${rewardQualified}%</b> time qualified</span>`}`;
   };
   let entrance = reduce ? 99 : 0; // seconds since the scene first became visible
 
@@ -369,6 +372,112 @@ export function mountMarketMotion(host, o = {}) {
     timers.add(id);
   };
   const Q = () => liveQuotes || quotes();
+
+  const chapterTimers = new Set();
+  const chapterLater = (fn, ms) => {
+    const id = setTimeout(
+      () => {
+        chapterTimers.delete(id);
+        fn();
+      },
+      reduce ? 0 : ms,
+    );
+    chapterTimers.add(id);
+  };
+  const clearChapter = () => {
+    for (const id of chapterTimers) clearTimeout(id);
+    chapterTimers.clear();
+  };
+  const settleChapter = () => {
+    for (let k = 0; k < 240; k++) step(1 / 60);
+    lastRead = -1;
+    draw();
+  };
+  const setCapsResting = () => {
+    const q = Q();
+    for (const side of ["ask", "bid"]) {
+      const c = cap[side];
+      c.mode = "rest";
+      c.ct = 0;
+      c.len.x = capL;
+      c.len.v = 0;
+      c.x.x = xOf(q[side]);
+      c.x.v = 0;
+      c.flash = 0;
+    }
+  };
+  const pose = (name) => {
+    clearChapter();
+    entrance = 99;
+    busy = 0;
+    hedging = false;
+    rewardQualified = null;
+    fills = 0;
+    hedges = 0;
+    earned = 0;
+    inv = 0;
+    holdInv = null;
+    quoteMid = mid;
+    if (name === "fills") {
+      fills = 1;
+      inv = size;
+    } else if (name === "skew") {
+      fills = 3;
+      inv = 3 * size;
+    } else if (name === "hedge") {
+      fills = 2;
+      hedges = 1;
+    } else if (name === "rewards") {
+      rewardQualified = 96;
+      cap.ask.flash = 1;
+      cap.bid.flash = 1;
+    }
+    setCapsResting();
+    invShown.x = inv;
+    count();
+    emit("pose-" + name);
+    settleChapter();
+  };
+  const play = (name) => {
+    if (reduce) {
+      pose(name);
+      return;
+    }
+    clearChapter();
+    pose("spread");
+    emit("play-" + name);
+    if (name === "spread") {
+      entrance = 0;
+      return;
+    }
+    if (name === "fills") {
+      chapterLater(() => spawnTaker("sell", "ours"), 600);
+      return;
+    }
+    if (name === "skew") {
+      [200, 1600, 3000].forEach((delay) =>
+        chapterLater(() => spawnTaker("sell", "ours"), delay),
+      );
+      return;
+    }
+    if (name === "hedge") {
+      chapterLater(() => {
+        inv = trigger;
+        invBefore = inv;
+        invShown.x = inv;
+        emit("hedge-trigger");
+        hedge();
+      }, 1000);
+      return;
+    }
+    if (name === "rewards") {
+      rewardQualified = 96;
+      cap.ask.flash = 1;
+      cap.bid.flash = 1;
+      count();
+      emit("rewards");
+    }
+  };
   // In live mode the book comes only from real data: depth levels when update() is given a
   // book, otherwise just the venue's best bid and ask as one bar each. Nothing is invented.
   const bestAsk = () =>
@@ -802,7 +911,7 @@ export function mountMarketMotion(host, o = {}) {
     entrance += dt;
     if (++frames % 60 === 0) readTheme();
     step(dt);
-    if (!live && entrance > 2) {
+    if (!live && director && entrance > 2) {
       nextTaker -= dt;
       sinceHedge += dt;
       if (nextTaker <= 0 && !busy && !hedging) {
@@ -1032,6 +1141,7 @@ export function mountMarketMotion(host, o = {}) {
       document.removeEventListener("visibilitychange", onVisibility);
       for (const id of timers) clearTimeout(id);
       timers.clear();
+      clearChapter();
       svg.remove();
     },
     // The theme changed: re-read the surface so the book's tint suits it, and redraw a still.
@@ -1116,6 +1226,14 @@ export function mountMarketMotion(host, o = {}) {
         lastRead = -1;
         draw();
       }
+    },
+    // Learn runs named scenes; a subsequent play cancels the prior script.
+    play(name) {
+      play(name);
+    },
+    // Learn's reduced-motion key frame.
+    pose(name) {
+      pose(name);
     },
     // A real fill on your bid or ask, drawn the same way as in the illustration.
     fill(side) {

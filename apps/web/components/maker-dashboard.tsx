@@ -46,6 +46,12 @@ import {
   shouldBeginWalletSignIn,
   walletSessionMatches,
 } from "../lib/access";
+import {
+  formatCompactMoney,
+  formatExactMoney,
+  formatMoney,
+  moneyTone,
+} from "../lib/format";
 import { narrate } from "../lib/narrate";
 import { quickPickMarketIds, type MarketQuickPick } from "../lib/quick-picks";
 import { primaryVenue } from "../lib/venues";
@@ -704,24 +710,13 @@ const compact = (value: string | null) =>
   value ? `${value.slice(0, 6)}...${value.slice(-4)}` : "Not set";
 
 const money = (value: number | null, digits = 2) =>
-  value === null
-    ? "-"
-    : new Intl.NumberFormat("en-US", {
-        style: "currency",
-        currency: "USD",
-        minimumFractionDigits: digits,
-        maximumFractionDigits: digits,
-      }).format(value);
+  formatMoney(value, {
+    table: digits > 2,
+    minimumFractionDigits: digits,
+    maximumFractionDigits: digits,
+  });
 
-const compactUsd = (value: number | null) =>
-  value === null
-    ? "-"
-    : new Intl.NumberFormat("en-US", {
-        style: "currency",
-        currency: "USD",
-        notation: "compact",
-        maximumFractionDigits: 1,
-      }).format(value);
+const compactUsd = (value: number | null) => formatCompactMoney(value);
 
 const compactNumber = (value: number | null) =>
   value === null
@@ -1606,7 +1601,6 @@ function DashboardBody() {
       );
       let nextMarkets = current.markets;
       if (selected) {
-        if (current.markets.length === 1) return current;
         nextMarkets = current.markets.filter(
           (item) => item.marketId !== market.id,
         );
@@ -2157,35 +2151,65 @@ function DashboardBody() {
   const rewardRotationBlocked =
     Boolean(snapshot?.running) ||
     (snapshot?.portfolio.grossExposureUsd ?? 0) > 0;
-  const objectiveEvidence =
-    config.strategyObjective === "farming"
-      ? {
-          test: "Rewards per collateral-day rise",
-          evidence: rewards
-            ? `${rewards.account.makerRewardsSui.toFixed(2)} SUI / ${compactUsd(rewards.account.makerVolumeUsd)} flow`
-            : "Awaiting reward data",
-          blindSpot: "Reward USD value and pool denominator",
-        }
-      : config.strategyObjective === "profit"
-        ? {
-            test: "Complete net trading PnL is positive",
-            evidence:
-              performance &&
-              performance.attributed.fills + performance.hedge.fills > 0
-                ? `${money(performance.combinedNetAfterKnownCostsUsd)} known result`
-                : "Awaiting attributed fills",
-            blindSpot: "Markouts, gas, funding, and carry",
-          }
-        : {
-            test: "Farming and profit tests both pass",
-            evidence:
-              rewards &&
-              performance &&
-              performance.attributed.fills + performance.hedge.fills > 0
-                ? `${rewards.account.makerRewardsSui.toFixed(2)} SUI + ${money(performance.combinedNetAfterKnownCostsUsd)} known`
-                : "Rewards live; attributed fills pending",
-            blindSpot: "Reward valuation and complete net costs",
-          };
+  const hasAttributedFills =
+    (performance?.attributed.fills ?? 0) + (performance?.hedge.fills ?? 0) > 0;
+  const objectiveEvidence = [
+    {
+      name: "Farming",
+      mark: rewards ? "✓" : "?",
+      headline: "Rewards per collateral-day rise",
+      evidence: rewards
+        ? `${rewards.account.makerRewardsSui.toFixed(2)} SUI across ${compactUsd(rewards.account.makerVolumeUsd)} of maker flow`
+        : "Awaiting reward data",
+    },
+    {
+      name: "Profit",
+      mark: hasAttributedFills
+        ? (performance?.combinedNetAfterKnownCostsUsd ?? 0) >= 0
+          ? "✓"
+          : "–"
+        : "?",
+      headline: "Known result stays positive after known costs",
+      evidence: hasAttributedFills
+        ? `${money(performance?.combinedNetAfterKnownCostsUsd ?? null)} known result; markouts, gas, funding, and carry remain outside this line`
+        : "Awaiting attributed fills",
+    },
+    {
+      name: "Both",
+      mark:
+        rewards && hasAttributedFills
+          ? (performance?.combinedNetAfterKnownCostsUsd ?? 0) >= 0
+            ? "✓"
+            : "–"
+          : "?",
+      headline: "Rewards and known result both clear their checks",
+      evidence:
+        rewards && hasAttributedFills
+          ? `${rewards.account.makerRewardsSui.toFixed(2)} SUI and ${money(performance?.combinedNetAfterKnownCostsUsd ?? null)} known result`
+          : "Needs both reward and attributed-fill evidence",
+    },
+  ];
+  const performanceVolumeByMarket = (() => {
+    const rows = new Map(
+      (performance?.volumeByMarket ?? []).map((row) => [row.marketId, row]),
+    );
+    for (const fill of performance?.fills ?? []) {
+      if (rows.has(fill.marketId)) continue;
+      rows.set(fill.marketId, {
+        marketId: fill.marketId,
+        symbol: fill.symbol,
+        makerNotionalUsd: Math.abs(fill.notionalUsd),
+        makerFills: 1,
+        takerNotionalUsd: 0,
+        takerFills: 0,
+        realizedPnlUsd: fill.realizedPnlUsd,
+        feesUsd: fill.protocolFeesUsd + fill.estimatedBuilderFeeUsd,
+      });
+    }
+    return [...rows.values()].sort((left, right) =>
+      left.symbol.localeCompare(right.symbol),
+    );
+  })();
   const visibleMarkets = markets.filter((market) => {
     const query = marketQuery.trim().toLowerCase();
     return (
@@ -2869,7 +2893,11 @@ function DashboardBody() {
         onClose={() => selectView("desk")}
       >
         <section className="workspace workspace-strategy">
-          <form className="settings-panel" onSubmit={saveConfig}>
+          <form
+            className="settings-panel"
+            data-strategy-step={strategyStep}
+            onSubmit={saveConfig}
+          >
             <header className="strategy-title">
               <h1>Strategy</h1>
               <p>
@@ -2937,10 +2965,96 @@ function DashboardBody() {
                     ? `Quote ${config.markets.length} selected market${config.markets.length === 1 ? "" : "s"} with ${money(config.quoteSizeUsd)} on each side, and stop before ${money(config.maxRunDrawdownUsd)} of run drawdown.`
                     : "Choose one or more markets before saving this strategy."}
                 </p>
+                <div className="strategy-step-nav">
+                  <button
+                    type="button"
+                    className="button secondary"
+                    onClick={() =>
+                      setStrategyStep((step) => Math.max(0, step - 1))
+                    }
+                    disabled={strategyStep === 0}
+                  >
+                    Back
+                  </button>
+                  <button
+                    type="button"
+                    className="button primary"
+                    onClick={() =>
+                      setStrategyStep((step) => Math.min(4, step + 1))
+                    }
+                    disabled={strategyStep === 4}
+                  >
+                    {strategyStep === 3 ? "Review" : "Next"}
+                  </button>
+                </div>
               </aside>
             </section>
 
-            <fieldset className="objective-control">
+            <section className="strategy-review-step strategy-step strategy-step-review">
+              <h2>Review</h2>
+              <p className="strategy-section-copy">
+                Choose how this saved strategy runs. Live remains unavailable
+                until the server gates are enabled and you confirm the review.
+              </p>
+              <fieldset className="strategy-mode-fieldset">
+                <legend>Mode</legend>
+                <div className="segments">
+                  {(["observe", "paper", "live"] as const).map((mode) => (
+                    <button
+                      key={mode}
+                      type="button"
+                      className={config.mode === mode ? "selected" : ""}
+                      aria-pressed={config.mode === mode}
+                      disabled={mode === "live" && !liveAvailable}
+                      title={
+                        mode === "live" && !liveAvailable
+                          ? "Live trading is off on this server"
+                          : undefined
+                      }
+                      onClick={() => {
+                        if (mode === "live") {
+                          setLiveSheetOpen(true);
+                        } else {
+                          setConfig((current) => ({ ...current, mode }));
+                        }
+                      }}
+                    >
+                      {mode}
+                    </button>
+                  ))}
+                </div>
+                {!liveAvailable && (
+                  <small>Live trading is off on this server</small>
+                )}
+                <button
+                  className="strategy-live-review"
+                  type="button"
+                  onClick={() => setLiveSheetOpen(true)}
+                >
+                  Review live setup
+                </button>
+              </fieldset>
+              <dl className="strategy-review-summary">
+                <div>
+                  <dt>Goal</dt>
+                  <dd>{config.strategyObjective}</dd>
+                </div>
+                <div>
+                  <dt>Markets</dt>
+                  <dd>{config.markets.length} selected</dd>
+                </div>
+                <div>
+                  <dt>Size</dt>
+                  <dd>{money(config.quoteSizeUsd)} per side</dd>
+                </div>
+                <div>
+                  <dt>Limits</dt>
+                  <dd>{money(config.maxRunDrawdownUsd)} drawdown</dd>
+                </div>
+              </dl>
+            </section>
+
+            <fieldset className="objective-control strategy-step strategy-step-goal">
               <legend>Objective</legend>
               <div
                 className="objective-segments"
@@ -2979,7 +3093,7 @@ function DashboardBody() {
               </div>
             </fieldset>
 
-            <fieldset className="rotation-mode-control">
+            <fieldset className="rotation-mode-control strategy-step strategy-step-markets">
               <legend>Rotation</legend>
               <div
                 className="rotation-mode-segments"
@@ -3045,7 +3159,7 @@ function DashboardBody() {
             </fieldset>
 
             <div
-              className="strategy-trial"
+              className="strategy-trial strategy-step strategy-step-review"
               aria-label="Three-cycle strategy trial"
             >
               <div className="strategy-trial-heading">
@@ -3131,7 +3245,7 @@ function DashboardBody() {
               )}
             </div>
 
-            <fieldset className="account-pair-control strategy-section strategy-hedging">
+            <fieldset className="account-pair-control strategy-section strategy-hedging strategy-step strategy-step-hedging">
               <legend>Hedging</legend>
               <p className="strategy-section-copy">
                 Use a separate account to offset fills without giving either
@@ -3351,7 +3465,7 @@ function DashboardBody() {
               )}
             </fieldset>
 
-            <fieldset className="strategy-section strategy-profile-section">
+            <fieldset className="strategy-section strategy-profile-section strategy-step strategy-step-goal">
               <legend>Risk profile</legend>
               <p className="strategy-section-copy">
                 Pick a starting policy, then tune individual controls.
@@ -3396,7 +3510,7 @@ function DashboardBody() {
               </div>
             </fieldset>
 
-            <fieldset className="pair-picker strategy-section strategy-markets-section">
+            <fieldset className="pair-picker strategy-section strategy-markets-section strategy-step strategy-step-markets">
               <legend>Markets</legend>
               <p className="strategy-section-copy">
                 Choose the venue markets this strategy may quote.
@@ -3574,7 +3688,46 @@ function DashboardBody() {
               </div>
             </fieldset>
 
-            <details className="market-overrides strategy-market-overrides">
+            <section className="strategy-market-ranks strategy-step strategy-step-markets">
+              <header>
+                <div>
+                  <span className="eyebrow">Market rank</span>
+                  <h2>Eligible pairs</h2>
+                </div>
+                <span>{sortedRewardOpportunities.length} ranked</span>
+              </header>
+              <div className="strategy-market-ranks-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Rank</th>
+                      <th>Pair</th>
+                      <th>Score</th>
+                      <th>24h flow</th>
+                      <th>Depth</th>
+                      <th>Policy</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {sortedRewardOpportunities.map((opportunity, index) => (
+                      <tr key={opportunity.marketId}>
+                        <td>{index + 1}</td>
+                        <td>{opportunity.symbol}</td>
+                        <td>{opportunity.score}</td>
+                        <td>{compactUsd(opportunity.volume24hUsd)}</td>
+                        <td>{compactUsd(opportunity.balancedDepth50BpsUsd)}</td>
+                        <td>
+                          {money(opportunity.suggestedQuoteSizeUsd)} /{" "}
+                          {opportunity.suggestedSpreadBps} bp
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </section>
+
+            <details className="market-overrides strategy-market-overrides strategy-step strategy-step-markets">
               <summary>
                 <SlidersHorizontal size={15} />
                 <span>Per-market overrides</span>
@@ -3719,7 +3872,102 @@ function DashboardBody() {
               </div>
             </details>
 
-            <section className="strategy-section strategy-capital-section">
+            <section className="strategy-limit-sentences strategy-step strategy-step-size">
+              <h2>Size and limits</h2>
+              <p>
+                Stop this run after
+                <label>
+                  <span className="sr-only">Maximum run drawdown in USD</span>
+                  <input
+                    aria-label="Maximum run drawdown in USD"
+                    type="number"
+                    min="1"
+                    value={config.maxRunDrawdownUsd}
+                    onChange={(event) =>
+                      setConfig((current) => ({
+                        ...current,
+                        maxRunDrawdownUsd: Number(event.target.value),
+                      }))
+                    }
+                  />
+                </label>
+                of run drawdown.
+              </p>
+              <p>
+                Hold no more than
+                <label>
+                  <span className="sr-only">Maximum inventory in USD</span>
+                  <input
+                    aria-label="Maximum inventory in USD"
+                    type="number"
+                    min="0.01"
+                    step="0.01"
+                    value={config.maxInventoryUsd}
+                    onChange={(event) =>
+                      setConfig((current) => ({
+                        ...current,
+                        maxInventoryUsd: Number(event.target.value),
+                      }))
+                    }
+                  />
+                </label>
+                in one market.
+              </p>
+              <p>
+                Keep total gross exposure below
+                <label>
+                  <span className="sr-only">Maximum gross exposure in USD</span>
+                  <input
+                    aria-label="Maximum gross exposure in USD"
+                    type="number"
+                    min={config.maxInventoryUsd}
+                    step="0.01"
+                    value={config.maxGrossExposureUsd}
+                    onChange={(event) => {
+                      const maxGrossExposureUsd = Number(event.target.value);
+                      setConfig((current) => ({
+                        ...current,
+                        maxGrossExposureUsd,
+                        rebalanceGrossExposureUsd: Math.min(
+                          current.rebalanceGrossExposureUsd,
+                          maxGrossExposureUsd,
+                        ),
+                      }));
+                    }}
+                  />
+                </label>
+                across markets.
+              </p>
+              <p>
+                Pause if unrealized loss reaches
+                <label>
+                  <span className="sr-only">
+                    Maximum unrealized loss in USD
+                  </span>
+                  <input
+                    aria-label="Maximum unrealized loss in USD"
+                    type="number"
+                    min="1"
+                    value={config.maxUnrealizedLossUsd}
+                    onChange={(event) =>
+                      setConfig((current) => ({
+                        ...current,
+                        maxUnrealizedLossUsd: Number(event.target.value),
+                      }))
+                    }
+                  />
+                </label>
+                .
+              </p>
+              {quoteSizeError && (
+                <p className="field-error">{quoteSizeError}</p>
+              )}
+              {grossExposureError && (
+                <p className="field-error">{grossExposureError}</p>
+              )}
+            </section>
+
+            <section className="strategy-section strategy-capital-section strategy-step strategy-step-size">
               <h2>Capital</h2>
               <p className="strategy-section-copy">
                 Set execution mode, order size, and the minimum edge quoted on
@@ -3816,7 +4064,7 @@ function DashboardBody() {
               </div>
             </section>
 
-            <details className="strategy-section strategy-advanced">
+            <details className="strategy-section strategy-advanced strategy-step strategy-step-size">
               <summary>Advanced</summary>
               <p className="strategy-section-copy">
                 Portfolio limits, quote guards, and timing controls.
@@ -4134,7 +4382,10 @@ function DashboardBody() {
             </details>
 
             {configDirty && (
-              <div className="strategy-save-bar" role="status">
+              <div
+                className="strategy-save-bar strategy-step strategy-step-review"
+                role="status"
+              >
                 <span>Unsaved changes</span>
                 <div>
                   <button
@@ -4245,28 +4496,31 @@ function DashboardBody() {
                       <span>{compact(row.id)}</span>
                     </td>
                     <td>
-                      <button
-                        className="market-add-strategy"
-                        type="button"
-                        disabled={
-                          config.markets.some(
-                            (market) => market.marketId === row.id,
-                          ) || config.markets.length >= MAX_SELECTED_MARKETS
-                        }
-                        onClick={() => {
-                          const market = markets.find(
-                            (item) => item.id === row.id,
-                          );
-                          if (market) toggleMarket(market);
-                          selectView("strategy");
-                        }}
-                      >
-                        {config.markets.some(
+                      {(() => {
+                        const selected = config.markets.some(
                           (market) => market.marketId === row.id,
-                        )
-                          ? "In strategy"
-                          : "Add to strategy"}
-                      </button>
+                        );
+                        return (
+                          <button
+                            className={
+                              selected
+                                ? "market-add-strategy is-selected"
+                                : "market-add-strategy"
+                            }
+                            type="button"
+                            aria-pressed={selected}
+                            onClick={() => {
+                              const market = markets.find(
+                                (item) => item.id === row.id,
+                              );
+                              if (market) toggleMarket(market);
+                              if (!selected) selectView("strategy");
+                            }}
+                          >
+                            {selected ? "In strategy" : "Add to strategy"}
+                          </button>
+                        );
+                      })()}
                     </td>
                     <td>
                       <VenueChip venue={primaryVenue} />
@@ -4427,27 +4681,26 @@ function DashboardBody() {
           >
             <header>
               <h3>Is the goal working?</h3>
-              <p>What the desk can show today, and what is still unmeasured.</p>
+              <p>
+                Each goal keeps its measured evidence separate from what still
+                needs a longer observation window.
+              </p>
             </header>
-            <div>
-              <span>Active objective</span>
-              <strong>
-                {config.strategyObjective[0]?.toUpperCase()}
-                {config.strategyObjective.slice(1)}
-              </strong>
-            </div>
-            <div>
-              <span>Pass condition</span>
-              <strong>{objectiveEvidence.test}</strong>
-            </div>
-            <div>
-              <span>Current evidence</span>
-              <strong>{objectiveEvidence.evidence}</strong>
-            </div>
-            <div>
-              <span>Still unmeasured</span>
-              <strong>{objectiveEvidence.blindSpot}</strong>
-            </div>
+            {objectiveEvidence.map((objective) => (
+              <div
+                key={objective.name}
+                className={
+                  config.strategyObjective === objective.name.toLowerCase()
+                    ? "is-active"
+                    : undefined
+                }
+              >
+                <b aria-hidden="true">{objective.mark}</b>
+                <span>{objective.name}</span>
+                <strong>{objective.headline}</strong>
+                <p>{objective.evidence}</p>
+              </div>
+            ))}
           </section>
 
           <div className="reward-command">
@@ -4691,10 +4944,18 @@ function DashboardBody() {
               <span>Net result</span>
               <strong
                 className={
-                  (performance?.combinedNetAfterKnownCostsUsd ?? 0) < 0
+                  moneyTone(performance?.combinedNetAfterKnownCostsUsd ?? 0) ===
+                  "loss"
                     ? "negative-number"
-                    : ""
+                    : moneyTone(
+                          performance?.combinedNetAfterKnownCostsUsd ?? 0,
+                        ) === "gain"
+                      ? "positive-number"
+                      : ""
                 }
+                title={formatExactMoney(
+                  performance?.combinedNetAfterKnownCostsUsd ?? 0,
+                )}
               >
                 {money(performance?.combinedNetAfterKnownCostsUsd ?? 0)}
               </strong>
@@ -4820,10 +5081,10 @@ function DashboardBody() {
                   </tr>
                 </thead>
                 <tbody>
-                  {performance?.volumeByMarket.length ? (
-                    performance.volumeByMarket.map((row) => {
+                  {performanceVolumeByMarket.length ? (
+                    performanceVolumeByMarket.map((row) => {
                       const totalVolume =
-                        (performance?.volumeByMarket ?? []).reduce(
+                        performanceVolumeByMarket.reduce(
                           (sum, value) =>
                             sum +
                             value.makerNotionalUsd +
@@ -4865,7 +5126,7 @@ function DashboardBody() {
                           {expanded && (
                             <tr className="performance-market-fills">
                               <td colSpan={5}>
-                                {performance.fills
+                                {(performance?.fills ?? [])
                                   .filter(
                                     (fill) => fill.marketId === row.marketId,
                                   )
@@ -4879,7 +5140,7 @@ function DashboardBody() {
                                       · {fill.side} {money(fill.notionalUsd)}
                                     </span>
                                   ))}
-                                {!performance.fills.some(
+                                {!(performance?.fills ?? []).some(
                                   (fill) => fill.marketId === row.marketId,
                                 ) && (
                                   <span>
@@ -5009,59 +5270,62 @@ function DashboardBody() {
             : {})}
         />
 
-        <section className="lower-grid lower-grid-venues">
-          <div className="fee-panel">
-            <div className="section-heading compact">
-              <div>
-                <span className="eyebrow">Account inspection</span>
-                <h2>Venue fee</h2>
+        {identity.operator && (
+          <section className="lower-grid lower-grid-venues">
+            <div className="fee-panel">
+              <div className="section-heading compact">
+                <div>
+                  <span className="eyebrow">Account inspection</span>
+                  <h2>Venue fee</h2>
+                </div>
+                <Search size={18} />
               </div>
-              <Search size={18} />
-            </div>
-            <p className="panel-copy">
-              {builderCode
-                ? `Venue code #${builderCode.integratorId} charges ${(builderCode.integratorFee * 10_000).toFixed(1)} bp on filled notional. Your one-time approval caps it at that exact rate and remains revocable.`
-                : "Venue incentives are not active. Orders carry no venue fee code until the operator completes on-chain registration."}
-            </p>
-            {builderCode && (
-              <p className="fee-caveat">
-                Each market's current maker fee is included in its known fill
-                cost. A 1 bp venue fee can reduce a rebate or turn a narrow
-                spread negative. Maker reports it separately from strategy PnL.
+              <p className="panel-copy">
+                {builderCode
+                  ? `Venue code #${builderCode.integratorId} charges ${(builderCode.integratorFee * 10_000).toFixed(1)} bp on filled notional. Your one-time approval caps it at that exact rate and remains revocable.`
+                  : "Venue incentives are not active. Orders carry no venue fee code until the operator completes on-chain registration."}
               </p>
-            )}
-            <form className="fee-form" onSubmit={inspectFee}>
-              <input
-                aria-label="Integrator ID"
-                type="number"
-                min="0"
-                placeholder="Integrator ID"
-                value={integratorId}
-                onChange={(event) => setIntegratorId(event.target.value)}
-              />
-              <button
-                className="button secondary"
-                disabled={!setup.setup || !integratorId || Boolean(busy)}
-              >
-                Inspect
-              </button>
-            </form>
-            {inspection && (
-              <div
-                className={
-                  inspection.exists ? "fee-result warning" : "fee-result"
-                }
-              >
-                <strong>
-                  {inspection.exists
-                    ? `Approved up to ${((inspection.maxIntegratorFee ?? 0) * 100).toFixed(3)}%`
-                    : "No approval found"}
-                </strong>
-                <span>{new Date(inspection.checkedAt).toLocaleString()}</span>
-              </div>
-            )}
-          </div>
-        </section>
+              {builderCode && (
+                <p className="fee-caveat">
+                  Each market's current maker fee is included in its known fill
+                  cost. A 1 bp venue fee can reduce a rebate or turn a narrow
+                  spread negative. Maker reports it separately from strategy
+                  PnL.
+                </p>
+              )}
+              <form className="fee-form" onSubmit={inspectFee}>
+                <input
+                  aria-label="Integrator ID"
+                  type="number"
+                  min="0"
+                  placeholder="Integrator ID"
+                  value={integratorId}
+                  onChange={(event) => setIntegratorId(event.target.value)}
+                />
+                <button
+                  className="button secondary"
+                  disabled={!setup.setup || !integratorId || Boolean(busy)}
+                >
+                  Inspect
+                </button>
+              </form>
+              {inspection && (
+                <div
+                  className={
+                    inspection.exists ? "fee-result warning" : "fee-result"
+                  }
+                >
+                  <strong>
+                    {inspection.exists
+                      ? `Approved up to ${((inspection.maxIntegratorFee ?? 0) * 100).toFixed(3)}%`
+                      : "No approval found"}
+                  </strong>
+                  <span>{new Date(inspection.checkedAt).toLocaleString()}</span>
+                </div>
+              )}
+            </div>
+          </section>
+        )}
 
         {identity.operator && (
           <section className="operator-panel">

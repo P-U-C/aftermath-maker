@@ -83,6 +83,7 @@ export function AccessScreen({
   );
   const [twitterHandle, setTwitterHandle] = useState("");
   const [company, setCompany] = useState("");
+  const [illustrationKey, setIllustrationKey] = useState(0);
 
   useEffect(() => {
     if (denied && accessRequestToken) {
@@ -98,6 +99,21 @@ export function AccessScreen({
     event.preventDefault();
     if (!accessRequestToken) return;
     onRequestAccess({ accessRequestToken, twitterHandle, company });
+  }
+
+  function openRequest() {
+    if (accessRequestToken) {
+      setRequestOpen(true);
+    } else {
+      onVerify();
+    }
+  }
+
+  function replayIllustration() {
+    setIllustrationKey((current) => current + 1);
+    document
+      .getElementById("maker-illustration")
+      ?.scrollIntoView({ behavior: "smooth", block: "center" });
   }
 
   const trustList = (
@@ -152,6 +168,24 @@ export function AccessScreen({
           <SpreadMark state="live" />
           <strong>Maker</strong>
         </div>
+        {landing && (
+          <nav className="access-landing-nav" aria-label="Landing">
+            <a href="#how-it-works">How it works</a>
+            <a href="#safety">Safety</a>
+            <button type="button" onClick={openRequest}>
+              Request access
+            </button>
+            {connected ? (
+              <Button variant="quiet" onClick={onVerify} disabled={busy}>
+                Sign in
+              </Button>
+            ) : (
+              <div className="access-header-connect">
+                <ConnectButton>Sign in</ConnectButton>
+              </div>
+            )}
+          </nav>
+        )}
         {connected && (
           <div className="access-header-wallet">
             <WalletControl />
@@ -268,21 +302,24 @@ export function AccessScreen({
                     <ConnectButton>Continue with wallet</ConnectButton>
                   </div>
                 )}
-                <button
-                  className="access-request-link"
-                  type="button"
-                  onClick={() => {
-                    if (accessRequestToken) {
-                      setRequestOpen(true);
-                    } else {
-                      onVerify();
-                    }
-                  }}
-                >
-                  {accessRequestToken
-                    ? "Request access"
-                    : "Verify wallet to request access"}
-                </button>
+                <div className="access-hero-links">
+                  <button
+                    className="access-request-link"
+                    type="button"
+                    onClick={openRequest}
+                  >
+                    {accessRequestToken
+                      ? "Request access"
+                      : "Verify wallet to request access"}
+                  </button>
+                  <button
+                    className="access-watch-link"
+                    type="button"
+                    onClick={replayIllustration}
+                  >
+                    Watch how it works
+                  </button>
+                </div>
               </div>
             )}
 
@@ -313,9 +350,11 @@ export function AccessScreen({
         <>
           <section
             className="access-landing-stage"
+            id="maker-illustration"
             aria-label="How a market is made"
           >
             <MarketMotion
+              key={illustrationKey}
               sim
               narrate
               mid={0.021441}
@@ -345,6 +384,20 @@ export function AccessScreen({
                 <span>1</span>
                 <strong>Pair two accounts</strong>
                 <p>One rests your quotes. The other can reduce inventory.</p>
+                <div
+                  className="access-mini access-mini-pair"
+                  aria-hidden="true"
+                >
+                  <div>
+                    <b>Maker</b>
+                    <small>Rests your bid and ask</small>
+                  </div>
+                  <i>+</i>
+                  <div>
+                    <b>Taker</b>
+                    <small>Hedges at market</small>
+                  </div>
+                </div>
               </li>
               <li>
                 <span>2</span>
@@ -352,15 +405,99 @@ export function AccessScreen({
                 <p>
                   Choose rewards, profit, or both from the markets you trust.
                 </p>
+                <div
+                  className="access-mini access-mini-picks"
+                  aria-hidden="true"
+                >
+                  <b>Best for rewards</b>
+                  <span>Balanced</span>
+                  <span>Quiet books</span>
+                </div>
               </li>
               <li>
                 <span>3</span>
                 <strong>Paper first, then live</strong>
                 <p>See the same decision-making against the real book first.</p>
+                <div
+                  className="access-mini access-mini-modes"
+                  aria-hidden="true"
+                >
+                  <span>Observe</span>
+                  <b>Paper</b>
+                  <span>Live</span>
+                </div>
               </li>
             </ol>
           </section>
-          <section className="access-landing-trust">{trustList}</section>
+          <section className="access-landing-away" aria-labelledby="while-away">
+            <header>
+              <h2 id="while-away">While you&apos;re away.</h2>
+              <p>
+                The desk works within the limits you set, and keeps a running
+                account of why it did each thing.
+              </p>
+            </header>
+            <div className="access-away-grid">
+              <article>
+                <ArrowRight size={20} aria-hidden="true" />
+                <h3>Quotes both sides</h3>
+                <p>
+                  A bid under the price and an ask over it, refreshed as price
+                  moves.
+                </p>
+              </article>
+              <article>
+                <ShieldCheck size={20} aria-hidden="true" />
+                <h3>Hedges what fills</h3>
+                <p>
+                  Past your trigger, the Taker account trades the other way.
+                </p>
+              </article>
+              <article>
+                <CircleMinus size={20} aria-hidden="true" />
+                <h3>Stops at your limits</h3>
+                <p>
+                  Exposure, inventory, and drawdown caps stop it before
+                  they&apos;re crossed.
+                </p>
+              </article>
+              <article>
+                <CheckCircle2 size={20} aria-hidden="true" />
+                <h3>Explains itself</h3>
+                <p>Every number has a line of plain English.</p>
+                <q>
+                  Your bid at $0.021393 is waiting for a seller. If it fills
+                  you&apos;ll hold $1.04 of MON.
+                </q>
+              </article>
+            </div>
+          </section>
+          <section className="access-landing-trust" id="safety">
+            {trustList}
+          </section>
+          <section className="access-landing-closing">
+            <div>
+              <h2>Open your desk.</h2>
+              <p>
+                Invite only for now. Connect a wallet to check, or request
+                access.
+              </p>
+            </div>
+            {connected ? (
+              <Button
+                variant="quiet"
+                size="large"
+                onClick={onVerify}
+                disabled={busy}
+              >
+                Sign in
+              </Button>
+            ) : (
+              <div className="access-closing-connect">
+                <ConnectButton>Continue with wallet</ConnectButton>
+              </div>
+            )}
+          </section>
           <footer className="access-landing-foot">{venueLine}</footer>
         </>
       )}

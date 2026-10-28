@@ -38,11 +38,20 @@ const showFlattenSheet = process.argv.includes("--flatten-sheet");
 const showLiveSheet = process.argv.includes("--live-sheet");
 const showAccountEditor = process.argv.includes("--account-editor");
 const verifyConfigSave = process.argv.includes("--verify-config-save");
+const verifyStrategyBuilder = process.argv.includes(
+  "--verify-strategy-builder",
+);
+const verifyPerformance = process.argv.includes("--verify-performance");
+const verifyExplain = process.argv.includes("--verify-explain");
+const verifyLearn = process.argv.includes("--verify-learn");
+const verifyMotion = process.argv.includes("--verify-motion");
 const exerciseAccessRequest = process.argv.includes("--access-request");
 const outputDirectory = path.resolve(
   projectRoot,
   option("--output", defaultOutput),
 );
+const deviceScaleFactor = Number(option("--scale", "2"));
+const learnChapter = option("--learn-chapter", null);
 
 const makerViews = [
   "desk",
@@ -58,10 +67,15 @@ const navigationViews = makerViews.filter(
   (view) => view !== "accounts" && view !== "learn",
 );
 
-function selectedViews() {
+function selectedViews(stateName) {
   const requested = option("--view", null);
   if (!requested) return [null];
-  if (requested === "all") return makerViews;
+  if (requested === "all") {
+    const fixture = fixtureStates[stateName];
+    return fixture.auth.status === 200 && fixture.setup.setup
+      ? makerViews
+      : [null];
+  }
   if (!makerViews.includes(requested)) {
     throw new Error(
       `Unknown view "${requested}". Choose: ${makerViews.join(", ")}, all`,
@@ -145,7 +159,7 @@ async function capture(browser, stateName, captureConfig, view) {
   const fixture = fixtureStates[stateName];
   const context = await browser.newContext({
     viewport: captureConfig.viewport,
-    deviceScaleFactor: 2,
+    deviceScaleFactor,
     colorScheme: captureConfig.colorScheme,
     reducedMotion: captureConfig.reducedMotion,
     locale: "en-US",
@@ -155,6 +169,7 @@ async function capture(browser, stateName, captureConfig, view) {
   const browserErrors = [];
   const remoteRequests = [];
   let capturedConfigBody = null;
+  let motionChangeArmed = false;
   const exerciseStop =
     stateName === "live-running" &&
     captureConfig.name === "desktop-light" &&
@@ -216,6 +231,19 @@ async function capture(browser, stateName, captureConfig, view) {
       return;
     }
     if (
+      verifyMotion &&
+      request.method() === "POST" &&
+      url.pathname.endsWith("/api/runtime/cycle")
+    ) {
+      motionChangeArmed = true;
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: "{}",
+      });
+      return;
+    }
+    if (
       exerciseStop &&
       request.method() === "POST" &&
       url.pathname.endsWith("/api/runtime/cycle")
@@ -244,6 +272,24 @@ async function capture(browser, stateName, captureConfig, view) {
     }
 
     const response = apiResponse(fixture, url);
+    if (
+      verifyMotion &&
+      motionChangeArmed &&
+      stateName === "paper-running" &&
+      url.pathname.endsWith("/api/status") &&
+      response.status === 200
+    ) {
+      const body = structuredClone(response.body);
+      body.snapshot.balances.equityUsd =
+        (body.snapshot.balances.equityUsd ?? 0) + 1;
+      body.snapshot.portfolio.grossExposureUsd += 1;
+      await route.fulfill({
+        status: response.status,
+        contentType: "application/json",
+        body: JSON.stringify(body),
+      });
+      return;
+    }
     await route.fulfill({
       status: response.status,
       contentType: "application/json",
@@ -262,7 +308,13 @@ async function capture(browser, stateName, captureConfig, view) {
   });
 
   try {
-    await page.goto(`${baseUrl}${view ? `#${view}` : ""}`, {
+    const hash =
+      view === "learn" && learnChapter
+        ? "#learn/" + encodeURIComponent(learnChapter)
+        : view
+          ? "#" + view
+          : "";
+    await page.goto(baseUrl + hash, {
       waitUntil: "networkidle",
     });
     await waitForFixture(page, stateName);
@@ -439,6 +491,25 @@ async function capture(browser, stateName, captureConfig, view) {
       }
     }
     if (
+      verifyPerformance &&
+      stateName === "paper-running" &&
+      captureConfig.name === "desktop-light" &&
+      view === "performance"
+    ) {
+      await page.getByRole("button", { name: "MON", exact: true }).click();
+      const monFills = page.locator(".performance-market-fills");
+      await monFills.waitFor();
+      const monText = await monFills.textContent();
+      if (monText?.includes("NEAR")) {
+        throw new Error("MON volume row included a fill from NEAR");
+      }
+      await page.getByRole("button", { name: "NEAR", exact: true }).click();
+      await page
+        .locator(".performance-market-fills")
+        .getByText(/ask \$1\.04/)
+        .waitFor();
+    }
+    if (
       showLiveSheet &&
       stateName === "stopped" &&
       (view === null || view === "strategy")
@@ -462,10 +533,39 @@ async function capture(browser, stateName, captureConfig, view) {
       captureConfig.name === "desktop-light" &&
       view === "strategy"
     ) {
+      if (verifyStrategyBuilder) {
+        for (const step of [
+          "Goal",
+          "Markets",
+          "Size and limits",
+          "Hedging",
+          "Review",
+        ]) {
+          await page
+            .getByRole("button", { name: new RegExp(step) })
+            .first()
+            .click();
+          await page
+            .locator(
+              `.settings-panel[data-strategy-step="${["Goal", "Markets", "Size and limits", "Hedging", "Review"].indexOf(step)}"]`,
+            )
+            .waitFor();
+        }
+        await page
+          .getByRole("button", { name: /Size and limits/ })
+          .first()
+          .click();
+      }
       const nextSpread = fixture.config.config.spreadBps + 1;
       await page
         .getByRole("spinbutton", { name: "Spread in basis points" })
         .fill(String(nextSpread));
+      if (verifyStrategyBuilder) {
+        await page
+          .getByRole("button", { name: /Review/ })
+          .first()
+          .click();
+      }
       await page.getByRole("button", { name: "Save strategy" }).click();
       await page.getByText("Unsaved changes").waitFor({ state: "hidden" });
       const successNotice = page.locator(".notice.notice-success");
@@ -493,6 +593,147 @@ async function capture(browser, stateName, captureConfig, view) {
       );
     }
     await page.waitForTimeout(100);
+
+    if (
+      verifyLearn &&
+      stateName === "paper-running" &&
+      view === "learn" &&
+      captureConfig.name === "desktop-light"
+    ) {
+      const expectedScenes = [
+        ["spread", "play spread"],
+        ["fills", "play fills"],
+        ["skew", "play skew"],
+        ["hedge", "play hedge"],
+        ["rewards", "rewards"],
+      ];
+      for (const [id, scene] of expectedScenes) {
+        await page
+          .locator("#" + id)
+          .getByRole("button")
+          .click();
+        await page.getByText("Scene: " + scene, { exact: true }).waitFor();
+      }
+      await page.goto(baseUrl + "#learn/hedge", { waitUntil: "networkidle" });
+      await page.locator('[data-view="learn"]:not([hidden])').waitFor();
+      await page.waitForTimeout(600);
+      const deepLinkState = await page.evaluate(() => ({
+        hash: window.location.hash,
+        active: document.querySelector(".learn-chapters button.is-active")
+          ?.parentElement?.id,
+      }));
+      if (deepLinkState.active !== "hedge") {
+        throw new Error(
+          "Learn deep link selected " + JSON.stringify(deepLinkState),
+        );
+      }
+      process.stdout.write(
+        `${stateName}/${view}/${captureConfig.name}: Learn chapters and deep link play their scenes\n`,
+      );
+    }
+
+    if (
+      verifyExplain &&
+      fixture.auth.status === 200 &&
+      ["desk", "strategy", "markets", "performance", "venues"].includes(view) &&
+      ["desktop-light", "phone-dark"].includes(captureConfig.name)
+    ) {
+      const explain =
+        view === "strategy" && captureConfig.viewport.width <= 390
+          ? page.locator(".strategy-mobile-explain")
+          : page.getByRole("button", {
+              name: "Explain",
+              exact: true,
+            });
+      if (await page.locator(".maker-coach").count()) {
+        throw new Error("Explain opened before the user opted in");
+      }
+      const notNow = page.getByRole("button", { name: "Not now", exact: true });
+      if (await notNow.count()) await notNow.click({ force: true });
+      await explain.click();
+      await page.locator(".maker-coach").waitFor();
+      await page.waitForTimeout(300);
+      const collisions = await page.evaluate(() => {
+        const overlaps = (first, second) =>
+          first.left < second.right &&
+          first.right > second.left &&
+          first.top < second.bottom &&
+          first.bottom > second.top;
+        const notes = Array.from(
+          document.querySelectorAll(".maker-coach-note"),
+        ).map((node) => node.getBoundingClientRect());
+        const targets = Array.from(
+          document.querySelectorAll(".maker-coach-target"),
+        ).map((node) => node.getBoundingClientRect());
+        const noteOverlap = notes.some((note, index) =>
+          notes.slice(index + 1).some((other) => overlaps(note, other)),
+        );
+        const targetOverlap = notes.some((note) =>
+          targets.some((target) => overlaps(note, target)),
+        );
+        return {
+          noteOverlap,
+          targetOverlap,
+          notes: notes.length,
+          targets: targets.length,
+        };
+      });
+      if (collisions.noteOverlap || collisions.targetOverlap) {
+        throw new Error(
+          `${stateName}/${view}/${captureConfig.name} Explain overlaps: ${JSON.stringify(collisions)}`,
+        );
+      }
+      await page.keyboard.press("Escape");
+      await page.locator(".maker-coach").waitFor({ state: "hidden" });
+      if (
+        !(await explain.evaluate((node) => node === document.activeElement))
+      ) {
+        throw new Error("Explain did not return focus to its switch");
+      }
+      process.stdout.write(
+        `${stateName}/${view}/${captureConfig.name}: Explain targets and notes do not overlap\n`,
+      );
+    }
+
+    if (
+      verifyMotion &&
+      stateName === "paper-running" &&
+      captureConfig.name === "desktop-light" &&
+      view === "desk"
+    ) {
+      const number = page.locator('[data-motion-number="maker-exposure"]');
+      await page.getByRole("button", { name: "Refresh market" }).click();
+      await number.locator("..").waitFor();
+      await page
+        .locator('[data-motion-number="maker-exposure"].is-changing')
+        .waitFor();
+      await page.screenshot({
+        path: path.join(outputDirectory, "motion-number-mid.png"),
+        fullPage: false,
+      });
+      await page.waitForTimeout(260);
+      if (
+        await number.evaluate((node) => node.classList.contains("is-changing"))
+      ) {
+        throw new Error("Number transition did not settle after 200ms");
+      }
+      await page.screenshot({
+        path: path.join(outputDirectory, "motion-number-settled.png"),
+        fullPage: false,
+      });
+      await page.waitForTimeout(10_000);
+      const lingeringAnimations = await page.evaluate(() =>
+        document.getAnimations().map((animation) => animation.animationName),
+      );
+      if (lingeringAnimations.length) {
+        throw new Error(
+          `Motion remained after ten seconds without data: ${lingeringAnimations.join(", ")}`,
+        );
+      }
+      process.stdout.write(
+        `${stateName}/${view}/${captureConfig.name}: captured number mid-transition and settled; no idle motion after ten seconds\n`,
+      );
+    }
 
     if (
       fixture.auth.status === 200 &&
@@ -524,6 +765,47 @@ async function capture(browser, stateName, captureConfig, view) {
       scrollWidth: document.documentElement.scrollWidth,
       innerWidth: window.innerWidth,
     }));
+    const clippedText = await page.evaluate(() => {
+      const selectors = [
+        ".desk-market-row > *",
+        ".desk-fill-row > *",
+        ".desk-event-row > *",
+        ".market-table th",
+        ".market-table td",
+        ".reward-table th",
+        ".reward-table td",
+        ".performance-volume-table-wrap th",
+        ".performance-volume-table-wrap td",
+        ".performance-metrics strong",
+        ".performance-v3-stats strong",
+      ];
+      return selectors
+        .flatMap((selector) => Array.from(document.querySelectorAll(selector)))
+        .filter((element) => {
+          if (!(element instanceof HTMLElement)) return false;
+          const style = getComputedStyle(element);
+          const text = element.textContent?.trim() ?? "";
+          return (
+            text.length > 0 &&
+            style.display !== "none" &&
+            style.visibility !== "hidden" &&
+            element.getBoundingClientRect().width > 0 &&
+            element.scrollWidth > element.clientWidth + 1
+          );
+        })
+        .slice(0, 20)
+        .map((element) => ({
+          selector: element.className,
+          text: element.textContent?.trim().slice(0, 80),
+          scrollWidth: element.scrollWidth,
+          clientWidth: element.clientWidth,
+        }));
+    });
+    if (clippedText.length) {
+      throw new Error(
+        `${stateName}/${captureConfig.name} clips table or log text: ${JSON.stringify(clippedText)}`,
+      );
+    }
     const contrastFailures = await page.evaluate(() => {
       const style = getComputedStyle(document.documentElement);
       const rgb = (token) => {
@@ -711,7 +993,7 @@ async function capture(browser, stateName, captureConfig, view) {
 
     const file = path.join(
       outputDirectory,
-      `${stateName}${view ? `-${view}` : ""}${showFlattenSheet ? "-flatten" : ""}${showLiveSheet ? "-live" : ""}-${captureConfig.name}.png`,
+      `${stateName}${view ? `-${view}` : ""}${learnChapter ? `-${learnChapter}` : ""}${showFlattenSheet ? "-flatten" : ""}${showLiveSheet ? "-live" : ""}-${captureConfig.name}.png`,
     );
     await page.screenshot({ path: file, fullPage: false });
     process.stdout.write(
@@ -797,7 +1079,7 @@ const browser = await chromium.launch({
 
 try {
   for (const stateName of selectedStates()) {
-    for (const view of selectedViews()) {
+    for (const view of selectedViews(stateName)) {
       for (const captureConfig of selectedCaptures()) {
         await capture(browser, stateName, captureConfig, view);
       }

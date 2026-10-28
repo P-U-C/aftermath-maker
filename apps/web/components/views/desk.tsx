@@ -7,17 +7,21 @@ import {
   Play,
   RefreshCw,
 } from "lucide-react";
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import {
+  formatEventTimestamp,
+  formatExactMoney,
   formatMoney,
   formatSignedMoney,
   formatTimestamp,
   moneyTone,
 } from "../../lib/format";
 import type { VenueDescriptor } from "../../lib/venues";
-import { Button, Card, ListRow, Meter, Sheet } from "../ui/primitives";
+import { AnimatedNumber } from "../ui/animated-number";
 import { GlossaryTerm } from "../ui/glossary-term";
+import { Button, Card, ListRow, Meter, Sheet } from "../ui/primitives";
+import { useRowEnter } from "../ui/use-row-enter";
 import {
   MarketMotion,
   type MarketBook,
@@ -121,9 +125,28 @@ function Freshness({
   const parsed = timestamp ? Date.parse(timestamp) : Number.NaN;
   const stale =
     Number.isFinite(parsed) && Date.now() - parsed > Math.max(1, staleAfterMs);
+  const lastTimestamp = useRef(timestamp);
+  const [fresh, setFresh] = useState(false);
+
+  useEffect(() => {
+    if (timestamp === lastTimestamp.current) return;
+    lastTimestamp.current = timestamp;
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+    setFresh(true);
+    const timer = window.setTimeout(() => setFresh(false), 400);
+    return () => window.clearTimeout(timer);
+  }, [timestamp]);
 
   return (
-    <span className={stale ? "desk-freshness is-stale" : "desk-freshness"}>
+    <span
+      className={[
+        "desk-freshness",
+        stale ? "is-stale" : null,
+        fresh ? "is-fresh" : null,
+      ]
+        .filter(Boolean)
+        .join(" ")}
+    >
       {formatTimestamp(timestamp)}
     </span>
   );
@@ -177,6 +200,8 @@ export function DeskView({
   const inventoryScaleUsd = risk.hedgeTriggerUsd ?? risk.grossExposureLimitUsd;
   const seenFillIds = useRef(new Set<string>());
   const seenHedgeDigest = useRef<string | null>(null);
+  const fillEnterClass = useRowEnter(fills);
+  const eventEnterClass = useRowEnter(events);
 
   useEffect(() => {
     const update = {
@@ -237,15 +262,33 @@ export function DeskView({
         <section className="desk-hero">
           <div>
             <span>Net known result, last 24 hours</span>
-            <strong className={`desk-pnl is-${moneyTone(pnlUsd)}`}>
-              {formatSignedMoney(pnlUsd)}
+            <strong
+              className={`desk-pnl is-${moneyTone(pnlUsd)}`}
+              title={formatExactMoney(pnlUsd)}
+            >
+              <AnimatedNumber
+                value={formatSignedMoney(pnlUsd)}
+                motionId="known-result"
+              />
             </strong>
             <div className="desk-facts">
               <span>
-                Maker equity <b>{formatMoney(equityUsd)}</b>
+                Maker equity{" "}
+                <b>
+                  <AnimatedNumber
+                    value={formatMoney(equityUsd)}
+                    motionId="maker-equity"
+                  />
+                </b>
               </span>
               <span>
-                Maker exposure <b>{formatMoney(grossExposureUsd)}</b>
+                Maker exposure{" "}
+                <b>
+                  <AnimatedNumber
+                    value={formatMoney(grossExposureUsd)}
+                    motionId="maker-exposure"
+                  />
+                </b>
               </span>
               <span>
                 Markets <b>{marketCount}</b>
@@ -345,6 +388,7 @@ export function DeskView({
               ref={motion}
               className="desk-market-motion"
               compact
+              height={300}
               sim={false}
               mid={market.indexPrice}
               bid={market.ourBid}
@@ -483,6 +527,7 @@ export function DeskView({
                 fills.slice(0, 8).map((fill) => (
                   <ListRow
                     key={fill.id}
+                    className={fillEnterClass(fill.id, fill.side)}
                     leading={<VenueChip venue={venue} compact />}
                     trailing={
                       <span
@@ -521,22 +566,12 @@ export function DeskView({
               events.map((event) => (
                 <ListRow
                   key={event.id}
+                  className={eventEnterClass(event.id)}
                   leading={<Clock3 size={15} aria-hidden="true" />}
                 >
                   <span className="desk-event-row">
                     <time dateTime={event.occurredAt}>
-                      <span>
-                        {new Intl.DateTimeFormat("en-US", {
-                          month: "short",
-                          day: "numeric",
-                        }).format(new Date(event.occurredAt))}
-                      </span>
-                      <span>
-                        {new Intl.DateTimeFormat("en-US", {
-                          hour: "numeric",
-                          minute: "2-digit",
-                        }).format(new Date(event.occurredAt))}
-                      </span>
+                      {formatEventTimestamp(event.occurredAt)}
                     </time>
                     <span
                       className={`desk-event-severity is-${event.severity}`}

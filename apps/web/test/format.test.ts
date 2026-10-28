@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  formatEventTimestamp,
+  formatExactMoney,
   formatMoney,
   formatPrice,
   formatSignedMoney,
@@ -9,7 +11,13 @@ import {
 } from "../lib/format";
 
 describe("money formatting", () => {
+  it("renders hero amounts to two decimals and keeps their exact tooltip value", () => {
+    expect(formatMoney(-0.01541)).toBe("−$0.02");
+    expect(formatExactMoney(-0.01541)).toBe("−$0.01541");
+  });
+
   it("normalizes negative zero and leaves zero neutral", () => {
+    expect(formatMoney(-0.000001)).toBe("$0.00");
     expect(formatSignedMoney(-0)).toBe("$0.00");
     expect(moneyTone(-0)).toBe("neutral");
     expect(moneyTone(0)).toBe("neutral");
@@ -21,9 +29,9 @@ describe("money formatting", () => {
     expect(formatSignedMoney(12.5)).toBe("+$12.50");
   });
 
-  it("keeps four significant figures below one dollar", () => {
-    expect(formatMoney(0.004321)).toBe("$0.004321");
-    expect(formatMoney(0.123456)).toBe("$0.1235");
+  it("keeps table values to four decimals below one cent", () => {
+    expect(formatMoney(0.004321, { table: true })).toBe("$0.0043");
+    expect(formatMoney(0.123456, { table: true })).toBe("$0.12");
   });
 
   it("returns a placeholder for unavailable money", () => {
@@ -58,8 +66,15 @@ describe("timestamp formatting", () => {
     );
   });
 
+  it("formats a complete control-log timestamp", () => {
+    expect(formatEventTimestamp("2026-10-27T00:08:00.000Z")).toBe(
+      "Oct 27, 12:08 AM",
+    );
+  });
+
   it("labels missing and invalid timestamps as waiting", () => {
     expect(formatTimestamp(null, now)).toBe("Waiting");
     expect(formatTimestamp("not-a-date", now)).toBe("Waiting");
+    expect(formatEventTimestamp(null)).toBe("Waiting");
   });
 });

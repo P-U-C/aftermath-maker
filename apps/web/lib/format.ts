@@ -5,40 +5,104 @@ const usdWhole = new Intl.NumberFormat("en-US", {
   maximumFractionDigits: 2,
 });
 
-const usdSmall = new Intl.NumberFormat("en-US", {
-  style: "currency",
-  currency: "USD",
-  minimumSignificantDigits: 1,
-  maximumSignificantDigits: 4,
-});
-
 const clock = new Intl.DateTimeFormat("en-US", {
   hour: "numeric",
   minute: "2-digit",
 });
 
+const eventClock = new Intl.DateTimeFormat("en-US", {
+  month: "short",
+  day: "numeric",
+  hour: "numeric",
+  minute: "2-digit",
+});
+
+export type MoneyFormatOptions = {
+  /** Table amounts may retain four decimals when they are smaller than one cent. */
+  table?: boolean;
+  minimumFractionDigits?: number;
+  maximumFractionDigits?: number;
+};
+
 function normalized(value: number): number {
   return Object.is(value, -0) || Math.abs(value) < Number.EPSILON ? 0 : value;
 }
 
+function moneyPrecision(options: MoneyFormatOptions, value: number) {
+  const subCent =
+    options.table && Math.abs(value) > 0 && Math.abs(value) < 0.01;
+  return {
+    minimumFractionDigits: options.minimumFractionDigits ?? (subCent ? 4 : 2),
+    maximumFractionDigits: options.maximumFractionDigits ?? (subCent ? 4 : 2),
+  };
+}
+
+function moneyFormatter(options: MoneyFormatOptions, value: number) {
+  const { minimumFractionDigits, maximumFractionDigits } = moneyPrecision(
+    options,
+    value,
+  );
+  if (minimumFractionDigits === 2 && maximumFractionDigits === 2) {
+    return usdWhole;
+  }
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: "USD",
+    minimumFractionDigits,
+    maximumFractionDigits,
+  });
+}
+
+function displayedMoneyValue(value: number, options: MoneyFormatOptions) {
+  const safe = normalized(value);
+  const { maximumFractionDigits } = moneyPrecision(options, safe);
+  const roundingFloor = 0.5 * 10 ** -maximumFractionDigits;
+  return Math.abs(safe) < roundingFloor ? 0 : safe;
+}
+
 export function moneyTone(value: number | null): "gain" | "loss" | "neutral" {
-  const safe = value === null ? 0 : normalized(value);
+  const safe = value === null ? 0 : displayedMoneyValue(value, {});
   if (safe > 0) return "gain";
   if (safe < 0) return "loss";
   return "neutral";
 }
 
-export function formatMoney(value: number | null): string {
+export function formatMoney(
+  value: number | null,
+  options: MoneyFormatOptions = {},
+): string {
   if (value === null || !Number.isFinite(value)) return "—";
-  const safe = normalized(value);
-  const formatter = Math.abs(safe) >= 1 || safe === 0 ? usdWhole : usdSmall;
-  return formatter.format(safe).replace("-$", "−$");
+  const safe = displayedMoneyValue(value, options);
+  return moneyFormatter(options, safe).format(safe).replace("-$", "−$");
 }
 
-export function formatSignedMoney(value: number | null): string {
+/** A stable, inspectable value for native UI tooltips. */
+export function formatExactMoney(value: number | null): string {
+  return formatMoney(value, {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 8,
+  });
+}
+
+export function formatCompactMoney(value: number | null): string {
   if (value === null || !Number.isFinite(value)) return "—";
-  const safe = normalized(value);
-  const amount = formatMoney(Math.abs(safe));
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: "USD",
+    notation: "compact",
+    maximumFractionDigits: 1,
+  })
+    .format(displayedMoneyValue(value, {}))
+    .replace("-$", "−$");
+}
+
+export function formatSignedMoney(
+  value: number | null,
+  options?: MoneyFormatOptions,
+): string {
+  if (value === null || !Number.isFinite(value)) return "—";
+  const safe = displayedMoneyValue(value, options ?? {});
+  const amount = formatMoney(Math.abs(safe), options);
   if (safe > 0) return `+${amount}`;
   if (safe < 0) return `−${amount}`;
   return amount;
@@ -77,4 +141,9 @@ export function formatTimestamp(
   const elapsedSeconds = Math.max(0, Math.floor((now - parsed) / 1_000));
   if (elapsedSeconds < 60) return `${elapsedSeconds} s ago`;
   return clock.format(parsed);
+}
+
+export function formatEventTimestamp(timestamp: string | null): string {
+  if (!timestamp || !Number.isFinite(Date.parse(timestamp))) return "Waiting";
+  return eventClock.format(new Date(timestamp));
 }

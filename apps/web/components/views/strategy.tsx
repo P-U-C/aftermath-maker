@@ -4,6 +4,7 @@ import { X } from "lucide-react";
 import { formatMoney } from "../../lib/format";
 import type { VenueDescriptor } from "../../lib/venues";
 import { Button, Sheet } from "../ui/primitives";
+import { useMakerExplain } from "../maker-shell";
 import { ViewFrame } from "./view-frame";
 
 export function StrategyView({
@@ -15,18 +16,29 @@ export function StrategyView({
   children: ReactNode;
   onClose: () => void;
 }) {
+  const { open: explainOpen, toggle: toggleExplain } = useMakerExplain();
   return (
     <ViewFrame active={active} name="strategy">
       <header className="strategy-mobile-sheet-header">
         <strong>Edit strategy</strong>
-        <Button
-          variant="quiet"
-          size="icon"
-          onClick={onClose}
-          aria-label="Close strategy"
-        >
-          <X size={20} aria-hidden="true" />
-        </Button>
+        <div className="strategy-mobile-sheet-actions">
+          <button
+            className="strategy-mobile-explain"
+            type="button"
+            aria-pressed={explainOpen}
+            onClick={toggleExplain}
+          >
+            Explain
+          </button>
+          <Button
+            variant="quiet"
+            size="icon"
+            onClick={onClose}
+            aria-label="Close strategy"
+          >
+            <X size={20} aria-hidden="true" />
+          </Button>
+        </div>
       </header>
       {children}
     </ViewFrame>
