@@ -9,6 +9,7 @@ import {
   decimalToBaseUnits,
   integratorInspectionSchema,
   makerConfigSchema,
+  makerMarketOverridesSchema,
   setupSchema,
   USDC_COIN_TYPE,
   type BuilderFeePolicy,
@@ -44,6 +45,29 @@ const walletLimitsSchema = z
     confirmed: z.literal(true),
   })
   .strict();
+
+const bundleMarketSchema = z
+  .object({
+    marketId: z.string().regex(/^0x[0-9a-fA-F]+$/),
+    symbol: z.string().min(1).max(24),
+    overrides: makerMarketOverridesSchema.optional(),
+  })
+  .strict();
+
+const strategyMarketRuleSchema = z.union([
+  z
+    .object({
+      kind: z.literal("quick-pick"),
+      pick: z.enum(["rewards", "balanced", "quiet", "steady", "clear"]),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal("preferred-list"),
+      marketIds: z.array(z.string().regex(/^0x[0-9a-fA-F]+$/)).max(64),
+    })
+    .strict(),
+]);
 
 const envSchema = z.object({
   NODE_ENV: z
@@ -403,6 +427,135 @@ app.get("/api/config", async (request) => ({
   config: tenant(request).getConfig(),
 }));
 
+app.get("/api/strategies", async (request) => {
+  const scoped = tenant(request);
+  if (scoped.bundlesRolledBack()) {
+    throw new AuthError(409, "Bundles rolled back");
+  }
+  return {
+    strategies: scoped
+      .listStrategies()
+      .filter((strategy) => !strategy.archivedAt),
+  };
+});
+
+app.get("/api/strategies/:strategyId", async (request) => {
+  const scoped = tenant(request);
+  if (scoped.bundlesRolledBack()) {
+    throw new AuthError(409, "Bundles rolled back");
+  }
+  const params = z
+    .object({ strategyId: z.string().min(1).max(200) })
+    .parse(request.params);
+  const strategy = scoped.getStrategy(params.strategyId);
+  if (!strategy || strategy.archivedAt) {
+    throw new AuthError(404, "Strategy was not found");
+  }
+  return { strategy };
+});
+
+app.post("/api/strategies", async (request) => {
+  const scoped = tenant(request);
+  if (scoped.bundlesRolledBack()) {
+    throw new AuthError(409, "Bundles rolled back");
+  }
+  const body = z
+    .object({
+      name: z.string().trim().min(1).max(80),
+      config: z.unknown(),
+      marketRule: strategyMarketRuleSchema,
+    })
+    .strict()
+    .parse(request.body);
+  const strategy = scoped.createStrategy(body);
+  scoped.logEvent({
+    category: "strategies",
+    action: "create",
+    outcome: "success",
+    detail: { name: strategy.name },
+  });
+  return { strategy };
+});
+
+app.patch("/api/strategies/:strategyId", async (request) => {
+  const scoped = tenant(request);
+  if (scoped.bundlesRolledBack()) {
+    throw new AuthError(409, "Bundles rolled back");
+  }
+  const params = z
+    .object({ strategyId: z.string().min(1).max(200) })
+    .parse(request.params);
+  const body = z
+    .object({
+      config: z.unknown(),
+      marketRule: strategyMarketRuleSchema,
+      expectedVersion: z.number().int().positive(),
+    })
+    .strict()
+    .parse(request.body);
+  const result = scoped.updateStrategy({
+    ...body,
+    strategyId: params.strategyId,
+  });
+  await runtimeManager.reconfigureStrategyBundles(
+    requestAuth(request).ownerAddress,
+    result.affectedBundles.map((bundle) => bundle.id),
+  );
+  scoped.logEvent({
+    category: "strategies",
+    action: "update",
+    outcome: "success",
+    detail: {
+      name: result.strategy.name,
+      bundleNames: result.affectedBundles.map((bundle) => bundle.name),
+    },
+  });
+  return result;
+});
+
+app.post("/api/strategies/:strategyId/duplicate", async (request) => {
+  const scoped = tenant(request);
+  if (scoped.bundlesRolledBack()) {
+    throw new AuthError(409, "Bundles rolled back");
+  }
+  const params = z
+    .object({ strategyId: z.string().min(1).max(200) })
+    .parse(request.params);
+  const body = z
+    .object({ name: z.string().trim().min(1).max(80).optional() })
+    .strict()
+    .parse(request.body ?? {});
+  const strategy = scoped.duplicateStrategy({
+    strategyId: params.strategyId,
+    ...(body.name ? { name: body.name } : {}),
+  });
+  scoped.logEvent({
+    category: "strategies",
+    action: "duplicate",
+    outcome: "success",
+    detail: { name: strategy.name },
+  });
+  return { strategy };
+});
+
+app.post("/api/strategies/:strategyId/archive", async (request) => {
+  const scoped = tenant(request);
+  if (scoped.bundlesRolledBack()) {
+    throw new AuthError(409, "Bundles rolled back");
+  }
+  const params = z
+    .object({ strategyId: z.string().min(1).max(200) })
+    .parse(request.params);
+  const strategy = scoped.archiveStrategy(params.strategyId);
+  scoped.logEvent({
+    category: "strategies",
+    action: "archive",
+    outcome: "success",
+    detail: { name: strategy.name },
+  });
+  return { strategy };
+});
+
 app.get("/api/bundles", async (request) => {
   const scoped = tenant(request);
   if (scoped.bundlesRolledBack()) {
@@ -455,23 +608,59 @@ app.post("/api/bundles", async (request) => {
     throw new AuthError(409, "Bundles rolled back");
   }
   const body = z
-    .object({
-      name: z.string().trim().min(1).max(80),
-      config: z.unknown(),
-      confirmWalletLimits: z.boolean().optional(),
-    })
-    .strict()
+    .union([
+      z
+        .object({
+          name: z.string().trim().min(1).max(80),
+          config: z.unknown(),
+          confirmWalletLimits: z.boolean().optional(),
+        })
+        .strict(),
+      z
+        .object({
+          name: z.string().trim().min(1).max(80),
+          makerAccountId: z.string().regex(/^\d+$/).nullable(),
+          takerAccountId: z.string().regex(/^\d+$/).nullable(),
+          mode: z.enum(["observe", "paper"]),
+          markets: z.array(bundleMarketSchema).min(1).max(64),
+          strategyId: z.string().min(1).max(200).nullable(),
+          confirmWalletLimits: z.boolean().optional(),
+        })
+        .strict(),
+    ])
     .parse(request.body);
-  const config = makerConfigSchema.parse(body.config);
-  assertLiveModeEnabled(config);
-  assertConfiguredAccounts(scoped, config);
-  const bundle = scoped.createBundle({
-    name: body.name,
-    config,
-    ...(body.confirmWalletLimits !== undefined
-      ? { confirmWalletLimits: body.confirmWalletLimits }
-      : {}),
-  });
+  const bundle =
+    "config" in body
+      ? (() => {
+          const config = makerConfigSchema.parse(body.config);
+          assertLiveModeEnabled(config);
+          assertConfiguredAccounts(scoped, config);
+          return scoped.createBundle({
+            name: body.name,
+            config,
+            ...(body.confirmWalletLimits !== undefined
+              ? { confirmWalletLimits: body.confirmWalletLimits }
+              : {}),
+          });
+        })()
+      : (() => {
+          for (const accountId of [body.makerAccountId, body.takerAccountId]) {
+            if (accountId && !scoped.getAccountSetup(accountId)?.agentCapId) {
+              throw new Error("The selected account is not authorized");
+            }
+          }
+          return scoped.createAllocatedBundle({
+            name: body.name,
+            makerAccountId: body.makerAccountId,
+            takerAccountId: body.takerAccountId,
+            mode: body.mode,
+            markets: body.markets,
+            strategyId: body.strategyId,
+            ...(body.confirmWalletLimits !== undefined
+              ? { confirmWalletLimits: body.confirmWalletLimits }
+              : {}),
+          });
+        })();
   store.forBundle(requestAuth(request).ownerAddress, bundle.id).logEvent({
     category: "bundles",
     action: "create",
@@ -516,6 +705,68 @@ app.post("/api/bundles/:bundleId/config", async (request) => {
     detail: {
       name: bundle.name,
       mode: bundle.mode,
+      marketIds: bundle.marketIds,
+    },
+  });
+  return { bundle, config: scoped.getBundleConfig(bundle.id) };
+});
+
+app.patch("/api/bundles/:bundleId", async (request) => {
+  const scoped = tenant(request);
+  if (scoped.bundlesRolledBack()) {
+    throw new AuthError(409, "Bundles rolled back");
+  }
+  const params = z
+    .object({ bundleId: z.string().min(1).max(200) })
+    .parse(request.params);
+  const body = z
+    .object({
+      makerAccountId: z.string().regex(/^\d+$/).nullable().optional(),
+      takerAccountId: z.string().regex(/^\d+$/).nullable().optional(),
+      mode: z.enum(["observe", "paper"]).optional(),
+      markets: z.array(bundleMarketSchema).min(1).max(64).optional(),
+      strategyId: z.string().min(1).max(200).nullable().optional(),
+      expectedUpdatedAt: z.string().datetime().optional(),
+    })
+    .strict()
+    .refine(
+      (value) =>
+        value.makerAccountId !== undefined ||
+        value.takerAccountId !== undefined ||
+        value.mode !== undefined ||
+        value.markets !== undefined ||
+        value.strategyId !== undefined,
+      "Choose at least one bundle field to update",
+    )
+    .parse(request.body);
+  for (const accountId of [body.makerAccountId, body.takerAccountId]) {
+    if (accountId && !scoped.getAccountSetup(accountId)?.agentCapId) {
+      throw new Error("The selected account is not authorized");
+    }
+  }
+  const bundle = await runtimeManager.updateBundleAllocation({
+    ownerAddress: requestAuth(request).ownerAddress,
+    bundleId: params.bundleId,
+    ...(body.makerAccountId !== undefined
+      ? { makerAccountId: body.makerAccountId }
+      : {}),
+    ...(body.takerAccountId !== undefined
+      ? { takerAccountId: body.takerAccountId }
+      : {}),
+    ...(body.mode ? { mode: body.mode } : {}),
+    ...(body.markets ? { markets: body.markets } : {}),
+    ...(body.strategyId !== undefined ? { strategyId: body.strategyId } : {}),
+    ...(body.expectedUpdatedAt
+      ? { expectedUpdatedAt: body.expectedUpdatedAt }
+      : {}),
+  });
+  scoped.logEvent({
+    category: "bundles",
+    action: "allocation.update",
+    outcome: "success",
+    detail: {
+      name: bundle.name,
+      strategyId: bundle.strategyId,
       marketIds: bundle.marketIds,
     },
   });

@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import Database from "better-sqlite3";
+import { z } from "zod";
 import type { EncryptedSecret } from "@puc/aftermath";
 import { makerConfigSchema, type MakerConfig, type Setup } from "@puc/core";
 
@@ -85,6 +86,137 @@ const normalizeMakerConfig = (stored: StoredMakerConfig) => {
 
   return { config: makerConfigSchema.parse(normalized), migrated };
 };
+
+const strategyMarketRuleSchema = z.union([
+  z
+    .object({
+      kind: z.literal("quick-pick"),
+      pick: z.enum(["rewards", "balanced", "quiet", "steady", "clear"]),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal("preferred-list"),
+      marketIds: z
+        .array(z.string().regex(/^0x[0-9a-fA-F]+$/, "Expected a Sui object ID"))
+        .max(64),
+    })
+    .strict(),
+]);
+
+/** Settings that can safely be shared between bundles. Execution allocation
+ * (accounts, mode, and actual markets) deliberately remains on the bundle. */
+const strategyConfigSchema = z
+  .object({
+    collateralCoinType: z.string().min(8),
+    rotationMode: z.enum(["portfolio", "single-slot"]),
+    strategyObjective: z.enum(["farming", "profit", "both"]),
+    strategyProfile: z.enum(["cautious", "balanced", "active"]),
+    hedge: z
+      .object({
+        enabled: z.boolean(),
+        thresholdUsd: z.number().positive().max(10_000),
+        maxOrderUsd: z.number().positive().max(10_000),
+        maxSlippageBps: z.number().int().min(5).max(500),
+      })
+      .strict(),
+    quoteSizeUsd: z.number().positive().max(1_000),
+    spreadBps: z.number().min(8).max(500),
+    refreshMs: z.number().int().min(2_000).max(300_000),
+    marketDwellMs: z.number().int().min(2_000).max(3_600_000),
+    requoteThresholdBps: z.number().min(0).max(500),
+    maxRestingMs: z.number().int().min(5_000).max(3_600_000),
+    autoRebalanceEnabled: z.boolean(),
+    rebalanceGrossExposureUsd: z.number().positive().max(100_000),
+    maxQuoteAgeMs: z.number().int().min(10_000).max(86_400_000),
+    maxInventoryUsd: z.number().positive().max(10_000),
+    inventoryTargetUsd: z.number().min(-10_000).max(10_000),
+    maxGrossExposureUsd: z.number().positive().max(100_000),
+    maxUnrealizedLossUsd: z.number().positive().max(10_000),
+    maxRunDrawdownUsd: z.number().positive().max(10_000),
+    maxBookDivergenceBps: z.number().positive().max(5_000),
+    maxLeverage: z.number().min(1).max(3),
+    maxGasMist: z.number().int().positive().max(500_000_000),
+    staleBookMs: z.number().int().min(3_000).max(120_000),
+    inventorySkewBps: z.number().min(0).max(250),
+  })
+  .strict()
+  .superRefine((config, context) => {
+    if (
+      config.hedge.enabled &&
+      config.hedge.maxOrderUsd < config.hedge.thresholdUsd
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["hedge", "maxOrderUsd"],
+        message: "Maximum hedge order must cover the hedge threshold",
+      });
+    }
+    if (config.autoRebalanceEnabled) {
+      if (!config.hedge.enabled) {
+        context.addIssue({
+          code: "custom",
+          path: ["autoRebalanceEnabled"],
+          message: "Automatic rebalancing requires paired-account hedging",
+        });
+      }
+      if (config.rebalanceGrossExposureUsd > config.maxGrossExposureUsd) {
+        context.addIssue({
+          code: "custom",
+          path: ["rebalanceGrossExposureUsd"],
+          message: "Rebalance exposure must not exceed the hard gross limit",
+        });
+      }
+    }
+    if (config.maxGrossExposureUsd < config.maxInventoryUsd) {
+      context.addIssue({
+        code: "custom",
+        path: ["maxGrossExposureUsd"],
+        message: "Gross exposure limit cannot be below a per-market limit",
+      });
+    }
+    if (
+      config.rotationMode === "single-slot" &&
+      (config.marketDwellMs < config.refreshMs ||
+        config.maxRestingMs < config.refreshMs)
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["rotationMode"],
+        message: "Single-slot timing cannot be shorter than the poll interval",
+      });
+    }
+  });
+
+export type StrategyMarketRule = z.infer<typeof strategyMarketRuleSchema>;
+export type StrategyConfig = z.infer<typeof strategyConfigSchema>;
+
+const strategyConfigFromMaker = (config: MakerConfig): StrategyConfig => {
+  const {
+    markets: _markets,
+    mode: _mode,
+    makerAccountId: _makerAccountId,
+    hedge,
+    ...shared
+  } = config;
+  const { accountId: _accountId, ...sharedHedge } = hedge;
+  return strategyConfigSchema.parse({ ...shared, hedge: sharedHedge });
+};
+
+const composeMakerConfig = (inputs: {
+  strategy: StrategyConfig;
+  mode: MakerConfig["mode"];
+  makerAccountId: string | null;
+  takerAccountId: string | null;
+  markets: MakerConfig["markets"];
+}): MakerConfig =>
+  makerConfigSchema.parse({
+    ...inputs.strategy,
+    mode: inputs.mode,
+    makerAccountId: inputs.makerAccountId,
+    hedge: { ...inputs.strategy.hedge, accountId: inputs.takerAccountId },
+    markets: inputs.markets,
+  });
 
 export type StoredAgent = {
   address: string;
@@ -216,6 +348,10 @@ export type StoredBundle = {
   id: string;
   ownerAddress: string;
   name: string;
+  strategyId: string | null;
+  strategyName: string | null;
+  strategyVersionApplied: number | null;
+  needsStrategy: boolean;
   makerAccountId: string | null;
   takerAccountId: string | null;
   mode: MakerConfig["mode"];
@@ -227,10 +363,26 @@ export type StoredBundle = {
   archivedAt: string | null;
 };
 
+export type StoredStrategy = {
+  id: string;
+  ownerAddress: string;
+  name: string;
+  config: StrategyConfig;
+  marketRule: StrategyMarketRule;
+  version: number;
+  createdAt: string;
+  updatedAt: string;
+  archivedAt: string | null;
+  usedBy: Array<{ id: string; name: string }>;
+};
+
 type BundleRow = {
   id: string;
   owner_address: string;
   name: string;
+  strategy_id: string | null;
+  strategy_name: string | null;
+  strategy_version_applied: number | null;
   maker_account_id: string | null;
   taker_account_id: string | null;
   config: string;
@@ -621,10 +773,25 @@ export class Store {
   private migrateBundles(): void {
     const migrate = this.db.transaction(() => {
       this.db.exec(`
+        CREATE TABLE IF NOT EXISTS strategies (
+          id TEXT PRIMARY KEY,
+          owner_address TEXT NOT NULL,
+          name TEXT NOT NULL COLLATE NOCASE,
+          config TEXT NOT NULL,
+          market_rule TEXT NOT NULL,
+          version INTEGER NOT NULL DEFAULT 1 CHECK (version >= 1),
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          archived_at TEXT,
+          UNIQUE (owner_address, name)
+        );
+
         CREATE TABLE IF NOT EXISTS bundles (
           id TEXT PRIMARY KEY,
           owner_address TEXT NOT NULL,
           name TEXT NOT NULL COLLATE NOCASE,
+          strategy_id TEXT REFERENCES strategies(id),
+          strategy_version_applied INTEGER,
           maker_account_id TEXT,
           taker_account_id TEXT,
           config TEXT NOT NULL,
@@ -646,6 +813,7 @@ export class Store {
           owner_address TEXT NOT NULL,
           market_id TEXT NOT NULL,
           symbol TEXT NOT NULL,
+          overrides TEXT,
           PRIMARY KEY (bundle_id, market_id),
           UNIQUE (owner_address, market_id),
           FOREIGN KEY (bundle_id) REFERENCES bundles(id) ON DELETE CASCADE
@@ -687,6 +855,14 @@ export class Store {
           recorded_at TEXT NOT NULL
         );
 
+        CREATE TABLE IF NOT EXISTS strategy_migration_skips (
+          bundle_id TEXT PRIMARY KEY,
+          config_updated_at TEXT NOT NULL,
+          error TEXT NOT NULL,
+          recorded_at TEXT NOT NULL,
+          FOREIGN KEY (bundle_id) REFERENCES bundles(id) ON DELETE CASCADE
+        );
+
         CREATE TABLE IF NOT EXISTS bundle_config_mirrors (
           owner_address TEXT PRIMARY KEY,
           core_config_updated_at TEXT NOT NULL,
@@ -695,6 +871,8 @@ export class Store {
 
         CREATE INDEX IF NOT EXISTS bundles_owner_status
           ON bundles(owner_address, status, updated_at DESC);
+        CREATE INDEX IF NOT EXISTS strategies_owner_active
+          ON strategies(owner_address, archived_at, updated_at DESC);
         CREATE INDEX IF NOT EXISTS bundle_markets_market
           ON bundle_markets(market_id);
         CREATE UNIQUE INDEX IF NOT EXISTS bundles_owner_maker_account_unique
@@ -748,6 +926,17 @@ export class Store {
         "bundle_markets",
         "owner_address",
         "owner_address TEXT NOT NULL DEFAULT ''",
+      );
+      ensureColumn("bundle_markets", "overrides", "overrides TEXT");
+      ensureColumn(
+        "bundles",
+        "strategy_id",
+        "strategy_id TEXT REFERENCES strategies(id)",
+      );
+      ensureColumn(
+        "bundles",
+        "strategy_version_applied",
+        "strategy_version_applied INTEGER",
       );
       ensureColumn("bundles", "archived_at", "archived_at TEXT");
       ensureColumn("bundle_wallet_limits", "confirmed_at", "confirmed_at TEXT");
@@ -998,6 +1187,154 @@ export class Store {
             ownerAddress,
             now,
             stringify({ reason: "invalid_config" }),
+          );
+        }
+      }
+
+      // RFC 0002 migration: every valid existing bundle receives an independent
+      // strategy before any strategy can be shared. A bad historical row must
+      // never take the service down or be reparsed on each subsequent boot.
+      const bundlesWithoutStrategy = this.db
+        .prepare(
+          `SELECT id, owner_address, name, maker_account_id, taker_account_id,
+                  config, mode, status, updated_at, archived_at
+           FROM bundles
+           WHERE strategy_id IS NULL`,
+        )
+        .all() as Array<{
+        id: string;
+        owner_address: string;
+        name: string;
+        maker_account_id: string | null;
+        taker_account_id: string | null;
+        config: string;
+        mode: MakerConfig["mode"];
+        status: BundleStatus;
+        updated_at: string;
+        archived_at: string | null;
+      }>;
+      const strategyMigrationSkipped = this.db.prepare(
+        `SELECT 1 FROM strategy_migration_skips
+         WHERE bundle_id = ? AND config_updated_at = ?`,
+      );
+      const recordStrategyMigrationSkip = this.db.prepare(
+        `INSERT INTO strategy_migration_skips
+          (bundle_id, config_updated_at, error, recorded_at)
+         VALUES (?, ?, ?, ?)
+         ON CONFLICT(bundle_id) DO UPDATE SET
+           config_updated_at = excluded.config_updated_at,
+           error = excluded.error,
+           recorded_at = excluded.recorded_at`,
+      );
+      const clearStrategyMigrationSkip = this.db.prepare(
+        "DELETE FROM strategy_migration_skips WHERE bundle_id = ?",
+      );
+      const strategyNameTaken = this.db.prepare(
+        `SELECT 1 FROM strategies
+         WHERE owner_address = ? AND name = ? COLLATE NOCASE`,
+      );
+      const insertStrategy = this.db.prepare(
+        `INSERT INTO strategies
+          (id, owner_address, name, config, market_rule, version,
+           created_at, updated_at, archived_at)
+         VALUES (?, ?, ?, ?, ?, 1, ?, ?, NULL)`,
+      );
+      const attachMigratedStrategy = this.db.prepare(
+        `UPDATE bundles
+         SET strategy_id = ?, strategy_version_applied = 1, config = ?
+         WHERE id = ?`,
+      );
+      const updateMigratedMarket = this.db.prepare(
+        `UPDATE bundle_markets
+         SET symbol = ?, overrides = ?
+         WHERE bundle_id = ? AND market_id = ?`,
+      );
+      const insertMigratedMarket = this.db.prepare(
+        `INSERT OR IGNORE INTO bundle_markets
+          (bundle_id, owner_address, market_id, symbol, overrides)
+         VALUES (?, ?, ?, ?, ?)`,
+      );
+      const recordStrategyMigrationEvent = this.db.prepare(
+        `INSERT INTO tenant_audit_events
+          (owner_address, occurred_at, category, action, outcome, detail)
+         VALUES (?, ?, 'strategies', 'migration.bundle-skipped', 'failed', ?)`,
+      );
+      for (const bundle of bundlesWithoutStrategy) {
+        if (
+          bundle.archived_at ||
+          strategyMigrationSkipped.get(bundle.id, bundle.updated_at)
+        ) {
+          continue;
+        }
+        try {
+          const config = normalizeMakerConfig(
+            parse<StoredMakerConfig>(bundle.config),
+          ).config;
+          const strategyId = `strategy-${bundle.id}`;
+          const baseName = `${bundle.name} strategy`;
+          let strategyName = baseName;
+          let duplicate = 2;
+          while (strategyNameTaken.get(bundle.owner_address, strategyName)) {
+            strategyName = `${baseName} ${duplicate}`;
+            duplicate += 1;
+          }
+          const strategy = strategyConfigFromMaker(config);
+          const rule: StrategyMarketRule = {
+            kind: "preferred-list",
+            marketIds: config.markets.map((market) => market.marketId),
+          };
+          insertStrategy.run(
+            strategyId,
+            bundle.owner_address,
+            strategyName,
+            stringify(strategy),
+            stringify(rule),
+            bundle.updated_at,
+            bundle.updated_at,
+          );
+          for (const market of config.markets) {
+            const overrides = market.overrides
+              ? stringify(market.overrides)
+              : null;
+            updateMigratedMarket.run(
+              market.symbol,
+              overrides,
+              bundle.id,
+              market.marketId,
+            );
+            insertMigratedMarket.run(
+              bundle.id,
+              bundle.owner_address,
+              market.marketId,
+              market.symbol,
+              overrides,
+            );
+          }
+          const projection = composeMakerConfig({
+            strategy,
+            mode: bundle.mode,
+            makerAccountId: bundle.maker_account_id,
+            takerAccountId: bundle.taker_account_id,
+            markets: config.markets,
+          });
+          attachMigratedStrategy.run(
+            strategyId,
+            stringify(projection),
+            bundle.id,
+          );
+          clearStrategyMigrationSkip.run(bundle.id);
+        } catch (error) {
+          const now = new Date().toISOString();
+          recordStrategyMigrationSkip.run(
+            bundle.id,
+            bundle.updated_at,
+            error instanceof Error ? error.name : "Invalid config",
+            now,
+          );
+          recordStrategyMigrationEvent.run(
+            bundle.owner_address,
+            now,
+            stringify({ bundleId: bundle.id, reason: "invalid_config" }),
           );
         }
       }
@@ -1523,11 +1860,16 @@ export class TenantStore {
   private getCoreRow(): BundleRow | null {
     const row = this.db
       .prepare(
-        `SELECT id, owner_address, name, maker_account_id, taker_account_id,
-                config, mode, status, created_at, updated_at, last_error,
-                archived_at
+        `SELECT bundles.id, bundles.owner_address, bundles.name,
+                bundles.maker_account_id, bundles.taker_account_id,
+                bundles.config, bundles.mode, bundles.status,
+                bundles.created_at, bundles.updated_at, bundles.last_error,
+                bundles.archived_at, bundles.strategy_id,
+                bundles.strategy_version_applied,
+                strategies.name AS strategy_name
          FROM bundles
-         WHERE owner_address = ? AND name = 'Core'`,
+         LEFT JOIN strategies ON strategies.id = bundles.strategy_id
+         WHERE bundles.owner_address = ? AND bundles.name = 'Core'`,
       )
       .get(this.ownerAddress) as BundleRow | undefined;
     return row ?? null;
@@ -1554,6 +1896,220 @@ export class TenantStore {
       )
       .get(this.ownerAddress) as { id: string } | undefined;
     return bundle?.id ?? null;
+  }
+
+  private getBundleRow(bundleId: string): BundleRow | null {
+    const row = this.db
+      .prepare(
+        `SELECT bundles.id, bundles.owner_address, bundles.name,
+                bundles.maker_account_id, bundles.taker_account_id,
+                bundles.config, bundles.mode, bundles.status,
+                bundles.created_at, bundles.updated_at, bundles.last_error,
+                bundles.archived_at, bundles.strategy_id,
+                bundles.strategy_version_applied,
+                strategies.name AS strategy_name
+         FROM bundles
+         LEFT JOIN strategies ON strategies.id = bundles.strategy_id
+         WHERE bundles.owner_address = ? AND bundles.id = ?`,
+      )
+      .get(this.ownerAddress, bundleId) as BundleRow | undefined;
+    return row ?? null;
+  }
+
+  private getBundleMarkets(bundleId: string): MakerConfig["markets"] {
+    const rows = this.db
+      .prepare(
+        `SELECT market_id, symbol, overrides
+         FROM bundle_markets
+         WHERE bundle_id = ?
+         ORDER BY market_id ASC`,
+      )
+      .all(bundleId) as Array<{
+      market_id: string;
+      symbol: string;
+      overrides: string | null;
+    }>;
+    return rows.map((market) => ({
+      marketId: market.market_id,
+      symbol: market.symbol,
+      ...(market.overrides
+        ? {
+            overrides: parse<MakerConfig["markets"][number]["overrides"]>(
+              market.overrides,
+            ),
+          }
+        : {}),
+    }));
+  }
+
+  private strategyRow(strategyId: string):
+    | {
+        id: string;
+        owner_address: string;
+        name: string;
+        config: string;
+        market_rule: string;
+        version: number;
+        created_at: string;
+        updated_at: string;
+        archived_at: string | null;
+      }
+    | undefined {
+    return this.db
+      .prepare(
+        `SELECT id, owner_address, name, config, market_rule, version,
+                created_at, updated_at, archived_at
+         FROM strategies
+         WHERE owner_address = ? AND id = ?`,
+      )
+      .get(this.ownerAddress, strategyId) as
+      | {
+          id: string;
+          owner_address: string;
+          name: string;
+          config: string;
+          market_rule: string;
+          version: number;
+          created_at: string;
+          updated_at: string;
+          archived_at: string | null;
+        }
+      | undefined;
+  }
+
+  private composeBundleConfig(row: BundleRow): MakerConfig {
+    if (!row.strategy_id) {
+      return normalizeMakerConfig(parse<StoredMakerConfig>(row.config)).config;
+    }
+    const strategy = this.strategyRow(row.strategy_id);
+    if (!strategy || strategy.archived_at) {
+      throw new Error("Bundle strategy was not found");
+    }
+    return composeMakerConfig({
+      strategy: strategyConfigSchema.parse(parse<unknown>(strategy.config)),
+      mode: row.mode,
+      makerAccountId: row.maker_account_id,
+      takerAccountId: row.taker_account_id,
+      markets: this.getBundleMarkets(row.id),
+    });
+  }
+
+  private strategyUsedBy(
+    strategyId: string,
+  ): Array<{ id: string; name: string }> {
+    return this.db
+      .prepare(
+        `SELECT id, name FROM bundles
+         WHERE owner_address = ? AND strategy_id = ? AND archived_at IS NULL
+         ORDER BY created_at ASC, id ASC`,
+      )
+      .all(this.ownerAddress, strategyId) as Array<{
+      id: string;
+      name: string;
+    }>;
+  }
+
+  private storedStrategy(
+    row: NonNullable<ReturnType<TenantStore["strategyRow"]>>,
+  ): StoredStrategy {
+    return {
+      id: row.id,
+      ownerAddress: row.owner_address,
+      name: row.name,
+      config: strategyConfigSchema.parse(parse<unknown>(row.config)),
+      marketRule: strategyMarketRuleSchema.parse(
+        parse<unknown>(row.market_rule),
+      ),
+      version: row.version,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+      archivedAt: row.archived_at,
+      usedBy: this.strategyUsedBy(row.id),
+    };
+  }
+
+  private nextStrategyName(base: string): string {
+    let name = base;
+    let suffix = 2;
+    const exists = this.db.prepare(
+      `SELECT 1 FROM strategies
+       WHERE owner_address = ? AND name = ? COLLATE NOCASE`,
+    );
+    while (exists.get(this.ownerAddress, name)) {
+      name = `${base} ${suffix}`;
+      suffix += 1;
+    }
+    return name;
+  }
+
+  /**
+   * The legacy config endpoints are intentionally narrow adapters: they may
+   * update a dedicated strategy, but never silently alter a second bundle that
+   * happens to share it. Core forks first; non-Core callers must use the
+   * strategy API so the shared fan-out is explicit.
+   */
+  private writeLegacyStrategyForBundle(inputs: {
+    bundleId: string;
+    bundleName: string;
+    currentStrategyId: string | null;
+    config: MakerConfig;
+    forkShared: boolean;
+  }): { strategyId: string; version: number } {
+    const sharedConfig = strategyConfigFromMaker(inputs.config);
+    const current = inputs.currentStrategyId
+      ? this.strategyRow(inputs.currentStrategyId)
+      : undefined;
+    const uses = current ? this.strategyUsedBy(current.id) : [];
+    const mustFork = Boolean(current && uses.length > 1);
+    if (mustFork && !inputs.forkShared) {
+      throw new Error(
+        "This bundle uses a shared strategy. Edit it from Strategy instead.",
+      );
+    }
+    const now = this.nextBundleUpdatedAt(inputs.bundleId);
+    if (current && !mustFork) {
+      const version = current.version + 1;
+      this.db
+        .prepare(
+          `UPDATE strategies
+           SET config = ?, version = ?, updated_at = ?
+           WHERE owner_address = ? AND id = ?`,
+        )
+        .run(
+          stringify(sharedConfig),
+          version,
+          now,
+          this.ownerAddress,
+          current.id,
+        );
+      return { strategyId: current.id, version };
+    }
+
+    const strategyId = `strategy-${randomUUID()}`;
+    const name = this.nextStrategyName(`${inputs.bundleName} strategy`);
+    const currentRule = current
+      ? strategyMarketRuleSchema.parse(parse<unknown>(current.market_rule))
+      : ({
+          kind: "preferred-list",
+          marketIds: inputs.config.markets.map((market) => market.marketId),
+        } satisfies StrategyMarketRule);
+    this.db
+      .prepare(
+        `INSERT INTO strategies
+          (id, owner_address, name, config, market_rule, version,
+           created_at, updated_at, archived_at)
+         VALUES (?, ?, ?, ?, ?, 1, ?, ?, NULL)`,
+      )
+      .run(
+        strategyId,
+        this.ownerAddress,
+        name,
+        stringify(sharedConfig),
+        stringify(currentRule),
+        now,
+        now,
+      );
+    return { strategyId, version: 1 };
   }
 
   private configSource():
@@ -1590,11 +2146,17 @@ export class TenantStore {
       .run(bundleId);
     const insert = this.db.prepare(
       `INSERT INTO bundle_markets
-        (bundle_id, owner_address, market_id, symbol)
-       VALUES (?, ?, ?, ?)`,
+        (bundle_id, owner_address, market_id, symbol, overrides)
+       VALUES (?, ?, ?, ?, ?)`,
     );
     for (const market of config.markets) {
-      insert.run(bundleId, this.ownerAddress, market.marketId, market.symbol);
+      insert.run(
+        bundleId,
+        this.ownerAddress,
+        market.marketId,
+        market.symbol,
+        market.overrides ? stringify(market.overrides) : null,
+      );
     }
   }
 
@@ -1755,11 +2317,17 @@ export class TenantStore {
     const write = this.db.transaction(() => {
       const bundle = this.db
         .prepare(
-          `SELECT id, name, archived_at FROM bundles
+          `SELECT id, name, strategy_id, archived_at FROM bundles
            WHERE owner_address = ? AND id = ?`,
         )
         .get(this.ownerAddress, bundleId) as
-        { id: string; name: string; archived_at: string | null } | undefined;
+        | {
+            id: string;
+            name: string;
+            strategy_id: string | null;
+            archived_at: string | null;
+          }
+        | undefined;
       if (!bundle || bundle.archived_at) {
         throw new Error("Bundle was not found");
       }
@@ -1774,14 +2342,24 @@ export class TenantStore {
       }
       this.assertConfigFitsWallet(config, walletLimits);
       this.assertBundleAssignmentsAvailable(bundleId, config);
+      const strategy = this.writeLegacyStrategyForBundle({
+        bundleId,
+        bundleName: bundle.name,
+        currentStrategyId: bundle.strategy_id,
+        config,
+        forkShared: bundle.name === "Core",
+      });
       this.db
         .prepare(
           `UPDATE bundles
-           SET maker_account_id = ?, taker_account_id = ?, config = ?, mode = ?,
+           SET strategy_id = ?, strategy_version_applied = ?,
+               maker_account_id = ?, taker_account_id = ?, config = ?, mode = ?,
                updated_at = ?
            WHERE owner_address = ? AND id = ?`,
         )
         .run(
+          strategy.strategyId,
+          strategy.version,
           config.makerAccountId ?? null,
           config.hedge.accountId ?? null,
           stringify(config),
@@ -1817,15 +2395,25 @@ export class TenantStore {
         this.assertConfigFitsWallet(config, walletLimits);
       }
       this.assertBundleAssignmentsAvailable(id, config);
+      const strategy = this.writeLegacyStrategyForBundle({
+        bundleId: id,
+        bundleName: "Core",
+        currentStrategyId: existing?.strategy_id ?? null,
+        config,
+        forkShared: true,
+      });
       if (existing) {
         this.db
           .prepare(
             `UPDATE bundles
-             SET maker_account_id = ?, taker_account_id = ?, config = ?, mode = ?,
+             SET strategy_id = ?, strategy_version_applied = ?,
+                 maker_account_id = ?, taker_account_id = ?, config = ?, mode = ?,
                  updated_at = ?
              WHERE id = ?`,
           )
           .run(
+            strategy.strategyId,
+            strategy.version,
             config.makerAccountId ?? null,
             config.hedge.accountId ?? null,
             serialized,
@@ -1837,13 +2425,16 @@ export class TenantStore {
         this.db
           .prepare(
             `INSERT INTO bundles
-              (id, owner_address, name, maker_account_id, taker_account_id,
-               config, mode, status, created_at, updated_at, last_error)
-             VALUES (?, ?, 'Core', ?, ?, ?, ?, 'stopped', ?, ?, NULL)`,
+              (id, owner_address, name, strategy_id, strategy_version_applied,
+               maker_account_id, taker_account_id, config, mode, status,
+               created_at, updated_at, last_error)
+             VALUES (?, ?, 'Core', ?, ?, ?, ?, ?, ?, 'stopped', ?, ?, NULL)`,
           )
           .run(
             id,
             this.ownerAddress,
+            strategy.strategyId,
+            strategy.version,
             config.makerAccountId ?? null,
             config.hedge.accountId ?? null,
             serialized,
@@ -1901,16 +2492,18 @@ export class TenantStore {
   }
 
   getConfig(): MakerConfig | null {
+    if (this.bundleId) return this.getBundleConfig(this.bundleId);
+    const core = this.getCoreRow();
+    if (core && !this.bundlesRolledBack()) {
+      return this.getBundleConfig(core.id);
+    }
     const source = this.configSource();
     if (!source) return null;
     const { config, migrated } = normalizeMakerConfig(
       parse<StoredMakerConfig>(source.value),
     );
     if (migrated) {
-      if (source.kind === "bundle")
-        this.writeBundleConfig(this.bundleId!, config);
-      else if (source.kind === "core") this.writeCoreConfig(config);
-      else this.setSetting("maker_config", config);
+      this.setSetting("maker_config", config);
     }
     return config;
   }
@@ -1944,12 +2537,17 @@ export class TenantStore {
   listBundles(): StoredBundle[] {
     const rows = this.db
       .prepare(
-        `SELECT id, owner_address, name, maker_account_id, taker_account_id,
-                config, mode, status, created_at, updated_at, last_error,
-                archived_at
+        `SELECT bundles.id, bundles.owner_address, bundles.name,
+                bundles.maker_account_id, bundles.taker_account_id,
+                bundles.config, bundles.mode, bundles.status,
+                bundles.created_at, bundles.updated_at, bundles.last_error,
+                bundles.archived_at, bundles.strategy_id,
+                bundles.strategy_version_applied,
+                strategies.name AS strategy_name
          FROM bundles
-         WHERE owner_address = ?
-         ORDER BY created_at ASC, id ASC`,
+         LEFT JOIN strategies ON strategies.id = bundles.strategy_id
+         WHERE bundles.owner_address = ?
+         ORDER BY bundles.created_at ASC, bundles.id ASC`,
       )
       .all(this.ownerAddress) as BundleRow[];
     const markets = this.db.prepare(
@@ -1960,6 +2558,10 @@ export class TenantStore {
       id: row.id,
       ownerAddress: row.owner_address,
       name: row.name,
+      strategyId: row.strategy_id,
+      strategyName: row.strategy_name,
+      strategyVersionApplied: row.strategy_version_applied,
+      needsStrategy: !row.strategy_id,
       makerAccountId: row.maker_account_id,
       takerAccountId: row.taker_account_id,
       mode: row.mode,
@@ -1975,13 +2577,203 @@ export class TenantStore {
   }
 
   getBundleConfig(bundleId: string): MakerConfig | null {
-    const row = this.db
+    const row = this.getBundleRow(bundleId);
+    return row ? this.composeBundleConfig(row) : null;
+  }
+
+  listStrategies(): StoredStrategy[] {
+    const rows = this.db
       .prepare(
-        `SELECT config FROM bundles
+        `SELECT id, owner_address, name, config, market_rule, version,
+                created_at, updated_at, archived_at
+         FROM strategies
+         WHERE owner_address = ?
+         ORDER BY archived_at IS NOT NULL, updated_at DESC, id ASC`,
+      )
+      .all(this.ownerAddress) as Array<
+      NonNullable<ReturnType<TenantStore["strategyRow"]>>
+    >;
+    return rows.map((row) => this.storedStrategy(row));
+  }
+
+  getStrategy(strategyId: string): StoredStrategy | null {
+    const row = this.strategyRow(strategyId);
+    return row ? this.storedStrategy(row) : null;
+  }
+
+  createStrategy(inputs: {
+    name: string;
+    config: unknown;
+    marketRule: unknown;
+  }): StoredStrategy {
+    const config = strategyConfigSchema.parse(inputs.config);
+    const marketRule = strategyMarketRuleSchema.parse(inputs.marketRule);
+    const name = inputs.name.trim();
+    if (!name || name.length > 80) {
+      throw new Error("Strategy name must be between 1 and 80 characters");
+    }
+    const id = `strategy-${randomUUID()}`;
+    const now = new Date().toISOString();
+    this.db
+      .prepare(
+        `INSERT INTO strategies
+          (id, owner_address, name, config, market_rule, version,
+           created_at, updated_at, archived_at)
+         VALUES (?, ?, ?, ?, ?, 1, ?, ?, NULL)`,
+      )
+      .run(
+        id,
+        this.ownerAddress,
+        name,
+        stringify(config),
+        stringify(marketRule),
+        now,
+        now,
+      );
+    return this.getStrategy(id)!;
+  }
+
+  updateStrategy(inputs: {
+    strategyId: string;
+    config: unknown;
+    marketRule: unknown;
+    expectedVersion: number;
+  }): { strategy: StoredStrategy; affectedBundles: StoredBundle[] } {
+    const config = strategyConfigSchema.parse(inputs.config);
+    const marketRule = strategyMarketRuleSchema.parse(inputs.marketRule);
+    const update = this.db.transaction(() => {
+      const current = this.strategyRow(inputs.strategyId);
+      if (!current || current.archived_at)
+        throw new Error("Strategy was not found");
+      if (current.version !== inputs.expectedVersion) {
+        throw new Error("Strategy changed elsewhere; refresh before saving");
+      }
+      const bundles = this.strategyUsedBy(current.id);
+      const projections = bundles.map((bundle) => {
+        const row = this.getBundleRow(bundle.id)!;
+        return {
+          bundle,
+          config: composeMakerConfig({
+            strategy: config,
+            mode: row.mode,
+            makerAccountId: row.maker_account_id,
+            takerAccountId: row.taker_account_id,
+            markets: this.getBundleMarkets(row.id),
+          }),
+        };
+      });
+      const walletLimits = this.getWalletLimits();
+      if (walletLimits) {
+        for (const projection of projections) {
+          this.assertConfigFitsWallet(projection.config, walletLimits);
+        }
+      }
+      const version = current.version + 1;
+      const now = new Date().toISOString();
+      this.db
+        .prepare(
+          `UPDATE strategies
+           SET config = ?, market_rule = ?, version = ?, updated_at = ?
+           WHERE owner_address = ? AND id = ?`,
+        )
+        .run(
+          stringify(config),
+          stringify(marketRule),
+          version,
+          now,
+          this.ownerAddress,
+          current.id,
+        );
+      const writeBundle = this.db.prepare(
+        `UPDATE bundles
+         SET config = ?, strategy_version_applied = ?, updated_at = ?
+         WHERE owner_address = ? AND id = ?`,
+      );
+      let coreProjection:
+        { config: MakerConfig; updatedAt: string } | undefined;
+      for (const projection of projections) {
+        const updatedAt = this.nextBundleUpdatedAt(projection.bundle.id);
+        writeBundle.run(
+          stringify(projection.config),
+          version,
+          updatedAt,
+          this.ownerAddress,
+          projection.bundle.id,
+        );
+        if (projection.bundle.name === "Core") {
+          coreProjection = { config: projection.config, updatedAt };
+        }
+      }
+      if (coreProjection) {
+        this.db
+          .prepare(
+            `INSERT INTO tenant_settings (owner_address, key, value, updated_at)
+             VALUES (?, 'maker_config', ?, ?)
+             ON CONFLICT(owner_address, key) DO UPDATE SET
+               value = excluded.value,
+               updated_at = excluded.updated_at`,
+          )
+          .run(
+            this.ownerAddress,
+            stringify(coreProjection.config),
+            coreProjection.updatedAt,
+          );
+        this.db
+          .prepare(
+            `INSERT INTO bundle_config_mirrors
+              (owner_address, core_config_updated_at, mirrored_at)
+             VALUES (?, ?, ?)
+             ON CONFLICT(owner_address) DO UPDATE SET
+               core_config_updated_at = excluded.core_config_updated_at,
+               mirrored_at = excluded.mirrored_at`,
+          )
+          .run(this.ownerAddress, coreProjection.updatedAt, now);
+      }
+      return projections.map((projection) => projection.bundle.id);
+    });
+    const affectedIds = update();
+    return {
+      strategy: this.getStrategy(inputs.strategyId)!,
+      affectedBundles: affectedIds.map((id) => this.getStoredBundle(id)!),
+    };
+  }
+
+  duplicateStrategy(inputs: {
+    strategyId: string;
+    name?: string;
+  }): StoredStrategy {
+    const current = this.strategyRow(inputs.strategyId);
+    if (!current || current.archived_at)
+      throw new Error("Strategy was not found");
+    const requested = inputs.name?.trim();
+    const name = requested || this.nextStrategyName(`${current.name} copy`);
+    return this.createStrategy({
+      name,
+      config: parse<unknown>(current.config),
+      marketRule: parse<unknown>(current.market_rule),
+    });
+  }
+
+  archiveStrategy(strategyId: string): StoredStrategy {
+    const current = this.strategyRow(strategyId);
+    if (!current || current.archived_at)
+      throw new Error("Strategy was not found");
+    const usedBy = this.strategyUsedBy(strategyId);
+    if (usedBy.length) {
+      throw new Error("A strategy in use by a bundle cannot be archived");
+    }
+    this.db
+      .prepare(
+        `UPDATE strategies SET archived_at = ?, updated_at = ?
          WHERE owner_address = ? AND id = ?`,
       )
-      .get(this.ownerAddress, bundleId) as { config: string } | undefined;
-    return row ? makerConfigSchema.parse(parse<unknown>(row.config)) : null;
+      .run(
+        new Date().toISOString(),
+        new Date().toISOString(),
+        this.ownerAddress,
+        strategyId,
+      );
+    return this.getStrategy(strategyId)!;
   }
 
   getWalletLimits(): BundleWalletLimits | null {
@@ -2159,17 +2951,27 @@ export class TenantStore {
       const id = `bundle-${randomUUID()}`;
       this.assertBundleAssignmentsAvailable(id, inputs.config);
       const now = new Date().toISOString();
+      const strategy = this.writeLegacyStrategyForBundle({
+        bundleId: id,
+        bundleName: name,
+        currentStrategyId: null,
+        config: inputs.config,
+        forkShared: false,
+      });
       this.db
         .prepare(
           `INSERT INTO bundles
-            (id, owner_address, name, maker_account_id, taker_account_id,
-             config, mode, status, created_at, updated_at, last_error, archived_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, 'paused', ?, ?, NULL, NULL)`,
+            (id, owner_address, name, strategy_id, strategy_version_applied,
+             maker_account_id, taker_account_id, config, mode, status,
+             created_at, updated_at, last_error, archived_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'paused', ?, ?, NULL, NULL)`,
         )
         .run(
           id,
           this.ownerAddress,
           name,
+          strategy.strategyId,
+          strategy.version,
           inputs.config.makerAccountId ?? null,
           inputs.config.hedge.accountId ?? null,
           stringify(inputs.config),
@@ -2182,6 +2984,210 @@ export class TenantStore {
       return this.getStoredBundle(id)!;
     });
     return create();
+  }
+
+  createAllocatedBundle(inputs: {
+    name: string;
+    makerAccountId: string | null;
+    takerAccountId: string | null;
+    mode: MakerConfig["mode"];
+    markets: MakerConfig["markets"];
+    strategyId: string | null;
+    confirmWalletLimits?: boolean;
+  }): StoredBundle {
+    const create = this.db.transaction(() => {
+      const name = inputs.name.trim();
+      if (!name || name.length > 80 || name.toLowerCase() === "core") {
+        throw new Error("Bundle name must be between 1 and 80 characters");
+      }
+      if (inputs.mode === "live") {
+        throw new Error(
+          "Additional bundles can only use Observe or Paper mode",
+        );
+      }
+      const active = this.db
+        .prepare(
+          `SELECT COUNT(*) AS count FROM bundles
+           WHERE owner_address = ? AND archived_at IS NULL`,
+        )
+        .get(this.ownerAddress) as { count: number };
+      if (active.count >= 4) {
+        throw new Error("A wallet can have at most four active bundles");
+      }
+      const strategy = inputs.strategyId
+        ? this.strategyRow(inputs.strategyId)
+        : undefined;
+      if (inputs.strategyId && (!strategy || strategy.archived_at)) {
+        throw new Error("Strategy was not found for this wallet");
+      }
+      const strategyConfig = strategy
+        ? strategyConfigSchema.parse(parse<unknown>(strategy.config))
+        : undefined;
+      const config = strategyConfig
+        ? composeMakerConfig({
+            strategy: strategyConfig,
+            mode: inputs.mode,
+            makerAccountId: inputs.makerAccountId,
+            takerAccountId: inputs.takerAccountId,
+            markets: inputs.markets,
+          })
+        : makerConfigSchema.parse({
+            markets: inputs.markets,
+            mode: inputs.mode,
+            makerAccountId: inputs.makerAccountId,
+            hedge: {
+              enabled: false,
+              accountId: inputs.takerAccountId,
+              thresholdUsd: 25,
+              maxOrderUsd: 100,
+              maxSlippageBps: 75,
+            },
+          });
+      const walletLimits = this.getWalletLimits();
+      if (strategy && walletLimits) {
+        if (active.count >= 1 && !walletLimits.confirmedAt) {
+          if (!inputs.confirmWalletLimits) {
+            throw new Error(
+              "Confirm the wallet limits before creating a second bundle",
+            );
+          }
+          this.confirmWalletLimits();
+        }
+        this.assertConfigFitsWallet(config, walletLimits);
+      }
+      const id = `bundle-${randomUUID()}`;
+      this.assertBundleAssignmentsAvailable(id, config);
+      const now = new Date().toISOString();
+      this.db
+        .prepare(
+          `INSERT INTO bundles
+            (id, owner_address, name, strategy_id, strategy_version_applied,
+             maker_account_id, taker_account_id, config, mode, status,
+             created_at, updated_at, last_error, archived_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'paused', ?, ?, NULL, NULL)`,
+        )
+        .run(
+          id,
+          this.ownerAddress,
+          name,
+          strategy?.id ?? null,
+          strategy?.version ?? null,
+          config.makerAccountId,
+          config.hedge.accountId,
+          stringify(config),
+          config.mode,
+          now,
+          now,
+        );
+      this.replaceBundleMarkets(id, config);
+      this.replaceBundleAccountRoles(id, config);
+      return this.getStoredBundle(id)!;
+    });
+    return create();
+  }
+
+  updateBundleAllocation(inputs: {
+    bundleId: string;
+    makerAccountId?: string | null;
+    takerAccountId?: string | null;
+    mode?: MakerConfig["mode"];
+    markets?: MakerConfig["markets"];
+    strategyId?: string | null;
+    expectedUpdatedAt?: string;
+  }): StoredBundle {
+    const update = this.db.transaction(() => {
+      const current = this.getBundleRow(inputs.bundleId);
+      if (!current || current.archived_at)
+        throw new Error("Bundle was not found");
+      if (
+        inputs.expectedUpdatedAt !== undefined &&
+        inputs.expectedUpdatedAt !== current.updated_at
+      ) {
+        throw new Error("Bundle changed elsewhere; refresh before saving");
+      }
+      const makerAccountId =
+        inputs.makerAccountId === undefined
+          ? current.maker_account_id
+          : inputs.makerAccountId;
+      const takerAccountId =
+        inputs.takerAccountId === undefined
+          ? current.taker_account_id
+          : inputs.takerAccountId;
+      const mode = inputs.mode ?? current.mode;
+      if (mode === "live" && current.name !== "Core") {
+        throw new Error(
+          "Additional bundles can only use Observe or Paper mode",
+        );
+      }
+      const strategyId =
+        inputs.strategyId === undefined
+          ? current.strategy_id
+          : inputs.strategyId;
+      const markets = inputs.markets ?? this.getBundleMarkets(current.id);
+      const strategy = strategyId ? this.strategyRow(strategyId) : undefined;
+      if (strategyId && (!strategy || strategy.archived_at)) {
+        throw new Error("Strategy was not found for this wallet");
+      }
+      const fallback = this.composeBundleConfig(current);
+      const config = strategy
+        ? composeMakerConfig({
+            strategy: strategyConfigSchema.parse(
+              parse<unknown>(strategy.config),
+            ),
+            mode,
+            makerAccountId,
+            takerAccountId,
+            markets,
+          })
+        : makerConfigSchema.parse({
+            ...fallback,
+            mode,
+            makerAccountId,
+            hedge: { ...fallback.hedge, accountId: takerAccountId },
+            markets,
+          });
+      const walletLimits = this.getWalletLimits();
+      if (walletLimits && strategy)
+        this.assertConfigFitsWallet(config, walletLimits);
+      this.assertBundleAssignmentsAvailable(current.id, config);
+      const updatedAt = this.nextBundleUpdatedAt(current.id);
+      this.db
+        .prepare(
+          `UPDATE bundles
+           SET strategy_id = ?, strategy_version_applied = ?,
+               maker_account_id = ?, taker_account_id = ?, config = ?, mode = ?,
+               status = CASE WHEN ? IS NULL THEN 'paused' ELSE status END,
+               updated_at = ?
+           WHERE owner_address = ? AND id = ?`,
+        )
+        .run(
+          strategy?.id ?? null,
+          strategy?.version ?? null,
+          config.makerAccountId,
+          config.hedge.accountId,
+          stringify(config),
+          config.mode,
+          strategy?.id ?? null,
+          updatedAt,
+          this.ownerAddress,
+          current.id,
+        );
+      this.replaceBundleMarkets(current.id, config);
+      this.replaceBundleAccountRoles(current.id, config);
+      if (current.name === "Core") {
+        this.db
+          .prepare(
+            `INSERT INTO tenant_settings (owner_address, key, value, updated_at)
+             VALUES (?, 'maker_config', ?, ?)
+             ON CONFLICT(owner_address, key) DO UPDATE SET
+               value = excluded.value,
+               updated_at = excluded.updated_at`,
+          )
+          .run(this.ownerAddress, stringify(config), updatedAt);
+      }
+      return this.getStoredBundle(current.id)!;
+    });
+    return update();
   }
 
   getStoredBundle(bundleId: string): StoredBundle | null {

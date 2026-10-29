@@ -15,6 +15,9 @@ import { ViewFrame } from "./view-frame";
 export type BundleCard = {
   id: string;
   name: string;
+  strategyId: string | null;
+  strategyName: string | null;
+  needsStrategy: boolean;
   mode: "observe" | "paper" | "live";
   status: "stopped" | "running" | "paused" | "error";
   makerAccountId: string | null;
@@ -46,11 +49,25 @@ type BundlesViewProps = {
   onArchive: (bundleId: string) => void;
   accounts: Array<{ accountId: string; label: string | null }>;
   markets: Array<{ id: string; symbol: string }>;
+  strategies: Array<{ id: string; name: string }>;
+  onAttachStrategy: (bundleId: string, strategyId: string) => Promise<void>;
+  onUpdateAllocation: (
+    bundleId: string,
+    draft: {
+      makerAccountId: string;
+      takerAccountId: string;
+      marketId: string;
+      mode: "observe" | "paper";
+      strategyId: string | null;
+      updatedAt: string;
+    },
+  ) => Promise<void>;
   onCreate: (draft: {
     name: string;
     makerAccountId: string;
     takerAccountId: string;
     marketId: string;
+    strategyId: string | null;
     confirmWalletLimits: boolean;
   }) => Promise<void>;
   onUpdateWalletLimits: (limits: {
@@ -90,6 +107,9 @@ export function BundlesView({
   onArchive,
   accounts,
   markets,
+  strategies,
+  onAttachStrategy,
+  onUpdateAllocation,
   onCreate,
   onUpdateWalletLimits,
 }: BundlesViewProps) {
@@ -110,6 +130,13 @@ export function BundlesView({
   const [makerAccountId, setMakerAccountId] = useState("");
   const [takerAccountId, setTakerAccountId] = useState("");
   const [marketId, setMarketId] = useState("");
+  const [strategyId, setStrategyId] = useState("");
+  const [editingBundle, setEditingBundle] = useState<BundleCard | null>(null);
+  const [editMakerAccountId, setEditMakerAccountId] = useState("");
+  const [editTakerAccountId, setEditTakerAccountId] = useState("");
+  const [editMarketId, setEditMarketId] = useState("");
+  const [editMode, setEditMode] = useState<"observe" | "paper">("paper");
+  const [editStrategyId, setEditStrategyId] = useState("");
   const availableMakerAccounts = availableBundleAccounts(accounts, visible);
   const availableTakerAccounts = availableBundleAccounts(
     accounts,
@@ -117,6 +144,23 @@ export function BundlesView({
     makerAccountId || null,
   );
   const availableMarkets = availableBundleMarkets(markets, visible);
+  const editAvailableAccounts = editingBundle
+    ? accounts.filter(
+        (account) =>
+          account.accountId === editingBundle.makerAccountId ||
+          account.accountId === editingBundle.takerAccountId ||
+          availableBundleAccounts(accounts, visible).some(
+            (available) => available.accountId === account.accountId,
+          ),
+      )
+    : [];
+  const editAvailableMarkets = editingBundle
+    ? markets.filter(
+        (market) =>
+          editingBundle.marketIds.includes(market.id) ||
+          availableMarkets.some((available) => available.id === market.id),
+      )
+    : [];
   const canCreate =
     visible.length < 4 &&
     Boolean(
@@ -170,6 +214,7 @@ export function BundlesView({
       makerAccountId,
       takerAccountId,
       marketId,
+      strategyId: strategyId || null,
       confirmWalletLimits,
     });
     setConfirmOpen(false);
@@ -179,6 +224,26 @@ export function BundlesView({
     if (!walletLimits) return;
     seedWalletLimitsDraft();
     setEditLimitsOpen(true);
+  };
+  const openEditBundle = (bundle: BundleCard) => {
+    setEditingBundle(bundle);
+    setEditMakerAccountId(bundle.makerAccountId ?? "");
+    setEditTakerAccountId(bundle.takerAccountId ?? "");
+    setEditMarketId(bundle.marketIds[0] ?? "");
+    setEditMode(bundle.mode === "observe" ? "observe" : "paper");
+    setEditStrategyId(bundle.strategyId ?? "");
+  };
+  const saveAllocation = async () => {
+    if (!editingBundle || !editMakerAccountId || !editMarketId) return;
+    await onUpdateAllocation(editingBundle.id, {
+      makerAccountId: editMakerAccountId,
+      takerAccountId: editTakerAccountId,
+      marketId: editMarketId,
+      mode: editMode,
+      strategyId: editStrategyId || null,
+      updatedAt: editingBundle.updatedAt,
+    });
+    setEditingBundle(null);
   };
   const submitWalletLimitsEdit = async () => {
     if (!canConfirmWalletLimitsEdit) return;
@@ -310,13 +375,45 @@ export function BundlesView({
                         .join(", ")
                     : "No markets selected"}
                 </p>
+                <p className="bundle-strategy">
+                  {bundle.strategyName
+                    ? `Strategy: ${bundle.strategyName}`
+                    : "No strategy attached"}
+                </p>
                 {bundle.lastError && (
                   <p className="bundle-error" role="status">
                     {bundle.lastError}
                   </p>
                 )}
                 <div className="bundle-actions">
-                  {bundle.status === "running" ? (
+                  {bundle.needsStrategy ? (
+                    <label className="bundle-attach-strategy">
+                      <span>Attach strategy</span>
+                      <select
+                        value=""
+                        disabled={busy || !strategies.length}
+                        onChange={(event) => {
+                          if (event.target.value) {
+                            void onAttachStrategy(
+                              bundle.id,
+                              event.target.value,
+                            );
+                          }
+                        }}
+                      >
+                        <option value="">
+                          {strategies.length
+                            ? "Choose a strategy"
+                            : "No strategies yet"}
+                        </option>
+                        {strategies.map((strategy) => (
+                          <option key={strategy.id} value={strategy.id}>
+                            {strategy.name}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  ) : bundle.status === "running" ? (
                     <Button
                       variant="quiet"
                       onClick={() => onPause(bundle.id)}
@@ -347,6 +444,16 @@ export function BundlesView({
                   {bundle.name !== "Core" && (
                     <Button
                       variant="quiet"
+                      onClick={() => openEditBundle(bundle)}
+                      disabled={busy || bundle.status === "running"}
+                    >
+                      <Pencil size={15} aria-hidden="true" />
+                      Edit
+                    </Button>
+                  )}
+                  {bundle.name !== "Core" && (
+                    <Button
+                      variant="quiet"
                       onClick={() => onArchive(bundle.id)}
                       disabled={busy || bundle.status === "running"}
                     >
@@ -363,7 +470,7 @@ export function BundlesView({
         <Sheet
           open={createOpen}
           title="New Paper bundle"
-          description="Choose separate accounts and one market. You can refine its strategy after it is created."
+          description="Choose separate accounts, a free market, and an optional reusable strategy. A bundle without one stays paused."
           onClose={() => setCreateOpen(false)}
           footer={
             <>
@@ -433,6 +540,24 @@ export function BundlesView({
               </select>
             </label>
             <label>
+              <span>Strategy</span>
+              <select
+                value={strategyId}
+                onChange={(event) => setStrategyId(event.target.value)}
+              >
+                <option value="">
+                  {strategies.length
+                    ? "No strategy yet (bundle stays paused)"
+                    : "No strategies yet. Create one first."}
+                </option>
+                {strategies.map((strategy) => (
+                  <option key={strategy.id} value={strategy.id}>
+                    {strategy.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
               <span>Market</span>
               <select
                 value={marketId}
@@ -454,6 +579,105 @@ export function BundlesView({
                 : "Every available market is already assigned to a bundle."}
             </p>
           )}
+        </Sheet>
+
+        <Sheet
+          open={Boolean(editingBundle)}
+          title={editingBundle ? `Edit ${editingBundle.name}` : "Edit bundle"}
+          description="Bundle allocation owns its accounts, actual markets, mode, and attached strategy."
+          onClose={() => setEditingBundle(null)}
+          footer={
+            <>
+              <Button variant="quiet" onClick={() => setEditingBundle(null)}>
+                Cancel
+              </Button>
+              <Button
+                variant="primary"
+                disabled={
+                  busy ||
+                  !editMakerAccountId ||
+                  !editMarketId ||
+                  editMakerAccountId === editTakerAccountId
+                }
+                onClick={() => void saveAllocation()}
+              >
+                Save allocation
+              </Button>
+            </>
+          }
+        >
+          <div className="bundle-create-fields">
+            <label>
+              <span>Maker account</span>
+              <select
+                value={editMakerAccountId}
+                onChange={(event) => setEditMakerAccountId(event.target.value)}
+              >
+                <option value="">Choose an available account</option>
+                {editAvailableAccounts.map((account) => (
+                  <option key={account.accountId} value={account.accountId}>
+                    {account.label ?? `Account ${account.accountId}`}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              <span>Taker account</span>
+              <select
+                value={editTakerAccountId}
+                onChange={(event) => setEditTakerAccountId(event.target.value)}
+              >
+                <option value="">Off</option>
+                {editAvailableAccounts
+                  .filter((account) => account.accountId !== editMakerAccountId)
+                  .map((account) => (
+                    <option key={account.accountId} value={account.accountId}>
+                      {account.label ?? `Account ${account.accountId}`}
+                    </option>
+                  ))}
+              </select>
+            </label>
+            <label>
+              <span>Mode</span>
+              <select
+                value={editMode}
+                onChange={(event) =>
+                  setEditMode(event.target.value as "observe" | "paper")
+                }
+              >
+                <option value="observe">Observe</option>
+                <option value="paper">Paper</option>
+              </select>
+            </label>
+            <label>
+              <span>Strategy</span>
+              <select
+                value={editStrategyId}
+                onChange={(event) => setEditStrategyId(event.target.value)}
+              >
+                <option value="">No strategy (bundle stays paused)</option>
+                {strategies.map((strategy) => (
+                  <option key={strategy.id} value={strategy.id}>
+                    {strategy.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              <span>Market</span>
+              <select
+                value={editMarketId}
+                onChange={(event) => setEditMarketId(event.target.value)}
+              >
+                <option value="">Choose an available market</option>
+                {editAvailableMarkets.map((market) => (
+                  <option key={market.id} value={market.id}>
+                    {market.symbol}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
         </Sheet>
 
         <Sheet

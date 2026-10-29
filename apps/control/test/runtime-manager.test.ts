@@ -86,6 +86,29 @@ describe("runtime endpoint management", () => {
     store.close();
   });
 
+  it("keeps a bundle without a strategy paused and refuses Start", () => {
+    const store = storeHarness();
+    const ownerAddress = `0x${"f".repeat(64)}`;
+    const tenant = store.forTenant(ownerAddress);
+    const bundle = tenant.createAllocatedBundle({
+      name: "Draft",
+      makerAccountId: null,
+      takerAccountId: null,
+      mode: "observe",
+      markets: [{ marketId: "0xf001", symbol: "DRAFT" }],
+      strategyId: null,
+    });
+    const manager = new RuntimeManager(store, {} as never, {});
+
+    expect(bundle).toMatchObject({ status: "paused", needsStrategy: true });
+    expect(() => manager.startBundle(ownerAddress, bundle.id)).toThrow(
+      "Attach a strategy",
+    );
+
+    manager.close();
+    store.close();
+  });
+
   it("reports aggregate use from running bundles before wallet limits change", async () => {
     const store = storeHarness();
     const ownerAddress = `0x${"2".repeat(64)}`;

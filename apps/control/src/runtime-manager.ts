@@ -208,6 +208,9 @@ export class RuntimeManager {
     bundle: StoredBundle,
   ): MakerConfig {
     const tenant = this.store.forTenant(ownerAddress);
+    if (bundle.needsStrategy) {
+      throw new Error("Attach a strategy before starting this bundle");
+    }
     const config = tenant.getBundleConfig(bundle.id);
     if (!config) throw new Error("Bundle was not found");
     if (bundle.archivedAt) throw new Error("Bundle was archived");
@@ -411,6 +414,58 @@ export class RuntimeManager {
     });
     const runtime = this.runtimes.get(this.runtimeKey(owner, inputs.bundleId));
     if (runtime) await runtime.reconfigure();
+    return updated;
+  }
+
+  async reconfigureStrategyBundles(
+    ownerAddress: string,
+    bundleIds: string[],
+  ): Promise<void> {
+    const owner = ownerAddress.toLowerCase();
+    for (const bundleId of bundleIds) {
+      const runtime = this.runtimes.get(this.runtimeKey(owner, bundleId));
+      if (runtime) await runtime.reconfigure();
+    }
+  }
+
+  async updateBundleAllocation(inputs: {
+    ownerAddress: string;
+    bundleId: string;
+    makerAccountId?: string | null;
+    takerAccountId?: string | null;
+    mode?: MakerConfig["mode"];
+    markets?: MakerConfig["markets"];
+    strategyId?: string | null;
+    expectedUpdatedAt?: string;
+  }): Promise<StoredBundle> {
+    const owner = inputs.ownerAddress.toLowerCase();
+    const tenant = this.store.forTenant(owner);
+    const current = tenant.getStoredBundle(inputs.bundleId);
+    if (!current || current.archivedAt) throw new Error("Bundle was not found");
+    // A detached bundle cannot keep quoting while it has no strategy. Stop it
+    // before changing the projection; Stop remains available if this fails.
+    if (inputs.strategyId === null && current.status === "running") {
+      await this.pauseBundle(owner, current.id);
+    }
+    const updated = tenant.updateBundleAllocation({
+      bundleId: inputs.bundleId,
+      ...(inputs.makerAccountId !== undefined
+        ? { makerAccountId: inputs.makerAccountId }
+        : {}),
+      ...(inputs.takerAccountId !== undefined
+        ? { takerAccountId: inputs.takerAccountId }
+        : {}),
+      ...(inputs.mode !== undefined ? { mode: inputs.mode } : {}),
+      ...(inputs.markets !== undefined ? { markets: inputs.markets } : {}),
+      ...(inputs.strategyId !== undefined
+        ? { strategyId: inputs.strategyId }
+        : {}),
+      ...(inputs.expectedUpdatedAt
+        ? { expectedUpdatedAt: inputs.expectedUpdatedAt }
+        : {}),
+    });
+    const runtime = this.runtimes.get(this.runtimeKey(owner, inputs.bundleId));
+    if (runtime && updated.strategyId) await runtime.reconfigure();
     return updated;
   }
 
