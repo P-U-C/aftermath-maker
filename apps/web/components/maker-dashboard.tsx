@@ -1287,7 +1287,10 @@ function DashboardBody() {
       return;
     }
     await mutate("create-bundle", async () => {
-      const result = await request<{ bundle: MakerBundle }>("api/bundles", {
+      const result = await request<{
+        bundle: MakerBundle;
+        walletLimits: BundleWalletLimits;
+      }>("api/bundles", {
         method: "POST",
         body: JSON.stringify({
           name: draft.name,
@@ -1299,6 +1302,8 @@ function DashboardBody() {
           confirmWalletLimits: draft.confirmWalletLimits,
         }),
       });
+      setBundles((current) => [...current, result.bundle]);
+      setWalletLimits(result.walletLimits);
       selectedBundleIdRef.current = result.bundle.id;
       setSelectedBundleId(result.bundle.id);
       const created = await request<{ config: MakerConfig }>(
@@ -3618,7 +3623,7 @@ function DashboardBody() {
         lastHedgeDigest={snapshot?.hedge.lastDigest ?? null}
         unavailable={controlUnavailable}
         showMarketLane={
-          bundles.filter((bundle) => !bundle.archivedAt).length <= 1
+          bundles.filter((bundle) => !bundle.archivedAt).length === 0
         }
         bundleLanes={
           <BundleDeskLanes

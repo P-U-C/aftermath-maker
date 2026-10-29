@@ -344,18 +344,33 @@ function CoachLayer({
     if (!open) return;
     const highlighted: HTMLElement[] = [];
     const update = () => {
-      highlighted
-        .splice(0)
-        .forEach((target) => target.classList.remove("maker-coach-target"));
+      highlighted.splice(0).forEach((target) => {
+        target.classList.remove("maker-coach-target");
+        target.removeAttribute("data-coach-target");
+      });
       const root = document.querySelector<HTMLElement>(
         '.maker-view[data-view="' + activeView + '"]:not([hidden])',
       );
       const targets = (coachNotes[activeView] ?? []).flatMap((note) => {
         const target = root?.querySelector<HTMLElement>(note.selector);
         if (!target) return [];
-        return [{ note, target, rect: target.getBoundingClientRect() }];
+        const rect = target.getBoundingClientRect();
+        const style = getComputedStyle(target);
+        if (
+          rect.width < 2 ||
+          rect.height < 2 ||
+          style.display === "none" ||
+          style.visibility === "hidden"
+        ) {
+          return [];
+        }
+        return [{ note, target, rect }];
       });
       if (window.innerWidth < 620) {
+        targets.forEach(({ target }) => {
+          target.setAttribute("data-coach-target", "true");
+          highlighted.push(target);
+        });
         setPositions(
           targets.map(({ note, rect }) => ({
             note,
@@ -368,16 +383,27 @@ function CoachLayer({
         );
         const current = targets[Math.min(phoneIndex, targets.length - 1)];
         if (current) {
-          // A phone note occupies the lower reading area. Scrolling to the
-          // section keeps the context visible without drawing a large target
-          // outline underneath the note.
-          current.target.scrollIntoView({ block: "start", behavior: "auto" });
+          // A phone note occupies the lower reading area. Keep its section
+          // below the sticky header instead of hiding its heading under tabs.
+          const navHeight =
+            document
+              .querySelector<HTMLElement>(
+                ".strategy-mobile-sheet-header, .maker-nav",
+              )
+              ?.getBoundingClientRect().height ?? 0;
+          const targetTop =
+            current.target.getBoundingClientRect().top + window.scrollY;
+          window.scrollTo({
+            top: Math.max(0, targetTop - navHeight - 12),
+            behavior: "auto",
+          });
         }
         return;
       }
 
       targets.forEach(({ target }) => {
         target.classList.add("maker-coach-target");
+        target.setAttribute("data-coach-target", "true");
         highlighted.push(target);
       });
       const margin = 8;
@@ -463,9 +489,10 @@ function CoachLayer({
     };
     window.addEventListener("keydown", keydown);
     return () => {
-      highlighted.forEach((target) =>
-        target.classList.remove("maker-coach-target"),
-      );
+      highlighted.forEach((target) => {
+        target.classList.remove("maker-coach-target");
+        target.removeAttribute("data-coach-target");
+      });
       window.removeEventListener("resize", update);
       window.removeEventListener("scroll", update, true);
       window.removeEventListener("keydown", keydown);

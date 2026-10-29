@@ -806,6 +806,23 @@ describe("persistent control store", () => {
       status: "paused",
       needsStrategy: true,
     });
+    const detachedStrategy = tenant.createStrategy({
+      name: "Detached",
+      config: {
+        ...coreStrategy.config,
+        hedge: { ...coreStrategy.config.hedge, enabled: false },
+      },
+      marketRule: coreStrategy.marketRule,
+    });
+    expect(
+      tenant.updateBundleAllocation({
+        bundleId: unconfigured.id,
+        strategyId: detachedStrategy.id,
+      }),
+    ).toMatchObject({
+      status: "stopped",
+      needsStrategy: false,
+    });
     databaseStore.close();
   });
 
@@ -1203,7 +1220,7 @@ describe("persistent control store", () => {
     expect(paper).toMatchObject({
       name: "Paper",
       mode: "paper",
-      status: "paused",
+      status: "stopped",
       marketIds: ["0x1002"],
     });
     expect(tenant.getWalletLimits()?.confirmedAt).not.toBeNull();
@@ -1297,7 +1314,7 @@ describe("persistent control store", () => {
     );
     expect(
       tenant.createBundle({ name: "Released", config: paperConfig }),
-    ).toMatchObject({ name: "Released", status: "paused" });
+    ).toMatchObject({ name: "Released", status: "stopped" });
     databaseStore.close();
 
     const reopened = new Store(join(directory, "maker.db"));
