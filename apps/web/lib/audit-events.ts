@@ -14,6 +14,11 @@ export type DeskEvent = {
   sentence: string;
 };
 
+export type AuditEventContext = {
+  bundleName?: string | null;
+  accountId?: string | null;
+};
+
 type AuditCopy = {
   severity: DeskEvent["severity"];
   sentence: (detail: Record<string, unknown>) => string;
@@ -264,7 +269,30 @@ const copies: Record<string, AuditCopy> = {
 
 export const auditEventCopyKeys = Object.keys(copies);
 
-export function deskEvent(event: AuditEventInput): DeskEvent {
+function withContext(
+  sentence: string,
+  event: AuditEventInput,
+  context: AuditEventContext,
+): string {
+  const bundleName = context.bundleName?.trim();
+  const accountId =
+    context.accountId ??
+    (bundleName && typeof event.detail.accountId === "string"
+      ? event.detail.accountId
+      : null);
+  if (!bundleName && !accountId) return sentence;
+
+  const withoutAccountSuffix = sentence.replace(/ for account [^.]+(?=\.)/, "");
+  const subject = [bundleName, accountId ? `account ${accountId}` : null]
+    .filter((value): value is string => Boolean(value))
+    .join(" · ");
+  return `${subject}: ${withoutAccountSuffix[0]?.toLowerCase() ?? ""}${withoutAccountSuffix.slice(1)}`;
+}
+
+export function deskEvent(
+  event: AuditEventInput,
+  context: AuditEventContext = {},
+): DeskEvent {
   const key = `${event.category}:${event.action}:${event.outcome}`;
   const copy = copies[key];
   if (copy) {
@@ -272,7 +300,7 @@ export function deskEvent(event: AuditEventInput): DeskEvent {
       id: event.id,
       occurredAt: event.occurredAt,
       severity: copy.severity,
-      sentence: copy.sentence(event.detail),
+      sentence: withContext(copy.sentence(event.detail), event, context),
     };
   }
 
@@ -280,6 +308,10 @@ export function deskEvent(event: AuditEventInput): DeskEvent {
     id: event.id,
     occurredAt: event.occurredAt,
     severity: "info",
-    sentence: "Maker recorded an unclassified control event.",
+    sentence: withContext(
+      "Maker recorded an unclassified control event.",
+      event,
+      context,
+    ),
   };
 }

@@ -184,6 +184,7 @@ async function installStatefulControl(page, state) {
       if (request.method() === "PATCH") {
         const body = JSON.parse(request.postData() ?? "{}");
         Object.assign(strategy, {
+          name: body.name ?? strategy.name,
           config: body.config,
           marketRule: body.marketRule,
           version: strategy.version + 1,
@@ -749,11 +750,11 @@ async function plainControlLog(browser) {
     await page.waitForTimeout(200);
     const auditText = await audit.textContent();
     assert(
-      auditText?.includes("Trading key approved for account 1745."),
+      auditText?.includes("Core · account 1745: trading key approved."),
       `Trading-key copy was not shown: ${auditText}`,
     );
     assert(
-      auditText?.includes("Account name and tags saved."),
+      auditText?.includes("Core · account 1745: account name and tags saved."),
       `Account metadata copy was not shown: ${auditText}`,
     );
     assert(
@@ -860,6 +861,144 @@ async function trialExplainsItsBlocker(browser) {
   }
 }
 
+async function v7BundleDeskAndStrategy(browser) {
+  const { context, page, state } = await newPage(browser, {
+    width: 1440,
+    height: 900,
+  });
+  try {
+    const rewardsBundle = state.fixture.bundles.bundles.find(
+      (bundle) => bundle.name === "Rewards",
+    );
+    const rewardsStatus = state.fixture.status.bundles.find(
+      (entry) => entry.bundle.name === "Rewards",
+    );
+    const eth = state.fixture.markets.markets.find(
+      (market) => market.symbol === "ETH",
+    );
+    assert(rewardsBundle && rewardsStatus && eth, "Missing rewards fixture");
+    rewardsBundle.status = "paused";
+    rewardsStatus.bundle.status = "paused";
+    rewardsStatus.snapshot = {
+      ...structuredClone(rewardsStatus.snapshot),
+      market: {
+        ...structuredClone(rewardsStatus.snapshot.market),
+        id: eth.id,
+        symbol: eth.symbol,
+        indexPrice: eth.indexPrice,
+      },
+      markets: structuredClone(rewardsStatus.snapshot.markets).map(
+        (market, index) =>
+          index === 0
+            ? {
+                ...market,
+                id: eth.id,
+                symbol: eth.symbol,
+                indexPrice: eth.indexPrice,
+              }
+            : market,
+      ),
+    };
+
+    await goToDesk(page);
+    await page
+      .locator(".bundle-desk-lane")
+      .filter({ hasText: "Core" })
+      .waitFor();
+    await page
+      .locator(".bundle-desk-lane")
+      .filter({ hasText: "Rewards" })
+      .waitFor();
+    await page.getByText("Paused", { exact: true }).first().waitFor();
+    await page.locator(".maker-wallet-menu > summary").click();
+    await page.getByText("Aftermath ✓", { exact: true }).waitFor();
+    await page.getByText("1 running of 2", { exact: true }).waitFor();
+    await page.getByText("2 authorized", { exact: true }).waitFor();
+    await capture(page, "v7-bundle-lanes-and-wallet-desktop.png");
+
+    rewardsBundle.status = "running";
+    rewardsStatus.bundle.status = "running";
+    await page.getByRole("link", { name: "Markets", exact: true }).click();
+    await page.waitForTimeout(120);
+    await page
+      .locator(".market-active-bundle")
+      .filter({ hasText: "Core" })
+      .first()
+      .waitFor();
+    await page
+      .locator(".market-active-bundle")
+      .filter({ hasText: "Rewards" })
+      .first()
+      .waitFor();
+    await capture(page, "v7-market-bundle-tags-desktop.png");
+
+    await page.getByRole("link", { name: "Venues", exact: true }).click();
+    await page
+      .getByText(/All venues: equity .* wallet limit .* 5 accounts/, {
+        exact: false,
+      })
+      .waitFor();
+    await page.locator(".venue-exposure-table").waitFor();
+    await page.locator(".venue-exposure-card").scrollIntoViewIfNeeded();
+    await capture(page, "v7-venues-wallet-total-desktop.png");
+
+    await page.getByRole("link", { name: "Strategy", exact: true }).click();
+    const strategyView = page.locator(
+      '.maker-view[data-view="strategy"]:not([hidden])',
+    );
+    await strategyView
+      .getByRole("button", { name: /Markets/ })
+      .first()
+      .click();
+    const builder = strategyView.locator(".strategy-builder");
+    const marketRule = strategyView.locator(".strategy-market-rule");
+    await builder.waitFor();
+    await marketRule.waitFor();
+    const builderBox = await builder.boundingBox();
+    const marketRuleBox = await marketRule.boundingBox();
+    assert(
+      builderBox && marketRuleBox && builderBox.y < marketRuleBox.y,
+      "Strategy steps were not placed before the market rule",
+    );
+    await strategyView.getByLabel("Rule").selectOption("preferred-list");
+    await strategyView
+      .getByRole("button", { name: /Size and limits/ })
+      .first()
+      .click();
+    await strategyView.locator(".strategy-advanced > summary").click();
+    await page
+      .getByRole("spinbutton", { name: "Maximum gross exposure in USD" })
+      .fill("3.00");
+    await page
+      .getByRole("spinbutton", { name: "Maximum run drawdown in USD" })
+      .fill("1.00");
+    await page.getByLabel("Strategy name").fill("Core maker");
+    const saveStrategy = page.getByRole("button", {
+      name: "Save strategy",
+      exact: true,
+    });
+    assert(
+      await saveStrategy.isEnabled(),
+      `Strategy save stayed disabled: ${await strategyView.textContent()}`,
+    );
+    await saveStrategy.click();
+    await page.waitForTimeout(300);
+    assert(
+      state.strategies.some((strategy) => strategy.name === "Core maker"),
+      "Strategy rename did not reach the API",
+    );
+    await strategyView
+      .getByRole("button", { name: /Markets/ })
+      .first()
+      .click();
+    await page.getByText("5 markets included", { exact: false }).waitFor();
+    await page.evaluate(() => window.scrollTo({ top: 0, behavior: "auto" }));
+    await capture(page, "v7-strategy-builder-desktop.png");
+  } finally {
+    await context.close();
+  }
+}
+
 await fs.mkdir(outputDirectory, { recursive: true });
 const server = spawnServer ? await startServer() : null;
 const browser = await chromium.launch({
@@ -876,6 +1015,7 @@ try {
   await plainControlLog(browser);
   await strategyLibraryAndBundleAttachment(browser);
   await trialExplainsItsBlocker(browser);
+  await v7BundleDeskAndStrategy(browser);
   await revokeWithoutWallet(browser);
   await serviceAndSessionFailures(browser);
   await createBundleWithFreeChoices(browser);

@@ -240,6 +240,7 @@ export type StoredAccountMetadata = {
 
 export type AuditEvent = {
   id: number;
+  bundleId: string | null;
   occurredAt: string;
   category: string;
   action: string;
@@ -2635,10 +2636,15 @@ export class TenantStore {
 
   updateStrategy(inputs: {
     strategyId: string;
+    name: string;
     config: unknown;
     marketRule: unknown;
     expectedVersion: number;
   }): { strategy: StoredStrategy; affectedBundles: StoredBundle[] } {
+    const name = inputs.name.trim();
+    if (!name || name.length > 80) {
+      throw new Error("Strategy name must be between 1 and 80 characters");
+    }
     const config = strategyConfigSchema.parse(inputs.config);
     const marketRule = strategyMarketRuleSchema.parse(inputs.marketRule);
     const update = this.db.transaction(() => {
@@ -2648,6 +2654,13 @@ export class TenantStore {
       if (current.version !== inputs.expectedVersion) {
         throw new Error("Strategy changed elsewhere; refresh before saving");
       }
+      const nameTaken = this.db
+        .prepare(
+          `SELECT 1 FROM strategies
+           WHERE owner_address = ? AND name = ? COLLATE NOCASE AND id <> ?`,
+        )
+        .get(this.ownerAddress, name, current.id);
+      if (nameTaken) throw new Error("A strategy already uses that name");
       const bundles = this.strategyUsedBy(current.id);
       const projections = bundles.map((bundle) => {
         const row = this.getBundleRow(bundle.id)!;
@@ -2673,10 +2686,11 @@ export class TenantStore {
       this.db
         .prepare(
           `UPDATE strategies
-           SET config = ?, market_rule = ?, version = ?, updated_at = ?
+           SET name = ?, config = ?, market_rule = ?, version = ?, updated_at = ?
            WHERE owner_address = ? AND id = ?`,
         )
         .run(
+          name,
           stringify(config),
           stringify(marketRule),
           version,
@@ -3549,7 +3563,7 @@ export class TenantStore {
     const beforeBundles = bundleId === "before";
     const rows = this.db
       .prepare(
-        `SELECT id, occurred_at, category, action, outcome, detail
+        `SELECT id, bundle_id, occurred_at, category, action, outcome, detail
          FROM tenant_audit_events
          WHERE owner_address = ?
            AND (
@@ -3567,6 +3581,7 @@ export class TenantStore {
         limit,
       ) as Array<{
       id: number;
+      bundle_id: string | null;
       occurred_at: string;
       category: string;
       action: string;
@@ -3575,6 +3590,7 @@ export class TenantStore {
     }>;
     return rows.map((row) => ({
       id: row.id,
+      bundleId: row.bundle_id,
       occurredAt: row.occurred_at,
       category: row.category,
       action: row.action,

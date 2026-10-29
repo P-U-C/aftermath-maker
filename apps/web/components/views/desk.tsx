@@ -34,6 +34,7 @@ export type DeskMarketRow = {
   id: string;
   symbol: string;
   status: "queued" | "healthy" | "error";
+  bundleName: string | null;
   inventoryUsd: number;
   unrealizedPnlUsd: number;
   effectiveSpreadBps: number;
@@ -65,6 +66,7 @@ type DeskViewProps = {
   configDirty: boolean;
   refreshBusy: boolean;
   startBusy: boolean;
+  stopState: "ready" | "stopping" | "stopped";
   flattenBusy: boolean;
   startDisabled: boolean;
   flattenDisabled: boolean;
@@ -166,6 +168,7 @@ export function DeskView({
   configDirty,
   refreshBusy,
   startBusy,
+  stopState,
   flattenBusy,
   startDisabled,
   flattenDisabled,
@@ -259,12 +262,15 @@ export function DeskView({
 
   const marketCaption =
     mode === "paper" ? "Paper" : running ? "Quoting now" : "Waiting its turn";
-  const plainMarketState = (status: DeskMarketRow["status"]) =>
-    status === "healthy"
-      ? "Quoting now"
-      : status === "queued"
-        ? "Waiting its turn"
-        : "Paused";
+  const plainMarketState = (row: DeskMarketRow) => {
+    const state =
+      row.status === "healthy"
+        ? "Quoting now"
+        : row.status === "queued"
+          ? "Waiting its turn"
+          : "Paused";
+    return row.bundleName ? `${state} · ${row.bundleName}` : state;
+  };
 
   return (
     <ViewFrame active={active} name="desk">
@@ -333,10 +339,10 @@ export function DeskView({
             >
               Flatten positions…
             </Button>
-            {running ? (
+            {running || stopState === "stopping" ? (
               <Button variant="stop" onClick={onStop}>
                 <CircleStop size={17} aria-hidden="true" />
-                Stop all
+                {stopState === "stopping" ? "Stopping…" : "Stop all"}
               </Button>
             ) : (
               <Button onClick={onStart} disabled={startDisabled}>
@@ -521,7 +527,7 @@ export function DeskView({
                     <span className="desk-market-row">
                       <strong>{row.symbol}</strong>
                       <span className={`desk-market-state is-${row.status}`}>
-                        {plainMarketState(row.status)}
+                        {plainMarketState(row)}
                       </span>
                       <span>
                         {formatSignedMoney(row.inventoryUsd)} inventory
@@ -615,7 +621,7 @@ export function DeskView({
         </Card>
       </div>
 
-      {running && (
+      {(running || stopState === "stopping") && (
         <div className="desk-phone-dock" aria-label="Running controls">
           <Button
             variant="quiet"
@@ -627,7 +633,7 @@ export function DeskView({
           </Button>
           <Button variant="stop" size="large" onClick={onStop}>
             <CircleStop size={18} aria-hidden="true" />
-            Stop all
+            {stopState === "stopping" ? "Stopping…" : "Stop all"}
           </Button>
         </div>
       )}

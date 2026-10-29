@@ -3,7 +3,7 @@ import { Fragment, type ReactNode } from "react";
 import { formatMoney } from "../../lib/format";
 import type { VenueDescriptor } from "../../lib/venues";
 import { VenueChip } from "../venue-chip";
-import { Button, Card, ListRow } from "../ui/primitives";
+import { Button, Card } from "../ui/primitives";
 import { ViewFrame } from "./view-frame";
 
 export function VenuesView({
@@ -162,14 +162,25 @@ export function VenueBoard({
               <span role="columnheader">Bundle</span>
               <span role="columnheader">Role</span>
             </div>
-            {accountsByBundle.map(([bundle, groupedAccounts]) => (
+            {accountsByBundle.map(([bundle, groupedAccounts], groupIndex) => (
               <Fragment key={bundle}>
-                <div className="venue-account-bundle" role="row">
+                <div
+                  className={
+                    groupIndex % 2 === 0
+                      ? "venue-account-bundle is-even"
+                      : "venue-account-bundle"
+                  }
+                  role="row"
+                >
                   <strong role="cell">{bundle}</strong>
                 </div>
                 {groupedAccounts.map((account) => (
                   <div
-                    className="venue-account-row"
+                    className={
+                      groupIndex % 2 === 0
+                        ? "venue-account-row is-even"
+                        : "venue-account-row"
+                    }
                     role="row"
                     key={account.accountId}
                   >
@@ -220,38 +231,33 @@ export function VenueBoard({
       <Card
         className="venue-exposure-card"
         title="Exposure by venue"
-        subtitle="Gross limits are shared across venues; equity counts Maker and Taker accounts."
+        subtitle={`All venues: equity ${formatMoney(totalEquityUsd)} · exposure ${formatMoney(grossExposureUsd)} of ${formatMoney(grossExposureLimitUsd)} wallet limit · unrealized ${formatMoney(unrealizedPnlUsd)} · ${accounts.length} accounts`}
       >
-        <div
-          className="venue-exposure-table"
-          role="table"
-          aria-label="Exposure by venue"
-        >
-          <ListRow className="venue-exposure-head">
-            <span>Venue</span>
-            <span>Equity</span>
-            <span>Gross exposure</span>
-            <span>Unrealized</span>
-            <span>Accounts</span>
-          </ListRow>
-          <ListRow>
-            <VenueChip venue={venue} />
-            <span>{formatMoney(totalEquityUsd)}</span>
-            <span>{formatMoney(grossExposureUsd)}</span>
-            <span className={pnlClass}>{formatMoney(unrealizedPnlUsd)}</span>
-            <span>{accounts.length}</span>
-          </ListRow>
-          <ListRow>
-            <strong>Portfolio total</strong>
-            <span>{formatMoney(totalEquityUsd)}</span>
-            <span>
-              {formatMoney(grossExposureUsd)} of{" "}
-              {formatMoney(grossExposureLimitUsd)}
-            </span>
-            <span className={pnlClass}>{formatMoney(unrealizedPnlUsd)}</span>
-            <span>{accounts.length}</span>
-          </ListRow>
-        </div>
+        <table className="venue-exposure-table">
+          <thead>
+            <tr>
+              <th scope="col">Venue</th>
+              <th scope="col">Equity</th>
+              <th scope="col">Exposure</th>
+              <th scope="col">Unrealized</th>
+              <th scope="col">Accounts</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>
+                <VenueChip venue={venue} />
+              </td>
+              <td>{formatMoney(totalEquityUsd)}</td>
+              <td>
+                {formatMoney(grossExposureUsd)} of{" "}
+                {formatMoney(grossExposureLimitUsd)}
+              </td>
+              <td className={pnlClass}>{formatMoney(unrealizedPnlUsd)}</td>
+              <td>{accounts.length}</td>
+            </tr>
+          </tbody>
+        </table>
       </Card>
     </div>
   );

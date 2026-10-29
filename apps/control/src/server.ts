@@ -487,6 +487,7 @@ app.patch("/api/strategies/:strategyId", async (request) => {
     .parse(request.params);
   const body = z
     .object({
+      name: z.string().trim().min(1).max(80),
       config: z.unknown(),
       marketRule: strategyMarketRuleSchema,
       expectedVersion: z.number().int().positive(),

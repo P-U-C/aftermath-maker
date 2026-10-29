@@ -26,6 +26,7 @@ type LaneSnapshot = {
 export type RunningBundleLane = {
   id: string;
   name: string;
+  status: "running" | "paused";
   snapshot: LaneSnapshot;
 };
 
@@ -49,7 +50,11 @@ function BundleLane({ lane }: { lane: RunningBundleLane }) {
     <article className="bundle-desk-lane">
       <header>
         <div>
-          <span>{snapshot.mode === "paper" ? "Paper" : "Observe"}</span>
+          <span>
+            {lane.status === "running"
+              ? `Quoting now · ${snapshot.mode === "live" ? "Live" : snapshot.mode === "paper" ? "Paper" : "Observe"}`
+              : "Paused"}
+          </span>
           <h2>{lane.name}</h2>
         </div>
         <dl>
