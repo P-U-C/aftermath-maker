@@ -127,11 +127,18 @@ async function installStatefulControl(page, state) {
       const next = {
         id: "audit-bundle",
         name: body.name,
-        makerAccountId: body.config.makerAccountId,
-        takerAccountId: body.config.hedge?.accountId ?? null,
+        strategyId: body.strategyId ?? "core-strategy",
+        strategyName: body.strategyId ? "Core strategy" : null,
+        strategyVersionApplied: body.strategyId ? 1 : null,
+        needsStrategy: !body.strategyId,
+        makerAccountId: body.makerAccountId ?? body.config?.makerAccountId,
+        takerAccountId:
+          body.takerAccountId ?? body.config?.hedge?.accountId ?? null,
         mode: "paper",
         status: "paused",
-        marketIds: body.config.markets.map((market) => market.marketId),
+        marketIds: (body.markets ?? body.config?.markets ?? []).map(
+          (market) => market.marketId,
+        ),
         createdAt,
         updatedAt: createdAt,
         lastError: null,

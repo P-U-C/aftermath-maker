@@ -49,6 +49,26 @@ const copies: Record<string, AuditCopy> = {
     severity: "info",
     sentence: (detail) => `Bundle${bundle(detail)} strategy saved.`,
   },
+  "bundles:allocation.update:success": {
+    severity: "info",
+    sentence: (detail) => `Bundle${bundle(detail)} allocation saved.`,
+  },
+  "strategies:create:success": {
+    severity: "info",
+    sentence: (detail) => `Strategy${bundle(detail)} created.`,
+  },
+  "strategies:update:success": {
+    severity: "info",
+    sentence: (detail) => `Strategy${bundle(detail)} saved.`,
+  },
+  "strategies:duplicate:success": {
+    severity: "info",
+    sentence: (detail) => `Strategy${bundle(detail)} duplicated.`,
+  },
+  "strategies:archive:success": {
+    severity: "info",
+    sentence: (detail) => `Strategy${bundle(detail)} archived.`,
+  },
   "accounts:metadata.update:success": {
     severity: "info",
     sentence: () => "Account name and tags saved.",

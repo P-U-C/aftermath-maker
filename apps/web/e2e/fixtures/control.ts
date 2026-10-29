@@ -339,6 +339,10 @@ export type FixtureState = {
       bundle: {
         id: string;
         name: string;
+        strategyId: string | null;
+        strategyName: string | null;
+        strategyVersionApplied: number | null;
+        needsStrategy: boolean;
         makerAccountId: string | null;
         takerAccountId: string | null;
         mode: Mode;
@@ -357,6 +361,10 @@ export type FixtureState = {
     bundles: Array<{
       id: string;
       name: string;
+      strategyId: string | null;
+      strategyName: string | null;
+      strategyVersionApplied: number | null;
+      needsStrategy: boolean;
       makerAccountId: string | null;
       takerAccountId: string | null;
       mode: Mode;
@@ -974,6 +982,10 @@ const base: Omit<FixtureState, "auth" | "status" | "config" | "setup"> = {
       {
         id: "core-fixture",
         name: "Core",
+        strategyId: "core-strategy",
+        strategyName: "Core strategy",
+        strategyVersionApplied: 1,
+        needsStrategy: false,
         makerAccountId: "1745",
         takerAccountId: "1746",
         mode: "paper",
@@ -987,6 +999,10 @@ const base: Omit<FixtureState, "auth" | "status" | "config" | "setup"> = {
       {
         id: "rewards-fixture",
         name: "Rewards",
+        strategyId: "rewards-strategy",
+        strategyName: "Rewards strategy",
+        strategyVersionApplied: 1,
+        needsStrategy: false,
         makerAccountId: "1747",
         takerAccountId: "1748",
         mode: "paper",

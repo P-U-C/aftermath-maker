@@ -15,11 +15,60 @@ export function apiResponse(fixture, url) {
   if (routePath === "api/config") {
     return { status: 200, body: fixture.config };
   }
+  if (routePath === "api/strategies") {
+    return {
+      status: 200,
+      body: {
+        strategies: fixture.strategies?.strategies ?? [
+          {
+            id: "core-strategy",
+            name: "Core strategy",
+            config: fixture.config.config,
+            marketRule: {
+              kind: "preferred-list",
+              marketIds: fixture.config.config.markets.map(
+                (market) => market.marketId,
+              ),
+            },
+            version: 1,
+            usedBy: [{ id: "core", name: "Core" }],
+            archivedAt: null,
+          },
+        ],
+      },
+    };
+  }
+  if (/^api\/strategies\/[^/]+(?:\/(?:duplicate|archive))?$/.test(routePath)) {
+    const strategy = fixture.strategies?.strategies?.[0] ?? {
+      id: "core-strategy",
+      name: "Core strategy",
+      config: fixture.config.config,
+      marketRule: {
+        kind: "preferred-list",
+        marketIds: fixture.config.config.markets.map(
+          (market) => market.marketId,
+        ),
+      },
+      version: 1,
+      usedBy: [{ id: "core", name: "Core" }],
+      archivedAt: null,
+    };
+    return { status: 200, body: { strategy, affectedBundles: [] } };
+  }
   if (routePath === "api/bundles") {
     return { status: 200, body: fixture.bundles };
   }
   if (/^api\/bundles\/[^/]+\/config$/.test(routePath)) {
     return { status: 200, body: fixture.config };
+  }
+  if (/^api\/bundles\/[^/]+$/.test(routePath)) {
+    return {
+      status: 200,
+      body: {
+        bundle: fixture.bundles.bundles[0],
+        config: fixture.config.config,
+      },
+    };
   }
   if (/^api\/bundles\/[^/]+\/(start|pause|resume|archive)$/.test(routePath)) {
     return { status: 200, body: { ok: true } };

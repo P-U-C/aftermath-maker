@@ -9575,6 +9575,136 @@ mysten-dapp-kit-connect-modal,
   font: inherit;
 }
 
+.strategy-heading-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.strategy-library {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 10px;
+}
+
+.strategy-library-item,
+.strategy-library-empty,
+.strategy-market-rule,
+.strategy-allocation-summary {
+  margin: 0;
+  padding: 15px;
+  color: var(--ink);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+}
+
+.strategy-library-item {
+  display: grid;
+  gap: 5px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.strategy-library-item:hover,
+.strategy-library-item.is-selected {
+  border-color: var(--tide);
+  box-shadow: inset 0 0 0 1px var(--tide-soft);
+}
+
+.strategy-library-item small,
+.strategy-library-item span,
+.strategy-library-empty,
+.strategy-allocation-summary p {
+  color: var(--ink-2);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.strategy-library-item span {
+  color: var(--tide-text);
+}
+
+.strategy-market-rule {
+  display: grid;
+  gap: 12px;
+}
+
+.strategy-market-rule legend {
+  padding: 0 4px;
+  font-weight: 700;
+}
+
+.strategy-rule-kind {
+  display: grid;
+  gap: 5px;
+  max-width: 320px;
+  color: var(--ink-2);
+  font-size: 12px;
+}
+
+.strategy-rule-kind select {
+  min-height: 38px;
+  padding: 0 10px;
+  color: var(--ink);
+  background: var(--fill);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.strategy-rule-markets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+}
+
+.strategy-rule-markets label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+}
+
+.strategy-allocation-summary {
+  display: grid;
+  gap: 4px;
+}
+
+.strategy-allocation-summary > span {
+  color: var(--tide-text);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.strategy-allocation-owned {
+  display: none !important;
+}
+
+.bundle-strategy {
+  margin: -4px 0 0;
+  color: var(--ink-2);
+  font-size: 12px;
+}
+
+.bundle-attach-strategy {
+  display: grid;
+  gap: 4px;
+  color: var(--ink-2);
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.bundle-attach-strategy select {
+  min-height: 34px;
+  max-width: 180px;
+  padding: 0 8px;
+  color: var(--ink);
+  background: var(--fill);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
 @media (max-width: 700px) {
   .strategy-title {
     align-items: flex-start;
@@ -9588,5 +9718,14 @@ mysten-dapp-kit-connect-modal,
 
   .strategy-bundle-picker select {
     max-width: min(70vw, 230px);
+  }
+
+  .strategy-heading-actions {
+    width: 100%;
+    justify-content: flex-start;
+  }
+
+  .bundles-title > div:first-child {
+    display: none;
   }
 }

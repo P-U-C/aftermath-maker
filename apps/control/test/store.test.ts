@@ -603,6 +603,15 @@ describe("persistent control store", () => {
       },
     ]);
     expect(tenant.listBundles()[0]).toMatchObject({ status: "stopped" });
+    expect(tenant.listStrategies()).toMatchObject([
+      {
+        name: "Core strategy",
+        marketRule: {
+          kind: "preferred-list",
+          marketIds: ["0x1001", "0x1002"],
+        },
+      },
+    ]);
     expect(tenant.getWalletLimits()).toMatchObject({
       maxRunDrawdownUsd: 7,
       maxInventoryUsd: 11,
@@ -626,6 +635,7 @@ describe("persistent control store", () => {
     expect(
       rerunTenant.listBundles().filter((bundle) => bundle.name === "Core"),
     ).toHaveLength(1);
+    expect(rerunTenant.listStrategies()).toHaveLength(1);
     expect(JSON.stringify(rerunTenant.getConfig())).toBe(
       JSON.stringify(changed),
     );
@@ -701,6 +711,153 @@ describe("persistent control store", () => {
         .run("secondary-bundle", ownerAddress, "0x1002", "TWO"),
     ).toThrow();
     migratedDatabase.close();
+  });
+
+  it("migrates reusable strategies, fans out shared settings, and forks Core compatibility writes", () => {
+    const directory = join(
+      process.env.TMPDIR ?? "/tmp",
+      `aftermath-maker-${randomBytes(8).toString("hex")}`,
+    );
+    mkdirSync(directory, { recursive: true });
+    const databaseStore = new Store(join(directory, "maker.db"));
+    const ownerAddress = `0x${"d".repeat(64)}`;
+    const tenant = databaseStore.forTenant(ownerAddress);
+    const coreConfig = makerConfigSchema.parse({
+      markets: [{ marketId: "0xd001", symbol: "CORE" }],
+      makerAccountId: "1",
+      hedge: {
+        enabled: true,
+        accountId: "2",
+        thresholdUsd: 10,
+        maxOrderUsd: 20,
+        maxSlippageBps: 75,
+      },
+      maxRunDrawdownUsd: 10,
+      maxInventoryUsd: 20,
+      maxGrossExposureUsd: 40,
+      maxUnrealizedLossUsd: 8,
+    });
+    tenant.setConfig(coreConfig);
+    tenant.confirmWalletLimits();
+    const paper = tenant.createBundle({
+      name: "Rewards",
+      config: makerConfigSchema.parse({
+        ...coreConfig,
+        mode: "paper",
+        makerAccountId: "3",
+        hedge: { ...coreConfig.hedge, accountId: "4" },
+        markets: [{ marketId: "0xd002", symbol: "REWARD" }],
+      }),
+    });
+    const core = tenant.listBundles().find((bundle) => bundle.name === "Core")!;
+    const coreStrategy = tenant.getStrategy(core.strategyId!)!;
+    expect(coreStrategy).toMatchObject({
+      name: "Core strategy",
+      marketRule: { kind: "preferred-list", marketIds: ["0xd001"] },
+      usedBy: [{ id: core.id, name: "Core" }],
+    });
+
+    const shared = tenant.duplicateStrategy({
+      strategyId: coreStrategy.id,
+      name: "Steady",
+    });
+    tenant.updateBundleAllocation({ bundleId: core.id, strategyId: shared.id });
+    tenant.updateBundleAllocation({
+      bundleId: paper.id,
+      strategyId: shared.id,
+    });
+    const updated = tenant.updateStrategy({
+      strategyId: shared.id,
+      config: { ...shared.config, quoteSizeUsd: 17 },
+      marketRule: shared.marketRule,
+      expectedVersion: shared.version,
+    });
+    expect(updated.affectedBundles.map((bundle) => bundle.name).sort()).toEqual(
+      ["Core", "Rewards"],
+    );
+    expect(tenant.getBundleConfig(core.id)).toMatchObject({
+      quoteSizeUsd: 17,
+      markets: [{ marketId: "0xd001", symbol: "CORE" }],
+    });
+    expect(tenant.getBundleConfig(paper.id)).toMatchObject({
+      quoteSizeUsd: 17,
+      markets: [{ marketId: "0xd002", symbol: "REWARD" }],
+    });
+    expect(() => tenant.archiveStrategy(shared.id)).toThrow("in use");
+
+    tenant.setConfig({ ...coreConfig, quoteSizeUsd: 19 });
+    const forkedCore = tenant.getStoredBundle(core.id)!;
+    expect(forkedCore.strategyId).not.toBe(shared.id);
+    expect(tenant.getBundleConfig(paper.id)?.quoteSizeUsd).toBe(17);
+    expect(tenant.getConfig()?.quoteSizeUsd).toBe(19);
+    expect(
+      databaseStore.forTenant(`0x${"e".repeat(64)}`).getStrategy(shared.id),
+    ).toBeNull();
+
+    const unconfigured = tenant.createAllocatedBundle({
+      name: "Later",
+      makerAccountId: "5",
+      takerAccountId: null,
+      mode: "observe",
+      markets: [{ marketId: "0xd003", symbol: "LATER" }],
+      strategyId: null,
+    });
+    expect(unconfigured).toMatchObject({
+      status: "paused",
+      needsStrategy: true,
+    });
+    databaseStore.close();
+  });
+
+  it("skips one malformed historical bundle strategy without blocking startup twice", () => {
+    const directory = join(
+      process.env.TMPDIR ?? "/tmp",
+      `aftermath-maker-${randomBytes(8).toString("hex")}`,
+    );
+    mkdirSync(directory, { recursive: true });
+    const path = join(directory, "maker.db");
+    const ownerAddress = `0x${"7".repeat(64)}`;
+    new Store(path).close();
+    const raw = new Database(path);
+    raw
+      .prepare(
+        `INSERT INTO bundles
+          (id, owner_address, name, maker_account_id, taker_account_id,
+           config, mode, status, created_at, updated_at, last_error, archived_at)
+         VALUES (?, ?, ?, NULL, NULL, ?, 'observe', 'paused', ?, ?, NULL, NULL)`,
+      )
+      .run(
+        "bad-historical-bundle",
+        ownerAddress,
+        "Historical",
+        "{not valid json",
+        "2026-10-29T00:00:00.000Z",
+        "2026-10-29T00:00:00.000Z",
+      );
+    raw.close();
+
+    const first = new Store(path);
+    const firstTenant = first.forTenant(ownerAddress);
+    expect(firstTenant.getStoredBundle("bad-historical-bundle")).toMatchObject({
+      needsStrategy: true,
+    });
+    expect(firstTenant.listEvents()).toMatchObject([
+      {
+        category: "strategies",
+        action: "migration.bundle-skipped",
+        outcome: "failed",
+      },
+    ]);
+    first.close();
+
+    const second = new Store(path);
+    expect(
+      second
+        .forTenant(ownerAddress)
+        .listEvents()
+        .filter((event) => event.action === "migration.bundle-skipped"),
+    ).toHaveLength(1);
+    second.close();
   });
 
   it("attributes Core records and backfills only unambiguous legacy history", () => {

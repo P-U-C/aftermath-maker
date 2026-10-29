@@ -244,6 +244,36 @@ async function capture(browser, stateName, captureConfig, view) {
       return;
     }
     if (
+      verifyConfigSave &&
+      request.method() === "PATCH" &&
+      /\/api\/strategies\/[^/]+$/.test(url.pathname)
+    ) {
+      capturedConfigBody = request.postData();
+      const current = fixture.config.config;
+      const { markets, mode, makerAccountId, hedge, ...settings } = current;
+      const { accountId, ...sharedHedge } = hedge;
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          strategy: {
+            id: "core-strategy",
+            name: "Core strategy",
+            config: { ...settings, hedge: sharedHedge },
+            marketRule: {
+              kind: "preferred-list",
+              marketIds: markets.map((market) => market.marketId),
+            },
+            version: 2,
+            usedBy: [{ id: "core", name: "Core" }],
+            archivedAt: null,
+          },
+          affectedBundles: [],
+        }),
+      });
+      return;
+    }
+    if (
       verifyMotion &&
       request.method() === "POST" &&
       url.pathname.endsWith("/api/runtime/cycle")
@@ -606,7 +636,9 @@ async function capture(browser, stateName, captureConfig, view) {
           .click();
       }
       await page.getByRole("button", { name: "Save strategy" }).click();
-      await page.getByText("Unsaved changes").waitFor({ state: "hidden" });
+      await page
+        .getByText("Unsaved changes, review and save", { exact: true })
+        .waitFor({ state: "hidden" });
       const successNotice = page.locator(".notice.notice-success");
       await successNotice.getByText(/Strategy saved\./).waitFor();
       if (
@@ -618,9 +650,25 @@ async function capture(browser, stateName, captureConfig, view) {
           "Successful strategy save did not use a polite status notice",
         );
       }
+      const {
+        markets,
+        mode: _mode,
+        makerAccountId,
+        hedge,
+        ...settings
+      } = fixture.config.config;
+      const { accountId: _accountId, ...sharedHedge } = hedge;
       const expectedBody = JSON.stringify({
-        ...fixture.config.config,
-        spreadBps: nextSpread,
+        config: {
+          ...settings,
+          spreadBps: nextSpread,
+          hedge: sharedHedge,
+        },
+        marketRule: {
+          kind: "preferred-list",
+          marketIds: markets.map((market) => market.marketId),
+        },
+        expectedVersion: 1,
       });
       if (capturedConfigBody !== expectedBody) {
         throw new Error(
@@ -628,7 +676,7 @@ async function capture(browser, stateName, captureConfig, view) {
         );
       }
       process.stdout.write(
-        `${stateName}/${view}/${captureConfig.name}: config request body is byte-identical\n`,
+        `${stateName}/${view}/${captureConfig.name}: strategy request body is allocation-free\n`,
       );
     }
     await page.waitForTimeout(100);

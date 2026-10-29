@@ -338,11 +338,60 @@ type MakerConfig = {
   inventorySkewBps: number;
 };
 
+type StrategySettings = Omit<
+  MakerConfig,
+  "markets" | "mode" | "makerAccountId" | "hedge"
+> & {
+  hedge: Omit<MakerConfig["hedge"], "accountId">;
+};
+
+type StrategyMarketRule =
+  | {
+      kind: "quick-pick";
+      pick: "rewards" | "balanced" | "quiet" | "steady" | "clear";
+    }
+  | { kind: "preferred-list"; marketIds: string[] };
+
+type MakerStrategy = {
+  id: string;
+  name: string;
+  config: StrategySettings;
+  marketRule: StrategyMarketRule;
+  version: number;
+  usedBy: Array<{ id: string; name: string }>;
+  archivedAt: string | null;
+};
+
+const strategySettingsFromConfig = (config: MakerConfig): StrategySettings => {
+  const {
+    markets: _markets,
+    mode: _mode,
+    makerAccountId: _makerAccountId,
+    hedge,
+    ...settings
+  } = config;
+  const { accountId: _accountId, ...sharedHedge } = hedge;
+  return { ...settings, hedge: sharedHedge };
+};
+
+const configWithStrategySettings = (
+  config: MakerConfig,
+  settings: StrategySettings,
+): MakerConfig => ({
+  ...config,
+  ...settings,
+  hedge: { ...settings.hedge, accountId: config.hedge.accountId },
+});
+
 type BundleStatus = "stopped" | "running" | "paused" | "error";
 
 type MakerBundle = {
   id: string;
   name: string;
+  strategyId: string | null;
+  strategyName: string | null;
+  strategyVersionApplied: number | null;
+  needsStrategy: boolean;
   makerAccountId: string | null;
   takerAccountId: string | null;
   mode: Mode;
@@ -844,6 +893,12 @@ function DashboardBody() {
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
   const [bundleSnapshots, setBundleSnapshots] = useState<BundleSnapshot[]>([]);
   const [bundles, setBundles] = useState<MakerBundle[]>([]);
+  const [strategies, setStrategies] = useState<MakerStrategy[]>([]);
+  const [selectedStrategyId, setSelectedStrategyId] = useState<string | null>(
+    null,
+  );
+  const [strategyMarketRule, setStrategyMarketRule] =
+    useState<StrategyMarketRule>({ kind: "quick-pick", pick: "balanced" });
   const [walletLimits, setWalletLimits] = useState<BundleWalletLimits | null>(
     null,
   );
@@ -966,22 +1021,29 @@ function DashboardBody() {
   }
 
   const refresh = useCallback(async () => {
-    const [statusResult, configResult, setupResult, eventResult, bundleResult] =
-      await Promise.all([
-        request<{
-          snapshot: Snapshot;
-          builderCode: BuilderCode | null;
-          liveGates: LiveGates;
-          bundles?: BundleSnapshot[];
-        }>("api/status"),
-        request<{ config: MakerConfig | null }>("api/config"),
-        request<SetupState>("api/setup"),
-        request<{ events: AuditEvent[] }>("api/events?limit=12"),
-        request<{
-          bundles: MakerBundle[];
-          walletLimits: BundleWalletLimits | null;
-        }>("api/bundles"),
-      ]);
+    const [
+      statusResult,
+      configResult,
+      setupResult,
+      eventResult,
+      bundleResult,
+      strategyResult,
+    ] = await Promise.all([
+      request<{
+        snapshot: Snapshot;
+        builderCode: BuilderCode | null;
+        liveGates: LiveGates;
+        bundles?: BundleSnapshot[];
+      }>("api/status"),
+      request<{ config: MakerConfig | null }>("api/config"),
+      request<SetupState>("api/setup"),
+      request<{ events: AuditEvent[] }>("api/events?limit=12"),
+      request<{
+        bundles: MakerBundle[];
+        walletLimits: BundleWalletLimits | null;
+      }>("api/bundles"),
+      request<{ strategies: MakerStrategy[] }>("api/strategies"),
+    ]);
     setSnapshot(statusResult.snapshot);
     setControlUnavailable(false);
     setLastGoodDataAt(
@@ -992,6 +1054,21 @@ function DashboardBody() {
     );
     setBundleSnapshots(statusResult.bundles ?? []);
     setBundles(bundleResult.bundles);
+    setStrategies(strategyResult.strategies);
+    setSelectedStrategyId((current) => {
+      const next =
+        current &&
+        strategyResult.strategies.some((strategy) => strategy.id === current)
+          ? current
+          : (strategyResult.strategies[0]?.id ?? null);
+      if (next !== current) {
+        const strategy = strategyResult.strategies.find(
+          (candidate) => candidate.id === next,
+        );
+        if (strategy) setStrategyMarketRule(strategy.marketRule);
+      }
+      return next;
+    });
     setWalletLimits(bundleResult.walletLimits);
     const previousBundleId = selectedBundleIdRef.current;
     const nextBundleId = selectedActiveBundleId(
@@ -1109,6 +1186,67 @@ function DashboardBody() {
     setSavedConfig(result.config);
   }
 
+  const selectedStrategy = strategies.find(
+    (strategy) => strategy.id === selectedStrategyId,
+  );
+
+  async function selectStrategy(strategyId: string) {
+    const result = await request<{ strategy: MakerStrategy }>(
+      `api/strategies/${encodeURIComponent(strategyId)}`,
+    );
+    setSelectedStrategyId(result.strategy.id);
+    setStrategyMarketRule(result.strategy.marketRule);
+    setConfig((current) =>
+      configWithStrategySettings(current, result.strategy.config),
+    );
+    setSavedConfig((current) =>
+      current
+        ? configWithStrategySettings(current, result.strategy.config)
+        : current,
+    );
+  }
+
+  async function createStrategy() {
+    await mutate("create-strategy", async () => {
+      const result = await request<{ strategy: MakerStrategy }>(
+        "api/strategies",
+        {
+          method: "POST",
+          body: JSON.stringify({
+            name: `Strategy ${strategies.length + 1}`,
+            config: strategySettingsFromConfig(config),
+            marketRule: {
+              kind: "preferred-list",
+              marketIds: config.markets.map((market) => market.marketId),
+            },
+          }),
+        },
+      );
+      setStrategies((current) => [result.strategy, ...current]);
+      await selectStrategy(result.strategy.id);
+      setNotice(
+        "Strategy created. Attach it to a bundle when ready.",
+        "success",
+      );
+    });
+  }
+
+  async function duplicateStrategy() {
+    if (!selectedStrategy) return;
+    await mutate("duplicate-strategy", async () => {
+      const result = await request<{ strategy: MakerStrategy }>(
+        `api/strategies/${encodeURIComponent(selectedStrategy.id)}/duplicate`,
+        { method: "POST", body: "{}" },
+      );
+      setStrategies((current) => [result.strategy, ...current]);
+      await selectStrategy(result.strategy.id);
+      setNotice(
+        "Strategy duplicated. It can now be edited independently.",
+        "success",
+      );
+    });
+  }
+
   async function bundleAction(
     bundleId: string,
     action: "start" | "pause" | "resume" | "archive",
@@ -1136,6 +1274,7 @@ function DashboardBody() {
     makerAccountId: string;
     takerAccountId: string;
     marketId: string;
+    strategyId: string | null;
     confirmWalletLimits: boolean;
   }) {
     const market = markets.find((candidate) => candidate.id === draft.marketId);
@@ -1147,34 +1286,98 @@ function DashboardBody() {
       setNotice("Maker and Taker accounts must be different.", "warning");
       return;
     }
-    const nextConfig: MakerConfig = {
-      ...config,
-      markets: [{ marketId: market.id, symbol: market.symbol }],
-      makerAccountId: draft.makerAccountId,
-      hedge: {
-        ...config.hedge,
-        enabled: Boolean(draft.takerAccountId),
-        accountId: draft.takerAccountId || null,
-      },
-      mode: "paper",
-    };
     await mutate("create-bundle", async () => {
       const result = await request<{ bundle: MakerBundle }>("api/bundles", {
         method: "POST",
         body: JSON.stringify({
           name: draft.name,
-          config: nextConfig,
+          makerAccountId: draft.makerAccountId,
+          takerAccountId: draft.takerAccountId || null,
+          mode: "paper",
+          markets: [{ marketId: market.id, symbol: market.symbol }],
+          strategyId: draft.strategyId,
           confirmWalletLimits: draft.confirmWalletLimits,
         }),
       });
       selectedBundleIdRef.current = result.bundle.id;
       setSelectedBundleId(result.bundle.id);
-      setConfig(nextConfig);
-      setSavedConfig(nextConfig);
+      const created = await request<{ config: MakerConfig }>(
+        `api/bundles/${encodeURIComponent(result.bundle.id)}/config`,
+      );
+      setConfig(created.config);
+      setSavedConfig(created.config);
       setNotice(
-        "Paper bundle created paused. Review it, then start it.",
+        draft.strategyId
+          ? "Paper bundle created paused. Review it, then start it."
+          : "Bundle created paused. Attach a strategy before starting it.",
         "success",
       );
+    });
+  }
+
+  async function attachStrategy(bundleId: string, strategyId: string) {
+    await mutate("attach-strategy", async () => {
+      const result = await request<{
+        bundle: MakerBundle;
+        config: MakerConfig;
+      }>(`api/bundles/${encodeURIComponent(bundleId)}`, {
+        method: "PATCH",
+        body: JSON.stringify({ strategyId }),
+      });
+      setBundles((current) =>
+        current.map((bundle) =>
+          bundle.id === result.bundle.id ? result.bundle : bundle,
+        ),
+      );
+      if (selectedBundleIdRef.current === result.bundle.id) {
+        setConfig(result.config);
+        setSavedConfig(result.config);
+      }
+      setNotice("Strategy attached. The bundle can now be started.", "success");
+    });
+  }
+
+  async function updateBundleAllocation(
+    bundleId: string,
+    draft: {
+      makerAccountId: string;
+      takerAccountId: string;
+      marketId: string;
+      mode: "observe" | "paper";
+      strategyId: string | null;
+      updatedAt: string;
+    },
+  ) {
+    const market = markets.find((candidate) => candidate.id === draft.marketId);
+    if (!market) {
+      setNotice("Choose a free market before saving the bundle.", "warning");
+      return;
+    }
+    await mutate("update-bundle-allocation", async () => {
+      const result = await request<{
+        bundle: MakerBundle;
+        config: MakerConfig;
+      }>(`api/bundles/${encodeURIComponent(bundleId)}`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          makerAccountId: draft.makerAccountId,
+          takerAccountId: draft.takerAccountId || null,
+          mode: draft.mode,
+          markets: [{ marketId: market.id, symbol: market.symbol }],
+          strategyId: draft.strategyId,
+          expectedUpdatedAt: draft.updatedAt,
+        }),
+      });
+      setBundles((current) =>
+        current.map((bundle) =>
+          bundle.id === result.bundle.id ? result.bundle : bundle,
+        ),
+      );
+      if (selectedBundleIdRef.current === result.bundle.id) {
+        setConfig(result.config);
+        setSavedConfig(result.config);
+      }
+      setNotice("Bundle allocation saved.", "success");
     });
   }
 
@@ -2120,6 +2323,32 @@ function DashboardBody() {
   async function saveConfig(event?: FormEvent) {
     event?.preventDefault();
     return mutate("save", async () => {
+      if (selectedStrategy) {
+        const result = await request<{
+          strategy: MakerStrategy;
+          affectedBundles: MakerBundle[];
+        }>(`api/strategies/${encodeURIComponent(selectedStrategy.id)}`, {
+          method: "PATCH",
+          body: JSON.stringify({
+            config: strategySettingsFromConfig(config),
+            marketRule: strategyMarketRule,
+            expectedVersion: selectedStrategy.version,
+          }),
+        });
+        setStrategies((current) =>
+          current.map((strategy) =>
+            strategy.id === result.strategy.id ? result.strategy : strategy,
+          ),
+        );
+        setSavedConfig(config);
+        setNotice(
+          result.affectedBundles.length > 1
+            ? `Strategy saved for ${result.affectedBundles.map((bundle) => bundle.name).join(", ")}.`
+            : "Strategy saved.",
+          "success",
+        );
+        return;
+      }
       const selected = bundles.find((bundle) => bundle.id === selectedBundleId);
       if (selected && selected.name !== "Core") {
         await request(`api/bundles/${encodeURIComponent(selected.id)}/config`, {
@@ -3434,16 +3663,177 @@ function DashboardBody() {
           >
             <header className="strategy-title">
               <div>
-                <h1>
-                  {selectedBundle
-                    ? `${selectedBundle.name} strategy`
-                    : "Strategy"}
-                </h1>
+                <h1>{selectedStrategy?.name ?? "Strategies"}</h1>
                 <p>
-                  Set how this bundle allocates capital, controls inventory, and
-                  moves between markets.
+                  Reusable settings for how bundles quote, control inventory,
+                  hedge, and manage risk.
                 </p>
               </div>
+              <div className="strategy-heading-actions">
+                <label className="strategy-bundle-picker">
+                  <span>Strategy</span>
+                  <select
+                    value={selectedStrategyId ?? ""}
+                    onChange={(event) =>
+                      void selectStrategy(event.target.value)
+                    }
+                  >
+                    {strategies.map((strategy) => (
+                      <option key={strategy.id} value={strategy.id}>
+                        {strategy.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <button
+                  className="button secondary"
+                  type="button"
+                  onClick={() => void createStrategy()}
+                  disabled={Boolean(busy)}
+                >
+                  New strategy
+                </button>
+                <button
+                  className="button secondary"
+                  type="button"
+                  onClick={() => void duplicateStrategy()}
+                  disabled={!selectedStrategy || Boolean(busy)}
+                >
+                  Duplicate
+                </button>
+              </div>
+            </header>
+
+            <section className="strategy-library" aria-label="Strategies">
+              {strategies.map((strategy) => (
+                <button
+                  key={strategy.id}
+                  type="button"
+                  className={
+                    strategy.id === selectedStrategyId
+                      ? "strategy-library-item is-selected"
+                      : "strategy-library-item"
+                  }
+                  aria-pressed={strategy.id === selectedStrategyId}
+                  onClick={() => void selectStrategy(strategy.id)}
+                >
+                  <strong>{strategy.name}</strong>
+                  <small>
+                    {strategy.marketRule.kind === "quick-pick"
+                      ? `Quick pick: ${strategy.marketRule.pick}`
+                      : `${strategy.marketRule.marketIds.length} preferred market${strategy.marketRule.marketIds.length === 1 ? "" : "s"}`}
+                  </small>
+                  <span>
+                    {strategy.usedBy.length
+                      ? `Used by ${strategy.usedBy.map((bundle) => bundle.name).join(", ")}`
+                      : "Not attached"}
+                  </span>
+                </button>
+              ))}
+              {!strategies.length && (
+                <p className="strategy-library-empty">
+                  No strategies yet. Create one first, then attach it to a
+                  paused bundle.
+                </p>
+              )}
+            </section>
+
+            {selectedStrategy ? (
+              <fieldset className="strategy-market-rule strategy-step strategy-step-markets">
+                <legend>Market rule</legend>
+                <p className="strategy-section-copy">
+                  This is a default for a new bundle. Existing bundle markets
+                  never move when you change it.
+                </p>
+                <label className="strategy-rule-kind">
+                  <span>Rule</span>
+                  <select
+                    value={strategyMarketRule.kind}
+                    onChange={(event) =>
+                      setStrategyMarketRule(
+                        event.target.value === "quick-pick"
+                          ? { kind: "quick-pick", pick: "balanced" }
+                          : {
+                              kind: "preferred-list",
+                              marketIds: config.markets.map(
+                                (market) => market.marketId,
+                              ),
+                            },
+                      )
+                    }
+                  >
+                    <option value="quick-pick">Quick pick</option>
+                    <option value="preferred-list">Preferred list</option>
+                  </select>
+                </label>
+                {strategyMarketRule.kind === "quick-pick" ? (
+                  <label className="strategy-rule-kind">
+                    <span>Quick pick</span>
+                    <select
+                      value={strategyMarketRule.pick}
+                      onChange={(event) =>
+                        setStrategyMarketRule({
+                          kind: "quick-pick",
+                          pick: event.target.value as
+                            | "rewards"
+                            | "balanced"
+                            | "quiet"
+                            | "steady"
+                            | "clear",
+                        })
+                      }
+                    >
+                      <option value="rewards">Best for rewards</option>
+                      <option value="balanced">Balanced</option>
+                      <option value="quiet">Quiet books</option>
+                      <option value="steady">Steadiest</option>
+                      <option value="clear">Clear</option>
+                    </select>
+                  </label>
+                ) : (
+                  <div className="strategy-rule-markets">
+                    {markets.map((market) => {
+                      const selected = strategyMarketRule.marketIds.includes(
+                        market.id,
+                      );
+                      return (
+                        <label key={market.id}>
+                          <input
+                            type="checkbox"
+                            checked={selected}
+                            onChange={() =>
+                              setStrategyMarketRule((current) =>
+                                current.kind !== "preferred-list"
+                                  ? current
+                                  : {
+                                      ...current,
+                                      marketIds: selected
+                                        ? current.marketIds.filter(
+                                            (id) => id !== market.id,
+                                          )
+                                        : [...current.marketIds, market.id],
+                                    },
+                              )
+                            }
+                          />
+                          {market.symbol}
+                        </label>
+                      );
+                    })}
+                  </div>
+                )}
+              </fieldset>
+            ) : null}
+
+            <header className="strategy-allocation-summary">
+              <span>Bundle allocation</span>
+              <p>
+                Accounts, actual markets, per-market overrides, and mode belong
+                to a bundle. Edit them from Bundles.
+              </p>
+            </header>
+
+            <div className="strategy-allocation-owned">
               <label className="strategy-bundle-picker">
                 <span>Bundle</span>
                 <select
@@ -3459,7 +3849,7 @@ function DashboardBody() {
                     ))}
                 </select>
               </label>
-            </header>
+            </div>
 
             <div
               className="execution-model"
@@ -3543,7 +3933,8 @@ function DashboardBody() {
                     }}
                     disabled={
                       (strategyStep === 4 &&
-                        (!config.markets.length || !strategyValid)) ||
+                        ((!selectedStrategy && !config.markets.length) ||
+                          !strategyValid)) ||
                       busy === "save"
                     }
                   >
@@ -3565,7 +3956,13 @@ function DashboardBody() {
                 Choose how this saved strategy runs. Live remains unavailable
                 until the server gates are enabled and you confirm the review.
               </p>
-              <fieldset className="strategy-mode-fieldset">
+              <fieldset
+                className={
+                  selectedStrategy
+                    ? "strategy-mode-fieldset strategy-allocation-owned"
+                    : "strategy-mode-fieldset"
+                }
+              >
                 <legend>Mode</legend>
                 <div className="segments">
                   {(["observe", "paper", "live"] as const).map((mode) => (
@@ -3842,7 +4239,13 @@ function DashboardBody() {
                 Use a separate account to offset fills without giving either
                 trading key withdrawal authority.
               </p>
-              <div className="account-role-grid">
+              <div
+                className={
+                  selectedStrategy
+                    ? "account-role-grid strategy-allocation-owned"
+                    : "account-role-grid"
+                }
+              >
                 <label>
                   <span>Maker</span>
                   <select
@@ -3902,6 +4305,12 @@ function DashboardBody() {
                   </select>
                 </label>
               </div>
+              {selectedStrategy && (
+                <p className="strategy-section-copy">
+                  Bundle accounts stay with the bundle. Shared hedging settings
+                  below apply only where that bundle has compatible accounts.
+                </p>
+              )}
               <label className="switch-row">
                 <input
                   type="checkbox"
@@ -4101,7 +4510,13 @@ function DashboardBody() {
               </div>
             </fieldset>
 
-            <fieldset className="pair-picker strategy-section strategy-markets-section strategy-step strategy-step-markets">
+            <fieldset
+              className={
+                selectedStrategy
+                  ? "pair-picker strategy-section strategy-markets-section strategy-step strategy-step-markets strategy-allocation-owned"
+                  : "pair-picker strategy-section strategy-markets-section strategy-step strategy-step-markets"
+              }
+            >
               <legend>Markets</legend>
               <p className="strategy-section-copy">
                 Choose the venue markets this strategy may quote.
@@ -4280,7 +4695,13 @@ function DashboardBody() {
               </div>
             </fieldset>
 
-            <section className="strategy-market-ranks strategy-step strategy-step-markets">
+            <section
+              className={
+                selectedStrategy
+                  ? "strategy-market-ranks strategy-step strategy-step-markets strategy-allocation-owned"
+                  : "strategy-market-ranks strategy-step strategy-step-markets"
+              }
+            >
               <header>
                 <div>
                   <span className="eyebrow">Market rank</span>
@@ -4319,7 +4740,13 @@ function DashboardBody() {
               </div>
             </section>
 
-            <details className="market-overrides strategy-market-overrides strategy-step strategy-step-markets">
+            <details
+              className={
+                selectedStrategy
+                  ? "market-overrides strategy-market-overrides strategy-step strategy-step-markets strategy-allocation-owned"
+                  : "market-overrides strategy-market-overrides strategy-step strategy-step-markets"
+              }
+            >
               <summary>
                 <SlidersHorizontal size={15} />
                 <span>Per-market overrides</span>
@@ -5053,6 +5480,12 @@ function DashboardBody() {
           id: market.id,
           symbol: market.symbol,
         }))}
+        strategies={strategies.map((strategy) => ({
+          id: strategy.id,
+          name: strategy.name,
+        }))}
+        onAttachStrategy={attachStrategy}
+        onUpdateAllocation={updateBundleAllocation}
         onCreate={createBundle}
         onUpdateWalletLimits={updateWalletLimits}
       />

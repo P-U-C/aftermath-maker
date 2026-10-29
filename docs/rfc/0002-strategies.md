@@ -1,8 +1,8 @@
 # RFC 0002: Reusable Maker strategies
 
-- **Status:** Proposed — owner approval required before implementation
+- **Status:** Approved — owner approval recorded 2026-10-29; implementation in progress
 - **Date:** 2026-10-29
-- **Scope:** Design only. This RFC adds no strategy, bundle, runtime, or migration code.
+- **Scope:** Reusable strategy model, migration, API, runtime projection, and UI.
 
 ## Summary
 
@@ -289,5 +289,5 @@ Suggested order after approval:
 4. Strategy/Bundle UI flows with committed screenshots;
 5. independent byte-identical Core order test before merge.
 
-Until approved, this RFC implements nothing. Live remains off, signing and
-deployment behavior remain unchanged, and Stop all remains available.
+Owner approval was recorded on 2026-10-29. Implementation must keep Live off,
+leave signing and deployment behavior unchanged, and keep Stop all available.
