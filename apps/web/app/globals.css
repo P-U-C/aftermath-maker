@@ -3964,10 +3964,21 @@ mysten-dapp-kit-connect-modal,
   min-height: 52px;
   padding: 0;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 120px 80px;
+  grid-template-columns: minmax(0, 1fr) 100px minmax(96px, auto) 80px;
   align-items: center;
   gap: 16px;
   border-bottom: 1px solid var(--hair);
+}
+
+.venue-account-bundle {
+  min-height: 30px;
+  padding-top: 12px;
+  color: var(--ink-2);
+  border-bottom: 1px solid var(--hair);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
 }
 
 .venue-account-row > :nth-child(n + 2) {
@@ -4231,8 +4242,9 @@ mysten-dapp-kit-connect-modal,
   }
 
   .venue-account-row {
-    grid-template-columns: minmax(0, 1fr) 84px 68px;
+    grid-template-columns: minmax(0, 1fr) 72px minmax(72px, auto) 58px;
     gap: 8px;
+    font-size: 12px;
   }
 
   .venue-exposure-table {
@@ -5012,7 +5024,7 @@ mysten-dapp-kit-connect-modal,
   border-right: 0;
 }
 
-@media (max-width: 1080px) {
+@media (max-width: 1280px) {
   .maker-nav {
     min-height: 0;
     padding-top: 8px;
@@ -5021,9 +5033,11 @@ mysten-dapp-kit-connect-modal,
   }
 
   .maker-view-tabs {
+    width: min(100%, 720px);
     grid-column: 1 / -1;
     grid-row: 2;
-    justify-self: stretch;
+    justify-self: center;
+    justify-content: center;
   }
 
   .maker-nav-right {
@@ -5481,6 +5495,10 @@ mysten-dapp-kit-connect-modal,
   }
 
   .bundle-card-select {
+    min-height: 44px;
+  }
+
+  .bundle-wallet-limit-heading .ui-button {
     min-height: 44px;
   }
 
@@ -7795,6 +7813,22 @@ mysten-dapp-kit-connect-modal,
   text-decoration: underline dotted;
   text-underline-offset: 3px;
   cursor: help;
+}
+
+.advanced-field-tip {
+  width: 15px;
+  height: 15px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--ink-2);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 720;
+  line-height: 1;
+  text-decoration: none;
+  vertical-align: 1px;
 }
 
 .glossary-tip {

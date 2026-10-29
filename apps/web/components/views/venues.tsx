@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { Fragment, type ReactNode } from "react";
 
 import { formatMoney } from "../../lib/format";
 import type { VenueDescriptor } from "../../lib/venues";
@@ -25,6 +25,7 @@ export type VenueAccountRow = {
   label: string | null;
   equityUsd: number;
   role: "Maker" | "Taker" | "Available";
+  bundle: string;
 };
 
 type VenueBoardProps = {
@@ -42,6 +43,7 @@ type VenueBoardProps = {
   grossExposureLimitUsd: number;
   unrealizedPnlUsd: number;
   onManage: () => void;
+  onNewAccount: () => void;
   onRevoke?: () => void;
 };
 
@@ -60,6 +62,7 @@ export function VenueBoard({
   grossExposureLimitUsd,
   unrealizedPnlUsd,
   onManage,
+  onNewAccount,
   onRevoke,
 }: VenueBoardProps) {
   const state = !connected
@@ -73,6 +76,18 @@ export function VenueBoard({
       : unrealizedPnlUsd > 0
         ? "is-profit"
         : undefined;
+  const accountsByBundle = Array.from(
+    accounts.reduce((groups, account) => {
+      const group = groups.get(account.bundle) ?? [];
+      group.push(account);
+      groups.set(account.bundle, group);
+      return groups;
+    }, new Map<string, VenueAccountRow[]>()),
+  ).sort(([left], [right]) => {
+    const rank = (bundle: string) =>
+      bundle === "Core" ? 0 : bundle === "Not in a bundle" ? 2 : 1;
+    return rank(left) - rank(right) || left.localeCompare(right);
+  });
 
   return (
     <div className="venues-board">
@@ -144,24 +159,36 @@ export function VenueBoard({
             <div className="venue-account-row is-header" role="row">
               <span role="columnheader">Account</span>
               <span role="columnheader">Equity</span>
+              <span role="columnheader">Bundle</span>
               <span role="columnheader">Role</span>
             </div>
-            {accounts.map((account) => (
-              <div
-                className="venue-account-row"
-                role="row"
-                key={account.accountId}
-              >
-                <strong role="cell">
-                  {account.label ?? `Account ${account.accountId}`}
-                </strong>
-                <span role="cell">{formatMoney(account.equityUsd)}</span>
-                <span role="cell">{account.role}</span>
-              </div>
+            {accountsByBundle.map(([bundle, groupedAccounts]) => (
+              <Fragment key={bundle}>
+                <div className="venue-account-bundle" role="row">
+                  <strong role="cell">{bundle}</strong>
+                </div>
+                {groupedAccounts.map((account) => (
+                  <div
+                    className="venue-account-row"
+                    role="row"
+                    key={account.accountId}
+                  >
+                    <strong role="cell">
+                      {account.label ?? `Account ${account.accountId}`}
+                    </strong>
+                    <span role="cell">{formatMoney(account.equityUsd)}</span>
+                    <span role="cell">{account.bundle}</span>
+                    <span role="cell">{account.role}</span>
+                  </div>
+                ))}
+              </Fragment>
             ))}
           </div>
 
           <div className="venue-card-actions">
+            <Button variant="quiet" size="small" onClick={onNewAccount}>
+              New account
+            </Button>
             <Button variant="quiet" size="small" onClick={onManage}>
               Manage accounts
             </Button>
