@@ -169,7 +169,18 @@ async function waitForFixture(page, stateName) {
 }
 
 async function capture(browser, stateName, captureConfig, view) {
-  const fixture = fixtureStates[stateName];
+  const fixture = structuredClone(fixtureStates[stateName]);
+  // Bundles deliberately replace the legacy market card. Retain one isolated
+  // legacy state only to exercise the card's manual refresh and motion path.
+  if (
+    verifyMotion &&
+    stateName === "paper-running" &&
+    captureConfig.name === "desktop-light" &&
+    view === "desk"
+  ) {
+    fixture.bundles.bundles = [];
+    fixture.status.bundles = [];
+  }
   const context = await browser.newContext({
     viewport: captureConfig.viewport,
     deviceScaleFactor,
@@ -571,7 +582,7 @@ async function capture(browser, stateName, captureConfig, view) {
       await page.getByRole("button", { name: "NEAR", exact: true }).click();
       await page
         .locator(".performance-market-fills")
-        .getByText(/ask \$1\.04/)
+        .getByText(/Sold \$1\.04/)
         .waitFor();
       await page
         .locator(".fill-table")
@@ -586,14 +597,33 @@ async function capture(browser, stateName, captureConfig, view) {
       if (view === null) {
         await page.getByRole("link", { name: "Strategy" }).click();
       }
-      await page.getByRole("button", { name: "Review live setup" }).click();
-      await page.getByRole("dialog", { name: "Use Live mode?" }).waitFor();
-      if (
-        await page.getByRole("button", { name: "Use Live mode" }).isEnabled()
-      ) {
-        throw new Error(
-          "Live mode was selectable while deployment gates were off",
-        );
+      await page
+        .locator(".strategy-builder")
+        .getByRole("button", { name: /Review/ })
+        .click();
+      const reviewLive = page.getByRole("button", {
+        name: "Review live setup",
+      });
+      if (await reviewLive.count()) {
+        await reviewLive.click();
+        await page.getByRole("dialog", { name: "Use Live mode?" }).waitFor();
+        if (
+          await page.getByRole("button", { name: "Use Live mode" }).isEnabled()
+        ) {
+          throw new Error(
+            "Live mode was selectable while deployment gates were off",
+          );
+        }
+      } else {
+        const liveTrial = page.getByRole("button", {
+          name: "Live",
+          exact: true,
+        });
+        if ((await liveTrial.count()) && (await liveTrial.isEnabled())) {
+          throw new Error(
+            "Live mode was selectable while deployment gates were off",
+          );
+        }
       }
     }
     if (
@@ -694,14 +724,12 @@ async function capture(browser, stateName, captureConfig, view) {
         ["hedge", "play hedge"],
         ["rewards", "rewards"],
       ];
-      for (const [id, scene] of expectedScenes) {
-        await page
-          .locator("#" + id)
-          .getByRole("button")
-          .click();
-        await page.getByText("Scene: " + scene, { exact: true }).waitFor();
-      }
-      await page.goto(baseUrl + "#learn/hedge", { waitUntil: "networkidle" });
+      // Let the mounted view register its hash listener before simulating a
+      // customer opening a chapter link.
+      await page.waitForTimeout(100);
+      await page.evaluate(() => {
+        window.location.hash = "learn/hedge";
+      });
       await page.locator('[data-view="learn"]:not([hidden])').waitFor();
       await page.waitForTimeout(600);
       const deepLinkState = await page.evaluate(() => ({
@@ -713,6 +741,13 @@ async function capture(browser, stateName, captureConfig, view) {
         throw new Error(
           "Learn deep link selected " + JSON.stringify(deepLinkState),
         );
+      }
+      for (const [id, scene] of expectedScenes) {
+        await page
+          .locator("#" + id)
+          .getByRole("button")
+          .click();
+        await page.getByText("Scene: " + scene, { exact: true }).waitFor();
       }
       process.stdout.write(
         `${stateName}/${view}/${captureConfig.name}: Learn chapters and deep link play their scenes\n`,
@@ -739,6 +774,22 @@ async function capture(browser, stateName, captureConfig, view) {
       await explain.click();
       await page.locator(".maker-coach").waitFor();
       await page.waitForTimeout(300);
+      if (captureConfig.viewport.width <= 390) {
+        const phoneTarget = await page.evaluate(() => {
+          const target = document.querySelector("[data-coach-target]");
+          const nav = document
+            .querySelector(".maker-nav")
+            ?.getBoundingClientRect();
+          return target && nav
+            ? { top: target.getBoundingClientRect().top, navBottom: nav.bottom }
+            : null;
+        });
+        if (!phoneTarget || phoneTarget.top < phoneTarget.navBottom) {
+          throw new Error(
+            `${stateName}/${view}/${captureConfig.name} Explain hid its target under the phone header: ${JSON.stringify(phoneTarget)}`,
+          );
+        }
+      }
       const collisions = await page.evaluate(() => {
         const overlaps = (first, second) =>
           first.left < second.right &&
@@ -1028,6 +1079,16 @@ async function capture(browser, stateName, captureConfig, view) {
         `${stateName}/${captureConfig.name} has horizontal overflow: ${dimensions.scrollWidth}px > ${dimensions.innerWidth}px`,
       );
     }
+    if (
+      view === "desk" &&
+      fixture.auth.status === 200 &&
+      fixture.bundles.bundles.some((bundle) => !bundle.archivedAt) &&
+      (await page.locator(".desk-ladder-card").count())
+    ) {
+      throw new Error(
+        `${stateName}/${captureConfig.name} showed the legacy market lane beside bundles`,
+      );
+    }
     if (captureConfig.viewport.width <= 390 && fixture.auth.status === 200) {
       const phoneCriteria = await page.evaluate(() => {
         const isVisible = (element) => {
@@ -1179,13 +1240,11 @@ async function capture(browser, stateName, captureConfig, view) {
     }
 
     if (exerciseStop) {
-      await page.getByRole("button", { name: "Refresh market" }).click();
-      await page.waitForTimeout(50);
       const stop = page
         .getByRole("button", { name: "Stop all", exact: true })
         .first();
       if (!(await stop.isEnabled())) {
-        throw new Error("Stop became disabled while a refresh was in flight");
+        throw new Error("Stop was disabled before its request began");
       }
       await stop.click();
       await page
@@ -1197,7 +1256,7 @@ async function capture(browser, stateName, captureConfig, view) {
         throw new Error("Stop became disabled after a server error");
       }
       process.stdout.write(
-        `${stateName}${view ? `/${view}` : ""}/${captureConfig.name}: Stop stayed enabled during busy and after error\n`,
+        `${stateName}${view ? `/${view}` : ""}/${captureConfig.name}: Stop stayed enabled after a server error\n`,
       );
     }
     if (

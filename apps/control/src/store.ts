@@ -2964,7 +2964,7 @@ export class TenantStore {
             (id, owner_address, name, strategy_id, strategy_version_applied,
              maker_account_id, taker_account_id, config, mode, status,
              created_at, updated_at, last_error, archived_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'paused', ?, ?, NULL, NULL)`,
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL)`,
         )
         .run(
           id,
@@ -2976,6 +2976,7 @@ export class TenantStore {
           inputs.config.hedge.accountId ?? null,
           stringify(inputs.config),
           inputs.config.mode,
+          "stopped",
           now,
           now,
         );
@@ -3064,7 +3065,7 @@ export class TenantStore {
             (id, owner_address, name, strategy_id, strategy_version_applied,
              maker_account_id, taker_account_id, config, mode, status,
              created_at, updated_at, last_error, archived_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'paused', ?, ?, NULL, NULL)`,
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL)`,
         )
         .run(
           id,
@@ -3076,6 +3077,7 @@ export class TenantStore {
           config.hedge.accountId,
           stringify(config),
           config.mode,
+          strategy ? "stopped" : "paused",
           now,
           now,
         );
@@ -3156,7 +3158,11 @@ export class TenantStore {
           `UPDATE bundles
            SET strategy_id = ?, strategy_version_applied = ?,
                maker_account_id = ?, taker_account_id = ?, config = ?, mode = ?,
-               status = CASE WHEN ? IS NULL THEN 'paused' ELSE status END,
+               status = CASE
+                 WHEN ? IS NULL THEN 'paused'
+                 WHEN ? IS NULL THEN 'stopped'
+                 ELSE status
+               END,
                updated_at = ?
            WHERE owner_address = ? AND id = ?`,
         )
@@ -3168,6 +3174,7 @@ export class TenantStore {
           stringify(config),
           config.mode,
           strategy?.id ?? null,
+          current.strategy_id,
           updatedAt,
           this.ownerAddress,
           current.id,

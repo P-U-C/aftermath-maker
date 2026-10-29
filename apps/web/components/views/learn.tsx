@@ -1,6 +1,12 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
 
 import { glossary, type GlossaryKey } from "../../lib/glossary";
 import { MarketMotion, type MarketMotionHandle } from "../market-motion";
@@ -67,6 +73,7 @@ export function LearnView({ active }: { active: boolean }) {
     >,
   );
   const [chapter, setChapter] = useState<ChapterId>("spread");
+  const chapterRef = useRef<ChapterId>("spread");
   const [beat, setBeat] = useState("");
   const directHashLocked = useRef(false);
 
@@ -75,6 +82,7 @@ export function LearnView({ active }: { active: boolean }) {
       next: ChapterId,
       options: { scroll?: boolean; replace?: boolean } = {},
     ) => {
+      chapterRef.current = next;
       setChapter(next);
       motion.current?.play(next);
       if (options.replace !== false) {
@@ -97,35 +105,27 @@ export function LearnView({ active }: { active: boolean }) {
     if (!active) return;
     const fromHash = chapterFromHash();
     if (fromHash) directHashLocked.current = true;
-    const next = fromHash ?? chapter;
+    const next = fromHash ?? chapterRef.current;
     const frame = window.requestAnimationFrame(() => {
       showChapter(next, { scroll: Boolean(fromHash), replace: false });
     });
-    const unlock = fromHash
-      ? window.setTimeout(() => {
-          directHashLocked.current = false;
-        }, 800)
-      : undefined;
     return () => {
       window.cancelAnimationFrame(frame);
-      if (unlock) window.clearTimeout(unlock);
     };
   }, [active, showChapter]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!active) return;
     const syncHash = () => {
       const next = chapterFromHash();
-      if (!next || next === chapter) return;
+      if (!next || next === chapterRef.current) return;
       directHashLocked.current = true;
       showChapter(next, { scroll: true, replace: false });
-      window.setTimeout(() => {
-        directHashLocked.current = false;
-      }, 800);
     };
+    syncHash();
     window.addEventListener("hashchange", syncHash);
     return () => window.removeEventListener("hashchange", syncHash);
-  }, [active, chapter, showChapter]);
+  }, [active, showChapter]);
 
   useEffect(() => {
     if (!active || !("IntersectionObserver" in window)) return;
@@ -136,10 +136,11 @@ export function LearnView({ active }: { active: boolean }) {
         );
         if (!entered) return;
         const next = entered.target.getAttribute("data-chapter") as ChapterId;
-        // Let a direct #learn/<chapter> request settle and scroll before the
-        // observer starts selecting chapters from the reading position.
+        // Keep an explicit chapter selection while its programmatic scroll
+        // settles. Wheel, touch, keyboard, or pointer input unlocks reading
+        // progress below.
         if (directHashLocked.current) return;
-        if (next && next !== chapter) showChapter(next);
+        if (next && next !== chapterRef.current) showChapter(next);
       },
       { threshold: [0.6] },
     );
@@ -149,13 +150,53 @@ export function LearnView({ active }: { active: boolean }) {
       if (node) observer.observe(node);
     });
     return () => observer.disconnect();
-  }, [active, chapter, showChapter]);
+  }, [active, showChapter]);
+
+  useEffect(() => {
+    if (!active) return;
+    const unlockObserver = () => {
+      directHashLocked.current = false;
+    };
+    const unlockOnNavigationKey = (event: KeyboardEvent) => {
+      if (
+        [
+          "ArrowDown",
+          "ArrowUp",
+          "PageDown",
+          "PageUp",
+          "Home",
+          "End",
+          " ",
+        ].includes(event.key)
+      ) {
+        unlockObserver();
+      }
+    };
+    window.addEventListener("pointerdown", unlockObserver, { passive: true });
+    window.addEventListener("wheel", unlockObserver, { passive: true });
+    window.addEventListener("touchstart", unlockObserver, { passive: true });
+    window.addEventListener("keydown", unlockOnNavigationKey);
+    return () => {
+      window.removeEventListener("pointerdown", unlockObserver);
+      window.removeEventListener("wheel", unlockObserver);
+      window.removeEventListener("touchstart", unlockObserver);
+      window.removeEventListener("keydown", unlockOnNavigationKey);
+    };
+  }, [active]);
 
   const setChapterNode = useCallback(
     (id: ChapterId) => (node: HTMLElement | null) => {
       chapterNodes.current[id] = node;
     },
     [],
+  );
+
+  const selectChapter = useCallback(
+    (next: ChapterId) => {
+      directHashLocked.current = true;
+      showChapter(next, { scroll: true });
+    },
+    [showChapter],
   );
 
   const onEvent = useCallback((event: string) => setBeat(event), []);
@@ -213,7 +254,7 @@ export function LearnView({ active }: { active: boolean }) {
                 <button
                   type="button"
                   className={chapter === item.id ? "is-active" : undefined}
-                  onClick={() => showChapter(item.id, { scroll: true })}
+                  onClick={() => selectChapter(item.id)}
                 >
                   <span>{index + 1}</span>
                   <strong>{item.title}</strong>
@@ -242,7 +283,7 @@ export function LearnView({ active }: { active: boolean }) {
                       href={"#learn/" + target}
                       onClick={(event) => {
                         event.preventDefault();
-                        showChapter(target, { scroll: true });
+                        selectChapter(target);
                       }}
                     >
                       See it

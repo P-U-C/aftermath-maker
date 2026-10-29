@@ -78,6 +78,26 @@ function cloneFixture() {
   return fixture;
 }
 
+function initialStrategies(fixture) {
+  const {
+    markets,
+    mode: _mode,
+    makerAccountId: _makerAccountId,
+    hedge,
+    ...config
+  } = fixture.config.config;
+  const { accountId: _accountId, ...sharedHedge } = hedge;
+  return fixture.bundles.bundles.map((bundle) => ({
+    id: bundle.strategyId,
+    name: bundle.strategyName,
+    config: { ...config, hedge: sharedHedge },
+    marketRule: { kind: "preferred-list", marketIds: bundle.marketIds },
+    version: 1,
+    usedBy: [{ id: bundle.id, name: bundle.name }],
+    archivedAt: null,
+  }));
+}
+
 function routePathFor(url) {
   const marker = "/api/control/";
   return url.pathname.slice(url.pathname.indexOf(marker) + marker.length);
@@ -121,16 +141,107 @@ async function installStatefulControl(page, state) {
       );
       return json(200, { ok: true });
     }
+    if (routePath === "api/strategies") {
+      if (request.method() === "GET") {
+        return json(200, { strategies: state.strategies });
+      }
+      if (request.method() === "POST") {
+        const body = JSON.parse(request.postData() ?? "{}");
+        const strategy = {
+          id: `strategy-${state.strategies.length + 1}`,
+          name: body.name,
+          config: body.config,
+          marketRule: body.marketRule,
+          version: 1,
+          usedBy: [],
+          archivedAt: null,
+        };
+        state.strategies.unshift(strategy);
+        return json(200, { strategy });
+      }
+    }
+    const strategyMatch = routePath.match(
+      /^api\/strategies\/([^/]+)(?:\/(duplicate))?$/,
+    );
+    if (strategyMatch) {
+      const [, strategyId, action] = strategyMatch;
+      const strategy = state.strategies.find(
+        (candidate) => candidate.id === strategyId,
+      );
+      if (!strategy) return json(404, { error: "Strategy was not found" });
+      if (request.method() === "GET") return json(200, { strategy });
+      if (action === "duplicate" && request.method() === "POST") {
+        const duplicate = {
+          ...structuredClone(strategy),
+          id: `strategy-${state.strategies.length + 1}`,
+          name: `${strategy.name} copy`,
+          version: 1,
+          usedBy: [],
+        };
+        state.strategies.unshift(duplicate);
+        return json(200, { strategy: duplicate });
+      }
+      if (request.method() === "PATCH") {
+        const body = JSON.parse(request.postData() ?? "{}");
+        Object.assign(strategy, {
+          config: body.config,
+          marketRule: body.marketRule,
+          version: strategy.version + 1,
+        });
+        return json(200, { strategy, affectedBundles: strategy.usedBy });
+      }
+    }
+    const bundleMatch = routePath.match(/^api\/bundles\/([^/]+)$/);
+    if (bundleMatch && request.method() === "PATCH") {
+      const bundle = state.fixture.bundles.bundles.find(
+        (candidate) => candidate.id === bundleMatch[1],
+      );
+      if (!bundle) return json(404, { error: "Bundle was not found" });
+      const body = JSON.parse(request.postData() ?? "{}");
+      if (body.strategyId !== undefined) {
+        const hadStrategy = Boolean(bundle.strategyId);
+        const previous = state.strategies.find(
+          (candidate) => candidate.id === bundle.strategyId,
+        );
+        previous &&
+          (previous.usedBy = previous.usedBy.filter(
+            (used) => used.id !== bundle.id,
+          ));
+        const strategy = state.strategies.find(
+          (candidate) => candidate.id === body.strategyId,
+        );
+        bundle.strategyId = body.strategyId;
+        bundle.strategyName = strategy?.name ?? null;
+        bundle.strategyVersionApplied = strategy?.version ?? null;
+        bundle.needsStrategy = !strategy;
+        if (strategy && !hadStrategy) bundle.status = "stopped";
+        if (strategy)
+          strategy.usedBy.push({ id: bundle.id, name: bundle.name });
+      }
+      if (body.makerAccountId !== undefined)
+        bundle.makerAccountId = body.makerAccountId;
+      if (body.takerAccountId !== undefined)
+        bundle.takerAccountId = body.takerAccountId;
+      if (body.mode !== undefined) bundle.mode = body.mode;
+      if (body.markets !== undefined) {
+        bundle.marketIds = body.markets.map((market) => market.marketId);
+      }
+      bundle.updatedAt = "2026-10-27T17:09:00.000Z";
+      return json(200, { bundle, config: state.fixture.config.config });
+    }
     if (routePath === "api/bundles" && request.method() === "POST") {
       const body = JSON.parse(request.postData() ?? "{}");
+      const selectedStrategy = body.strategyId
+        ? state.strategies.find((strategy) => strategy.id === body.strategyId)
+        : null;
       const createdAt = "2026-10-27T17:08:32.000Z";
       const next = {
         id: "audit-bundle",
         name: body.name,
-        strategyId: body.strategyId ?? "core-strategy",
-        strategyName: body.strategyId ? "Core strategy" : null,
-        strategyVersionApplied: body.strategyId ? 1 : null,
-        needsStrategy: !body.strategyId,
+        strategyId: selectedStrategy?.id ?? null,
+        strategyName: selectedStrategy?.name ?? null,
+        strategyVersionApplied: selectedStrategy?.version ?? null,
+        needsStrategy: !selectedStrategy,
         makerAccountId: body.makerAccountId ?? body.config?.makerAccountId,
         takerAccountId:
           body.takerAccountId ?? body.config?.hedge?.accountId ?? null,
@@ -145,11 +256,17 @@ async function installStatefulControl(page, state) {
         archivedAt: null,
       };
       state.fixture.bundles.bundles.push(next);
+      if (selectedStrategy) {
+        selectedStrategy.usedBy.push({ id: next.id, name: next.name });
+      }
       state.fixture.status.bundles = [
         ...(state.fixture.status.bundles ?? []),
         { bundle: next, snapshot: null },
       ];
-      return json(200, { bundle: next });
+      return json(200, {
+        bundle: next,
+        walletLimits: state.fixture.bundles.walletLimits,
+      });
     }
     if (
       routePath === "api/bundles/wallet-limits" &&
@@ -234,8 +351,10 @@ async function newPage(browser, viewport) {
   });
   const page = await context.newPage();
   page.setDefaultTimeout(5_000);
+  const fixture = cloneFixture();
   const state = {
-    fixture: cloneFixture(),
+    fixture,
+    strategies: initialStrategies(fixture),
     serviceDown: false,
     sessionExpired: false,
     delayStop: false,
@@ -648,6 +767,71 @@ async function plainControlLog(browser) {
   }
 }
 
+async function strategyLibraryAndBundleAttachment(browser) {
+  const { context, page, state } = await newPage(browser, {
+    width: 1440,
+    height: 900,
+  });
+  try {
+    const draftBundle = {
+      id: "strategy-audit-bundle",
+      name: "Strategy audit",
+      strategyId: null,
+      strategyName: null,
+      strategyVersionApplied: null,
+      needsStrategy: true,
+      makerAccountId: "1749",
+      takerAccountId: null,
+      mode: "paper",
+      status: "paused",
+      marketIds: [
+        state.fixture.markets.markets.find((market) => market.symbol === "HYPE")
+          .id,
+      ],
+      createdAt: "2026-10-27T17:10:00.000Z",
+      updatedAt: "2026-10-27T17:10:00.000Z",
+      lastError: null,
+      archivedAt: null,
+    };
+    state.fixture.bundles.bundles.push(draftBundle);
+    state.fixture.status.bundles.push({ bundle: draftBundle, snapshot: null });
+
+    await goToDesk(page);
+    await page.getByRole("link", { name: "Strategy", exact: true }).click();
+    await page
+      .getByRole("button", { name: "New strategy", exact: true })
+      .click();
+    await page
+      .getByText("Strategy created. Attach it to a bundle when ready.", {
+        exact: true,
+      })
+      .waitFor();
+    await page.getByRole("button", { name: "Duplicate", exact: true }).click();
+    await page
+      .getByText("Strategy duplicated. It can now be edited independently.", {
+        exact: true,
+      })
+      .waitFor();
+
+    await page.getByRole("link", { name: "Bundles", exact: true }).click();
+    const card = page.locator(".bundle-card").filter({
+      hasText: "Strategy audit",
+    });
+    await card.waitFor();
+    await card.getByRole("combobox").selectOption({ label: "Strategy 3" });
+    await page
+      .getByText("Strategy attached. The bundle can now be started.", {
+        exact: true,
+      })
+      .waitFor();
+    await card.getByText("Strategy: Strategy 3", { exact: true }).waitFor();
+    await card.getByRole("button", { name: "Start", exact: true }).waitFor();
+    await capture(page, "rfc-0002-strategy-attachment-desktop.png");
+  } finally {
+    await context.close();
+  }
+}
+
 async function trialExplainsItsBlocker(browser) {
   const { context, page } = await newPage(browser, {
     width: 1440,
@@ -690,6 +874,7 @@ try {
   await savedDeskOnly(browser);
   await cleanStrategyLeavesWithoutPrompt(browser);
   await plainControlLog(browser);
+  await strategyLibraryAndBundleAttachment(browser);
   await trialExplainsItsBlocker(browser);
   await revokeWithoutWallet(browser);
   await serviceAndSessionFailures(browser);
