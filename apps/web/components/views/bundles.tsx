@@ -1,6 +1,6 @@
 "use client";
 
-import { Archive, Pause, Play, Plus, RotateCcw } from "lucide-react";
+import { Archive, Pencil, Pause, Play, Plus, RotateCcw } from "lucide-react";
 import { useState } from "react";
 
 import {
@@ -53,6 +53,19 @@ type BundlesViewProps = {
     marketId: string;
     confirmWalletLimits: boolean;
   }) => void;
+  onUpdateWalletLimits: (limits: {
+    maxRunDrawdownUsd: number;
+    maxInventoryUsd: number;
+    maxGrossExposureUsd: number;
+    maxUnrealizedLossUsd: number;
+  }) => void;
+};
+
+type WalletLimitsDraft = {
+  maxRunDrawdownUsd: string;
+  maxInventoryUsd: string;
+  maxGrossExposureUsd: string;
+  maxUnrealizedLossUsd: string;
 };
 
 const plainStatus = (status: BundleCard["status"]) =>
@@ -78,10 +91,21 @@ export function BundlesView({
   accounts,
   markets,
   onCreate,
+  onUpdateWalletLimits,
 }: BundlesViewProps) {
   const visible = activeBundles(bundles);
   const [createOpen, setCreateOpen] = useState(false);
   const [confirmOpen, setConfirmOpen] = useState(false);
+  const [editLimitsOpen, setEditLimitsOpen] = useState(false);
+  const [confirmLimitsEditOpen, setConfirmLimitsEditOpen] = useState(false);
+  const [walletLimitsDraft, setWalletLimitsDraft] = useState<WalletLimitsDraft>(
+    {
+      maxRunDrawdownUsd: "",
+      maxInventoryUsd: "",
+      maxGrossExposureUsd: "",
+      maxUnrealizedLossUsd: "",
+    },
+  );
   const [name, setName] = useState("");
   const [makerAccountId, setMakerAccountId] = useState("");
   const [takerAccountId, setTakerAccountId] = useState("");
@@ -113,6 +137,31 @@ export function BundlesView({
     setConfirmOpen(false);
     setCreateOpen(false);
   };
+  const editedWalletLimits = {
+    maxRunDrawdownUsd: Number(walletLimitsDraft.maxRunDrawdownUsd),
+    maxInventoryUsd: Number(walletLimitsDraft.maxInventoryUsd),
+    maxGrossExposureUsd: Number(walletLimitsDraft.maxGrossExposureUsd),
+    maxUnrealizedLossUsd: Number(walletLimitsDraft.maxUnrealizedLossUsd),
+  };
+  const canConfirmWalletLimitsEdit = Object.values(editedWalletLimits).every(
+    (value) => Number.isFinite(value) && value > 0,
+  );
+  const openWalletLimitsEditor = () => {
+    if (!walletLimits) return;
+    setWalletLimitsDraft({
+      maxRunDrawdownUsd: String(walletLimits.maxRunDrawdownUsd),
+      maxInventoryUsd: String(walletLimits.maxInventoryUsd),
+      maxGrossExposureUsd: String(walletLimits.maxGrossExposureUsd),
+      maxUnrealizedLossUsd: String(walletLimits.maxUnrealizedLossUsd),
+    });
+    setEditLimitsOpen(true);
+  };
+  const submitWalletLimitsEdit = () => {
+    if (!canConfirmWalletLimitsEdit) return;
+    onUpdateWalletLimits(editedWalletLimits);
+    setConfirmLimitsEditOpen(false);
+    setEditLimitsOpen(false);
+  };
   return (
     <ViewFrame active={active} name="bundles">
       <section className="bundles-page">
@@ -141,13 +190,24 @@ export function BundlesView({
 
         {walletLimits && (
           <section className="bundle-wallet-limits" aria-label="Wallet limits">
-            <div>
-              <span>Wallet limits</span>
-              <strong>
-                {walletLimits.confirmedAt
-                  ? "Confirmed"
-                  : "Confirm before a second bundle"}
-              </strong>
+            <div className="bundle-wallet-limit-heading">
+              <div className="bundle-wallet-limit-copy">
+                <span>Wallet limits</span>
+                <strong>
+                  {walletLimits.confirmedAt
+                    ? "Confirmed"
+                    : "Confirm before a second bundle"}
+                </strong>
+              </div>
+              <Button
+                variant="quiet"
+                size="small"
+                onClick={openWalletLimitsEditor}
+                disabled={busy}
+              >
+                <Pencil size={14} aria-hidden="true" />
+                Edit wallet limits
+              </Button>
             </div>
             <dl>
               <div>
@@ -399,6 +459,147 @@ export function BundlesView({
             <div>
               <dt>Unrealized loss</dt>
               <dd>{formatMoney(walletLimits?.maxUnrealizedLossUsd ?? null)}</dd>
+            </div>
+          </dl>
+        </Sheet>
+
+        <Sheet
+          open={editLimitsOpen}
+          title="Edit wallet limits"
+          description="Set the envelope shared by every running bundle in this wallet. You will review the change before it applies."
+          onClose={() => setEditLimitsOpen(false)}
+          footer={
+            <>
+              <Button variant="quiet" onClick={() => setEditLimitsOpen(false)}>
+                Cancel
+              </Button>
+              <Button
+                variant="primary"
+                disabled={!canConfirmWalletLimitsEdit || busy}
+                onClick={() => {
+                  setEditLimitsOpen(false);
+                  setConfirmLimitsEditOpen(true);
+                }}
+              >
+                Continue
+              </Button>
+            </>
+          }
+        >
+          <div className="bundle-create-fields bundle-wallet-limit-fields">
+            <label>
+              <span>Gross exposure</span>
+              <input
+                type="number"
+                min="0.01"
+                max="100000"
+                step="0.01"
+                inputMode="decimal"
+                value={walletLimitsDraft.maxGrossExposureUsd}
+                onChange={(event) =>
+                  setWalletLimitsDraft((current) => ({
+                    ...current,
+                    maxGrossExposureUsd: event.target.value,
+                  }))
+                }
+              />
+            </label>
+            <label>
+              <span>Inventory</span>
+              <input
+                type="number"
+                min="0.01"
+                max="10000"
+                step="0.01"
+                inputMode="decimal"
+                value={walletLimitsDraft.maxInventoryUsd}
+                onChange={(event) =>
+                  setWalletLimitsDraft((current) => ({
+                    ...current,
+                    maxInventoryUsd: event.target.value,
+                  }))
+                }
+              />
+            </label>
+            <label>
+              <span>Run drawdown</span>
+              <input
+                type="number"
+                min="0.01"
+                max="10000"
+                step="0.01"
+                inputMode="decimal"
+                value={walletLimitsDraft.maxRunDrawdownUsd}
+                onChange={(event) =>
+                  setWalletLimitsDraft((current) => ({
+                    ...current,
+                    maxRunDrawdownUsd: event.target.value,
+                  }))
+                }
+              />
+            </label>
+            <label>
+              <span>Unrealized loss</span>
+              <input
+                type="number"
+                min="0.01"
+                max="10000"
+                step="0.01"
+                inputMode="decimal"
+                value={walletLimitsDraft.maxUnrealizedLossUsd}
+                onChange={(event) =>
+                  setWalletLimitsDraft((current) => ({
+                    ...current,
+                    maxUnrealizedLossUsd: event.target.value,
+                  }))
+                }
+              />
+            </label>
+          </div>
+        </Sheet>
+
+        <Sheet
+          open={confirmLimitsEditOpen}
+          title="Confirm wallet limits"
+          description="These limits apply across every running bundle. Limits below a running bundle's current use cannot be saved."
+          onClose={() => setConfirmLimitsEditOpen(false)}
+          footer={
+            <>
+              <Button
+                variant="quiet"
+                onClick={() => {
+                  setConfirmLimitsEditOpen(false);
+                  setEditLimitsOpen(true);
+                }}
+              >
+                Back
+              </Button>
+              <Button
+                variant="primary"
+                disabled={!canConfirmWalletLimitsEdit || busy}
+                onClick={submitWalletLimitsEdit}
+              >
+                Confirm changes
+              </Button>
+            </>
+          }
+        >
+          <dl className="bundle-confirm-limits">
+            <div>
+              <dt>Gross exposure</dt>
+              <dd>{formatMoney(editedWalletLimits.maxGrossExposureUsd)}</dd>
+            </div>
+            <div>
+              <dt>Inventory</dt>
+              <dd>{formatMoney(editedWalletLimits.maxInventoryUsd)}</dd>
+            </div>
+            <div>
+              <dt>Run drawdown</dt>
+              <dd>{formatMoney(editedWalletLimits.maxRunDrawdownUsd)}</dd>
+            </div>
+            <div>
+              <dt>Unrealized loss</dt>
+              <dd>{formatMoney(editedWalletLimits.maxUnrealizedLossUsd)}</dd>
             </div>
           </dl>
         </Sheet>

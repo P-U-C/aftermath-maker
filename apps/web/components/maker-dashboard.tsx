@@ -1164,6 +1164,25 @@ function DashboardBody() {
     });
   }
 
+  async function updateWalletLimits(limits: {
+    maxRunDrawdownUsd: number;
+    maxInventoryUsd: number;
+    maxGrossExposureUsd: number;
+    maxUnrealizedLossUsd: number;
+  }) {
+    await mutate("update-wallet-limits", async () => {
+      const result = await request<{ walletLimits: BundleWalletLimits }>(
+        "api/bundles/wallet-limits",
+        {
+          method: "POST",
+          body: JSON.stringify({ ...limits, confirmed: true }),
+        },
+      );
+      setWalletLimits(result.walletLimits);
+      setNotice("Wallet limits updated across your bundles.", "success");
+    });
+  }
+
   const loadAccessRequests = useCallback(async () => {
     const result = await request<{ accessRequests: AccessRequest[] }>(
       "api/operator/access-requests?limit=50",
@@ -4865,6 +4884,7 @@ function DashboardBody() {
           symbol: market.symbol,
         }))}
         onCreate={(draft) => void createBundle(draft)}
+        onUpdateWalletLimits={(limits) => void updateWalletLimits(limits)}
       />
 
       <MarketsView active={displayedView === "markets"}>

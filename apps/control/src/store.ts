@@ -201,6 +201,17 @@ export type BundleWalletLimits = {
   confirmedAt: string | null;
 };
 
+export type BundleWalletUsage = {
+  runDrawdownUsd: number;
+  inventoryUsd: number;
+  grossExposureUsd: number;
+  unrealizedLossUsd: number;
+};
+
+export class WalletLimitError extends Error {
+  readonly statusCode = 409;
+}
+
 export type StoredBundle = {
   id: string;
   ownerAddress: string;
@@ -1619,7 +1630,7 @@ export class TenantStore {
     ).toISOString();
   }
 
-  private assertConfigFitsWallet(
+  assertConfigFitsWallet(
     config: MakerConfig,
     walletLimits: BundleWalletLimits,
   ): void {
@@ -1653,6 +1664,48 @@ export class TenantStore {
         `${overLimit[0]} limit exceeds this wallet's confirmed envelope`,
       );
     }
+  }
+
+  private runningBundleWalletLimitFloor(): BundleWalletUsage {
+    const rows = this.db
+      .prepare(
+        `SELECT config FROM bundles
+         WHERE owner_address = ? AND archived_at IS NULL AND status = 'running'`,
+      )
+      .all(this.ownerAddress) as Array<{ config: string }>;
+    return rows.reduce<BundleWalletUsage>(
+      (floor, row) => {
+        const config = makerConfigSchema.parse(parse<unknown>(row.config));
+        return {
+          runDrawdownUsd: Math.max(
+            floor.runDrawdownUsd,
+            config.maxRunDrawdownUsd,
+          ),
+          inventoryUsd: Math.max(
+            floor.inventoryUsd,
+            config.maxInventoryUsd,
+            ...config.markets.map(
+              (market) =>
+                market.overrides?.maxInventoryUsd ?? config.maxInventoryUsd,
+            ),
+          ),
+          grossExposureUsd: Math.max(
+            floor.grossExposureUsd,
+            config.maxGrossExposureUsd,
+          ),
+          unrealizedLossUsd: Math.max(
+            floor.unrealizedLossUsd,
+            config.maxUnrealizedLossUsd,
+          ),
+        };
+      },
+      {
+        runDrawdownUsd: 0,
+        inventoryUsd: 0,
+        grossExposureUsd: 0,
+        unrealizedLossUsd: 0,
+      },
+    );
   }
 
   private assertBundleAssignmentsAvailable(
@@ -1977,6 +2030,93 @@ export class TenantStore {
       return { ...current, confirmedAt };
     }
     return current;
+  }
+
+  updateWalletLimits(inputs: {
+    maxRunDrawdownUsd: number;
+    maxInventoryUsd: number;
+    maxGrossExposureUsd: number;
+    maxUnrealizedLossUsd: number;
+    usage: BundleWalletUsage;
+  }): BundleWalletLimits {
+    const update = this.db.transaction(() => {
+      const current = this.getWalletLimits();
+      if (!current) {
+        throw new WalletLimitError(
+          "Configure Core before editing wallet limits",
+        );
+      }
+      const configured = this.runningBundleWalletLimitFloor();
+      const currentUsage: BundleWalletUsage = {
+        runDrawdownUsd: Math.max(
+          0,
+          configured.runDrawdownUsd,
+          inputs.usage.runDrawdownUsd,
+        ),
+        inventoryUsd: Math.max(
+          0,
+          configured.inventoryUsd,
+          inputs.usage.inventoryUsd,
+        ),
+        grossExposureUsd: Math.max(
+          0,
+          configured.grossExposureUsd,
+          inputs.usage.grossExposureUsd,
+        ),
+        unrealizedLossUsd: Math.max(
+          0,
+          configured.unrealizedLossUsd,
+          inputs.usage.unrealizedLossUsd,
+        ),
+      };
+      const minimums: Array<[string, number, number]> = [
+        ["Run drawdown", inputs.maxRunDrawdownUsd, currentUsage.runDrawdownUsd],
+        ["Inventory", inputs.maxInventoryUsd, currentUsage.inventoryUsd],
+        [
+          "Gross exposure",
+          inputs.maxGrossExposureUsd,
+          currentUsage.grossExposureUsd,
+        ],
+        [
+          "Unrealized loss",
+          inputs.maxUnrealizedLossUsd,
+          currentUsage.unrealizedLossUsd,
+        ],
+      ];
+      const belowRunningUse = minimums.find(([, limit, used]) => limit < used);
+      if (belowRunningUse) {
+        const [label, , used] = belowRunningUse;
+        throw new WalletLimitError(
+          `${label} limit cannot be below $${used.toFixed(2)} used by running bundles`,
+        );
+      }
+      const updatedAt = new Date().toISOString();
+      this.db
+        .prepare(
+          `UPDATE bundle_wallet_limits
+           SET max_run_drawdown_usd = ?, max_inventory_usd = ?,
+               max_gross_exposure_usd = ?, max_unrealized_loss_usd = ?,
+               updated_at = ?
+           WHERE owner_address = ?`,
+        )
+        .run(
+          inputs.maxRunDrawdownUsd,
+          inputs.maxInventoryUsd,
+          inputs.maxGrossExposureUsd,
+          inputs.maxUnrealizedLossUsd,
+          updatedAt,
+          this.ownerAddress,
+        );
+      return {
+        maxRunDrawdownUsd: inputs.maxRunDrawdownUsd,
+        maxInventoryUsd: inputs.maxInventoryUsd,
+        maxGrossExposureUsd: inputs.maxGrossExposureUsd,
+        maxUnrealizedLossUsd: inputs.maxUnrealizedLossUsd,
+        updatedAt,
+        confirmedAt: current.confirmedAt,
+      };
+    });
+    return update();
   }
 
   createBundle(inputs: {

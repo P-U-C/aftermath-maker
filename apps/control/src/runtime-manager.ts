@@ -5,7 +5,7 @@ import {
   calculateBundleGasReserveMist,
   hasBundleGasReserve,
 } from "./bundle-supervisor.js";
-import type { Store, StoredBundle } from "./store.js";
+import type { BundleWalletUsage, Store, StoredBundle } from "./store.js";
 import { MakerRuntime, type RuntimeOptions } from "./runtime.js";
 
 type GatewayOptions = {
@@ -168,6 +168,41 @@ export class RuntimeManager {
       });
   }
 
+  runningWalletUsage(ownerAddress: string): BundleWalletUsage {
+    const owner = ownerAddress.toLowerCase();
+    return this.store
+      .forTenant(owner)
+      .listBundles()
+      .filter((bundle) => !bundle.archivedAt && bundle.status === "running")
+      .reduce<BundleWalletUsage>(
+        (usage, bundle) => {
+          const snapshot = this.runtimes.get(
+            this.runtimeKey(owner, bundle.id),
+          )?.snapshot;
+          return {
+            grossExposureUsd:
+              usage.grossExposureUsd +
+              Math.abs(snapshot?.portfolio.grossExposureUsd ?? 0),
+            inventoryUsd:
+              usage.inventoryUsd +
+              Math.abs(snapshot?.balances.inventoryUsd ?? 0),
+            unrealizedLossUsd:
+              usage.unrealizedLossUsd +
+              Math.max(0, -(snapshot?.portfolio.unrealizedPnlUsd ?? 0)),
+            runDrawdownUsd:
+              usage.runDrawdownUsd +
+              Math.max(0, snapshot?.risk.runDrawdownUsd ?? 0),
+          };
+        },
+        {
+          grossExposureUsd: 0,
+          inventoryUsd: 0,
+          unrealizedLossUsd: 0,
+          runDrawdownUsd: 0,
+        },
+      );
+  }
+
   private assertStartAllowed(
     ownerAddress: string,
     bundle: StoredBundle,
@@ -176,6 +211,8 @@ export class RuntimeManager {
     const config = tenant.getBundleConfig(bundle.id);
     if (!config) throw new Error("Bundle was not found");
     if (bundle.archivedAt) throw new Error("Bundle was archived");
+    const walletLimits = tenant.getWalletLimits();
+    if (walletLimits) tenant.assertConfigFitsWallet(config, walletLimits);
     if (config.mode === "live") {
       if (bundle.name !== "Core") {
         throw new Error("Only Core can use Live mode");

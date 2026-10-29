@@ -1153,6 +1153,85 @@ describe("persistent control store", () => {
     reopened.close();
   });
 
+  it("edits wallet limits without dropping below running bundle use", () => {
+    const directory = join(
+      process.env.TMPDIR ?? "/tmp",
+      `aftermath-maker-${randomBytes(8).toString("hex")}`,
+    );
+    mkdirSync(directory, { recursive: true });
+    const databaseStore = new Store(join(directory, "maker.db"));
+    const tenant = databaseStore.forTenant(`0x${"f".repeat(64)}`);
+    tenant.setConfig(
+      makerConfigSchema.parse({
+        markets: [{ marketId: "0x9001", symbol: "CORE" }],
+        maxRunDrawdownUsd: 10,
+        maxInventoryUsd: 20,
+        maxGrossExposureUsd: 40,
+        maxUnrealizedLossUsd: 8,
+      }),
+    );
+    const core = tenant.listBundles()[0]!;
+    tenant.confirmWalletLimits();
+    tenant.setBundleStatus(core.id, "running");
+
+    expect(() =>
+      tenant.updateWalletLimits({
+        maxRunDrawdownUsd: 10,
+        maxInventoryUsd: 20,
+        maxGrossExposureUsd: 39,
+        maxUnrealizedLossUsd: 8,
+        usage: {
+          runDrawdownUsd: 0,
+          inventoryUsd: 0,
+          grossExposureUsd: 0,
+          unrealizedLossUsd: 0,
+        },
+      }),
+    ).toThrow(
+      "Gross exposure limit cannot be below $40.00 used by running bundles",
+    );
+
+    expect(() =>
+      tenant.updateWalletLimits({
+        maxRunDrawdownUsd: 12,
+        maxInventoryUsd: 26,
+        maxGrossExposureUsd: 49,
+        maxUnrealizedLossUsd: 10,
+        usage: {
+          runDrawdownUsd: 12,
+          inventoryUsd: 25,
+          grossExposureUsd: 50,
+          unrealizedLossUsd: 9,
+        },
+      }),
+    ).toThrow(
+      "Gross exposure limit cannot be below $50.00 used by running bundles",
+    );
+
+    const before = tenant.getWalletLimits()!;
+    const updated = tenant.updateWalletLimits({
+      maxRunDrawdownUsd: 12,
+      maxInventoryUsd: 26,
+      maxGrossExposureUsd: 51,
+      maxUnrealizedLossUsd: 10,
+      usage: {
+        runDrawdownUsd: 12,
+        inventoryUsd: 25,
+        grossExposureUsd: 50,
+        unrealizedLossUsd: 9,
+      },
+    });
+    expect(updated).toMatchObject({
+      maxRunDrawdownUsd: 12,
+      maxInventoryUsd: 26,
+      maxGrossExposureUsd: 51,
+      maxUnrealizedLossUsd: 10,
+      confirmedAt: before.confirmedAt,
+    });
+    expect(tenant.getWalletLimits()).toEqual(updated);
+    databaseStore.close();
+  });
+
   it("caps a wallet at four active bundles and refuses Live outside Core", () => {
     const directory = join(
       process.env.TMPDIR ?? "/tmp",
