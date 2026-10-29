@@ -627,7 +627,7 @@ export function DeskView({
           </Button>
           <Button variant="stop" size="large" onClick={onStop}>
             <CircleStop size={18} aria-hidden="true" />
-            Stop
+            Stop all
           </Button>
         </div>
       )}

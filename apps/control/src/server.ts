@@ -476,7 +476,11 @@ app.post("/api/bundles", async (request) => {
     category: "bundles",
     action: "create",
     outcome: "success",
-    detail: { mode: bundle.mode, marketIds: bundle.marketIds },
+    detail: {
+      name: bundle.name,
+      mode: bundle.mode,
+      marketIds: bundle.marketIds,
+    },
   });
   return { bundle, walletLimits: scoped.getWalletLimits() };
 });
@@ -509,7 +513,11 @@ app.post("/api/bundles/:bundleId/config", async (request) => {
     category: "bundles",
     action: "configure",
     outcome: "success",
-    detail: { mode: bundle.mode, marketIds: bundle.marketIds },
+    detail: {
+      name: bundle.name,
+      mode: bundle.mode,
+      marketIds: bundle.marketIds,
+    },
   });
   return { bundle, config: scoped.getBundleConfig(bundle.id) };
 });
@@ -964,6 +972,7 @@ app.post("/api/setup/confirm", async (request) => {
     action: "agent.grant",
     outcome: "confirmed",
     detail: {
+      accountId: body.accountId,
       digest: body.digest,
       agentCapId: verified.agentCapId,
       builderCode: builderCode(),

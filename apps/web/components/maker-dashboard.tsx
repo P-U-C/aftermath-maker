@@ -48,7 +48,9 @@ import {
   shouldBeginWalletSignIn,
   walletSessionMatches,
 } from "../lib/access";
+import { deskEvent } from "../lib/audit-events";
 import { selectedActiveBundleId } from "../lib/bundle-options";
+import { configsEqual } from "../lib/config-equality";
 import {
   formatCompactMoney,
   formatEventTimestamp,
@@ -58,10 +60,21 @@ import {
 } from "../lib/format";
 import { narrate } from "../lib/narrate";
 import { quickPickMarketIds, type MarketQuickPick } from "../lib/quick-picks";
+import {
+  advancedFieldTips,
+  type AdvancedFieldTipId,
+} from "../lib/strategy-field-tips";
 import { primaryVenue } from "../lib/venues";
 import { AccessScreen, type AccessRequestInput } from "./access-screen";
 import { GlossaryTerm } from "./ui/glossary-term";
-import { MakerShell, useMakerView, type MakerNoticeTone } from "./maker-shell";
+import {
+  makerViews,
+  MakerShell,
+  useMakerView,
+  type MakerNoticeTone,
+  type MakerView,
+} from "./maker-shell";
+import { Button, Sheet } from "./ui/primitives";
 import { SpreadMark } from "./spread-mark";
 import { VenueChip } from "./venue-chip";
 import { AccountsView } from "./views/accounts";
@@ -714,6 +727,16 @@ const defaultConfig: MakerConfig = {
   inventorySkewBps: 20,
 };
 
+function AdvancedTip({ id }: { id: AdvancedFieldTipId }) {
+  return (
+    <GlossaryTerm definition={advancedFieldTips[id]}>
+      <span className="advanced-field-tip" aria-label={`Help: ${id}`}>
+        ?
+      </span>
+    </GlossaryTerm>
+  );
+}
+
 class RequestError extends Error {
   constructor(
     message: string,
@@ -801,24 +824,6 @@ const timeUntil = (timestamp: string | null) => {
   return days > 0 ? `${days}d ${hours}h` : `${hours}h`;
 };
 
-const deskEvent = (event: AuditEvent) => {
-  const words = event.action.replace(/[-_]+/g, " ");
-  const action = `${words.charAt(0).toUpperCase()}${words.slice(1)}`;
-  const failed = !["success", "ok", "completed"].includes(
-    event.outcome.toLowerCase(),
-  );
-  return {
-    id: event.id,
-    occurredAt: event.occurredAt,
-    severity: failed
-      ? ("error" as const)
-      : event.category === "risk" || event.category === "watchdog"
-        ? ("warning" as const)
-        : ("info" as const),
-    sentence: failed ? `${action}: ${event.outcome}.` : `${action}.`,
-  };
-};
-
 function DashboardBody() {
   const account = useCurrentAccount();
   const wallet = useDAppKit();
@@ -895,12 +900,17 @@ function DashboardBody() {
   const [busy, setBusy] = useState("");
   const [flattenArmed, setFlattenArmed] = useState(false);
   const [liveSheetOpen, setLiveSheetOpen] = useState(false);
+  const [pendingStrategyExit, setPendingStrategyExit] =
+    useState<MakerView | null>(null);
   const [notice, setNoticeMessage] = useState<string | null>(null);
   const [noticeTone, setNoticeTone] = useState<MakerNoticeTone>("error");
   const noticeTimer = useRef<number | null>(null);
   const [controlUnavailable, setControlUnavailable] = useState(false);
   const [lastGoodDataAt, setLastGoodDataAt] = useState<string | null>(null);
   const [stopError, setStopError] = useState<string | null>(null);
+  const [stopState, setStopState] = useState<"ready" | "stopping" | "stopped">(
+    "ready",
+  );
   const [integratorId, setIntegratorId] = useState("");
   const [inspection, setInspection] = useState<{
     exists: boolean;
@@ -934,6 +944,10 @@ function DashboardBody() {
     },
     [],
   );
+
+  useEffect(() => {
+    if (snapshot?.running) setStopState("ready");
+  }, [snapshot?.running]);
 
   useEffect(
     () => () => {
@@ -1170,7 +1184,7 @@ function DashboardBody() {
     maxGrossExposureUsd: number;
     maxUnrealizedLossUsd: number;
   }) {
-    await mutate("update-wallet-limits", async () => {
+    return mutate("update-wallet-limits", async () => {
       const result = await request<{ walletLimits: BundleWalletLimits }>(
         "api/bundles/wallet-limits",
         {
@@ -1600,8 +1614,10 @@ function DashboardBody() {
     try {
       await action();
       await refresh();
+      return true;
     } catch (error) {
       setNotice(error instanceof Error ? error.message : String(error));
+      return false;
     } finally {
       setBusy("");
     }
@@ -2101,9 +2117,9 @@ function DashboardBody() {
     );
   }
 
-  async function saveConfig(event: FormEvent) {
-    event.preventDefault();
-    await mutate("save", async () => {
+  async function saveConfig(event?: FormEvent) {
+    event?.preventDefault();
+    return mutate("save", async () => {
       const selected = bundles.find((bundle) => bundle.id === selectedBundleId);
       if (selected && selected.name !== "Core") {
         await request(`api/bundles/${encodeURIComponent(selected.id)}/config`, {
@@ -2171,6 +2187,7 @@ function DashboardBody() {
 
   async function stopRuntime() {
     setStopError(null);
+    setStopState("stopping");
     try {
       await request("api/runtime/stop", {
         method: "POST",
@@ -2195,7 +2212,9 @@ function DashboardBody() {
         }
         throw error;
       });
+      setStopState("stopped");
     } catch (error) {
+      setStopState("ready");
       setStopError(error instanceof Error ? error.message : String(error));
     }
   }
@@ -2324,8 +2343,36 @@ function DashboardBody() {
   }
 
   const configDirty =
-    savedConfig === undefined ||
-    JSON.stringify(config) !== JSON.stringify(savedConfig);
+    savedConfig === undefined || !configsEqual(config, savedConfig);
+
+  const requestStrategyExit = useCallback(
+    (view: MakerView) => {
+      if (configDirty) {
+        setPendingStrategyExit(view);
+        return;
+      }
+      selectView(view);
+    },
+    [configDirty, selectView],
+  );
+
+  const discardStrategyChanges = useCallback(() => {
+    const target = pendingStrategyExit;
+    if (!target) return;
+    if (savedConfig) setConfig(savedConfig);
+    setPendingStrategyExit(null);
+    selectView(target);
+  }, [pendingStrategyExit, savedConfig, selectView]);
+
+  const saveStrategyChangesThenLeave = useCallback(() => {
+    const target = pendingStrategyExit;
+    if (!target) return;
+    void saveConfig().then((saved) => {
+      if (!saved) return;
+      setPendingStrategyExit(null);
+      selectView(target);
+    });
+  }, [pendingStrategyExit, selectView]);
 
   useEffect(() => {
     if (
@@ -2341,7 +2388,7 @@ function DashboardBody() {
     };
     window.addEventListener("beforeunload", warnBeforeUnload);
     return () => window.removeEventListener("beforeunload", warnBeforeUnload);
-  }, [configDirty]);
+  }, [configDirty, identity, savedConfig]);
 
   useEffect(() => {
     if (
@@ -2356,15 +2403,22 @@ function DashboardBody() {
       const target = event.target;
       if (!(target instanceof Element)) return;
       const link = target.closest<HTMLAnchorElement>('a[href^="#"]');
-      if (!link || link.getAttribute("href") === "#strategy") return;
-      if (window.confirm("Leave Strategy without saving your changes?")) return;
+      const destination = link?.getAttribute("href")?.replace(/^#/, "");
+      if (
+        !destination ||
+        destination === "strategy" ||
+        !makerViews.some((view) => view.id === destination)
+      ) {
+        return;
+      }
       event.preventDefault();
       event.stopImmediatePropagation();
+      setPendingStrategyExit(destination as MakerView);
     };
     document.addEventListener("click", warnBeforeLeavingStrategy, true);
     return () =>
       document.removeEventListener("click", warnBeforeLeavingStrategy, true);
-  }, [activeView, configDirty]);
+  }, [activeView, configDirty, identity, savedConfig]);
 
   if (!authChecked) {
     return (
@@ -2451,6 +2505,15 @@ function DashboardBody() {
   const onboardingComplete = Boolean(
     setup.agent && activeMakerAccount?.agentCapId,
   );
+  const trialBlocker = Boolean(busy)
+    ? "Maker is finishing another action."
+    : snapshot?.running
+      ? "Stop all before running the test."
+      : configDirty
+        ? "Save strategy changes before running the test."
+        : !onboardingComplete
+          ? "Finish account setup before running the test."
+          : null;
   const activeHedgeAccount = setup.accounts.find(
     (managed) => managed.accountId === config.hedge.accountId,
   );
@@ -2620,6 +2683,46 @@ function DashboardBody() {
     });
   const rotationRows = rotationRowsFor(config);
   const deskRotationRows = rotationRowsFor(deskConfig);
+  const marketTableRows = visibleMarkets
+    .map((listed) => {
+      const runtimeMarket = snapshot?.markets.find(
+        (market) => market.id === listed.id,
+      );
+      const assignedBundle = bundles.find(
+        (bundle) => !bundle.archivedAt && bundle.marketIds.includes(listed.id),
+      );
+      return {
+        id: listed.id,
+        symbol: listed.symbol,
+        bundleName: assignedBundle?.name ?? "Not used",
+        bundleRank:
+          assignedBundle?.name === "Core" ? 0 : assignedBundle ? 1 : 2,
+        status: runtimeMarket?.status ?? "queued",
+        indexPrice: runtimeMarket?.indexPrice ?? listed.indexPrice,
+        openInterestBase:
+          runtimeMarket?.openInterestBase ?? listed.openInterestBase,
+        openInterestUsd:
+          runtimeMarket?.openInterestUsd ?? listed.openInterestUsd,
+        openInterestUtilizationPct:
+          runtimeMarket?.openInterestUtilizationPct ??
+          listed.openInterestUtilizationPct,
+        volume24hUsd: runtimeMarket?.volume24hUsd ?? listed.volume24hUsd,
+        fundingRate: runtimeMarket?.fundingRate ?? listed.fundingRate,
+        inventoryUsd: runtimeMarket?.inventoryUsd ?? 0,
+        unrealizedPnlUsd: runtimeMarket?.unrealizedPnlUsd ?? 0,
+        effectiveSpreadBps: runtimeMarket?.effectiveSpreadBps ?? null,
+        effectiveQuoteSizeUsd: runtimeMarket?.effectiveQuoteSizeUsd ?? null,
+        lastTransactionDigest: runtimeMarket?.lastTransactionDigest ?? null,
+        updatedAt: runtimeMarket?.updatedAt ?? null,
+        error: runtimeMarket?.error ?? null,
+      };
+    })
+    .sort(
+      (left, right) =>
+        left.bundleRank - right.bundleRank ||
+        left.bundleName.localeCompare(right.bundleName) ||
+        left.symbol.localeCompare(right.symbol),
+    );
 
   const deskLatestMarketUpdate = deskRotationRows.reduce<string | null>(
     (latest, row) => {
@@ -2679,17 +2782,26 @@ function DashboardBody() {
         )
       : null,
   });
-  const venueAccountRows = accounts.map((owned) => ({
-    accountId: owned.accountId,
-    label: owned.label,
-    equityUsd: owned.equityUsd,
-    role:
-      owned.accountId === activeMakerAccountId
-        ? ("Maker" as const)
-        : owned.accountId === config.hedge.accountId
-          ? ("Taker" as const)
-          : ("Available" as const),
-  }));
+  const venueAccountRows = accounts.map((owned) => {
+    const assignedBundle = bundles.find(
+      (bundle) =>
+        !bundle.archivedAt &&
+        (bundle.makerAccountId === owned.accountId ||
+          bundle.takerAccountId === owned.accountId),
+    );
+    return {
+      accountId: owned.accountId,
+      label: owned.label,
+      equityUsd: owned.equityUsd,
+      bundle: assignedBundle?.name ?? "Not in a bundle",
+      role:
+        assignedBundle?.makerAccountId === owned.accountId
+          ? ("Maker" as const)
+          : assignedBundle?.takerAccountId === owned.accountId
+            ? ("Taker" as const)
+            : ("Available" as const),
+    };
+  });
   const venueEquityUsd = accounts.reduce(
     (total, owned) => total + owned.equityUsd,
     0,
@@ -2729,7 +2841,13 @@ function DashboardBody() {
       : "paper";
   const canOperate = onboardingComplete && deskConfig.markets.length > 0;
   const canStopAll =
-    canOperate && Boolean(snapshot?.running || anyBundleRunning);
+    canOperate &&
+    Boolean(
+      snapshot?.running ||
+      anyBundleRunning ||
+      stopState === "stopping" ||
+      stopState === "stopped",
+    );
   const displayedView = activeView;
 
   return (
@@ -2740,6 +2858,7 @@ function DashboardBody() {
       mode={snapshot?.mode ?? "observe"}
       running={Boolean(snapshot?.running || anyBundleRunning)}
       canStopAll={canStopAll}
+      stopState={stopState}
       phoneDeskStopAvailable={canStopAll}
       live={Boolean(snapshot?.running && snapshot.mode === "live")}
       canOperate={canOperate}
@@ -3305,15 +3424,7 @@ function DashboardBody() {
         active={displayedView === "strategy"}
         phoneStopAll={canStopAll}
         onStopAll={() => void stopRuntime()}
-        onClose={() => {
-          if (
-            configDirty &&
-            !window.confirm("Leave Strategy without saving your changes?")
-          ) {
-            return;
-          }
-          selectView("desk");
-        }}
+        onClose={() => requestStrategyExit("desk")}
       >
         <section className="workspace workspace-strategy">
           <form
@@ -3423,12 +3534,26 @@ function DashboardBody() {
                   <button
                     type="button"
                     className="button primary"
-                    onClick={() =>
-                      setStrategyStep((step) => Math.min(4, step + 1))
+                    onClick={() => {
+                      if (strategyStep === 4) {
+                        void saveConfig();
+                        return;
+                      }
+                      setStrategyStep((step) => Math.min(4, step + 1));
+                    }}
+                    disabled={
+                      (strategyStep === 4 &&
+                        (!config.markets.length || !strategyValid)) ||
+                      busy === "save"
                     }
-                    disabled={strategyStep === 4}
                   >
-                    {strategyStep === 3 ? "Review" : "Next"}
+                    {strategyStep === 4
+                      ? busy === "save"
+                        ? "Saving..."
+                        : "Save"
+                      : strategyStep === 3
+                        ? "Review"
+                        : "Next"}
                   </button>
                 </div>
               </aside>
@@ -3648,12 +3773,7 @@ function DashboardBody() {
                   type="button"
                   className={trialArmed ? "button danger" : "button secondary"}
                   onClick={() => void runStrategyTrial()}
-                  disabled={
-                    Boolean(busy) ||
-                    Boolean(snapshot?.running) ||
-                    configDirty ||
-                    !onboardingComplete
-                  }
+                  disabled={Boolean(trialBlocker)}
                 >
                   <TimerReset size={16} aria-hidden="true" />
                   {busy === "strategy-trial"
@@ -3673,6 +3793,31 @@ function DashboardBody() {
                   </button>
                 )}
               </div>
+              {trialBlocker && (
+                <p className="trial-blocker" role="status">
+                  {trialBlocker}{" "}
+                  {snapshot?.running ? (
+                    <button type="button" onClick={() => void stopRuntime()}>
+                      Stop all
+                    </button>
+                  ) : configDirty ? (
+                    <button
+                      type="button"
+                      onClick={() => void saveConfig()}
+                      disabled={!strategyValid || busy === "save"}
+                    >
+                      Save
+                    </button>
+                  ) : !onboardingComplete ? (
+                    <button
+                      type="button"
+                      onClick={() => selectView("accounts")}
+                    >
+                      Finish setup
+                    </button>
+                  ) : null}
+                </p>
+              )}
               {trialResult && (
                 <div className="strategy-trial-results">
                   {trialResult.rounds.map((round, index) => (
@@ -4322,7 +4467,7 @@ function DashboardBody() {
             <section className="strategy-limit-sentences strategy-step strategy-step-size">
               <h2>Size and limits</h2>
               <p>
-                Stop this run after
+                Stop everything if equity falls $
                 <label>
                   <span className="sr-only">Maximum run drawdown in USD</span>
                   <input
@@ -4338,10 +4483,10 @@ function DashboardBody() {
                     }
                   />
                 </label>
-                of run drawdown.
+                from its highest point this run.
               </p>
               <p>
-                Hold no more than
+                In any one market, hold at most $
                 <label>
                   <span className="sr-only">Maximum inventory in USD</span>
                   <input
@@ -4358,10 +4503,10 @@ function DashboardBody() {
                     }
                   />
                 </label>
-                in one market.
+                of position, long or short.
               </p>
               <p>
-                Keep total gross exposure below
+                Across all markets, keep the total position value under $
                 <label>
                   <span className="sr-only">Maximum gross exposure in USD</span>
                   <input
@@ -4383,10 +4528,10 @@ function DashboardBody() {
                     }}
                   />
                 </label>
-                across markets.
+                .
               </p>
               <p>
-                Pause if unrealized loss reaches
+                Pause quoting a market when its open position is down $
                 <label>
                   <span className="sr-only">
                     Maximum unrealized loss in USD
@@ -4518,7 +4663,9 @@ function DashboardBody() {
               </p>
               <div className="risk-field-grid">
                 <label>
-                  <span>Per-pair inventory</span>
+                  <span>
+                    Per-pair inventory <AdvancedTip id="per-pair-inventory" />
+                  </span>
                   <div className="input-unit">
                     <b>$</b>
                     <input
@@ -4536,7 +4683,9 @@ function DashboardBody() {
                   </div>
                 </label>
                 <label>
-                  <span>Inventory target</span>
+                  <span>
+                    Inventory target <AdvancedTip id="inventory-target" />
+                  </span>
                   <div className="input-unit">
                     <b>$</b>
                     <input
@@ -4552,7 +4701,9 @@ function DashboardBody() {
                   </div>
                 </label>
                 <label>
-                  <span>Gross exposure</span>
+                  <span>
+                    Gross exposure <AdvancedTip id="gross-exposure" />
+                  </span>
                   <div className="input-unit">
                     <b>$</b>
                     <input
@@ -4582,7 +4733,9 @@ function DashboardBody() {
                   )}
                 </label>
                 <label>
-                  <span>Unrealized loss</span>
+                  <span>
+                    Unrealized loss <AdvancedTip id="unrealized-loss" />
+                  </span>
                   <div className="input-unit">
                     <b>$</b>
                     <input
@@ -4599,7 +4752,9 @@ function DashboardBody() {
                   </div>
                 </label>
                 <label>
-                  <span>Run drawdown</span>
+                  <span>
+                    Run drawdown <AdvancedTip id="run-drawdown" />
+                  </span>
                   <div className="input-unit">
                     <b>$</b>
                     <input
@@ -4621,7 +4776,8 @@ function DashboardBody() {
                     Book / index{" "}
                     <GlossaryTerm definition="Divergence is the distance between the venue book and index price.">
                       divergence
-                    </GlossaryTerm>
+                    </GlossaryTerm>{" "}
+                    <AdvancedTip id="book-index-divergence" />
                   </span>
                   <div className="input-unit suffix">
                     <input
@@ -4644,7 +4800,8 @@ function DashboardBody() {
                     Inventory{" "}
                     <GlossaryTerm definition="Skew shifts quotes to encourage fills that move inventory toward its target.">
                       skew
-                    </GlossaryTerm>
+                    </GlossaryTerm>{" "}
+                    <AdvancedTip id="inventory-skew" />
                   </span>
                   <div className="input-unit suffix">
                     <input
@@ -4663,7 +4820,9 @@ function DashboardBody() {
                   </div>
                 </label>
                 <label>
-                  <span>Max leverage</span>
+                  <span>
+                    Max leverage <AdvancedTip id="max-leverage" />
+                  </span>
                   <div className="input-unit suffix">
                     <input
                       type="number"
@@ -4685,7 +4844,9 @@ function DashboardBody() {
 
               <div className="timing-controls">
                 <label>
-                  <span>Poll interval</span>
+                  <span>
+                    Poll interval <AdvancedTip id="poll-interval" />
+                  </span>
                   <input
                     type="range"
                     min="2000"
@@ -4719,7 +4880,9 @@ function DashboardBody() {
                   </small>
                 </label>
                 <label>
-                  <span>Market dwell</span>
+                  <span>
+                    Market dwell <AdvancedTip id="market-dwell" />
+                  </span>
                   <div className="input-unit suffix">
                     <input
                       type="number"
@@ -4742,7 +4905,9 @@ function DashboardBody() {
                   <small>Switches the one live pair.</small>
                 </label>
                 <label>
-                  <span>Requote movement</span>
+                  <span>
+                    Requote movement <AdvancedTip id="requote-movement" />
+                  </span>
                   <div className="input-unit suffix">
                     <input
                       type="number"
@@ -4762,7 +4927,9 @@ function DashboardBody() {
                   <small>Smaller moves keep the resting quote.</small>
                 </label>
                 <label>
-                  <span>Forced refresh</span>
+                  <span>
+                    Forced refresh <AdvancedTip id="forced-refresh" />
+                  </span>
                   <div className="input-unit suffix">
                     <input
                       type="number"
@@ -4798,7 +4965,10 @@ function DashboardBody() {
                   <small>Maximum time before a paid requote.</small>
                 </label>
                 <label>
-                  <span>Stale-observation cutoff</span>
+                  <span>
+                    Stale-observation cutoff{" "}
+                    <AdvancedTip id="stale-observation-cutoff" />
+                  </span>
                   <div className="input-unit suffix">
                     <input
                       type="number"
@@ -4883,8 +5053,8 @@ function DashboardBody() {
           id: market.id,
           symbol: market.symbol,
         }))}
-        onCreate={(draft) => void createBundle(draft)}
-        onUpdateWalletLimits={(limits) => void updateWalletLimits(limits)}
+        onCreate={createBundle}
+        onUpdateWalletLimits={updateWalletLimits}
       />
 
       <MarketsView active={displayedView === "markets"}>
@@ -4923,8 +5093,7 @@ function DashboardBody() {
               <h2>Rotation and exposure</h2>
             </div>
             <span className="rotation-cadence">
-              {config.markets.length} pairs / {effectiveRefreshSeconds}s full
-              lap
+              {marketTableRows.length} venue markets, grouped by bundle
             </span>
           </div>
           <div className="market-table-wrap">
@@ -4932,7 +5101,7 @@ function DashboardBody() {
               <thead>
                 <tr>
                   <th>Pair</th>
-                  <th>Strategy</th>
+                  <th>Bundle</th>
                   <th>Venue</th>
                   <th>State</th>
                   <th>Policy</th>
@@ -4951,7 +5120,7 @@ function DashboardBody() {
                 </tr>
               </thead>
               <tbody>
-                {rotationRows.map((row) => (
+                {marketTableRows.map((row) => (
                   <tr
                     key={row.id}
                     className={
@@ -4963,31 +5132,15 @@ function DashboardBody() {
                       <span>{compact(row.id)}</span>
                     </td>
                     <td>
-                      {(() => {
-                        const selected = config.markets.some(
-                          (market) => market.marketId === row.id,
-                        );
-                        return (
-                          <button
-                            className={
-                              selected
-                                ? "market-add-strategy is-selected"
-                                : "market-add-strategy"
-                            }
-                            type="button"
-                            aria-pressed={selected}
-                            onClick={() => {
-                              const market = markets.find(
-                                (item) => item.id === row.id,
-                              );
-                              if (market) toggleMarket(market);
-                              if (!selected) selectView("strategy");
-                            }}
-                          >
-                            {selected ? "In bundle" : "Add to bundle"}
-                          </button>
-                        );
-                      })()}
+                      <span
+                        className={
+                          row.bundleName === "Not used"
+                            ? "market-bundle-state"
+                            : "market-bundle-state is-assigned"
+                        }
+                      >
+                        {row.bundleName}
+                      </span>
                     </td>
                     <td>
                       <VenueChip venue={primaryVenue} />
@@ -5013,7 +5166,11 @@ function DashboardBody() {
                     </td>
                     <td className="dual-value">
                       <strong>{money(row.effectiveQuoteSizeUsd, 0)}</strong>
-                      <span>{row.effectiveSpreadBps} bps</span>
+                      <span>
+                        {row.effectiveSpreadBps === null
+                          ? "—"
+                          : `${row.effectiveSpreadBps} bps`}
+                      </span>
                     </td>
                     <td>{money(row.indexPrice, 4)}</td>
                     <td className="dual-value">
@@ -5779,6 +5936,7 @@ function DashboardBody() {
           grossExposureLimitUsd={config.maxGrossExposureUsd}
           unrealizedPnlUsd={snapshot?.portfolio.unrealizedPnlUsd ?? 0}
           onManage={() => selectView("accounts")}
+          onNewAccount={() => void createVenueAccount()}
           {...(activeMakerAccountId
             ? {
                 onRevoke: () => {
@@ -5998,6 +6156,43 @@ function DashboardBody() {
           </section>
         )}
       </VenuesView>
+
+      <Sheet
+        open={pendingStrategyExit !== null}
+        title="Save strategy changes?"
+        description="You have unsaved strategy changes. Choose what to do before leaving this view."
+        onClose={() => setPendingStrategyExit(null)}
+        footer={
+          <>
+            <Button
+              variant="quiet"
+              onClick={() => setPendingStrategyExit(null)}
+              disabled={busy === "save"}
+            >
+              Keep editing
+            </Button>
+            <Button
+              variant="quiet"
+              onClick={discardStrategyChanges}
+              disabled={busy === "save"}
+            >
+              Discard
+            </Button>
+            <Button
+              variant="primary"
+              onClick={saveStrategyChangesThenLeave}
+              disabled={busy === "save" || !strategyValid}
+            >
+              {busy === "save" ? "Saving..." : "Save"}
+            </Button>
+          </>
+        }
+      >
+        <p className="sheet-copy">
+          Saving writes this bundle&apos;s strategy before you leave. Discarding
+          restores the last saved strategy.
+        </p>
+      </Sheet>
 
       <GoLiveSheet
         open={liveSheetOpen}

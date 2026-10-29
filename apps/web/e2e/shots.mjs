@@ -99,6 +99,18 @@ const captures = [
     reducedMotion: "no-preference",
   },
   {
+    name: "medium-1180",
+    viewport: { width: 1180, height: 900 },
+    colorScheme: "light",
+    reducedMotion: "no-preference",
+  },
+  {
+    name: "medium-1024",
+    viewport: { width: 1024, height: 900 },
+    colorScheme: "light",
+    reducedMotion: "no-preference",
+  },
+  {
     name: "phone-light",
     viewport: { width: 390, height: 844 },
     colorScheme: "light",
@@ -662,16 +674,15 @@ async function capture(browser, stateName, captureConfig, view) {
     if (
       verifyExplain &&
       fixture.auth.status === 200 &&
-      ["desk", "strategy", "markets", "performance", "venues"].includes(view) &&
-      ["desktop-light", "phone-dark"].includes(captureConfig.name)
+      makerViews.includes(view) &&
+      ["desktop-light", "phone-light"].includes(captureConfig.name)
     ) {
       const explain =
-        view === "strategy" && captureConfig.viewport.width <= 390
-          ? page.locator(".strategy-mobile-explain")
-          : page.getByRole("button", {
-              name: "Explain",
-              exact: true,
-            });
+        captureConfig.viewport.width <= 390
+          ? view === "strategy"
+            ? page.locator(".strategy-mobile-explain")
+            : page.locator(".maker-phone-explain")
+          : page.locator(".maker-explain-toggle");
       if (await page.locator(".maker-coach").count()) {
         throw new Error("Explain opened before the user opted in");
       }
@@ -789,6 +800,41 @@ async function capture(browser, stateName, captureConfig, view) {
       }
     }
 
+    if (
+      ["medium-1024", "medium-1180"].includes(captureConfig.name) &&
+      fixture.auth.status === 200
+    ) {
+      const navLayout = await page.evaluate(() => {
+        const nav = document
+          .querySelector(".maker-nav")
+          ?.getBoundingClientRect();
+        const tabs = document
+          .querySelector(".maker-view-tabs")
+          ?.getBoundingClientRect();
+        const controls = document
+          .querySelector(".maker-nav-right")
+          ?.getBoundingClientRect();
+        if (!nav || !tabs || !controls) return null;
+        const overlaps = (first, second) =>
+          first.left < second.right &&
+          first.right > second.left &&
+          first.top < second.bottom &&
+          first.bottom > second.top;
+        return {
+          centred: Math.abs((tabs.left + tabs.right) / 2 - innerWidth / 2) < 3,
+          overlaps: overlaps(tabs, controls),
+        };
+      });
+      if (!navLayout?.centred || navLayout.overlaps) {
+        throw new Error(
+          `${stateName}/${view}/${captureConfig.name} header layout failed: ${JSON.stringify(navLayout)}`,
+        );
+      }
+      process.stdout.write(
+        `${stateName}/${view}/${captureConfig.name}: centred tabs do not overlap controls\n`,
+      );
+    }
+
     const dimensions = await page.evaluate(() => ({
       scrollWidth: document.documentElement.scrollWidth,
       innerWidth: window.innerWidth,
@@ -837,7 +883,12 @@ async function capture(browser, stateName, captureConfig, view) {
     const contrastFailures = await page.evaluate(() => {
       const style = getComputedStyle(document.documentElement);
       const rgb = (token) => {
-        const value = style.getPropertyValue(token).trim();
+        const declared = style.getPropertyValue(token).trim();
+        const probe = document.createElement("span");
+        probe.style.color = `var(${token})`;
+        document.body.append(probe);
+        const value = getComputedStyle(probe).color || declared;
+        probe.remove();
         const hex = value.match(/^#([0-9a-f]{3}|[0-9a-f]{6})$/i)?.[1];
         if (hex) {
           const raw =

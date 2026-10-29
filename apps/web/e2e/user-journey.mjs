@@ -103,6 +103,9 @@ async function installStatefulControl(page, state) {
       return json(503, { error: "Maker is temporarily unavailable" });
     }
     if (routePath === "api/runtime/stop" && request.method() === "POST") {
+      if (state.delayStop) {
+        await new Promise((resolve) => setTimeout(resolve, 250));
+      }
       state.fixture.status.snapshot.running = false;
       state.fixture.status.bundles = (state.fixture.status.bundles ?? []).map(
         (entry) => ({
@@ -228,10 +231,10 @@ async function newPage(browser, viewport) {
     fixture: cloneFixture(),
     serviceDown: false,
     sessionExpired: false,
+    delayStop: false,
   };
   await page.addInitScript({ path: mockWalletPath });
   await page.addInitScript(() => {
-    window.confirm = () => true;
     Object.defineProperty(document, "startViewTransition", {
       configurable: true,
       value: undefined,
@@ -280,6 +283,32 @@ async function stopWithInventory(browser) {
   }
 }
 
+async function stopAllShowsProgress(browser) {
+  const { context, page, state } = await newPage(browser, {
+    width: 1440,
+    height: 900,
+  });
+  try {
+    state.delayStop = true;
+    await goToDesk(page);
+    await page
+      .locator(".maker-nav-right")
+      .getByRole("button", { name: "Stop all", exact: true })
+      .click();
+    await page
+      .locator(".maker-nav-right")
+      .getByRole("button", { name: "Stopping…", exact: true })
+      .waitFor();
+    await page
+      .locator(".maker-nav-right")
+      .getByRole("button", { name: "Stopped", exact: true })
+      .waitFor();
+    await capture(page, "v6-stop-progress-desktop.png");
+  } finally {
+    await context.close();
+  }
+}
+
 async function savedDeskOnly(browser) {
   const { context, page } = await newPage(browser, {
     width: 1440,
@@ -303,15 +332,25 @@ async function savedDeskOnly(browser) {
     await page
       .getByText("Unsaved changes, review and save", { exact: true })
       .waitFor();
+    assert(
+      (await page
+        .locator('.maker-view[data-view="desk"] .desk-risk-card')
+        .getByText("$0.01 of $0.90", { exact: true })
+        .count()) > 0,
+      "Hidden Desk read the unsaved strategy draft",
+    );
     await page.getByRole("link", { name: "Desk", exact: true }).click();
+    const leaveSheet = page.getByRole("dialog", {
+      name: "Save strategy changes?",
+    });
+    await leaveSheet.waitFor();
+    await leaveSheet
+      .getByRole("button", { name: "Discard", exact: true })
+      .click();
     await page
       .locator(".desk-risk-card")
       .getByText("$0.01 of $0.90", { exact: true })
       .first()
-      .waitFor();
-    await page
-      .locator(".desk-hero")
-      .getByText("Markets", { exact: false })
       .waitFor();
     await capture(page, "v5-audit-saved-desk-desktop.png");
   } finally {
@@ -442,6 +481,47 @@ async function createBundleWithFreeChoices(browser) {
   }
 }
 
+async function lowerWalletLimitsWhenCreating(browser) {
+  const { context, page, state } = await newPage(browser, {
+    width: 1440,
+    height: 900,
+  });
+  try {
+    state.fixture.bundles.walletLimits.confirmedAt = null;
+    await goToDesk(page);
+    await page.getByRole("link", { name: "Bundles", exact: true }).click();
+    await page.getByRole("button", { name: "New bundle", exact: true }).click();
+    const create = page.getByRole("dialog", { name: "New Paper bundle" });
+    await create.getByLabel("Name").fill("Limits audit");
+    await create.getByLabel("Maker account").selectOption({ label: "Reserve" });
+    await create.getByLabel("Market").selectOption({ label: "HYPE" });
+    await create.getByRole("button", { name: "Continue", exact: true }).click();
+    const confirmation = page.getByRole("dialog", {
+      name: "Confirm wallet limits",
+    });
+    await confirmation.waitFor();
+    await confirmation
+      .getByText(
+        "These limits apply across every bundle. You can lower them here. To raise them, edit wallet limits.",
+        { exact: true },
+      )
+      .waitFor();
+    await confirmation.getByLabel("Gross exposure").fill("15.00");
+    assert(
+      await confirmation
+        .getByRole("button", { name: "Confirm limits and create", exact: true })
+        .isEnabled(),
+      "Lower wallet limits could not be confirmed before creating a bundle",
+    );
+    await capture(page, "v6-lower-wallet-limits-desktop.png");
+    await confirmation.screenshot({
+      path: path.join(outputDirectory, "v6-lower-wallet-limits-sheet.png"),
+    });
+  } finally {
+    await context.close();
+  }
+}
+
 async function editWalletLimits(browser) {
   const { context, page } = await newPage(browser, {
     width: 1440,
@@ -482,6 +562,113 @@ async function editWalletLimits(browser) {
   }
 }
 
+async function cleanStrategyLeavesWithoutPrompt(browser) {
+  const { context, page } = await newPage(browser, {
+    width: 1440,
+    height: 900,
+  });
+  const dialogs = [];
+  page.on("dialog", async (dialog) => {
+    dialogs.push(dialog.message());
+    await dialog.dismiss();
+  });
+  try {
+    await goToDesk(page);
+    await page.getByRole("link", { name: "Strategy", exact: true }).click();
+    await page
+      .locator('.maker-view[data-view="strategy"]:not([hidden])')
+      .waitFor();
+    await page.getByRole("link", { name: "Desk", exact: true }).click();
+    await page.locator('.maker-view[data-view="desk"]:not([hidden])').waitFor();
+    assert(dialogs.length === 0, `Unexpected browser prompt: ${dialogs}`);
+    assert(
+      (await page
+        .getByRole("dialog", { name: "Save strategy changes?" })
+        .count()) === 0,
+      "Clean Strategy showed the unsaved-changes sheet",
+    );
+    await capture(page, "v6-clean-strategy-leave-desktop.png");
+  } finally {
+    await context.close();
+  }
+}
+
+async function plainControlLog(browser) {
+  const { context, page, state } = await newPage(browser, {
+    width: 1440,
+    height: 900,
+  });
+  try {
+    state.fixture.events.events = [
+      {
+        id: 98,
+        occurredAt: "2026-10-27T10:08:00.000Z",
+        category: "onboarding",
+        action: "agent.grant",
+        outcome: "confirmed",
+        detail: { accountId: "1745" },
+      },
+      {
+        id: 99,
+        occurredAt: "2026-10-27T10:07:00.000Z",
+        category: "accounts",
+        action: "metadata.update",
+        outcome: "success",
+        detail: { accountId: "1745" },
+      },
+      ...state.fixture.events.events,
+    ];
+    await goToDesk(page);
+    const audit = page.locator(".desk-log-card");
+    await page.waitForTimeout(200);
+    const auditText = await audit.textContent();
+    assert(
+      auditText?.includes("Trading key approved for account 1745."),
+      `Trading-key copy was not shown: ${auditText}`,
+    );
+    assert(
+      auditText?.includes("Account name and tags saved."),
+      `Account metadata copy was not shown: ${auditText}`,
+    );
+    assert(
+      (await audit.getByText("error", { exact: true }).count()) === 0,
+      "Routine control events were shown as errors",
+    );
+    await audit.scrollIntoViewIfNeeded();
+    await capture(page, "v6-plain-control-log-desktop.png");
+  } finally {
+    await context.close();
+  }
+}
+
+async function trialExplainsItsBlocker(browser) {
+  const { context, page } = await newPage(browser, {
+    width: 1440,
+    height: 900,
+  });
+  try {
+    await goToDesk(page);
+    await page.getByRole("link", { name: "Strategy", exact: true }).click();
+    await page
+      .getByRole("button", { name: /Review/ })
+      .first()
+      .click();
+    const trial = page.getByLabel("Three-cycle strategy trial");
+    await page.waitForTimeout(150);
+    const trialText = await trial.textContent();
+    assert(
+      trialText?.includes("Stop all before running the test."),
+      `Test-run blocker was unclear: ${trialText}`,
+    );
+    await trial
+      .getByRole("button", { name: "Stop all", exact: true })
+      .waitFor();
+    await capture(page, "v6-trial-blocker-desktop.png");
+  } finally {
+    await context.close();
+  }
+}
+
 await fs.mkdir(outputDirectory, { recursive: true });
 const server = spawnServer ? await startServer() : null;
 const browser = await chromium.launch({
@@ -492,10 +679,15 @@ const browser = await chromium.launch({
 
 try {
   await stopWithInventory(browser);
+  await stopAllShowsProgress(browser);
   await savedDeskOnly(browser);
+  await cleanStrategyLeavesWithoutPrompt(browser);
+  await plainControlLog(browser);
+  await trialExplainsItsBlocker(browser);
   await revokeWithoutWallet(browser);
   await serviceAndSessionFailures(browser);
   await createBundleWithFreeChoices(browser);
+  await lowerWalletLimitsWhenCreating(browser);
   await editWalletLimits(browser);
   process.stdout.write("customer journey: all stateful audit flows passed\n");
 } finally {

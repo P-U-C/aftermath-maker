@@ -105,8 +105,13 @@ type CoachNote = {
   body: string;
 };
 
-const coachNotes: Partial<Record<MakerView, CoachNote[]>> = {
+const coachNotes: Record<MakerView, CoachNote[]> = {
   desk: [
+    {
+      selector: ".desk-hero",
+      title: "Wallet total",
+      body: "This is the saved strategy's wallet-level result, equity, and exposure.",
+    },
     {
       selector: ".desk-narration",
       title: "Right now",
@@ -127,6 +132,11 @@ const coachNotes: Partial<Record<MakerView, CoachNote[]>> = {
       title: "Markets",
       body: "Each row says whether that selected market is quoting or waiting.",
     },
+    {
+      selector: ".desk-log-card",
+      title: "Control log",
+      body: "This records what Maker did, using plain language and real error severity.",
+    },
   ],
   strategy: [
     {
@@ -140,9 +150,29 @@ const coachNotes: Partial<Record<MakerView, CoachNote[]>> = {
       body: "The Maker account quotes; the Taker account can reduce inventory.",
     },
     {
+      selector: ".strategy-builder",
+      title: "Steps",
+      body: "Move through goal, markets, limits, hedging, and review in any order.",
+    },
+    {
+      selector: ".rotation-mode-control",
+      title: "Rotation",
+      body: "Choose whether Maker quotes all saved pairs or one pair at a time.",
+    },
+    {
       selector: ".strategy-capital-section",
       title: "Size and limits",
       body: "These limits describe the amount of risk the desk may take.",
+    },
+    {
+      selector: ".strategy-hedging",
+      title: "Hedging",
+      body: "A separate Taker account can reduce inventory after fills.",
+    },
+    {
+      selector: ".strategy-review-step",
+      title: "Review",
+      body: "Review the saved mode and run a paper test before starting Maker.",
     },
     {
       selector: ".strategy-save-bar",
@@ -154,41 +184,127 @@ const coachNotes: Partial<Record<MakerView, CoachNote[]>> = {
     {
       selector: ".markets-title",
       title: "Market list",
-      body: "Compare the markets that can be included in the strategy.",
+      body: "Compare every venue market before selecting it in Strategy.",
     },
     {
-      selector: ".markets-table",
-      title: "Add markets",
-      body: "Use the rows to inspect a market before adding it to the strategy.",
+      selector: ".rotation-board",
+      title: "Rotation and exposure",
+      body: "Saved bundle assignments, current state, and exposure stay visible here without changing a draft.",
+    },
+  ],
+  bundles: [
+    {
+      selector: ".bundles-title",
+      title: "Bundles",
+      body: "A bundle keeps its own accounts, markets, and start or pause state.",
+    },
+    {
+      selector: ".bundle-wallet-limits",
+      title: "Wallet limits",
+      body: "These limits apply across every bundle in this wallet.",
+    },
+    {
+      selector: ".bundle-card-grid",
+      title: "Bundle controls",
+      body: "Select a bundle to edit its strategy, or start and pause that bundle here.",
     },
   ],
   performance: [
     {
-      selector: ".performance-v3-stats",
-      title: "Performance",
-      body: "Results separate what is measured from what still needs evidence.",
+      selector: ".rewards-board",
+      title: "Reward efficiency",
+      body: "Reward estimates are separated from the trading result and its known costs.",
     },
     {
-      selector: ".performance-metrics",
-      title: "The headline numbers",
-      body: "Choose a period to see the current result, volume, fills, and rewards.",
+      selector: ".objective-evidence",
+      title: "Goal evidence",
+      body: "Each goal states what has been measured and what still needs more observation.",
     },
     {
-      selector: ".performance-table",
-      title: "Fills",
-      body: "Each attributed fill keeps the price, size, and realised result.",
+      selector: ".reward-table-wrap",
+      title: "Market ranking",
+      body: "These are market signals for planning; they do not change a saved strategy.",
+    },
+    {
+      selector: ".performance-board",
+      title: "Attributed performance",
+      body: "Use wallet, bundle, and period filters to inspect attributed results.",
+    },
+    {
+      selector: ".performance-volume-by-market",
+      title: "Market results",
+      body: "Expand a market to inspect its attributed fills and known result.",
+    },
+    {
+      selector: ".performance-note",
+      title: "Coverage",
+      body: "This explains what the performance record includes and what it cannot yet prove.",
+    },
+  ],
+  accounts: [
+    {
+      selector: ".accounts-title",
+      title: "Accounts",
+      body: "Create, fund, authorise, and name the accounts Maker can use.",
+    },
+    {
+      selector: ".onboarding",
+      title: "Setup",
+      body: "Complete owner-wallet and trading-key setup before Maker can run.",
+    },
+    {
+      selector: ".account-desk",
+      title: "Trading accounts",
+      body: "Assign Maker and Taker roles, then manage collateral and trading keys.",
     },
   ],
   venues: [
     {
-      selector: ".venue-card-heading",
-      title: "Venue connection",
-      body: "This is the venue Maker uses and the status of your account access.",
+      selector: ".venues-title",
+      title: "Venue",
+      body: "This is the execution venue and its connection state.",
+    },
+    {
+      selector: ".venue-accounts",
+      title: "Venue accounts",
+      body: "Accounts are grouped by their current bundle or available state.",
+    },
+    {
+      selector: ".venue-add-card",
+      title: "Execution boundary",
+      body: "Maker can trade through its delegated key but cannot move withdrawals.",
+    },
+    {
+      selector: ".venue-exposure-card",
+      title: "Exposure",
+      body: "Venue and portfolio totals show the shared risk envelope.",
     },
     {
       selector: ".fee-panel",
       title: "Fee inspection",
-      body: "Operators can inspect the venue fee before configuring the desk.",
+      body: "Inspect the venue fee before configuring the desk.",
+    },
+  ],
+  learn: [
+    {
+      selector: ".learn-heading",
+      title: "Learn",
+      body: "Follow the illustration to see how Maker quotes, fills, and manages inventory.",
+    },
+    {
+      selector: ".learn-stage",
+      title: "The book",
+      body: "The animated book shows Maker's bid and ask around the market price.",
+    },
+    {
+      selector: ".learn-chapters",
+      title: "Chapters",
+      body: "Choose a chapter to step through the lifecycle one decision at a time.",
+    },
+    {
+      selector: ".learn-glossary",
+      title: "Glossary",
+      body: "Definitions use the same terms you see throughout the desk.",
     },
   ],
 };
@@ -252,9 +368,10 @@ function CoachLayer({
         );
         const current = targets[Math.min(phoneIndex, targets.length - 1)];
         if (current) {
-          current.target.classList.add("maker-coach-target");
-          highlighted.push(current.target);
-          current.target.scrollIntoView({ block: "center", behavior: "auto" });
+          // A phone note occupies the lower reading area. Scrolling to the
+          // section keeps the context visible without drawing a large target
+          // outline underneath the note.
+          current.target.scrollIntoView({ block: "start", behavior: "auto" });
         }
         return;
       }
@@ -331,7 +448,11 @@ function CoachLayer({
           });
         }
       }
-      setPositions(next);
+      setPositions(
+        next.some((position) => position.docked)
+          ? next.map((position) => ({ ...position, docked: true }))
+          : next,
+      );
     };
     update();
     dialog.current?.focus();
@@ -461,6 +582,7 @@ type MakerShellProps = {
   mode: "observe" | "paper" | "live";
   running: boolean;
   canStopAll: boolean;
+  stopState: "ready" | "stopping" | "stopped";
   phoneDeskStopAvailable: boolean;
   live: boolean;
   canOperate: boolean;
@@ -485,6 +607,7 @@ export function MakerShell({
   mode,
   running,
   canStopAll,
+  stopState,
   phoneDeskStopAvailable,
   live,
   canOperate,
@@ -571,6 +694,12 @@ export function MakerShell({
         : "neutral";
   const activeLabel =
     makerViews.find((view) => view.id === activeView)?.label ?? "Desk";
+  const stopLabel =
+    stopState === "stopping"
+      ? "Stopping…"
+      : stopState === "stopped"
+        ? "Stopped"
+        : "Stop all";
   const showPhoneStopAll =
     canStopAll &&
     activeView !== "strategy" &&
@@ -612,7 +741,7 @@ export function MakerShell({
                   onClick={onStopAll}
                 >
                   <CircleStop size={17} aria-hidden="true" />
-                  Stop all
+                  {stopLabel}
                 </button>
               ) : (
                 <Pill tone={modeTone} dot={running}>
@@ -672,7 +801,7 @@ export function MakerShell({
                 onClick={onStopAll}
               >
                 <CircleStop size={15} aria-hidden="true" />
-                Stop all
+                {stopLabel}
               </button>
             )}
             <button
