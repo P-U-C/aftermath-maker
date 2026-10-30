@@ -348,6 +348,7 @@ export class RuntimeManager {
     const bundle = tenant.getStoredBundle(bundleId);
     if (!bundle || bundle.archivedAt) throw new Error("Bundle was not found");
     this.assertStartAllowed(owner, bundle);
+    tenant.assertBundleMarketsAvailableToStart(bundle.id);
     const runtime = this.getBundle(owner, bundle.id);
     try {
       this.assertStartGasReserve(owner, bundle, runtime);

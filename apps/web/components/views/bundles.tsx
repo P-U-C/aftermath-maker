@@ -6,7 +6,6 @@ import { useState } from "react";
 import {
   activeBundles,
   availableBundleAccounts,
-  availableBundleMarkets,
 } from "../../lib/bundle-options";
 import { formatMoney } from "../../lib/format";
 import { Button, Card, Sheet } from "../ui/primitives";
@@ -56,7 +55,6 @@ type BundlesViewProps = {
     draft: {
       makerAccountId: string;
       takerAccountId: string;
-      marketId: string;
       mode: "observe" | "paper";
       strategyId: string | null;
       updatedAt: string;
@@ -66,7 +64,6 @@ type BundlesViewProps = {
     name: string;
     makerAccountId: string;
     takerAccountId: string;
-    marketId: string;
     strategyId: string | null;
     confirmWalletLimits: boolean;
   }) => Promise<void>;
@@ -129,12 +126,10 @@ export function BundlesView({
   const [name, setName] = useState("");
   const [makerAccountId, setMakerAccountId] = useState("");
   const [takerAccountId, setTakerAccountId] = useState("");
-  const [marketId, setMarketId] = useState("");
   const [strategyId, setStrategyId] = useState("");
   const [editingBundle, setEditingBundle] = useState<BundleCard | null>(null);
   const [editMakerAccountId, setEditMakerAccountId] = useState("");
   const [editTakerAccountId, setEditTakerAccountId] = useState("");
-  const [editMarketId, setEditMarketId] = useState("");
   const [editMode, setEditMode] = useState<"observe" | "paper">("paper");
   const [editStrategyId, setEditStrategyId] = useState("");
   const availableMakerAccounts = availableBundleAccounts(accounts, visible);
@@ -143,7 +138,6 @@ export function BundlesView({
     visible,
     makerAccountId || null,
   );
-  const availableMarkets = availableBundleMarkets(markets, visible);
   const editAvailableAccounts = editingBundle
     ? accounts.filter(
         (account) =>
@@ -154,21 +148,9 @@ export function BundlesView({
           ),
       )
     : [];
-  const editAvailableMarkets = editingBundle
-    ? markets.filter(
-        (market) =>
-          editingBundle.marketIds.includes(market.id) ||
-          availableMarkets.some((available) => available.id === market.id),
-      )
-    : [];
   const canCreate =
     visible.length < 4 &&
-    Boolean(
-      name.trim() &&
-      makerAccountId &&
-      marketId &&
-      makerAccountId !== takerAccountId,
-    );
+    Boolean(name.trim() && makerAccountId && makerAccountId !== takerAccountId);
   const editedWalletLimits = {
     maxRunDrawdownUsd: Number(walletLimitsDraft.maxRunDrawdownUsd),
     maxInventoryUsd: Number(walletLimitsDraft.maxInventoryUsd),
@@ -213,7 +195,6 @@ export function BundlesView({
       name: name.trim(),
       makerAccountId,
       takerAccountId,
-      marketId,
       strategyId: strategyId || null,
       confirmWalletLimits,
     });
@@ -229,16 +210,14 @@ export function BundlesView({
     setEditingBundle(bundle);
     setEditMakerAccountId(bundle.makerAccountId ?? "");
     setEditTakerAccountId(bundle.takerAccountId ?? "");
-    setEditMarketId(bundle.marketIds[0] ?? "");
     setEditMode(bundle.mode === "observe" ? "observe" : "paper");
     setEditStrategyId(bundle.strategyId ?? "");
   };
   const saveAllocation = async () => {
-    if (!editingBundle || !editMakerAccountId || !editMarketId) return;
+    if (!editingBundle || !editMakerAccountId) return;
     await onUpdateAllocation(editingBundle.id, {
       makerAccountId: editMakerAccountId,
       takerAccountId: editTakerAccountId,
-      marketId: editMarketId,
       mode: editMode,
       strategyId: editStrategyId || null,
       updatedAt: editingBundle.updatedAt,
@@ -260,8 +239,9 @@ export function BundlesView({
             <span className="eyebrow">Wallet desk</span>
             <h1>Bundles</h1>
             <p>
-              Each bundle has its own accounts, markets, and pause control. Stop
-              all remains available from the desk navigation.
+              Each bundle has its own accounts and pause control. Markets come
+              from its strategy. Stop all remains available from the desk
+              navigation.
             </p>
           </div>
           <div className="bundles-heading-actions">
@@ -365,19 +345,8 @@ export function BundlesView({
                   </strong>
                 </div>
                 <p className="bundle-markets">
-                  {bundle.marketIds.length
-                    ? bundle.marketIds
-                        .map(
-                          (marketId) =>
-                            markets.find((market) => market.id === marketId)
-                              ?.symbol ?? marketId,
-                        )
-                        .join(", ")
-                    : "No markets selected"}
-                </p>
-                <p className="bundle-strategy">
                   {bundle.strategyName
-                    ? `Strategy: ${bundle.strategyName}`
+                    ? `From ${bundle.strategyName}: ${bundle.marketIds.length ? bundle.marketIds.map((marketId) => markets.find((market) => market.id === marketId)?.symbol ?? marketId).join(", ") : "No markets selected"}`
                     : "No strategy attached"}
                 </p>
                 {bundle.lastError && (
@@ -470,7 +439,7 @@ export function BundlesView({
         <Sheet
           open={createOpen}
           title="New Paper bundle"
-          description="Choose separate accounts, a free market, and an optional reusable strategy. A bundle without one stays paused."
+          description="Choose separate accounts and an optional reusable strategy. A bundle without one stays paused."
           onClose={() => setCreateOpen(false)}
           footer={
             <>
@@ -557,26 +526,11 @@ export function BundlesView({
                 ))}
               </select>
             </label>
-            <label>
-              <span>Market</span>
-              <select
-                value={marketId}
-                onChange={(event) => setMarketId(event.target.value)}
-              >
-                <option value="">Choose an available market</option>
-                {availableMarkets.map((market) => (
-                  <option key={market.id} value={market.id}>
-                    {market.symbol}
-                  </option>
-                ))}
-              </select>
-            </label>
           </div>
-          {(!availableMakerAccounts.length || !availableMarkets.length) && (
+          {!availableMakerAccounts.length && (
             <p className="bundle-create-note" role="status">
-              {!availableMakerAccounts.length
-                ? "Add or authorize an unassigned account before creating another bundle."
-                : "Every available market is already assigned to a bundle."}
+              Add or authorize an unassigned account before creating another
+              bundle.
             </p>
           )}
         </Sheet>
@@ -584,7 +538,7 @@ export function BundlesView({
         <Sheet
           open={Boolean(editingBundle)}
           title={editingBundle ? `Edit ${editingBundle.name}` : "Edit bundle"}
-          description="Bundle allocation owns its accounts, actual markets, mode, and attached strategy."
+          description="Bundle allocation owns accounts, mode, and strategy. Markets are read-only from the strategy."
           onClose={() => setEditingBundle(null)}
           footer={
             <>
@@ -596,7 +550,6 @@ export function BundlesView({
                 disabled={
                   busy ||
                   !editMakerAccountId ||
-                  !editMarketId ||
                   editMakerAccountId === editTakerAccountId
                 }
                 onClick={() => void saveAllocation()}
@@ -663,20 +616,18 @@ export function BundlesView({
                 ))}
               </select>
             </label>
-            <label>
-              <span>Market</span>
-              <select
-                value={editMarketId}
-                onChange={(event) => setEditMarketId(event.target.value)}
-              >
-                <option value="">Choose an available market</option>
-                {editAvailableMarkets.map((market) => (
-                  <option key={market.id} value={market.id}>
-                    {market.symbol}
-                  </option>
-                ))}
-              </select>
-            </label>
+            {editingBundle?.strategyName && (
+              <p className="bundle-create-note">
+                From {editingBundle.strategyName}:{" "}
+                {editingBundle.marketIds
+                  .map(
+                    (marketId) =>
+                      markets.find((market) => market.id === marketId)
+                        ?.symbol ?? marketId,
+                  )
+                  .join(", ")}
+              </p>
+            )}
           </div>
         </Sheet>
 

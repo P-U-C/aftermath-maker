@@ -92,6 +92,12 @@ function initialStrategies(fixture) {
     name: bundle.strategyName,
     config: { ...config, hedge: sharedHedge },
     marketRule: { kind: "preferred-list", marketIds: bundle.marketIds },
+    markets: bundle.marketIds.map((marketId) => {
+      const market = fixture.markets.markets.find(
+        (item) => item.id === marketId,
+      );
+      return { marketId, symbol: market?.symbol ?? marketId };
+    }),
     version: 1,
     usedBy: [{ id: bundle.id, name: bundle.name }],
     archivedAt: null,
@@ -152,6 +158,7 @@ async function installStatefulControl(page, state) {
           name: body.name,
           config: body.config,
           marketRule: body.marketRule,
+          markets: body.markets,
           version: 1,
           usedBy: [],
           archivedAt: null,
@@ -187,8 +194,18 @@ async function installStatefulControl(page, state) {
           name: body.name ?? strategy.name,
           config: body.config,
           marketRule: body.marketRule,
+          markets: body.markets,
           version: strategy.version + 1,
         });
+        for (const used of strategy.usedBy) {
+          const bundle = state.fixture.bundles.bundles.find(
+            (candidate) => candidate.id === used.id,
+          );
+          if (bundle)
+            bundle.marketIds = strategy.markets.map(
+              (market) => market.marketId,
+            );
+        }
         return json(200, { strategy, affectedBundles: strategy.usedBy });
       }
     }
@@ -216,8 +233,10 @@ async function installStatefulControl(page, state) {
         bundle.strategyVersionApplied = strategy?.version ?? null;
         bundle.needsStrategy = !strategy;
         if (strategy && !hadStrategy) bundle.status = "stopped";
-        if (strategy)
+        if (strategy) {
+          bundle.marketIds = strategy.markets.map((market) => market.marketId);
           strategy.usedBy.push({ id: bundle.id, name: bundle.name });
+        }
       }
       if (body.makerAccountId !== undefined)
         bundle.makerAccountId = body.makerAccountId;
@@ -248,9 +267,11 @@ async function installStatefulControl(page, state) {
           body.takerAccountId ?? body.config?.hedge?.accountId ?? null,
         mode: "paper",
         status: "paused",
-        marketIds: (body.markets ?? body.config?.markets ?? []).map(
-          (market) => market.marketId,
-        ),
+        marketIds: (
+          selectedStrategy?.markets ??
+          body.config?.markets ??
+          []
+        ).map((market) => market.marketId),
         createdAt,
         updatedAt: createdAt,
         lastError: null,
@@ -576,10 +597,6 @@ async function createBundleWithFreeChoices(browser) {
       .getByLabel("Maker account")
       .locator("option")
       .allTextContents();
-    const marketOptions = await dialog
-      .getByLabel("Market")
-      .locator("option")
-      .allTextContents();
     assert(
       !makerOptions.some((label) =>
         /Core maker|Neutral hedge|Rewards maker|Rewards hedge/.test(label),
@@ -587,12 +604,15 @@ async function createBundleWithFreeChoices(browser) {
       `Taken accounts were offered: ${JSON.stringify(makerOptions)}`,
     );
     assert(
-      !marketOptions.some((label) => /^(MON|NEAR|ETH|BTC)$/.test(label)),
-      `Taken markets were offered: ${JSON.stringify(marketOptions)}`,
+      (await dialog.getByLabel("Market").count()) === 0,
+      "Bundle creation still offered a market picker",
     );
     await dialog.getByLabel("Name").fill("Audit reserve");
     await dialog.getByLabel("Maker account").selectOption({ label: "Reserve" });
-    await dialog.getByLabel("Market").selectOption({ label: "HYPE" });
+    await dialog
+      .getByLabel("Strategy")
+      .selectOption({ label: "Rewards strategy" });
+    await capture(page, "rfc-0002-new-bundle-desktop.png");
     await dialog.getByRole("button", { name: "Continue", exact: true }).click();
     await page
       .getByRole("heading", { name: "Audit reserve", exact: true })
@@ -621,7 +641,9 @@ async function lowerWalletLimitsWhenCreating(browser) {
     const create = page.getByRole("dialog", { name: "New Paper bundle" });
     await create.getByLabel("Name").fill("Limits audit");
     await create.getByLabel("Maker account").selectOption({ label: "Reserve" });
-    await create.getByLabel("Market").selectOption({ label: "HYPE" });
+    await create
+      .getByLabel("Strategy")
+      .selectOption({ label: "Rewards strategy" });
     await create.getByRole("button", { name: "Continue", exact: true }).click();
     const confirmation = page.getByRole("dialog", {
       name: "Confirm wallet limits",
@@ -825,7 +847,7 @@ async function strategyLibraryAndBundleAttachment(browser) {
         exact: true,
       })
       .waitFor();
-    await card.getByText("Strategy: Strategy 3", { exact: true }).waitFor();
+    await card.getByText(/^From Strategy 3:/, { exact: false }).waitFor();
     await card.getByRole("button", { name: "Start", exact: true }).waitFor();
     await capture(page, "rfc-0002-strategy-attachment-desktop.png");
   } finally {

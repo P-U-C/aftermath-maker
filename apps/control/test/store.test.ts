@@ -709,7 +709,7 @@ describe("persistent control store", () => {
            VALUES (?, ?, ?, ?)`,
         )
         .run("secondary-bundle", ownerAddress, "0x1002", "TWO"),
-    ).toThrow();
+    ).not.toThrow();
     migratedDatabase.close();
   });
 
@@ -783,7 +783,7 @@ describe("persistent control store", () => {
     });
     expect(tenant.getBundleConfig(paper.id)).toMatchObject({
       quoteSizeUsd: 17,
-      markets: [{ marketId: "0xd002", symbol: "REWARD" }],
+      markets: [{ marketId: "0xd001", symbol: "CORE" }],
     });
     expect(() => tenant.archiveStrategy(shared.id)).toThrow("in use");
 
@@ -826,6 +826,81 @@ describe("persistent control store", () => {
       needsStrategy: false,
     });
     databaseStore.close();
+  });
+
+  it("forks a shared legacy strategy with divergent bundle market mirrors", () => {
+    const directory = join(
+      process.env.TMPDIR ?? "/tmp",
+      `aftermath-maker-${randomBytes(8).toString("hex")}`,
+    );
+    mkdirSync(directory, { recursive: true });
+    const path = join(directory, "maker.db");
+    const ownerAddress = `0x${"c".repeat(64)}`;
+    const initial = new Store(path);
+    const tenant = initial.forTenant(ownerAddress);
+    const coreConfig = makerConfigSchema.parse({
+      markets: [{ marketId: "0xc001", symbol: "CORE" }],
+      makerAccountId: "1",
+      hedge: {
+        enabled: true,
+        accountId: "2",
+        thresholdUsd: 10,
+        maxOrderUsd: 20,
+        maxSlippageBps: 75,
+      },
+      maxRunDrawdownUsd: 10,
+      maxInventoryUsd: 20,
+      maxGrossExposureUsd: 40,
+      maxUnrealizedLossUsd: 8,
+    });
+    tenant.setConfig(coreConfig);
+    tenant.confirmWalletLimits();
+    const rewardsConfig = makerConfigSchema.parse({
+      ...coreConfig,
+      mode: "paper",
+      makerAccountId: "3",
+      hedge: { ...coreConfig.hedge, accountId: "4" },
+      markets: [{ marketId: "0xc002", symbol: "REWARDS" }],
+    });
+    const rewards = tenant.createBundle({
+      name: "Rewards",
+      config: rewardsConfig,
+    });
+    const core = tenant.listBundles().find((bundle) => bundle.name === "Core")!;
+    const shared = tenant.duplicateStrategy({
+      strategyId: core.strategyId!,
+      name: "Shared legacy",
+    });
+    initial.close();
+
+    const raw = new Database(path);
+    raw
+      .prepare(
+        `UPDATE bundles SET strategy_id = ?, strategy_version_applied = 1
+         WHERE owner_address = ? AND id IN (?, ?)`,
+      )
+      .run(shared.id, ownerAddress, core.id, rewards.id);
+    raw
+      .prepare("DELETE FROM strategy_markets WHERE strategy_id = ?")
+      .run(shared.id);
+    raw.close();
+
+    const migrated = new Store(path);
+    const migratedTenant = migrated.forTenant(ownerAddress);
+    const migratedCore = migratedTenant.getStoredBundle(core.id)!;
+    const migratedRewards = migratedTenant.getStoredBundle(rewards.id)!;
+    expect(migratedCore.strategyId).toBe(shared.id);
+    expect(migratedRewards.strategyId).not.toBe(shared.id);
+    expect(migratedTenant.getBundleConfig(core.id)).toEqual(coreConfig);
+    expect(migratedTenant.getBundleConfig(rewards.id)).toEqual(rewardsConfig);
+    const strategyCount = migratedTenant.listStrategies().length;
+    migrated.close();
+
+    const rerun = new Store(path);
+    expect(rerun.forTenant(ownerAddress).listStrategies()).toHaveLength(
+      strategyCount,
+    );
+    rerun.close();
   });
 
   it("skips one malformed historical bundle strategy without blocking startup twice", () => {
@@ -1237,7 +1312,7 @@ describe("persistent control store", () => {
         },
       }),
     ).toThrow("one bundle role");
-    expect(() =>
+    expect(
       tenant.createBundle({
         name: "Shared market",
         config: {
@@ -1246,7 +1321,7 @@ describe("persistent control store", () => {
           hedge: { ...paperConfig.hedge, accountId: "6" },
         },
       }),
-    ).toThrow("one bundle per wallet");
+    ).toMatchObject({ name: "Shared market", status: "stopped" });
     expect(() =>
       tenant.createBundle({
         name: "Same roles",

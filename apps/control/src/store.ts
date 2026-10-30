@@ -4,7 +4,12 @@ import { dirname } from "node:path";
 import Database from "better-sqlite3";
 import { z } from "zod";
 import type { EncryptedSecret } from "@puc/aftermath";
-import { makerConfigSchema, type MakerConfig, type Setup } from "@puc/core";
+import {
+  makerConfigSchema,
+  makerMarketSchema,
+  type MakerConfig,
+  type Setup,
+} from "@puc/core";
 
 const BIGINT_TAG = "__maker_bigint__";
 
@@ -104,8 +109,10 @@ const strategyMarketRuleSchema = z.union([
     .strict(),
 ]);
 
+const strategyMarketsSchema = z.array(makerMarketSchema).max(64);
+
 /** Settings that can safely be shared between bundles. Execution allocation
- * (accounts, mode, and actual markets) deliberately remains on the bundle. */
+ * (accounts and mode) deliberately remains on the bundle; markets are strategy-owned. */
 const strategyConfigSchema = z
   .object({
     collateralCoinType: z.string().min(8),
@@ -370,6 +377,8 @@ export type StoredStrategy = {
   name: string;
   config: StrategyConfig;
   marketRule: StrategyMarketRule;
+  /** The frozen, canonical market set this strategy supplies to every bundle. */
+  markets: MakerConfig["markets"];
   version: number;
   createdAt: string;
   updatedAt: string;
@@ -809,6 +818,8 @@ export class Store {
           UNIQUE (owner_address, name)
         );
 
+        -- Compatibility mirror. The canonical market set is strategy_markets;
+        -- paused bundles may therefore share a market before one is started.
         CREATE TABLE IF NOT EXISTS bundle_markets (
           bundle_id TEXT NOT NULL,
           owner_address TEXT NOT NULL,
@@ -816,8 +827,18 @@ export class Store {
           symbol TEXT NOT NULL,
           overrides TEXT,
           PRIMARY KEY (bundle_id, market_id),
-          UNIQUE (owner_address, market_id),
           FOREIGN KEY (bundle_id) REFERENCES bundles(id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS strategy_markets (
+          strategy_id TEXT NOT NULL,
+          market_id TEXT NOT NULL,
+          symbol TEXT NOT NULL,
+          overrides TEXT,
+          position INTEGER NOT NULL CHECK (position >= 0),
+          PRIMARY KEY (strategy_id, market_id),
+          UNIQUE (strategy_id, position),
+          FOREIGN KEY (strategy_id) REFERENCES strategies(id) ON DELETE CASCADE
         );
 
         CREATE TABLE IF NOT EXISTS bundle_account_roles (
@@ -862,6 +883,20 @@ export class Store {
           error TEXT NOT NULL,
           recorded_at TEXT NOT NULL,
           FOREIGN KEY (bundle_id) REFERENCES bundles(id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS strategy_market_migration_skips (
+          strategy_id TEXT PRIMARY KEY,
+          strategy_updated_at TEXT NOT NULL,
+          error TEXT NOT NULL,
+          recorded_at TEXT NOT NULL,
+          FOREIGN KEY (strategy_id) REFERENCES strategies(id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS strategy_market_migrations (
+          strategy_id TEXT PRIMARY KEY,
+          migrated_at TEXT NOT NULL,
+          FOREIGN KEY (strategy_id) REFERENCES strategies(id) ON DELETE CASCADE
         );
 
         CREATE TABLE IF NOT EXISTS bundle_config_mirrors (
@@ -941,6 +976,35 @@ export class Store {
       );
       ensureColumn("bundles", "archived_at", "archived_at TEXT");
       ensureColumn("bundle_wallet_limits", "confirmed_at", "confirmed_at TEXT");
+
+      // B2 stored an owner-wide UNIQUE constraint inside bundle_markets. SQLite
+      // cannot drop an inline constraint, so rebuild this compatibility mirror
+      // once before strategies become the canonical market owner.
+      const bundleMarketsSql = this.db
+        .prepare(
+          "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'bundle_markets'",
+        )
+        .get() as { sql: string } | undefined;
+      if (bundleMarketsSql?.sql.includes("UNIQUE (owner_address, market_id)")) {
+        this.db.exec(`
+          ALTER TABLE bundle_markets RENAME TO bundle_markets_legacy;
+          CREATE TABLE bundle_markets (
+            bundle_id TEXT NOT NULL,
+            owner_address TEXT NOT NULL,
+            market_id TEXT NOT NULL,
+            symbol TEXT NOT NULL,
+            overrides TEXT,
+            PRIMARY KEY (bundle_id, market_id),
+            FOREIGN KEY (bundle_id) REFERENCES bundles(id) ON DELETE CASCADE
+          );
+          INSERT INTO bundle_markets
+            (bundle_id, owner_address, market_id, symbol, overrides)
+          SELECT bundle_id, owner_address, market_id, symbol, overrides
+          FROM bundle_markets_legacy;
+          DROP TABLE bundle_markets_legacy;
+        `);
+      }
+
       this.db.exec(`
         UPDATE bundle_markets
         SET owner_address = (
@@ -949,8 +1013,9 @@ export class Store {
         )
         WHERE owner_address = '';
 
-        CREATE UNIQUE INDEX IF NOT EXISTS bundle_markets_owner_market_unique
-          ON bundle_markets(owner_address, market_id);
+        DROP INDEX IF EXISTS bundle_markets_owner_market_unique;
+        CREATE INDEX IF NOT EXISTS strategy_markets_strategy_position
+          ON strategy_markets(strategy_id, position);
 
         DROP INDEX IF EXISTS bundles_owner_maker_account_unique;
         DROP INDEX IF EXISTS bundles_owner_taker_account_unique;
@@ -1336,6 +1401,320 @@ export class Store {
             bundle.owner_address,
             now,
             stringify({ bundleId: bundle.id, reason: "invalid_config" }),
+          );
+        }
+      }
+
+      // RFC 0002 amendment: strategies now own the resolved market set. Keep
+      // bundle_markets as a compatibility mirror for rollback, but materialize
+      // every attached strategy once. A shared strategy that already backs
+      // divergent bundle market sets is forked before this becomes canonical.
+      const strategyMarketRows = this.db.prepare(
+        `SELECT market_id, symbol, overrides
+         FROM bundle_markets WHERE bundle_id = ? ORDER BY market_id ASC`,
+      );
+      const strategyMarketInsert = this.db.prepare(
+        `INSERT INTO strategy_markets
+          (strategy_id, market_id, symbol, overrides, position)
+         VALUES (?, ?, ?, ?, ?)`,
+      );
+      const clearStrategyMarkets = this.db.prepare(
+        "DELETE FROM strategy_markets WHERE strategy_id = ?",
+      );
+      const strategyHasMarkets = this.db.prepare(
+        "SELECT 1 FROM strategy_markets WHERE strategy_id = ? LIMIT 1",
+      );
+      const strategyMarketMigrated = this.db.prepare(
+        "SELECT 1 FROM strategy_market_migrations WHERE strategy_id = ?",
+      );
+      const markStrategyMarketMigrated = this.db.prepare(
+        `INSERT OR IGNORE INTO strategy_market_migrations (strategy_id, migrated_at)
+         VALUES (?, ?)`,
+      );
+      const marketMigrationSkipped = this.db.prepare(
+        `SELECT 1 FROM strategy_market_migration_skips
+         WHERE strategy_id = ? AND strategy_updated_at = ?`,
+      );
+      const recordMarketMigrationSkip = this.db.prepare(
+        `INSERT INTO strategy_market_migration_skips
+          (strategy_id, strategy_updated_at, error, recorded_at)
+         VALUES (?, ?, ?, ?)
+         ON CONFLICT(strategy_id) DO UPDATE SET
+           strategy_updated_at = excluded.strategy_updated_at,
+           error = excluded.error,
+           recorded_at = excluded.recorded_at`,
+      );
+      const clearMarketMigrationSkip = this.db.prepare(
+        "DELETE FROM strategy_market_migration_skips WHERE strategy_id = ?",
+      );
+      const allStrategies = this.db
+        .prepare(
+          `SELECT id, owner_address, name, config, market_rule, version,
+                  created_at, updated_at, archived_at
+           FROM strategies WHERE archived_at IS NULL`,
+        )
+        .all() as Array<{
+        id: string;
+        owner_address: string;
+        name: string;
+        config: string;
+        market_rule: string;
+        version: number;
+        created_at: string;
+        updated_at: string;
+        archived_at: string | null;
+      }>;
+      const bundlesForStrategy = this.db.prepare(
+        `SELECT id, owner_address, name, maker_account_id, taker_account_id,
+                mode, updated_at
+         FROM bundles
+         WHERE owner_address = ? AND strategy_id = ? AND archived_at IS NULL
+         ORDER BY created_at ASC, id ASC`,
+      );
+      const strategyNameExists = this.db.prepare(
+        `SELECT 1 FROM strategies
+         WHERE owner_address = ? AND name = ? COLLATE NOCASE`,
+      );
+      const insertStrategyFork = this.db.prepare(
+        `INSERT INTO strategies
+          (id, owner_address, name, config, market_rule, version,
+           created_at, updated_at, archived_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
+      );
+      const attachFork = this.db.prepare(
+        `UPDATE bundles SET strategy_id = ?, strategy_version_applied = ?
+         WHERE owner_address = ? AND id = ?`,
+      );
+      const updateProjection = this.db.prepare(
+        `UPDATE bundles SET config = ?, strategy_version_applied = ?, updated_at = ?
+         WHERE owner_address = ? AND id = ?`,
+      );
+      const writeCoreProjection = this.db.prepare(
+        `INSERT INTO tenant_settings (owner_address, key, value, updated_at)
+         VALUES (?, 'maker_config', ?, ?)
+         ON CONFLICT(owner_address, key) DO UPDATE SET
+           value = excluded.value, updated_at = excluded.updated_at`,
+      );
+      const writeCoreMarketMirror = this.db.prepare(
+        `INSERT INTO bundle_config_mirrors
+          (owner_address, core_config_updated_at, mirrored_at)
+         VALUES (?, ?, ?)
+         ON CONFLICT(owner_address) DO UPDATE SET
+           core_config_updated_at = excluded.core_config_updated_at,
+           mirrored_at = excluded.mirrored_at`,
+      );
+      const marketMigrationEvent = this.db.prepare(
+        `INSERT INTO tenant_audit_events
+          (owner_address, occurred_at, category, action, outcome, detail)
+         VALUES (?, ?, 'strategies', 'migration.markets-skipped', 'failed', ?)`,
+      );
+      type LegacyMarketRow = {
+        market_id: string;
+        symbol: string;
+        overrides: string | null;
+      };
+      type StrategyBundleRow = {
+        id: string;
+        owner_address: string;
+        name: string;
+        maker_account_id: string | null;
+        taker_account_id: string | null;
+        mode: MakerConfig["mode"];
+        updated_at: string;
+      };
+      const insertCanonicalMarkets = (
+        strategyId: string,
+        markets: LegacyMarketRow[],
+      ) => {
+        clearStrategyMarkets.run(strategyId);
+        for (const [position, market] of markets.entries()) {
+          strategyMarketInsert.run(
+            strategyId,
+            market.market_id,
+            market.symbol,
+            market.overrides,
+            position,
+          );
+        }
+      };
+      const mirrorBundleMarkets = (
+        ownerAddress: string,
+        bundleId: string,
+        markets: LegacyMarketRow[],
+      ) => {
+        this.db
+          .prepare("DELETE FROM bundle_markets WHERE bundle_id = ?")
+          .run(bundleId);
+        const insert = this.db.prepare(
+          `INSERT INTO bundle_markets
+            (bundle_id, owner_address, market_id, symbol, overrides)
+           VALUES (?, ?, ?, ?, ?)`,
+        );
+        for (const market of markets) {
+          insert.run(
+            bundleId,
+            ownerAddress,
+            market.market_id,
+            market.symbol,
+            market.overrides,
+          );
+        }
+      };
+      const migrateStrategyMarkets = this.db.transaction(
+        (strategy: (typeof allStrategies)[number]) => {
+          if (strategyHasMarkets.get(strategy.id)) return;
+          const rule = strategyMarketRuleSchema.parse(
+            parse<unknown>(strategy.market_rule),
+          );
+          const config = strategyConfigSchema.parse(
+            parse<unknown>(strategy.config),
+          );
+          const attached = bundlesForStrategy.all(
+            strategy.owner_address,
+            strategy.id,
+          ) as StrategyBundleRow[];
+          if (!attached.length) {
+            if (rule.kind === "preferred-list") {
+              insertCanonicalMarkets(
+                strategy.id,
+                rule.marketIds.map((marketId) => ({
+                  market_id: marketId,
+                  symbol: marketId,
+                  overrides: null,
+                })),
+              );
+            }
+            clearMarketMigrationSkip.run(strategy.id);
+            markStrategyMarketMigrated.run(
+              strategy.id,
+              new Date().toISOString(),
+            );
+            return;
+          }
+          const groups = new Map<
+            string,
+            { markets: LegacyMarketRow[]; bundles: StrategyBundleRow[] }
+          >();
+          for (const bundle of attached) {
+            const markets = strategyMarketRows.all(
+              bundle.id,
+            ) as LegacyMarketRow[];
+            if (!markets.length) {
+              throw new Error(
+                `Bundle ${bundle.name} has no legacy market mirror`,
+              );
+            }
+            const key = stringify(markets);
+            const group = groups.get(key) ?? { markets, bundles: [] };
+            group.bundles.push(bundle);
+            groups.set(key, group);
+          }
+          let groupIndex = 0;
+          for (const group of groups.values()) {
+            const targetId =
+              groupIndex === 0 ? strategy.id : `strategy-${randomUUID()}`;
+            const targetVersion = groupIndex === 0 ? strategy.version : 1;
+            if (groupIndex > 0) {
+              const baseName = `${group.bundles[0]!.name} strategy`;
+              let name = baseName;
+              let suffix = 2;
+              while (strategyNameExists.get(strategy.owner_address, name)) {
+                name = `${baseName} ${suffix}`;
+                suffix += 1;
+              }
+              insertStrategyFork.run(
+                targetId,
+                strategy.owner_address,
+                name,
+                strategy.config,
+                strategy.market_rule,
+                targetVersion,
+                strategy.created_at,
+                strategy.updated_at,
+              );
+            }
+            insertCanonicalMarkets(targetId, group.markets);
+            const resolved = group.markets.map((market) => ({
+              marketId: market.market_id,
+              symbol: market.symbol,
+              ...(market.overrides
+                ? {
+                    overrides: parse<
+                      MakerConfig["markets"][number]["overrides"]
+                    >(market.overrides),
+                  }
+                : {}),
+            }));
+            for (const bundle of group.bundles) {
+              if (targetId !== strategy.id) {
+                attachFork.run(
+                  targetId,
+                  targetVersion,
+                  strategy.owner_address,
+                  bundle.id,
+                );
+              }
+              mirrorBundleMarkets(
+                strategy.owner_address,
+                bundle.id,
+                group.markets,
+              );
+              const projection = composeMakerConfig({
+                strategy: config,
+                mode: bundle.mode,
+                makerAccountId: bundle.maker_account_id,
+                takerAccountId: bundle.taker_account_id,
+                markets: resolved,
+              });
+              const updatedAt = bundle.updated_at;
+              updateProjection.run(
+                stringify(projection),
+                targetVersion,
+                updatedAt,
+                strategy.owner_address,
+                bundle.id,
+              );
+              if (bundle.name === "Core") {
+                writeCoreProjection.run(
+                  strategy.owner_address,
+                  stringify(projection),
+                  updatedAt,
+                );
+                writeCoreMarketMirror.run(
+                  strategy.owner_address,
+                  updatedAt,
+                  new Date().toISOString(),
+                );
+              }
+            }
+            groupIndex += 1;
+          }
+          clearMarketMigrationSkip.run(strategy.id);
+          markStrategyMarketMigrated.run(strategy.id, new Date().toISOString());
+        },
+      );
+      for (const strategy of allStrategies) {
+        if (
+          strategyHasMarkets.get(strategy.id) ||
+          strategyMarketMigrated.get(strategy.id) ||
+          marketMigrationSkipped.get(strategy.id, strategy.updated_at)
+        ) {
+          continue;
+        }
+        try {
+          migrateStrategyMarkets(strategy);
+        } catch (error) {
+          const now = new Date().toISOString();
+          recordMarketMigrationSkip.run(
+            strategy.id,
+            strategy.updated_at,
+            error instanceof Error ? error.name : "Invalid strategy",
+            now,
+          );
+          marketMigrationEvent.run(
+            strategy.owner_address,
+            now,
+            stringify({ strategyId: strategy.id, reason: "invalid_markets" }),
           );
         }
       }
@@ -1943,6 +2322,65 @@ export class TenantStore {
     }));
   }
 
+  private getStrategyMarkets(strategyId: string): MakerConfig["markets"] {
+    const rows = this.db
+      .prepare(
+        `SELECT market_id, symbol, overrides
+         FROM strategy_markets
+         WHERE strategy_id = ?
+         ORDER BY position ASC, market_id ASC`,
+      )
+      .all(strategyId) as Array<{
+      market_id: string;
+      symbol: string;
+      overrides: string | null;
+    }>;
+    return rows.map((market) => ({
+      marketId: market.market_id,
+      symbol: market.symbol,
+      ...(market.overrides
+        ? {
+            overrides: parse<MakerConfig["markets"][number]["overrides"]>(
+              market.overrides,
+            ),
+          }
+        : {}),
+    }));
+  }
+
+  private replaceStrategyMarkets(
+    strategyId: string,
+    markets: MakerConfig["markets"],
+  ): void {
+    this.db
+      .prepare("DELETE FROM strategy_markets WHERE strategy_id = ?")
+      .run(strategyId);
+    const insert = this.db.prepare(
+      `INSERT INTO strategy_markets
+        (strategy_id, market_id, symbol, overrides, position)
+       VALUES (?, ?, ?, ?, ?)`,
+    );
+    for (const [position, market] of markets.entries()) {
+      insert.run(
+        strategyId,
+        market.marketId,
+        market.symbol,
+        market.overrides ? stringify(market.overrides) : null,
+        position,
+      );
+    }
+  }
+
+  private mirrorStrategyMarkets(
+    strategyId: string,
+    bundleIds = this.strategyUsedBy(strategyId).map((bundle) => bundle.id),
+  ): void {
+    const markets = this.getStrategyMarkets(strategyId);
+    for (const bundleId of bundleIds) {
+      this.replaceBundleMarkets(bundleId, { markets });
+    }
+  }
+
   private strategyRow(strategyId: string):
     | {
         id: string;
@@ -1991,7 +2429,7 @@ export class TenantStore {
       mode: row.mode,
       makerAccountId: row.maker_account_id,
       takerAccountId: row.taker_account_id,
-      markets: this.getBundleMarkets(row.id),
+      markets: this.getStrategyMarkets(strategy.id),
     });
   }
 
@@ -2021,6 +2459,7 @@ export class TenantStore {
       marketRule: strategyMarketRuleSchema.parse(
         parse<unknown>(row.market_rule),
       ),
+      markets: this.getStrategyMarkets(row.id),
       version: row.version,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
@@ -2083,6 +2522,8 @@ export class TenantStore {
           this.ownerAddress,
           current.id,
         );
+      this.replaceStrategyMarkets(current.id, inputs.config.markets);
+      this.mirrorStrategyMarkets(current.id);
       return { strategyId: current.id, version };
     }
 
@@ -2110,6 +2551,7 @@ export class TenantStore {
         now,
         now,
       );
+    this.replaceStrategyMarkets(strategyId, inputs.config.markets);
     return { strategyId, version: 1 };
   }
 
@@ -2141,7 +2583,10 @@ export class TenantStore {
     return row ? { kind: "legacy", value: row.value } : null;
   }
 
-  private replaceBundleMarkets(bundleId: string, config: MakerConfig): void {
+  private replaceBundleMarkets(
+    bundleId: string,
+    config: Pick<MakerConfig, "markets">,
+  ): void {
     this.db
       .prepare("DELETE FROM bundle_markets WHERE bundle_id = ?")
       .run(bundleId);
@@ -2298,18 +2743,40 @@ export class TenantStore {
         throw new Error("Each account can hold one bundle role per wallet");
       }
     }
-    const assignedMarket = this.db.prepare(
-      `SELECT 1
-       FROM bundle_markets markets
-       JOIN bundles ON bundles.id = markets.bundle_id
-       WHERE markets.owner_address = ?
-         AND markets.market_id = ?
-         AND markets.bundle_id <> ?
-         AND bundles.archived_at IS NULL`,
+  }
+
+  /**
+   * Market membership is strategy-owned. Multiple paused bundles may share a
+   * market; only a transition to running reserves it for this wallet.
+   */
+  assertBundleMarketsAvailableToStart(bundleId: string): void {
+    const bundle = this.getStoredBundle(bundleId);
+    if (!bundle || bundle.archivedAt) throw new Error("Bundle was not found");
+    if (!bundle.strategyId) {
+      throw new Error("Attach a strategy before starting this bundle");
+    }
+    const assigned = this.db.prepare(
+      `SELECT bundles.name
+       FROM bundles
+       JOIN strategy_markets ON strategy_markets.strategy_id = bundles.strategy_id
+       WHERE bundles.owner_address = ?
+         AND bundles.id <> ?
+         AND bundles.archived_at IS NULL
+         AND bundles.status = 'running'
+         AND strategy_markets.market_id = ?
+       ORDER BY bundles.created_at ASC, bundles.id ASC
+       LIMIT 1`,
     );
-    for (const market of config.markets) {
-      if (assignedMarket.get(this.ownerAddress, market.marketId, bundleId)) {
-        throw new Error("A market can belong to one bundle per wallet");
+    for (const market of this.getStrategyMarkets(bundle.strategyId)) {
+      const existing = assigned.get(
+        this.ownerAddress,
+        bundle.id,
+        market.marketId,
+      ) as { name: string } | undefined;
+      if (existing) {
+        throw new Error(
+          `${market.symbol} is already quoted by ${existing.name}. Duplicate the strategy and change its markets.`,
+        );
       }
     }
   }
@@ -2552,8 +3019,8 @@ export class TenantStore {
       )
       .all(this.ownerAddress) as BundleRow[];
     const markets = this.db.prepare(
-      `SELECT market_id FROM bundle_markets
-       WHERE bundle_id = ? ORDER BY market_id ASC`,
+      `SELECT market_id FROM strategy_markets
+       WHERE strategy_id = ? ORDER BY position ASC, market_id ASC`,
     );
     return rows.map((row) => ({
       id: row.id,
@@ -2567,9 +3034,12 @@ export class TenantStore {
       takerAccountId: row.taker_account_id,
       mode: row.mode,
       status: row.status,
-      marketIds: (markets.all(row.id) as Array<{ market_id: string }>).map(
-        (market) => market.market_id,
-      ),
+      marketIds:
+        row.archived_at || !row.strategy_id
+          ? []
+          : (markets.all(row.strategy_id) as Array<{ market_id: string }>).map(
+              (market) => market.market_id,
+            ),
       createdAt: row.created_at,
       updatedAt: row.updated_at,
       lastError: row.last_error,
@@ -2606,9 +3076,19 @@ export class TenantStore {
     name: string;
     config: unknown;
     marketRule: unknown;
+    markets?: unknown;
   }): StoredStrategy {
     const config = strategyConfigSchema.parse(inputs.config);
     const marketRule = strategyMarketRuleSchema.parse(inputs.marketRule);
+    const markets =
+      inputs.markets === undefined
+        ? marketRule.kind === "preferred-list"
+          ? marketRule.marketIds.map((marketId) => ({
+              marketId,
+              symbol: marketId,
+            }))
+          : []
+        : strategyMarketsSchema.parse(inputs.markets);
     const name = inputs.name.trim();
     if (!name || name.length > 80) {
       throw new Error("Strategy name must be between 1 and 80 characters");
@@ -2631,6 +3111,7 @@ export class TenantStore {
         now,
         now,
       );
+    this.replaceStrategyMarkets(id, markets);
     return this.getStrategy(id)!;
   }
 
@@ -2639,6 +3120,7 @@ export class TenantStore {
     name: string;
     config: unknown;
     marketRule: unknown;
+    markets?: unknown;
     expectedVersion: number;
   }): { strategy: StoredStrategy; affectedBundles: StoredBundle[] } {
     const name = inputs.name.trim();
@@ -2654,6 +3136,10 @@ export class TenantStore {
       if (current.version !== inputs.expectedVersion) {
         throw new Error("Strategy changed elsewhere; refresh before saving");
       }
+      const markets =
+        inputs.markets === undefined
+          ? this.getStrategyMarkets(current.id)
+          : strategyMarketsSchema.parse(inputs.markets);
       const nameTaken = this.db
         .prepare(
           `SELECT 1 FROM strategies
@@ -2666,15 +3152,51 @@ export class TenantStore {
         const row = this.getBundleRow(bundle.id)!;
         return {
           bundle,
+          status: row.status,
           config: composeMakerConfig({
             strategy: config,
             mode: row.mode,
             makerAccountId: row.maker_account_id,
             takerAccountId: row.taker_account_id,
-            markets: this.getBundleMarkets(row.id),
+            markets,
           }),
         };
       });
+      const running = projections.filter(
+        (projection) => projection.status === "running",
+      );
+      if (running.length > 1 && markets.length) {
+        throw new Error(
+          `${markets[0]!.symbol} is already quoted by ${running[0]!.bundle.name}. Duplicate the strategy and change its markets.`,
+        );
+      }
+      if (running.length && markets.length) {
+        const reservedMarket = this.db.prepare(
+          `SELECT bundles.name
+           FROM bundles
+           JOIN strategy_markets
+             ON strategy_markets.strategy_id = bundles.strategy_id
+           WHERE bundles.owner_address = ?
+             AND bundles.archived_at IS NULL
+             AND bundles.status = 'running'
+             AND bundles.strategy_id <> ?
+             AND strategy_markets.market_id = ?
+           ORDER BY bundles.created_at ASC, bundles.id ASC
+           LIMIT 1`,
+        );
+        for (const market of markets) {
+          const existing = reservedMarket.get(
+            this.ownerAddress,
+            current.id,
+            market.marketId,
+          ) as { name: string } | undefined;
+          if (existing) {
+            throw new Error(
+              `${market.symbol} is already quoted by ${existing.name}. Duplicate the strategy and change its markets.`,
+            );
+          }
+        }
+      }
       const walletLimits = this.getWalletLimits();
       if (walletLimits) {
         for (const projection of projections) {
@@ -2698,6 +3220,8 @@ export class TenantStore {
           this.ownerAddress,
           current.id,
         );
+      this.replaceStrategyMarkets(current.id, markets);
+      this.mirrorStrategyMarkets(current.id);
       const writeBundle = this.db.prepare(
         `UPDATE bundles
          SET config = ?, strategy_version_applied = ?, updated_at = ?
@@ -2765,6 +3289,7 @@ export class TenantStore {
       name,
       config: parse<unknown>(current.config),
       marketRule: parse<unknown>(current.market_rule),
+      markets: this.getStrategyMarkets(current.id),
     });
   }
 
@@ -3006,7 +3531,8 @@ export class TenantStore {
     makerAccountId: string | null;
     takerAccountId: string | null;
     mode: MakerConfig["mode"];
-    markets: MakerConfig["markets"];
+    /** Compatibility-only scaffold for a paused bundle without a strategy. */
+    markets?: MakerConfig["markets"];
     strategyId: string | null;
     confirmWalletLimits?: boolean;
   }): StoredBundle {
@@ -3038,16 +3564,24 @@ export class TenantStore {
       const strategyConfig = strategy
         ? strategyConfigSchema.parse(parse<unknown>(strategy.config))
         : undefined;
+      const strategyMarkets = strategy
+        ? this.getStrategyMarkets(strategy.id)
+        : (inputs.markets ?? this.getConfig()?.markets ?? []);
+      if (!strategyMarkets.length) {
+        throw new Error(
+          "Choose a strategy with one or more markets before creating this bundle",
+        );
+      }
       const config = strategyConfig
         ? composeMakerConfig({
             strategy: strategyConfig,
             mode: inputs.mode,
             makerAccountId: inputs.makerAccountId,
             takerAccountId: inputs.takerAccountId,
-            markets: inputs.markets,
+            markets: strategyMarkets,
           })
         : makerConfigSchema.parse({
-            markets: inputs.markets,
+            markets: strategyMarkets,
             mode: inputs.mode,
             makerAccountId: inputs.makerAccountId,
             hedge: {
@@ -3139,10 +3673,20 @@ export class TenantStore {
         inputs.strategyId === undefined
           ? current.strategy_id
           : inputs.strategyId;
-      const markets = inputs.markets ?? this.getBundleMarkets(current.id);
+      if (inputs.markets !== undefined) {
+        throw new Error("Markets are set on the strategy, not the bundle");
+      }
       const strategy = strategyId ? this.strategyRow(strategyId) : undefined;
+      const markets = strategy
+        ? this.getStrategyMarkets(strategy.id)
+        : this.getBundleMarkets(current.id);
       if (strategyId && (!strategy || strategy.archived_at)) {
         throw new Error("Strategy was not found for this wallet");
+      }
+      if (strategy && !markets.length) {
+        throw new Error(
+          "Add one or more markets to the strategy before attaching it",
+        );
       }
       const fallback = this.composeBundleConfig(current);
       const config = strategy

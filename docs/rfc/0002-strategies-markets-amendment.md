@@ -1,6 +1,6 @@
 # RFC 0002 amendment: Strategies own markets
 
-- **Status:** Proposed — approval required before implementation
+- **Status:** Approved — implementation in progress
 - **Date:** 2026-10-29
 - **Amends:** [RFC 0002](0002-strategies.md)
 - **Scope:** Move the canonical market set from bundles to strategies without changing Live order behavior.

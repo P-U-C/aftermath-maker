@@ -357,6 +357,7 @@ type MakerStrategy = {
   name: string;
   config: StrategySettings;
   marketRule: StrategyMarketRule;
+  markets: MakerConfig["markets"];
   version: number;
   usedBy: Array<{ id: string; name: string }>;
   archivedAt: string | null;
@@ -1204,12 +1205,16 @@ function DashboardBody() {
     setSelectedStrategyId(result.strategy.id);
     setStrategyNameDraft(result.strategy.name);
     setStrategyMarketRule(result.strategy.marketRule);
-    setConfig((current) =>
-      configWithStrategySettings(current, result.strategy.config),
-    );
+    setConfig((current) => ({
+      ...configWithStrategySettings(current, result.strategy.config),
+      markets: result.strategy.markets,
+    }));
     setSavedConfig((current) =>
       current
-        ? configWithStrategySettings(current, result.strategy.config)
+        ? {
+            ...configWithStrategySettings(current, result.strategy.config),
+            markets: result.strategy.markets,
+          }
         : current,
     );
   }
@@ -1227,6 +1232,7 @@ function DashboardBody() {
               kind: "preferred-list",
               marketIds: config.markets.map((market) => market.marketId),
             },
+            markets: config.markets,
           }),
         },
       );
@@ -1281,15 +1287,9 @@ function DashboardBody() {
     name: string;
     makerAccountId: string;
     takerAccountId: string;
-    marketId: string;
     strategyId: string | null;
     confirmWalletLimits: boolean;
   }) {
-    const market = markets.find((candidate) => candidate.id === draft.marketId);
-    if (!market) {
-      setNotice("Choose a market before creating a bundle.", "warning");
-      return;
-    }
     if (draft.takerAccountId && draft.takerAccountId === draft.makerAccountId) {
       setNotice("Maker and Taker accounts must be different.", "warning");
       return;
@@ -1305,7 +1305,6 @@ function DashboardBody() {
           makerAccountId: draft.makerAccountId,
           takerAccountId: draft.takerAccountId || null,
           mode: "paper",
-          markets: [{ marketId: market.id, symbol: market.symbol }],
           strategyId: draft.strategyId,
           confirmWalletLimits: draft.confirmWalletLimits,
         }),
@@ -1355,17 +1354,11 @@ function DashboardBody() {
     draft: {
       makerAccountId: string;
       takerAccountId: string;
-      marketId: string;
       mode: "observe" | "paper";
       strategyId: string | null;
       updatedAt: string;
     },
   ) {
-    const market = markets.find((candidate) => candidate.id === draft.marketId);
-    if (!market) {
-      setNotice("Choose a free market before saving the bundle.", "warning");
-      return;
-    }
     await mutate("update-bundle-allocation", async () => {
       const result = await request<{
         bundle: MakerBundle;
@@ -1376,7 +1369,6 @@ function DashboardBody() {
           makerAccountId: draft.makerAccountId,
           takerAccountId: draft.takerAccountId || null,
           mode: draft.mode,
-          markets: [{ marketId: market.id, symbol: market.symbol }],
           strategyId: draft.strategyId,
           expectedUpdatedAt: draft.updatedAt,
         }),
@@ -2356,6 +2348,10 @@ function DashboardBody() {
             name: strategyNameDraft.trim(),
             config: strategySettingsFromConfig(config),
             marketRule: strategyMarketRule,
+            markets: strategyRulePreviewMarkets.map((market) => ({
+              marketId: market.id,
+              symbol: market.symbol,
+            })),
             expectedVersion: selectedStrategy.version,
           }),
         });
@@ -2364,7 +2360,12 @@ function DashboardBody() {
             strategy.id === result.strategy.id ? result.strategy : strategy,
           ),
         );
-        setSavedConfig(config);
+        const savedStrategyConfig = {
+          ...configWithStrategySettings(config, result.strategy.config),
+          markets: result.strategy.markets,
+        };
+        setConfig(savedStrategyConfig);
+        setSavedConfig(savedStrategyConfig);
         setStrategyNameDraft(result.strategy.name);
         setNotice(
           result.affectedBundles.length > 1
@@ -2599,10 +2600,15 @@ function DashboardBody() {
   const strategyNameDirty =
     Boolean(selectedStrategy) &&
     strategyNameDraft.trim() !== selectedStrategy?.name;
+  const strategyRuleDirty =
+    Boolean(selectedStrategy) &&
+    JSON.stringify(strategyMarketRule) !==
+      JSON.stringify(selectedStrategy?.marketRule);
   const configDirty =
     savedConfig === undefined ||
     !configsEqual(config, savedConfig) ||
-    strategyNameDirty;
+    strategyNameDirty ||
+    strategyRuleDirty;
 
   const requestStrategyExit = useCallback(
     (view: MakerView) => {
@@ -2619,9 +2625,13 @@ function DashboardBody() {
     const target = pendingStrategyExit;
     if (!target) return;
     if (savedConfig) setConfig(savedConfig);
+    if (selectedStrategy) {
+      setStrategyNameDraft(selectedStrategy.name);
+      setStrategyMarketRule(selectedStrategy.marketRule);
+    }
     setPendingStrategyExit(null);
     selectView(target);
-  }, [pendingStrategyExit, savedConfig, selectView]);
+  }, [pendingStrategyExit, savedConfig, selectView, selectedStrategy]);
 
   const saveStrategyChangesThenLeave = useCallback(() => {
     const target = pendingStrategyExit;
@@ -3930,8 +3940,8 @@ function DashboardBody() {
               <fieldset className="strategy-market-rule strategy-step strategy-step-markets">
                 <legend>Market rule</legend>
                 <p className="strategy-section-copy">
-                  This is a default for a new bundle. Existing bundle markets
-                  never move when you change it.
+                  These are this strategy's markets. Saving changes every bundle
+                  that uses it.
                 </p>
                 <label className="strategy-rule-kind">
                   <span>Rule</span>

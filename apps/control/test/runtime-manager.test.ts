@@ -167,6 +167,38 @@ describe("runtime endpoint management", () => {
     store.close();
   });
 
+  it("allows paused market overlap but refuses a second running bundle", () => {
+    const store = storeHarness();
+    const ownerAddress = `0x${"6".repeat(64)}`;
+    const tenant = store.forTenant(ownerAddress);
+    const core = makerConfigSchema.parse({
+      markets: [{ marketId: "0x6001", symbol: "BTC" }],
+    });
+    tenant.setConfig(core);
+    tenant.confirmWalletLimits();
+    const duplicate = tenant.createBundle({
+      name: "Rewards",
+      config: makerConfigSchema.parse({
+        ...core,
+        mode: "paper",
+        makerAccountId: "3",
+        hedge: { ...core.hedge, accountId: "4" },
+      }),
+    });
+    const coreBundle = tenant
+      .listBundles()
+      .find((bundle) => bundle.name === "Core")!;
+    tenant.setBundleStatus(coreBundle.id, "running");
+    const manager = new RuntimeManager(store, {} as never, {});
+
+    expect(() => manager.startBundle(ownerAddress, duplicate.id)).toThrow(
+      "BTC is already quoted by Core. Duplicate the strategy and change its markets.",
+    );
+    expect(tenant.getStoredBundle(duplicate.id)?.status).toBe("stopped");
+    manager.close();
+    store.close();
+  });
+
   it("does not start a paused bundle outside an edited wallet envelope", async () => {
     const store = storeHarness();
     const ownerAddress = `0x${"5".repeat(64)}`;
