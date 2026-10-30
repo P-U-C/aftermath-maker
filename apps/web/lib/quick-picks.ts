@@ -27,28 +27,35 @@ export function quickPickMarketIds(
   const sorted = [...opportunities];
   if (pick === "rewards") {
     return sorted
-      .filter((item) => item.eligible)
+      .filter((item) => item.eligible && item.objectiveEligible)
       .sort(byDescending("farmingScore"))
       .slice(0, Math.min(3, max))
       .map((item) => item.marketId);
   }
   if (pick === "balanced") {
     return sorted
-      .filter((item) => item.objectiveEligible)
+      .filter((item) => item.eligible && item.objectiveEligible)
       .sort(byDescending("bothScore"))
       .slice(0, Math.min(5, max))
       .map((item) => item.marketId);
   }
   if (pick === "quiet") {
     return sorted
-      .filter((item) => item.thinActive)
+      .filter(
+        (item) => item.eligible && item.thinActive && item.objectiveEligible,
+      )
       .sort(byDescending("farmingScore"))
       .slice(0, Math.min(5, max))
       .map((item) => item.marketId);
   }
 
   return sorted
-    .filter((item) => item.eligible && item.priceChange24hPct !== null)
+    .filter(
+      (item) =>
+        item.eligible &&
+        item.objectiveEligible &&
+        item.priceChange24hPct !== null,
+    )
     .sort(
       (left, right) =>
         Math.abs(left.priceChange24hPct ?? Infinity) -

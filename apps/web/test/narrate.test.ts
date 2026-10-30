@@ -17,7 +17,7 @@ describe("desk narration", () => {
         },
       }),
     ).toBe(
-      "Core is quoting MON, buying at 0.021393 and selling at 0.021484, 42 bps apart.",
+      "Core calculated MON quote levels of 0.021393 bid and 0.021484 ask, 42 bps apart. These prices do not prove orders are resting.",
     );
   });
 
@@ -70,15 +70,17 @@ describe("desk narration", () => {
         market: { symbol: "MON" },
         inventoryUsd: 1.04,
       }),
-    ).toBe("Stopped. Orders are cancelled; you still hold $1.04 of MON.");
+    ).toBe(
+      "Stopped in this view; confirm orders are cancelled on the venue. You still hold $1.04 of MON.",
+    );
   });
 
   it("only says the stopped desk holds nothing when it is flat", () => {
     expect(narrate({ running: false, mode: "live", inventoryUsd: 0 })).toBe(
-      "Stopped. Orders are cancelled; you hold nothing.",
+      "Stopped in this view; confirm orders are cancelled on the venue. No exposure is shown.",
     );
     expect(narrate({ name: "Core", running: true, mode: "paper" })).toBe(
-      "Core is paper trading. Nothing it shows is a real order.",
+      "Core is reading markets in Paper. No real orders are placed; a dry run may be blocked.",
     );
   });
 });

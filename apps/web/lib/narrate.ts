@@ -32,12 +32,12 @@ export function narrate(input: NarrationInput): string {
   if (!input.running) {
     if (finite(input.inventoryUsd) && input.inventoryUsd !== 0) {
       const market = input.market?.symbol ? ` of ${input.market.symbol}` : "";
-      return `Stopped. Orders are cancelled; you still hold ${formatMoney(Math.abs(input.inventoryUsd))}${market}.`;
+      return `Stopped in this view; confirm orders are cancelled on the venue. You still hold ${formatMoney(Math.abs(input.inventoryUsd))}${market}.`;
     }
-    return "Stopped. Orders are cancelled; you hold nothing.";
+    return "Stopped in this view; confirm orders are cancelled on the venue. No exposure is shown.";
   }
   if (input.mode === "paper") {
-    return `${name} is paper trading. Nothing it shows is a real order.`;
+    return `${name} is reading markets in Paper. No real orders are placed; a dry run may be blocked.`;
   }
 
   const clauses: string[] = [];
@@ -51,7 +51,7 @@ export function narrate(input: NarrationInput): string {
     const mid = (market.ask + market.bid) / 2;
     const spreadBps = ((market.ask - market.bid) / mid) * 10_000;
     clauses.push(
-      `${name} is quoting ${market.symbol}, buying at ${formatPrice(market.bid, market.tickSize ?? null)} and selling at ${formatPrice(market.ask, market.tickSize ?? null)}, ${Math.round(spreadBps)} bps apart.`,
+      `${name} calculated ${market.symbol} quote levels of ${formatPrice(market.bid, market.tickSize ?? null)} bid and ${formatPrice(market.ask, market.tickSize ?? null)} ask, ${Math.round(spreadBps)} bps apart. These prices do not prove orders are resting.`,
     );
   }
 
@@ -64,7 +64,7 @@ export function narrate(input: NarrationInput): string {
       ? ` from a fill ${Math.max(0, Math.round(input.lastFillAgeSeconds))} s ago`
       : "";
     clauses.push(
-      `It holds ${formatMoney(Math.abs(input.inventoryUsd))} of ${market.symbol}${age}, so both quotes lean ${input.inventoryUsd > 0 ? "lower to sell it back" : "higher to buy it back"}.`,
+      `It holds ${formatMoney(Math.abs(input.inventoryUsd))} of ${market.symbol}${age}, so calculated quote levels lean ${input.inventoryUsd > 0 ? "lower to sell it back" : "higher to buy it back"}.`,
     );
   }
 
@@ -96,7 +96,7 @@ export function narrate(input: NarrationInput): string {
     Math.abs(input.inventoryUsd) >= input.maxInventoryUsd * 0.8
   ) {
     clauses.push(
-      `${name} is at ${formatMoney(Math.abs(input.inventoryUsd))} of its ${formatMoney(input.maxInventoryUsd)} inventory limit, so it is only quoting the side that reduces it.`,
+      `${name} is at ${formatMoney(Math.abs(input.inventoryUsd))} of its ${formatMoney(input.maxInventoryUsd)} inventory limit, so it may quote only the side that reduces it.`,
     );
   }
 

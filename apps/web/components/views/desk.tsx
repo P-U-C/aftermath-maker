@@ -1,12 +1,6 @@
 "use client";
 
-import {
-  ArrowDownRight,
-  CircleStop,
-  Clock3,
-  Play,
-  RefreshCw,
-} from "lucide-react";
+import { ArrowDownRight, CircleStop, Clock3, RefreshCw } from "lucide-react";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 
 import {
@@ -28,6 +22,7 @@ import {
   type MarketMotionHandle,
 } from "../market-motion";
 import { VenueChip } from "../venue-chip";
+import { useMakerRunControls } from "../maker-shell";
 import { ViewFrame } from "./view-frame";
 
 export type DeskMarketRow = {
@@ -37,7 +32,8 @@ export type DeskMarketRow = {
   bundleName: string | null;
   inventoryUsd: number;
   unrealizedPnlUsd: number;
-  effectiveSpreadBps: number;
+  effectiveSpreadBps: number | null;
+  activityLabel?: string;
   updatedAt: string | null;
 };
 
@@ -75,6 +71,7 @@ type DeskViewProps = {
   stopError: string | null;
   pnlUsd: number | null;
   equityUsd: number | null;
+  reportBundleName: string | null;
   grossExposureUsd: number | null;
   marketCount: number;
   startedAt: string | null;
@@ -104,7 +101,7 @@ type DeskViewProps = {
     subtitle: string;
   };
   risk: {
-    grossExposureUsd: number;
+    grossExposureUsd: number | null;
     grossExposureLimitUsd: number;
     hedgeTriggerUsd: number | null;
     worstSideFillUsd: number;
@@ -186,6 +183,7 @@ export function DeskView({
   stopError,
   pnlUsd,
   equityUsd,
+  reportBundleName,
   grossExposureUsd,
   marketCount,
   startedAt,
@@ -211,6 +209,7 @@ export function DeskView({
   onFlatten,
   onCancelFlatten,
 }: DeskViewProps) {
+  const { open: openRunControls } = useMakerRunControls();
   const gasShortfall =
     risk.gasRunwayTransactions === null
       ? 0
@@ -271,15 +270,18 @@ export function DeskView({
     inventoryUsd,
   ]);
 
-  const marketCaption =
-    mode === "paper" ? "Paper" : running ? "Quoting now" : "Waiting its turn";
+  const marketCaption = running
+    ? mode === "paper"
+      ? "Paper · reading markets; dry runs are not real orders"
+      : "Reading markets · verify resting quotes on the venue"
+    : "Waiting its turn";
   const plainMarketState = (row: DeskMarketRow) => {
     const state =
       row.status === "healthy"
-        ? "Quoting now"
+        ? "Market data current · orders unverified"
         : row.status === "queued"
           ? "Waiting its turn"
-          : "Paused";
+          : "Needs attention";
     return row.bundleName ? `${state} · ${row.bundleName}` : state;
   };
 
@@ -300,7 +302,7 @@ export function DeskView({
             </strong>
             <div className="desk-facts">
               <span>
-                Maker equity{" "}
+                Maker equity{reportBundleName ? ` · ${reportBundleName}` : ""}{" "}
                 <b>
                   <AnimatedNumber
                     value={formatMoney(equityUsd)}
@@ -309,7 +311,7 @@ export function DeskView({
                 </b>
               </span>
               <span>
-                Maker exposure{" "}
+                Bundle gross exposure{" "}
                 <b>
                   <AnimatedNumber
                     value={formatMoney(grossExposureUsd)}
@@ -359,17 +361,9 @@ export function DeskView({
             >
               Flatten positions…
             </Button>
-            {running || stopState === "stopping" ? (
-              <Button variant="stop" onClick={onStop}>
-                <CircleStop size={17} aria-hidden="true" />
-                {stopState === "stopping" ? "Stopping…" : "Stop all"}
-              </Button>
-            ) : (
-              <Button onClick={onStart} disabled={startDisabled}>
-                <Play size={17} aria-hidden="true" />
-                {startBusy ? "Starting…" : "Start"}
-              </Button>
-            )}
+            <Button onClick={() => openRunControls()}>
+              Run controls · choose bundle
+            </Button>
             {configDirty && !running && (
               <span className="desk-action-note">
                 Save Strategy changes before starting.
@@ -403,7 +397,7 @@ export function DeskView({
               title={
                 <span className="desk-card-title">
                   {running && (
-                    <span className="desk-card-title-prefix">Quoting </span>
+                    <span className="desk-card-title-prefix">Checking </span>
                   )}
                   {market.symbol}
                   <VenueChip venue={venue} />
@@ -464,12 +458,19 @@ export function DeskView({
             }
           >
             <div className="desk-risk-stack">
-              <Meter
-                label="Gross exposure"
-                value={risk.grossExposureUsd}
-                max={risk.grossExposureLimitUsd}
-                valueText={`${formatMoney(risk.grossExposureUsd)} of ${formatMoney(risk.grossExposureLimitUsd)}`}
-              />
+              {risk.grossExposureUsd === null ? (
+                <p className="desk-action-note" role="status">
+                  Exposure unavailable for this bundle; do not infer zero risk
+                  from the stopped Core snapshot.
+                </p>
+              ) : (
+                <Meter
+                  label="Gross exposure"
+                  value={risk.grossExposureUsd}
+                  max={risk.grossExposureLimitUsd}
+                  valueText={`${formatMoney(risk.grossExposureUsd)} of ${formatMoney(risk.grossExposureLimitUsd)}`}
+                />
+              )}
               <Meter
                 label="Worst-side fills"
                 value={risk.worstSideFillUsd}
@@ -547,12 +548,16 @@ export function DeskView({
                     <span className="desk-market-row">
                       <strong>{row.symbol}</strong>
                       <span className={`desk-market-state is-${row.status}`}>
-                        {plainMarketState(row)}
+                        {row.activityLabel ?? plainMarketState(row)}
                       </span>
                       <span>
                         {formatSignedMoney(row.inventoryUsd)} inventory
                       </span>
-                      <span>{row.effectiveSpreadBps} bps</span>
+                      <span>
+                        {row.effectiveSpreadBps === null
+                          ? "No saved policy"
+                          : `${row.effectiveSpreadBps} bps`}
+                      </span>
                     </span>
                   </ListRow>
                 ))

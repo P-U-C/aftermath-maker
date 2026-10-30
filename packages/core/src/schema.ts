@@ -307,6 +307,9 @@ export type RuntimeSnapshot = {
     measuredAt: string | null;
   };
   markets: RuntimeMarketSnapshot[];
+  /** Venue-visible, Maker-attributed resting orders from the last account read. */
+  restingQuoteMarketIds?: string[];
+  restingQuoteVerifiedAt?: string | null;
   portfolio: {
     selectedMarkets: number;
     grossExposureUsd: number;

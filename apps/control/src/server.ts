@@ -497,10 +497,21 @@ app.patch("/api/strategies/:strategyId", async (request) => {
     })
     .strict()
     .parse(request.body);
-  const result = scoped.updateStrategy({
-    ...body,
-    strategyId: params.strategyId,
-  });
+  let result: ReturnType<typeof scoped.updateStrategy>;
+  try {
+    result = scoped.updateStrategy({
+      ...body,
+      strategyId: params.strategyId,
+    });
+  } catch (error) {
+    if (
+      error instanceof Error &&
+      (error.message.includes("Strategy changed elsewhere") ||
+        error.message.includes("already quoted by"))
+    )
+      throw new AuthError(409, error.message);
+    throw error;
+  }
   await runtimeManager.reconfigureStrategyBundles(
     requestAuth(request).ownerAddress,
     result.affectedBundles.map((bundle) => bundle.id),

@@ -1,4 +1,29 @@
 /** Shared control-API fixture routing for headless runs. */
+function fallbackStrategy(fixture) {
+  const maker = fixture.config.config;
+  if (!maker) return null;
+  const {
+    markets,
+    mode: _mode,
+    makerAccountId: _makerAccountId,
+    hedge,
+    ...settings
+  } = maker;
+  const { accountId: _hedgeAccountId, ...hedgeSettings } = hedge;
+  return {
+    id: "core-strategy",
+    name: "Core strategy",
+    config: { ...settings, hedge: hedgeSettings },
+    marketRule: {
+      kind: "preferred-list",
+      marketIds: markets.map((market) => market.marketId),
+    },
+    markets,
+    version: 1,
+    usedBy: [{ id: "core-fixture", name: "Core" }],
+    archivedAt: null,
+  };
+}
 export function apiResponse(fixture, url) {
   const marker = "/api/control/";
   const routePath = url.pathname.slice(
@@ -16,44 +41,24 @@ export function apiResponse(fixture, url) {
     return { status: 200, body: fixture.config };
   }
   if (routePath === "api/strategies") {
+    const fallback = fallbackStrategy(fixture);
     return {
       status: 200,
       body: {
-        strategies: fixture.strategies?.strategies ?? [
-          {
-            id: "core-strategy",
-            name: "Core strategy",
-            config: fixture.config.config,
-            marketRule: {
-              kind: "preferred-list",
-              marketIds: fixture.config.config.markets.map(
-                (market) => market.marketId,
-              ),
-            },
-            version: 1,
-            usedBy: [{ id: "core", name: "Core" }],
-            archivedAt: null,
-          },
-        ],
+        strategies:
+          fixture.strategies?.strategies ?? (fallback ? [fallback] : []),
       },
     };
   }
-  if (/^api\/strategies\/[^/]+(?:\/(?:duplicate|archive))?$/.test(routePath)) {
-    const strategy = fixture.strategies?.strategies?.[0] ?? {
-      id: "core-strategy",
-      name: "Core strategy",
-      config: fixture.config.config,
-      marketRule: {
-        kind: "preferred-list",
-        marketIds: fixture.config.config.markets.map(
-          (market) => market.marketId,
-        ),
+  if (routePath.startsWith("api/strategies/")) {
+    return {
+      status: 200,
+      body: {
+        strategy:
+          fixture.strategies?.strategies?.[0] ?? fallbackStrategy(fixture),
+        affectedBundles: [],
       },
-      version: 1,
-      usedBy: [{ id: "core", name: "Core" }],
-      archivedAt: null,
     };
-    return { status: 200, body: { strategy, affectedBundles: [] } };
   }
   if (routePath === "api/bundles") {
     return { status: 200, body: fixture.bundles };

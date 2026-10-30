@@ -44,6 +44,7 @@ const views = [
 const viewports = [
   { name: "desktop", width: 1440, height: 900 },
   { name: "phone", width: 390, height: 844 },
+  { name: "tablet", width: 768, height: 900 },
 ];
 
 const auditInPage = (threshold) => {

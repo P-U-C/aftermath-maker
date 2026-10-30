@@ -867,6 +867,60 @@ describe("persistent control store", () => {
     databaseStore.close();
   });
 
+  it("retains ordered per-field market overrides on an unrelated strategy edit", () => {
+    const directory = join(
+      process.env.TMPDIR ?? "/tmp",
+      `aftermath-maker-${randomBytes(8).toString("hex")}`,
+    );
+    mkdirSync(directory, { recursive: true });
+    const databaseStore = new Store(join(directory, "maker.db"));
+    const tenant = databaseStore.forTenant(`0x${"f".repeat(64)}`);
+    const base = makerConfigSchema.parse({
+      markets: [{ marketId: "0xd001", symbol: "CORE" }],
+      maxInventoryUsd: 20,
+      maxGrossExposureUsd: 60,
+    });
+    tenant.setConfig(base);
+    const core = tenant.listBundles().find((bundle) => bundle.name === "Core")!;
+    const original = tenant.getStrategy(core.strategyId!)!;
+    const markets = [
+      { marketId: "0xd002", symbol: "SECOND", overrides: { spreadBps: 52 } },
+      { marketId: "0xd001", symbol: "CORE", overrides: { quoteSizeUsd: 13 } },
+    ];
+    const first = tenant.updateStrategy({
+      strategyId: original.id,
+      name: original.name,
+      config: original.config,
+      marketRule: { kind: "quick-pick", pick: "balanced" },
+      markets,
+      expectedVersion: original.version,
+    }).strategy;
+    expect(first.markets).toEqual(markets);
+    const renamed = tenant.updateStrategy({
+      strategyId: first.id,
+      name: "Renamed",
+      config: { ...first.config, spreadBps: 72, quoteSizeUsd: 19 },
+      marketRule: first.marketRule,
+      markets: first.markets,
+      expectedVersion: first.version,
+    }).strategy;
+    expect(renamed.markets).toEqual(markets);
+    expect(tenant.getBundleConfig(core.id)?.markets).toEqual(markets);
+    expect(tenant.getBundleConfig(core.id)?.spreadBps).toBe(72);
+    expect(() =>
+      tenant.updateStrategy({
+        strategyId: first.id,
+        name: "Stale",
+        config: first.config,
+        marketRule: first.marketRule,
+        markets: [],
+        expectedVersion: first.version,
+      }),
+    ).toThrow("Strategy changed elsewhere");
+    expect(tenant.getStrategy(first.id)?.markets).toEqual(markets);
+    databaseStore.close();
+  });
+
   it("forks a shared legacy strategy with divergent bundle market mirrors", () => {
     const directory = join(
       process.env.TMPDIR ?? "/tmp",
