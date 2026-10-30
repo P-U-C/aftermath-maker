@@ -64,7 +64,11 @@ import { narrate } from "../lib/narrate";
 import { marketActivity } from "../lib/market-activity";
 import { hedgeSizingSuggestion } from "../lib/hedge-suggestion";
 import { strategyIssueFromServer } from "../lib/strategy-validation";
-import { quickPickMarketIds, type MarketQuickPick } from "../lib/quick-picks";
+import { mergeStrategyReads } from "../lib/strategy-snapshots";
+import {
+  suggestMarketIds,
+  type MarketSuggestionPreset,
+} from "../lib/quick-picks";
 import {
   draftMarketsForSave,
   selectDraftMarkets,
@@ -91,10 +95,15 @@ import {
 import { Button, Sheet } from "./ui/primitives";
 import { NumericDraftInput } from "./ui/numeric-draft-input";
 import { SpreadMark } from "./spread-mark";
+import { StrategyPicker } from "./strategy-picker";
 import { VenueChip } from "./venue-chip";
 import { AccountsView } from "./views/accounts";
 import { BundleDeskLanes } from "./views/bundle-desk-lanes";
-import { BundlesView } from "./views/bundles";
+import {
+  BundlesView,
+  type BundleCreationResult,
+  type BundleEditorRequest,
+} from "./views/bundles";
 import { DeskView } from "./views/desk";
 import { LearnView } from "./views/learn";
 import { MarketsView } from "./views/markets";
@@ -837,13 +846,18 @@ const defaultConfig: MakerConfig = {
 
 function AdvancedTip({ id }: { id: AdvancedFieldTipId }) {
   return (
-    <GlossaryTerm definition={advancedFieldTips[id]}>
-      <span className="advanced-field-tip" aria-label={`Help: ${id}`}>
+    <GlossaryTerm
+      definition={advancedFieldTips[id]}
+      label={`Explain ${id.replaceAll("-", " ")}`}
+    >
+      <span className="advanced-field-tip" aria-hidden="true">
         ?
       </span>
     </GlossaryTerm>
   );
 }
+
+class FieldValidationFailure extends Error {}
 
 class RequestError extends Error {
   constructor(
@@ -864,17 +878,20 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
     cache: "no-store",
   });
   const payload = await response.text();
-  let data: T & { error?: string } = {} as T & { error?: string };
+  let data: T & { error?: string; requestId?: string } = {} as T & {
+    error?: string;
+    requestId?: string;
+  };
   if (payload) {
     try {
-      data = JSON.parse(payload) as T & { error?: string };
+      data = JSON.parse(payload) as T & { error?: string; requestId?: string };
     } catch {
-      data = { error: payload } as T & { error?: string };
+      data = { error: payload } as T & { error?: string; requestId?: string };
     }
   }
   if (!response.ok) {
     throw new RequestError(
-      data.error ?? `Request failed: ${response.status}`,
+      `${data.error ?? `Request failed: ${response.status}`}${response.status >= 500 && data.requestId ? ` (reference ${data.requestId})` : ""}`,
       response.status,
     );
   }
@@ -941,12 +958,23 @@ function DashboardBody() {
   const [strategyNameDraft, setStrategyNameDraft] = useState("");
   const [pendingMarketSuggestion, setPendingMarketSuggestion] = useState<{
     ids: string[];
-    pick: MarketQuickPick | null;
+    preset: MarketSuggestionPreset;
+    focus: "all" | "thin";
+    count: number;
+    strategyId: string | null;
   } | null>(null);
   const [walletLimits, setWalletLimits] = useState<BundleWalletLimits | null>(
     null,
   );
   const [selectedBundleId, setSelectedBundleId] = useState<string | null>(null);
+  const [bundleEditorRequest, setBundleEditorRequest] =
+    useState<BundleEditorRequest | null>(null);
+  const bundleEditorToken = useRef(0);
+  const [strategyReturn, setStrategyReturn] = useState<{
+    strategyId: string;
+    step: number;
+  } | null>(null);
+  const [accountFocusId, setAccountFocusId] = useState<string | null>(null);
   const selectedBundleIdRef = useRef<string | null>(null);
   const [markets, setMarkets] = useState<Market[]>([]);
   const [marketQuery, setMarketQuery] = useState("");
@@ -962,6 +990,15 @@ function DashboardBody() {
   });
   const [accounts, setAccounts] = useState<AccountCap[]>([]);
   const [accountsLoaded, setAccountsLoaded] = useState(false);
+  useEffect(() => {
+    if (activeView !== "accounts" || !accountFocusId) return;
+    const frame = window.requestAnimationFrame(() => {
+      const target = document.getElementById(`account-${accountFocusId}`);
+      target?.scrollIntoView({ block: "center" });
+      target?.focus({ preventScroll: true });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [activeView, accountFocusId, accounts.length]);
   const [events, setEvents] = useState<AuditEvent[]>([]);
   const [performance, setPerformance] = useState<Performance | null>(null);
   const [performancePeriod, setPerformancePeriod] =
@@ -981,6 +1018,11 @@ function DashboardBody() {
   const [invalidNumeric, setInvalidNumeric] = useState<Record<string, string>>(
     {},
   );
+  const [serverFieldIssue, setServerFieldIssue] = useState<{
+    message: string;
+    step: number;
+    fieldId: string | null;
+  } | null>(null);
   const [marketOverridesOpen, setMarketOverridesOpen] = useState(false);
   const [hedgeSuggestionOpen, setHedgeSuggestionOpen] = useState(false);
   const [overrideResetEpochs, setOverrideResetEpochs] = useState<
@@ -990,7 +1032,13 @@ function DashboardBody() {
   const [trialResult, setTrialResult] = useState<StrategyTrialResult | null>(
     null,
   );
-  const [rewardMarketCount, setRewardMarketCount] = useState(1);
+  const [rewardMarketCount, setRewardMarketCount] = useState(5);
+  const [suggestionPreset, setSuggestionPreset] =
+    useState<MarketSuggestionPreset>("balanced");
+  const [suggestionInputEpoch, setSuggestionInputEpoch] = useState(0);
+  const [suggestionCountError, setSuggestionCountError] = useState<
+    string | null
+  >(null);
   const [rewardFocus, setRewardFocus] = useState<"all" | "thin">("all");
   const [marketVenueFilter, setMarketVenueFilter] = useState<
     "all" | "aftermath"
@@ -1010,6 +1058,7 @@ function DashboardBody() {
     Record<string, string>
   >({});
   const [busy, setBusy] = useState("");
+  const bundleCreateInFlight = useRef(false);
   const [flattenArmed, setFlattenArmed] = useState(false);
   const [liveSheetOpen, setLiveSheetOpen] = useState(false);
   const [pendingStrategyExit, setPendingStrategyExit] =
@@ -1111,13 +1160,11 @@ function DashboardBody() {
     );
     setBundleSnapshots(statusResult.bundles ?? []);
     setBundles(bundleResult.bundles);
-    setStrategies(strategyResult.strategies);
+    setStrategies((current) =>
+      mergeStrategyReads(current, strategyResult.strategies),
+    );
     setSelectedStrategyId((current) => {
-      const next =
-        current &&
-        strategyResult.strategies.some((strategy) => strategy.id === current)
-          ? current
-          : (strategyResult.strategies[0]?.id ?? null);
+      const next = current ?? strategyResult.strategies[0]?.id ?? null;
       if (next !== current) {
         const strategy = strategyResult.strategies.find(
           (candidate) => candidate.id === next,
@@ -1310,11 +1357,16 @@ function DashboardBody() {
       return false;
     }
     setInvalidNumeric({});
+    setServerFieldIssue(null);
     setSelectedStrategyId(result.strategy.id);
     setDraftBaseVersion(result.strategy.version);
     setStrategyNameDraft(result.strategy.name);
     setStrategyMarketRule(result.strategy.marketRule);
     setPendingMarketSuggestion(null);
+    setSuggestionPreset("balanced");
+    setRewardFocus("all");
+    setRewardMarketCount(5);
+    setSuggestionCountError(null);
     setHedgeSuggestionOpen(false);
     setConfig((current) => ({
       ...configWithStrategySettings(current, result.strategy.config),
@@ -1402,15 +1454,23 @@ function DashboardBody() {
     takerAccountId: string;
     strategyId: string | null;
     confirmWalletLimits: boolean;
-  }) {
-    if (draft.takerAccountId && draft.takerAccountId === draft.makerAccountId) {
-      setNotice("Maker and Taker accounts must be different.", "warning");
-      return;
+  }): Promise<BundleCreationResult> {
+    if (bundleCreateInFlight.current) {
+      return { ok: false, error: "Bundle creation is already in progress." };
     }
-    await mutate("create-bundle", async () => {
+    if (draft.takerAccountId && draft.takerAccountId === draft.makerAccountId) {
+      return {
+        ok: false,
+        error: "Maker and Taker accounts must be different.",
+      };
+    }
+    bundleCreateInFlight.current = true;
+    setBusy("create-bundle");
+    setNotice(null);
+    try {
       const result = await request<{
         bundle: MakerBundle;
-        walletLimits: BundleWalletLimits;
+        walletLimits: BundleWalletLimits | null;
       }>("api/bundles", {
         method: "POST",
         body: JSON.stringify({
@@ -1422,22 +1482,62 @@ function DashboardBody() {
           confirmWalletLimits: draft.confirmWalletLimits,
         }),
       });
-      setBundles((current) => [...current, result.bundle]);
+      // The POST receipt is authoritative. A later GET/refresh failure must
+      // not turn this confirmed creation into a retried second POST.
+      setBundles((current) =>
+        current.some((bundle) => bundle.id === result.bundle.id)
+          ? current
+          : [...current, result.bundle],
+      );
       setWalletLimits(result.walletLimits);
       selectedBundleIdRef.current = result.bundle.id;
       setSelectedBundleId(result.bundle.id);
-      const created = await request<{ config: MakerConfig }>(
-        `api/bundles/${encodeURIComponent(result.bundle.id)}/config`,
-      );
-      setConfig(created.config);
-      setSavedConfig(created.config);
-      setNotice(
-        draft.strategyId
-          ? "Paper bundle created paused. Review it, then start it."
-          : "Bundle created paused. Attach a strategy before starting it.",
-        "success",
-      );
-    });
+      let configLoadedAfterCreate = false;
+      const readCreatedConfig = async () => {
+        try {
+          const created = await request<{ config: MakerConfig }>(
+            `api/bundles/${encodeURIComponent(result.bundle.id)}/config`,
+          );
+          setConfig(created.config);
+          setSavedConfig(created.config);
+          configLoadedAfterCreate = true;
+        } catch {
+          // Keep the confirmed bundle ID and try again after the list refresh.
+        }
+      };
+      await readCreatedConfig();
+      let refreshed = true;
+      try {
+        await refresh();
+      } catch {
+        refreshed = false;
+      }
+      if (!configLoadedAfterCreate) await readCreatedConfig();
+      if (!configLoadedAfterCreate || !refreshed) {
+        setNotice(
+          `Paper bundle ${result.bundle.name} was created, but its latest configuration could not be reloaded. Keep the bundle stopped and refresh the page; do not click Create again.`,
+          "warning",
+        );
+      } else {
+        setNotice(
+          "Paper bundle created stopped. Review it before starting.",
+          "success",
+        );
+      }
+      return { ok: true, bundleId: result.bundle.id };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (!(error instanceof RequestError) || error.status >= 500) {
+        setNotice(
+          "Bundle creation failed unexpectedly. No success receipt was returned; inspect the bundle list before retrying.",
+          "error",
+        );
+      }
+      return { ok: false, error: message };
+    } finally {
+      bundleCreateInFlight.current = false;
+      setBusy("");
+    }
   }
 
   async function attachStrategy(bundleId: string, strategyId: string) {
@@ -1467,7 +1567,6 @@ function DashboardBody() {
     draft: {
       makerAccountId: string;
       takerAccountId: string;
-      mode: "paper";
       strategyId: string | null;
       updatedAt: string;
     },
@@ -1481,7 +1580,6 @@ function DashboardBody() {
         body: JSON.stringify({
           makerAccountId: draft.makerAccountId,
           takerAccountId: draft.takerAccountId || null,
-          mode: draft.mode,
           strategyId: draft.strategyId,
           expectedUpdatedAt: draft.updatedAt,
         }),
@@ -1937,7 +2035,8 @@ function DashboardBody() {
       await refresh();
       return true;
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : String(error));
+      if (!(error instanceof FieldValidationFailure))
+        setNotice(error instanceof Error ? error.message : String(error));
       return false;
     } finally {
       setBusy("");
@@ -2205,6 +2304,8 @@ function DashboardBody() {
   }
 
   function toggleMarket(market: Market) {
+    setServerFieldIssue((current) => (current?.step === 1 ? null : current));
+    setPendingMarketSuggestion(null);
     const selected = config.markets.some((item) => item.marketId === market.id);
     const nextMarkets = selected
       ? config.markets.filter((item) => item.marketId !== market.id)
@@ -2234,6 +2335,9 @@ function DashboardBody() {
   }
 
   function setNumericValidity(fieldId: string, error: string | null) {
+    setServerFieldIssue((current) =>
+      current?.fieldId === fieldId ? null : current,
+    );
     setInvalidNumeric((current) => {
       const next = { ...current };
       if (error) next[fieldId] = error;
@@ -2275,6 +2379,9 @@ function DashboardBody() {
 
   function resetMarketOverride(marketId: string, key: keyof MarketOverrides) {
     const fieldId = `market-${marketId}-${key}`;
+    setServerFieldIssue((current) =>
+      current?.fieldId === fieldId ? null : current,
+    );
     setInvalidNumeric((current) => {
       const next = { ...current };
       delete next[fieldId];
@@ -2316,28 +2423,39 @@ function DashboardBody() {
     }));
   }
 
-  function applyQuickPick(pick: MarketQuickPick) {
-    setPendingMarketSuggestion({
-      ids: quickPickMarketIds(
-        rewards?.marketModel.opportunities ?? [],
-        pick,
-        MAX_SELECTED_MARKETS,
-      ),
-      pick,
-    });
+  function chooseSuggestionPreset(preset: MarketSuggestionPreset) {
+    setSuggestionPreset(preset);
+    setRewardMarketCount(preset === "rewards" ? 3 : 5);
+    setSuggestionInputEpoch((epoch) => epoch + 1);
+    setSuggestionCountError(null);
+    setPendingMarketSuggestion(null);
   }
 
   function acceptMarketSuggestion() {
-    if (!pendingMarketSuggestion) return;
+    setServerFieldIssue((current) => (current?.step === 1 ? null : current));
+    if (
+      !pendingMarketSuggestion ||
+      pendingMarketSuggestion.strategyId !== selectedStrategyId
+    )
+      return;
     const nextMarkets = selectDraftMarkets(
       pendingMarketSuggestion.ids,
       config.markets,
       markets,
     );
     setConfig((current) => ({ ...current, markets: nextMarkets }));
+    const defaultCount = pendingMarketSuggestion.preset === "rewards" ? 3 : 5;
+    const compatiblePreset =
+      pendingMarketSuggestion.focus === "all" &&
+      pendingMarketSuggestion.count === defaultCount &&
+      pendingMarketSuggestion.preset !== "ranked";
     setStrategyMarketRule(
-      pendingMarketSuggestion.pick
-        ? { kind: "quick-pick", pick: pendingMarketSuggestion.pick }
+      compatiblePreset
+        ? {
+            kind: "quick-pick",
+            pick: pendingMarketSuggestion.preset as
+              "rewards" | "balanced" | "steady",
+          }
         : {
             kind: "preferred-list",
             marketIds: nextMarkets.map((market) => market.marketId),
@@ -2347,25 +2465,20 @@ function DashboardBody() {
   }
 
   function stageRewardRotation() {
-    const candidates =
-      rewards?.marketModel.opportunities
-        .filter(
-          (opportunity) =>
-            opportunity.eligible &&
-            opportunity.objectiveEligible &&
-            (rewardFocus === "all" || opportunity.thinActive),
-        )
-        .slice(0, rewardMarketCount) ?? [];
-    if (!candidates.length) {
-      setNotice(
-        `No markets pass the ${config.strategyObjective} objective and selected focus in the latest scan.`,
-        "warning",
-      );
-      return;
-    }
+    if (suggestionCountError) return;
+    const ids = suggestMarketIds(
+      rewards?.marketModel.opportunities ?? [],
+      suggestionPreset,
+      rewardFocus,
+      rewardMarketCount,
+    );
+    if (!ids.length) return;
     setPendingMarketSuggestion({
-      ids: candidates.map((candidate) => candidate.marketId),
-      pick: null,
+      ids,
+      preset: suggestionPreset,
+      focus: rewardFocus,
+      count: rewardMarketCount,
+      strategyId: selectedStrategyId,
     });
   }
 
@@ -2373,7 +2486,14 @@ function DashboardBody() {
     if (!selectedStrategy || !identity) return false;
     const invalid = Object.entries(invalidNumeric)[0];
     if (invalid) {
-      setNotice(`Fix ${invalid[1]} before saving this draft.`, "warning");
+      focusStrategyField(
+        invalid[0],
+        invalid[0].startsWith("market-")
+          ? 2
+          : invalid[0].includes("hedge")
+            ? 3
+            : 2,
+      );
       return false;
     }
     try {
@@ -2413,7 +2533,6 @@ function DashboardBody() {
           ? strategySaveBlocker
           : null;
     if (issue) {
-      setNotice(issue.message, "warning");
       if ("fieldId" in issue && issue.fieldId)
         focusStrategyField(issue.fieldId, issue.step);
       return;
@@ -2439,7 +2558,6 @@ function DashboardBody() {
           strategySaveBlocker.step,
         );
       }
-      setNotice(strategySaveBlocker.message, "warning");
       return false;
     }
     return mutate("save", async () => {
@@ -2467,9 +2585,10 @@ function DashboardBody() {
           if (issue) {
             if (issue.fieldId?.startsWith("market-"))
               setMarketOverridesOpen(true);
+            setServerFieldIssue(issue);
             if (issue.fieldId) focusStrategyField(issue.fieldId, issue.step);
             else setStrategyStep(issue.step);
-            throw new Error(issue.message);
+            throw new FieldValidationFailure(issue.message);
           }
           if (
             error instanceof RequestError &&
@@ -2759,6 +2878,38 @@ function DashboardBody() {
     selectView(view);
   };
 
+  function openBundleEditorFromStrategy(
+    kind: BundleEditorRequest["kind"],
+    bundleId?: string,
+  ) {
+    if (!selectedStrategy) return;
+    if (configDirty && !persistStrategyDraft()) return;
+    setStrategyReturn({ strategyId: selectedStrategy.id, step: strategyStep });
+    bundleEditorToken.current += 1;
+    setBundleEditorRequest({
+      token: bundleEditorToken.current,
+      kind,
+      strategyId: selectedStrategy.id,
+      ...(bundleId ? { bundleId } : {}),
+    });
+    selectView("bundles");
+  }
+
+  function openAccountFromStrategy(accountId: string | null) {
+    if (!selectedStrategy) return;
+    if (configDirty && !persistStrategyDraft()) return;
+    setStrategyReturn({ strategyId: selectedStrategy.id, step: strategyStep });
+    setAccountFocusId(accountId);
+    selectView("accounts");
+  }
+
+  function returnToStrategy() {
+    if (strategyReturn) setStrategyStep(strategyReturn.step);
+    setAccountFocusId(null);
+    setStrategyReturn(null);
+    selectView("strategy");
+  }
+
   const discardStrategyChanges = useCallback(() => {
     const target = pendingStrategyExit;
     if (!target) return;
@@ -3040,8 +3191,21 @@ function DashboardBody() {
       opportunity.objectiveEligible &&
       (rewardFocus === "all" || opportunity.thinActive),
   );
-  const strategyRulePreviewMarkets = config.markets;
+  const suggestionCandidateIds = suggestMarketIds(
+    rewards?.marketModel.opportunities ?? [],
+    suggestionPreset,
+    rewardFocus,
+    64,
+  );
   const strategyMarketCount = config.markets.length;
+  const duplicateStrategyName = Boolean(
+    selectedStrategy &&
+    strategies.some(
+      (strategy) =>
+        strategy.id !== selectedStrategy.id &&
+        strategy.name.toLowerCase() === strategyNameDraft.trim().toLowerCase(),
+    ),
+  );
   const firstNumericError = Object.entries(invalidNumeric)[0];
   // The same core schema protects venue/risk relationships at the review
   // boundary. Account allocation is bundle-owned, so validate with a distinct
@@ -3054,6 +3218,14 @@ function DashboardBody() {
   const schemaIssue = schemaResult.success
     ? null
     : (schemaResult.error.issues[0] ?? null);
+  const mappedSchemaIssue = schemaIssue
+    ? strategyIssueFromServer(
+        JSON.stringify([
+          { path: schemaIssue.path, message: schemaIssue.message },
+        ]),
+        config.markets,
+      )
+    : null;
   const schemaIssueStep = schemaIssue
     ? schemaIssue.path[0] === "markets"
       ? schemaIssue.path.length > 2
@@ -3092,46 +3264,46 @@ function DashboardBody() {
           step: 0,
           fieldId: "strategy-name",
         }
-      : firstNumericError
+      : duplicateStrategyName
         ? {
-            message: firstNumericError[1],
-            fieldId: firstNumericError[0],
-            step: firstNumericError[0].includes("top-count")
-              ? 1
-              : firstNumericError[0].includes("hedge")
-                ? 3
-                : 2,
+            message: "Another strategy already uses that name.",
+            step: 0,
+            fieldId: "strategy-name",
           }
-        : config.hedge.enabled &&
-            config.hedge.maxOrderUsd < config.hedge.thresholdUsd
+        : firstNumericError
           ? {
-              message: "Maximum hedge order must cover the hedge trigger.",
-              step: 3,
-              fieldId: "strategy-hedge-max",
+              message: firstNumericError[1],
+              fieldId: firstNumericError[0],
+              step: firstNumericError[0].includes("top-count")
+                ? 1
+                : firstNumericError[0].includes("hedge")
+                  ? 3
+                  : 2,
             }
-          : config.autoRebalanceEnabled &&
-              config.rebalanceGrossExposureUsd > config.maxGrossExposureUsd
+          : config.hedge.enabled &&
+              config.hedge.maxOrderUsd < config.hedge.thresholdUsd
             ? {
-                message: "Rebalance exposure cannot exceed the gross limit.",
+                message: "Maximum hedge order must cover the hedge trigger.",
                 step: 3,
-                fieldId: "strategy-gross",
+                fieldId: "strategy-hedge-max",
               }
-            : incompatibleHedgeBundle
+            : config.autoRebalanceEnabled &&
+                config.rebalanceGrossExposureUsd > config.maxGrossExposureUsd
               ? {
-                  message: `${incompatibleHedgeBundle.name} needs two distinct authorized Maker/hedge accounts before this hedge can be applied. Fix the bundle allocation in Bundles.`,
+                  message: "Rebalance exposure cannot exceed the gross limit.",
                   step: 3,
+                  fieldId: "strategy-gross",
                 }
-              : focusedRewardOpportunities.length > 0 &&
-                  rewardMarketCount > focusedRewardOpportunities.length
+              : incompatibleHedgeBundle
                 ? {
-                    message: `Select top N must be at most ${focusedRewardOpportunities.length} available candidate${focusedRewardOpportunities.length === 1 ? "" : "s"} for this focus.`,
-                    step: 1,
-                    fieldId: "strategy-top-count",
+                    message: `${incompatibleHedgeBundle.name} needs two distinct authorized Maker/hedge accounts before this hedge can be applied. Fix the bundle allocation in Bundles.`,
+                    step: 3,
                   }
                 : schemaIssue
                   ? {
                       message: `${schemaIssue.path.join(".")}: ${schemaIssue.message}`,
                       step: schemaIssueStep,
+                      fieldId: mappedSchemaIssue?.fieldId ?? undefined,
                     }
                   : strategyMarketCount === 0
                     ? {
@@ -3207,6 +3379,16 @@ function DashboardBody() {
             ];
       })
     : [];
+  const reviewCanAttach = Boolean(
+    selectedStrategy && !configDirty && selectedStrategy.markets.length > 0,
+  );
+  const unattachedBundles = bundles.filter(
+    (bundle) =>
+      !bundle.archivedAt && (!bundle.strategyId || bundle.needsStrategy),
+  );
+  const activeBundleCount = bundles.filter(
+    (bundle) => !bundle.archivedAt,
+  ).length;
   const strategyReady = strategySteps.every((step) => step.complete);
   const strategyReadyLabel = !strategyReady
     ? "Finish the highlighted steps"
@@ -3233,9 +3415,6 @@ function DashboardBody() {
               (config.rotationMode === "single-slot" ? 1 : rewardMarketCount)),
         )
       : Number.POSITIVE_INFINITY;
-  const rewardRotationBlocked =
-    Boolean(snapshot?.running) ||
-    (snapshot?.portfolio.grossExposureUsd ?? 0) > 0;
   const hasAttributedFills =
     (performance?.attributed.fills ?? 0) + (performance?.hedge.fills ?? 0) > 0;
   const objectiveEvidence = [
@@ -3306,6 +3485,7 @@ function DashboardBody() {
   const strategyVisibleMarkets = visibleMarkets.filter(
     (market) =>
       rewardFocus === "all" ||
+      selectedMarketIds.has(market.id) ||
       rewards?.marketModel.opportunities.some(
         (opportunity) =>
           opportunity.marketId === market.id && opportunity.thinActive,
@@ -4005,6 +4185,15 @@ function DashboardBody() {
               Create, fund, authorize, and assign the accounts Maker operates.
             </p>
           </div>
+          {strategyReturn && (
+            <button
+              className="button secondary"
+              type="button"
+              onClick={returnToStrategy}
+            >
+              Back to Strategy
+            </button>
+          )}
           {onboardingComplete && (
             <button
               className="button secondary"
@@ -4179,7 +4368,12 @@ function DashboardBody() {
                 const isMaker = activeMakerAccountId === owned.accountId;
                 const isHedge = config.hedge.accountId === owned.accountId;
                 return (
-                  <article className="account-row" key={owned.accountId}>
+                  <article
+                    className="account-row"
+                    key={owned.accountId}
+                    id={`account-${owned.accountId}`}
+                    tabIndex={-1}
+                  >
                     <div className="account-row-id">
                       <div className="account-row-heading">
                         <strong>
@@ -4633,9 +4827,38 @@ function DashboardBody() {
                     maxLength={80}
                     placeholder="Name this strategy"
                     aria-label="Strategy name"
+                    aria-invalid={Boolean(
+                      selectedStrategy &&
+                      (!strategyNameDraft.trim() || duplicateStrategyName),
+                    )}
+                    aria-describedby={
+                      selectedStrategy &&
+                      (!strategyNameDraft.trim() || duplicateStrategyName)
+                        ? "strategy-name-error"
+                        : undefined
+                    }
                     disabled={!selectedStrategy || Boolean(busy)}
                   />
                 </label>
+                {selectedStrategy &&
+                  (!strategyNameDraft.trim() || duplicateStrategyName) && (
+                    <small
+                      id="strategy-name-error"
+                      className="field-error"
+                      role="alert"
+                    >
+                      {duplicateStrategyName
+                        ? "Another strategy already uses that name."
+                        : "Name this strategy before continuing."}
+                    </small>
+                  )}
+                {selectedStrategy && (
+                  <small className="strategy-name-status" role="status">
+                    {strategyNameDirty
+                      ? `Draft name. Applied elsewhere as ${selectedStrategy.name} until Apply strategy.`
+                      : "Applied strategy name."}
+                  </small>
+                )}
                 <p>
                   Reusable settings for how bundles quote, control inventory,
                   hedge, and manage risk.
@@ -4644,76 +4867,47 @@ function DashboardBody() {
                     : " Not attached to a bundle yet."}
                 </p>
               </div>
-              <div className="strategy-heading-actions">
-                <div className="strategy-control-family">
-                  <label className="strategy-bundle-picker">
-                    <span>Strategy</span>
-                    <select
-                      value={selectedStrategyId ?? ""}
-                      onChange={(event) =>
-                        void selectStrategy(event.target.value)
-                      }
-                    >
-                      {strategies.map((strategy) => (
-                        <option key={strategy.id} value={strategy.id}>
-                          {strategy.name}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <button
-                    className="strategy-new-button"
-                    type="button"
-                    onClick={() => void createStrategy()}
-                    disabled={Boolean(busy)}
-                  >
-                    New strategy
-                  </button>
-                </div>
-                <button
-                  className="button secondary"
-                  type="button"
-                  onClick={() => void deleteStrategy()}
-                  disabled={!selectedStrategy || Boolean(busy)}
-                >
-                  Delete
-                </button>
-              </div>
+              <button
+                className="button secondary strategy-delete-button"
+                type="button"
+                onClick={() => void deleteStrategy()}
+                disabled={!selectedStrategy || Boolean(busy)}
+              >
+                Delete
+              </button>
             </header>
 
-            <section className="strategy-library" aria-label="Strategies">
-              {strategies.map((strategy) => (
-                <button
-                  key={strategy.id}
-                  type="button"
-                  className={
-                    strategy.id === selectedStrategyId
-                      ? "strategy-library-item is-selected"
-                      : "strategy-library-item"
-                  }
-                  aria-pressed={strategy.id === selectedStrategyId}
-                  onClick={() => void selectStrategy(strategy.id)}
-                >
-                  <strong>{strategy.name}</strong>
-                  <small>
-                    {strategy.marketRule.kind === "quick-pick"
-                      ? `Quick pick: ${strategy.marketRule.pick}`
-                      : `${strategy.marketRule.marketIds.length} preferred market${strategy.marketRule.marketIds.length === 1 ? "" : "s"}`}
-                  </small>
-                  <span>
-                    {strategy.usedBy.length
-                      ? `Used by ${strategy.usedBy.map((bundle) => bundle.name).join(", ")}`
-                      : "Not attached"}
-                  </span>
-                </button>
-              ))}
-              {!strategies.length && (
-                <p className="strategy-library-empty">
-                  No strategies yet. Create one first, then attach it to a
-                  paused bundle.
-                </p>
-              )}
-            </section>
+            <div className="strategy-select-row">
+              <StrategyPicker
+                strategies={strategies
+                  .filter((strategy) => !strategy.archivedAt)
+                  .map((strategy) => ({
+                    id: strategy.id,
+                    name: strategy.name,
+                    marketCount: strategy.markets.length,
+                    selection:
+                      strategy.marketRule.kind === "quick-pick"
+                        ? `Preset: ${strategy.marketRule.pick}`
+                        : "Manual selection",
+                    bundleCount: strategy.usedBy.length,
+                  }))}
+                selectedId={selectedStrategyId}
+                draftName={
+                  selectedStrategy && strategyNameDirty
+                    ? strategyNameDraft
+                    : null
+                }
+                onSelect={selectStrategy}
+              />
+              <button
+                className="strategy-new-button"
+                type="button"
+                onClick={() => void createStrategy()}
+                disabled={Boolean(busy)}
+              >
+                New strategy
+              </button>
+            </div>
 
             {selectedStrategy && (
               <p className="strategy-section-copy strategy-step strategy-step-markets">
@@ -4863,28 +5057,58 @@ function DashboardBody() {
                 {strategySaveBlocker &&
                   strategySaveBlocker.step <= strategyStep && (
                     <p className="strategy-save-reason" role="status">
-                      {strategySaveBlocker.message}{" "}
+                      {"fieldId" in strategySaveBlocker &&
+                      strategySaveBlocker.fieldId
+                        ? `Fix the highlighted field in ${strategySteps[strategySaveBlocker.step]?.label ?? "Strategy"}.`
+                        : strategySaveBlocker.message}{" "}
                       <button
                         type="button"
                         onClick={() =>
-                          setStrategyStep(strategySaveBlocker.step)
+                          "fieldId" in strategySaveBlocker &&
+                          strategySaveBlocker.fieldId
+                            ? focusStrategyField(
+                                strategySaveBlocker.fieldId,
+                                strategySaveBlocker.step,
+                              )
+                            : setStrategyStep(strategySaveBlocker.step)
                         }
                       >
                         Go to that step
                       </button>
                     </p>
                   )}
+                {serverFieldIssue && serverFieldIssue.step <= strategyStep && (
+                  <p className="strategy-save-reason field-error" role="alert">
+                    {serverFieldIssue.message}{" "}
+                    <button
+                      type="button"
+                      onClick={() =>
+                        serverFieldIssue.fieldId
+                          ? focusStrategyField(
+                              serverFieldIssue.fieldId,
+                              serverFieldIssue.step,
+                            )
+                          : setStrategyStep(serverFieldIssue.step)
+                      }
+                    >
+                      Go to field
+                    </button>
+                  </p>
+                )}
               </aside>
             </section>
 
             <section className="strategy-review-step strategy-step strategy-step-review">
               <h2>Review</h2>
               <p className="strategy-section-copy">
-                A strategy is reusable policy. Each bundle that uses it chooses
-                its own Paper or Live mode in Bundles.
+                A strategy is reusable policy. Each bundle chooses its own Paper
+                or Live mode, accounts and lifecycle.
               </p>
               {selectedStrategy && (
-                <div className="strategy-bundle-modes">
+                <div
+                  className="strategy-bundle-modes"
+                  aria-label="Bundle attachment"
+                >
                   {selectedStrategy.usedBy.length ? (
                     selectedStrategy.usedBy.map((usage) => {
                       const bundle = bundles.find(
@@ -4894,21 +5118,62 @@ function DashboardBody() {
                         <div key={usage.id}>
                           <strong>{usage.name}</strong>
                           <span>
-                            {bundle?.mode === "live" ? "Live" : "Paper"}
+                            {bundle?.mode === "live" ? "Live" : "Paper"} ·{" "}
+                            {bundle?.status ?? "status unknown"}
                           </span>
+                          <button
+                            className="button secondary"
+                            type="button"
+                            onClick={() =>
+                              openBundleEditorFromStrategy("edit", usage.id)
+                            }
+                          >
+                            Edit {usage.name} bundle
+                          </button>
                         </div>
                       );
                     })
                   ) : (
-                    <p>Not used by a bundle yet.</p>
+                    <p>This strategy is not attached to a bundle yet.</p>
+                  )}
+                  {!reviewCanAttach && (
+                    <p className="strategy-save-reason" role="status">
+                      {selectedStrategy.markets.length === 0
+                        ? "Apply at least one market in this strategy before attaching or creating a bundle."
+                        : "Apply or discard the Strategy draft before using it in a bundle. Save and next does not change the applied strategy."}
+                    </p>
+                  )}
+                  {unattachedBundles.length > 0 && (
+                    <button
+                      className="button secondary"
+                      type="button"
+                      disabled={!reviewCanAttach}
+                      onClick={() =>
+                        openBundleEditorFromStrategy(
+                          "edit",
+                          unattachedBundles[0]!.id,
+                        )
+                      }
+                    >
+                      Attach to {unattachedBundles[0]!.name}
+                    </button>
                   )}
                   <button
                     className="button secondary"
                     type="button"
-                    onClick={() => selectView("bundles")}
+                    disabled={!reviewCanAttach || activeBundleCount >= 4}
+                    onClick={() => openBundleEditorFromStrategy("create")}
                   >
-                    Change bundle mode
+                    {selectedStrategy.usedBy.length || unattachedBundles.length
+                      ? "Create another Paper bundle"
+                      : "Create bundle"}
                   </button>
+                  {activeBundleCount >= 4 && (
+                    <small>
+                      Archive or edit an existing bundle before creating
+                      another.
+                    </small>
+                  )}
                 </div>
               )}
               <fieldset
@@ -4998,12 +5263,13 @@ function DashboardBody() {
                       aria-pressed={
                         config.strategyObjective === objective.value
                       }
-                      onClick={() =>
+                      onClick={() => {
+                        setPendingMarketSuggestion(null);
                         setConfig((current) => ({
                           ...current,
                           strategyObjective: objective.value,
-                        }))
-                      }
+                        }));
+                      }}
                     >
                       <ObjectiveIcon size={15} aria-hidden="true" />
                       <span>
@@ -5479,92 +5745,202 @@ function DashboardBody() {
               <p className="strategy-section-copy">
                 Choose the venue markets this strategy may quote.
               </p>
-              <div
-                className="strategy-quick-picks"
-                role="group"
-                aria-label="Market quick picks"
+              <section
+                className="strategy-suggestion-panel"
+                aria-label="Suggest markets"
               >
-                <span>Quick picks</span>
-                {(
-                  [
-                    ["rewards", "Best for rewards"],
-                    ["balanced", "Balanced"],
-                    ["quiet", "Thin books"],
-                    ["steady", "Smallest 24h move"],
-                    ["clear", "Clear"],
-                  ] as const
-                ).map(([pick, label]) => (
-                  <button
-                    key={pick}
-                    type="button"
-                    className={
-                      strategyMarketRule.kind === "quick-pick" &&
-                      strategyMarketRule.pick === pick
-                        ? "is-selected"
-                        : undefined
-                    }
-                    aria-pressed={
-                      strategyMarketRule.kind === "quick-pick" &&
-                      strategyMarketRule.pick === pick
-                    }
-                    onClick={() => applyQuickPick(pick)}
+                <header>
+                  <strong>Suggest markets</strong>
+                  <span>
+                    Current rankings are advisory. Only Use these markets
+                    changes the draft.
+                  </span>
+                </header>
+                <div
+                  className="strategy-quick-picks"
+                  role="group"
+                  aria-label="Suggestion ranking"
+                >
+                  {(
+                    [
+                      ["rewards", "Best for rewards"],
+                      ["balanced", "Balanced"],
+                      ["steady", "Smallest 24h move"],
+                      ["ranked", "Top ranked"],
+                    ] as const
+                  ).map(([preset, label]) => (
+                    <button
+                      key={preset}
+                      type="button"
+                      className={
+                        suggestionPreset === preset ? "is-selected" : undefined
+                      }
+                      aria-pressed={suggestionPreset === preset}
+                      onClick={() => chooseSuggestionPreset(preset)}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+                <div className="strategy-rotation-stage">
+                  <div
+                    className="reward-focus"
+                    aria-label="Market suggestion focus"
                   >
-                    {label}
+                    <span>Focus</span>
+                    <div role="group" aria-label="Market suggestion focus">
+                      <button
+                        type="button"
+                        className={rewardFocus === "all" ? "selected" : ""}
+                        aria-pressed={rewardFocus === "all"}
+                        onClick={() => {
+                          setRewardFocus("all");
+                          setPendingMarketSuggestion(null);
+                        }}
+                      >
+                        All eligible
+                      </button>
+                      <button
+                        type="button"
+                        className={rewardFocus === "thin" ? "selected" : ""}
+                        aria-pressed={rewardFocus === "thin"}
+                        onClick={() => {
+                          setRewardFocus("thin");
+                          setPendingMarketSuggestion(null);
+                        }}
+                      >
+                        Thin books
+                      </button>
+                    </div>
+                  </div>
+                  <label className="reward-count">
+                    <span>Up to N markets</span>
+                    <NumericDraftInput
+                      key={`${selectedStrategyId ?? "core"}:${suggestionInputEpoch}`}
+                      id="strategy-top-count"
+                      label="Up to N markets"
+                      unit="markets"
+                      value={rewardMarketCount}
+                      min={1}
+                      max={64}
+                      integer
+                      onValidity={(_, error) => {
+                        setSuggestionCountError(error);
+                        setPendingMarketSuggestion(null);
+                      }}
+                      onValue={(value) => {
+                        setRewardMarketCount(value);
+                        setPendingMarketSuggestion(null);
+                      }}
+                    />
+                  </label>
+                  <button
+                    className="button reward-stage"
+                    type="button"
+                    onClick={stageRewardRotation}
+                    disabled={
+                      Boolean(suggestionCountError) ||
+                      suggestionCandidateIds.length === 0
+                    }
+                  >
+                    Preview selection
                   </button>
-                ))}
-              </div>
-              <p className="strategy-section-copy">
-                Suggestions are capped at 3 (rewards) or 5 (other presets) and
-                only include markets passing the selected objective. Thin books
-                have $100–$1,000 of balanced depth within 50 bps; smallest 24h
-                move is a price-change ranking, not a volatility forecast.
-                Rankings are suggestions, not saved policy.
-              </p>
-              <details className="strategy-market-legend">
-                <summary>What the market evidence means</summary>
-                <p>
-                  Score is a 0–100 heuristic for the selected objective, not a
-                  payoff forecast. Edge is estimated pre-risk basis points after
-                  known fees. 24h shows reported traded volume, not volatility.
-                  Open a market’s evidence for the full reasons.
+                  <button
+                    className="button secondary"
+                    type="button"
+                    onClick={() =>
+                      void loadRewards(config.strategyObjective).catch(
+                        (error) =>
+                          setNotice(
+                            error instanceof Error
+                              ? error.message
+                              : String(error),
+                          ),
+                      )
+                    }
+                  >
+                    Refresh suggestions
+                  </button>
+                </div>
+                <p className="strategy-suggestion-hint" role="status">
+                  {suggestionCandidateIds.length === 0
+                    ? "No current candidates pass this preset and focus. Your accepted markets remain unchanged."
+                    : suggestionCandidateIds.length < rewardMarketCount
+                      ? `${suggestionCandidateIds.length} candidates available; Preview will propose all ${suggestionCandidateIds.length}, not block saved policy.`
+                      : `${suggestionCandidateIds.length} candidates available; Preview proposes up to ${rewardMarketCount}.`}{" "}
+                  Rewards ranking favors measured farming score; Balanced ranks
+                  both-score; smallest move uses absolute 24h change, not
+                  volatility. Thin focus is $100–$1,000 balanced depth within 50
+                  bps. Presets seed 3 or 5 markets; N is adjustable up to 64.
                 </p>
-              </details>
+              </section>
               <p className="strategy-quick-preview" aria-live="polite">
-                Saved effective selection ({strategyMarketCount}/64):{" "}
-                {strategyRulePreviewMarkets
-                  .map((market) => market.symbol)
-                  .join(", ") || "none yet"}
+                Accepted draft selection ({strategyMarketCount}/64):{" "}
+                {config.markets.map((market) => market.symbol).join(", ") ||
+                  "none yet"}
                 .
                 {strategyMarketRule.kind === "quick-pick" && (
                   <>
                     {" "}
-                    Last applied preset: {strategyMarketRule.pick}; it does not
-                    auto-refresh.
+                    Last applied preset: {strategyMarketRule.pick}; rankings
+                    never auto-refresh it.
                   </>
                 )}
               </p>
-              {pendingMarketSuggestion && (
+              {config.markets.length === 0 && (
+                <p className="field-error" role="alert">
+                  Choose at least one market before saving this strategy.
+                </p>
+              )}
+              {pendingMarketSuggestion?.strategyId === selectedStrategyId && (
                 <div className="strategy-rule-preview" role="status">
-                  <strong>Proposed selection — not yet applied</strong>
+                  <strong>
+                    Proposed {pendingMarketSuggestion.ids.length} market
+                    {pendingMarketSuggestion.ids.length === 1 ? "" : "s"} — not
+                    yet used
+                  </strong>
                   <span>
-                    {pendingMarketSuggestion.ids.length
-                      ? pendingMarketSuggestion.ids
-                          .map(
-                            (id) =>
-                              markets.find((market) => market.id === id)
-                                ?.symbol ?? id,
-                          )
-                          .join(", ")
-                      : "No markets (you must choose at least one before saving)."}{" "}
-                    This changes only the selected market set; retained markets
-                    keep their overrides.
+                    {pendingMarketSuggestion.ids
+                      .map(
+                        (id) =>
+                          markets.find((market) => market.id === id)?.symbol ??
+                          id,
+                      )
+                      .join(", ")}
+                  </span>
+                  <span>
+                    Adding:{" "}
+                    {pendingMarketSuggestion.ids
+                      .filter(
+                        (id) =>
+                          !config.markets.some(
+                            (market) => market.marketId === id,
+                          ),
+                      )
+                      .map(
+                        (id) =>
+                          markets.find((market) => market.id === id)?.symbol ??
+                          id,
+                      )
+                      .join(", ") || "none"}
+                    . Removing:{" "}
+                    {config.markets
+                      .filter(
+                        (market) =>
+                          !pendingMarketSuggestion.ids.includes(
+                            market.marketId,
+                          ),
+                      )
+                      .map((market) => market.symbol)
+                      .join(", ") || "none"}
+                    . Retained markets keep their overrides.
                   </span>
                   <button
                     type="button"
                     className="button secondary"
                     onClick={acceptMarketSuggestion}
                   >
-                    Accept selection
+                    Use these markets
                   </button>
                   <button
                     type="button"
@@ -5575,65 +5951,29 @@ function DashboardBody() {
                   </button>
                 </div>
               )}
-              <div className="strategy-rotation-stage">
-                <div
-                  className="reward-focus"
-                  aria-label="Reward rotation focus"
-                >
-                  <span>Focus</span>
-                  <div role="group" aria-label="Reward rotation focus">
-                    <button
-                      type="button"
-                      className={rewardFocus === "all" ? "selected" : ""}
-                      aria-pressed={rewardFocus === "all"}
-                      onClick={() => setRewardFocus("all")}
-                    >
-                      All eligible
-                    </button>
-                    <button
-                      type="button"
-                      className={rewardFocus === "thin" ? "selected" : ""}
-                      aria-pressed={rewardFocus === "thin"}
-                      onClick={() => setRewardFocus("thin")}
-                    >
-                      Thin books
-                    </button>
-                  </div>
-                </div>
-                <label className="reward-count">
-                  <span>
-                    Select top N (of {focusedRewardOpportunities.length}{" "}
-                    eligible)
-                  </span>
-                  <NumericDraftInput
-                    key={selectedStrategyId ?? "core"}
-                    id="strategy-top-count"
-                    label="Select top N"
-                    unit="markets"
-                    value={rewardMarketCount}
-                    min={1}
-                    max={Math.max(
-                      1,
-                      Math.min(64, focusedRewardOpportunities.length),
-                    )}
-                    integer
-                    onValidity={setNumericValidity}
-                    onValue={(value) => setRewardMarketCount(value)}
-                  />
-                </label>
-                <button
-                  className="button reward-stage"
-                  type="button"
-                  onClick={stageRewardRotation}
-                  disabled={
-                    rewardRotationBlocked ||
-                    focusedRewardOpportunities.length < rewardMarketCount
-                  }
-                >
-                  <Target size={16} aria-hidden="true" />
-                  Preview selection
-                </button>
-              </div>
+              <button
+                type="button"
+                className="button secondary strategy-clear-selection"
+                onClick={() => {
+                  setConfig((current) => ({ ...current, markets: [] }));
+                  setStrategyMarketRule({
+                    kind: "preferred-list",
+                    marketIds: [],
+                  });
+                  setPendingMarketSuggestion(null);
+                }}
+              >
+                Clear selected markets
+              </button>
+              <details className="strategy-market-legend">
+                <summary>What the market evidence means</summary>
+                <p>
+                  Score is a 0–100 heuristic for the selected objective, not a
+                  payoff forecast. Edge is estimated pre-risk basis points after
+                  known fees. 24h shows reported traded volume, not volatility.
+                  Open a market’s evidence for full reasons.
+                </p>
+              </details>
               <div
                 className="strategy-venue-filters"
                 aria-label="Market venue filter"
@@ -5713,7 +6053,7 @@ function DashboardBody() {
                         <span>
                           <strong>{item.symbol}</strong>
                           <small>{money(item.openInterestUsd, 0)} OI</small>
-                          {opportunity && (
+                          {opportunity ? (
                             <small className="strategy-market-evidence">
                               <span>
                                 Score {Math.round(opportunity.score)} / 100
@@ -5727,12 +6067,28 @@ function DashboardBody() {
                                 {compactUsd(opportunity.volume24hUsd)} 24h
                               </span>
                               <span>
-                                {opportunity.reasons[0] ?? "Reason unavailable"}
+                                Depth{" "}
+                                {compactUsd(opportunity.balancedDepth50BpsUsd)}
                               </span>
+                            </small>
+                          ) : (
+                            <small className="strategy-market-evidence">
+                              <span>Score —</span>
+                              <span>Edge —</span>
+                              <span>24h —</span>
+                              <span>Depth —</span>
                             </small>
                           )}
                         </span>
                       </label>
+                      {selected &&
+                        rewardFocus === "thin" &&
+                        !opportunity?.thinActive && (
+                          <small className="strategy-outside-focus">
+                            Selected outside Thin focus; still included in the
+                            draft.
+                          </small>
+                        )}
                       {opportunity && (
                         <details className="strategy-market-reasons">
                           <summary>Why {item.symbol} ranks here</summary>
@@ -5837,7 +6193,20 @@ function DashboardBody() {
                 . This strategy’s limits apply per running bundle and do not
                 edit the shared wallet ceiling. Account equity percentages need
                 an attached bundle’s actual Maker account; no Core balance is
-                assumed for a shared strategy.
+                assumed for a shared strategy.{" "}
+                <button
+                  type="button"
+                  className="strategy-context-link"
+                  onClick={() =>
+                    walletLimits
+                      ? openBundleEditorFromStrategy("wallet-limits")
+                      : openAccountFromStrategy(null)
+                  }
+                >
+                  {walletLimits
+                    ? "Edit wallet limits"
+                    : "Finish Core setup in Accounts"}
+                </button>
               </p>
               <p className="strategy-section-copy">
                 Quote-only collateral estimate: {money(quoteOnlyCollateralUsd)}{" "}
@@ -5846,7 +6215,14 @@ function DashboardBody() {
                   ? "summing all selected markets"
                   : "one market at a time"}
                 . This excludes existing positions and other bundles; the live
-                risk gate still uses the full account state.
+                risk gate still uses the full account state.{" "}
+                <button
+                  type="button"
+                  className="strategy-context-link"
+                  onClick={() => focusStrategyField("strategy-quote-size", 2)}
+                >
+                  Edit quote size
+                </button>
               </p>
               {selectedStrategy?.usedBy.map((used) => {
                 const bundle = bundles.find((item) => item.id === used.id);
@@ -5867,13 +6243,46 @@ function DashboardBody() {
                     {account
                       ? money(account.availableCollateralUsd)
                       : "unavailable"}{" "}
-                    (latest loaded account read; timestamp not provided).
+                    (latest loaded account read; timestamp not provided).{" "}
+                    <button
+                      type="button"
+                      className="strategy-context-link"
+                      onClick={() =>
+                        openBundleEditorFromStrategy("edit", used.id)
+                      }
+                    >
+                      Edit {used.name} bundle
+                    </button>{" "}
+                    <button
+                      type="button"
+                      className="strategy-context-link"
+                      onClick={() =>
+                        openAccountFromStrategy(bundle?.makerAccountId ?? null)
+                      }
+                    >
+                      {bundle?.makerAccountId
+                        ? `View Maker account ${bundle.makerAccountId}`
+                        : "Set up Maker account"}
+                    </button>
+                    {bundle?.takerAccountId && (
+                      <>
+                        {" "}
+                        <button
+                          type="button"
+                          className="strategy-context-link"
+                          onClick={() =>
+                            openAccountFromStrategy(bundle.takerAccountId)
+                          }
+                        >
+                          View hedge account {bundle.takerAccountId}
+                        </button>
+                      </>
+                    )}
                   </p>
                 );
               })}
               <p>
                 Stop everything if equity falls ${" "}
-                <AdvancedTip id="run-drawdown" />
                 <label>
                   <span className="sr-only">Maximum run drawdown in USD</span>
                   <NumericDraftInput
@@ -5893,11 +6302,11 @@ function DashboardBody() {
                     }
                   />
                 </label>
-                from its highest point this run.
+                from its highest point this run.{" "}
+                <AdvancedTip id="run-drawdown" />
               </p>
               <p>
                 In any one market, hold at most ${" "}
-                <AdvancedTip id="per-pair-inventory" />
                 <label>
                   <span className="sr-only">Maximum inventory in USD</span>
                   <NumericDraftInput
@@ -5917,11 +6326,11 @@ function DashboardBody() {
                     }
                   />
                 </label>
-                of position, long or short.
+                of position, long or short.{" "}
+                <AdvancedTip id="per-pair-inventory" />
               </p>
               <p>
                 Across all markets, keep the total position value under ${" "}
-                <AdvancedTip id="gross-exposure" />
                 <label>
                   <span className="sr-only">Maximum gross exposure in USD</span>
                   <NumericDraftInput
@@ -5941,17 +6350,16 @@ function DashboardBody() {
                     }
                   />
                 </label>
-                {grossExposureError && (
-                  <small className="field-error">
-                    Gross exposure must cover the per-market inventory limit.
-                    Raise the gross cap or lower the inventory cap.
-                  </small>
-                )}
-                .
+                . <AdvancedTip id="gross-exposure" />
               </p>
+              {grossExposureError && (
+                <p className="field-error" role="alert">
+                  Gross exposure must cover the per-market inventory limit.
+                  Raise the gross cap or lower the inventory cap.
+                </p>
+              )}
               <p>
                 Pause quoting a market when its open position is down ${" "}
-                <AdvancedTip id="unrealized-loss" />
                 <label>
                   <span className="sr-only">
                     Maximum unrealized loss in USD
@@ -5973,7 +6381,7 @@ function DashboardBody() {
                     }
                   />
                 </label>
-                .
+                . <AdvancedTip id="unrealized-loss" />
               </p>
             </section>
 
@@ -6708,6 +7116,10 @@ function DashboardBody() {
         bundles={bundleCards}
         walletLimits={walletLimits}
         selectedBundleId={selectedBundleId}
+        editorRequest={bundleEditorRequest}
+        returnToStrategy={strategyReturn !== null}
+        onReturnToStrategy={returnToStrategy}
+        onOpenAccounts={() => selectView("accounts")}
         busy={Boolean(busy)}
         onSelect={(bundleId) => void selectBundle(bundleId)}
         onStart={(bundleId) => void bundleAction(bundleId, "start")}
@@ -6717,6 +7129,11 @@ function DashboardBody() {
         accounts={accounts.map((account) => ({
           accountId: account.accountId,
           label: account.label,
+          authorized: Boolean(
+            setup.accounts.find(
+              (managed) => managed.accountId === account.accountId,
+            )?.agentCapId,
+          ),
         }))}
         markets={markets.map((market) => ({
           id: market.id,
@@ -6725,6 +7142,8 @@ function DashboardBody() {
         strategies={strategies.map((strategy) => ({
           id: strategy.id,
           name: strategy.name,
+          marketCount: strategy.markets.length,
+          requiresHedge: strategy.config.hedge.enabled,
         }))}
         onAttachStrategy={attachStrategy}
         onUpdateAllocation={updateBundleAllocation}

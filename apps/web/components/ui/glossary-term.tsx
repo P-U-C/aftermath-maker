@@ -6,6 +6,7 @@ import { glossary, type GlossaryKey } from "../../lib/glossary";
 type GlossaryTermProps = {
   definition?: string;
   term?: GlossaryKey;
+  label?: string;
   children: ReactNode;
 };
 
@@ -17,6 +18,7 @@ type GlossaryTermProps = {
 export function GlossaryTerm({
   definition,
   term,
+  label,
   children,
 }: GlossaryTermProps) {
   const tipId = useId();
@@ -24,7 +26,12 @@ export function GlossaryTerm({
   const resolvedDefinition = entry?.definition ?? definition;
   if (!resolvedDefinition) return <>{children}</>;
   return (
-    <span className="glossary-term" tabIndex={0} aria-describedby={tipId}>
+    <span
+      className="glossary-term"
+      tabIndex={0}
+      aria-label={label}
+      aria-describedby={tipId}
+    >
       {children}
       <span className="glossary-tip" id={tipId} role="tooltip">
         {resolvedDefinition}

@@ -822,6 +822,7 @@ export function MakerShell({
                   <button
                     className="maker-phone-stop-all"
                     type="button"
+                    aria-label={stopLabel}
                     onClick={onStopAll}
                   >
                     <CircleStop size={17} aria-hidden="true" />

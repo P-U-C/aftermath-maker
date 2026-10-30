@@ -1,7 +1,7 @@
 "use client";
 
 import { Archive, Pencil, Plus } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import {
   activeBundles,
@@ -12,6 +12,16 @@ import { parseNumericDraft } from "../../lib/numeric-draft";
 import { Button, Card, Sheet } from "../ui/primitives";
 import { useMakerRunControls } from "../maker-shell";
 import { ViewFrame } from "./view-frame";
+
+export type BundleEditorRequest = {
+  token: number;
+  kind: "create" | "edit" | "wallet-limits";
+  strategyId?: string;
+  bundleId?: string;
+};
+
+export type BundleCreationResult =
+  { ok: true; bundleId: string } | { ok: false; error: string };
 
 export type BundleCard = {
   id: string;
@@ -42,22 +52,34 @@ type BundlesViewProps = {
     confirmedAt: string | null;
   } | null;
   selectedBundleId: string | null;
+  editorRequest?: BundleEditorRequest | null;
+  returnToStrategy?: boolean;
+  onReturnToStrategy?: () => void;
+  onOpenAccounts?: () => void;
   busy: boolean;
   onSelect: (bundleId: string) => void;
   onStart: (bundleId: string) => void;
   onPause: (bundleId: string) => void;
   onResume: (bundleId: string) => void;
   onArchive: (bundleId: string) => void;
-  accounts: Array<{ accountId: string; label: string | null }>;
+  accounts: Array<{
+    accountId: string;
+    label: string | null;
+    authorized: boolean;
+  }>;
   markets: Array<{ id: string; symbol: string }>;
-  strategies: Array<{ id: string; name: string }>;
+  strategies: Array<{
+    id: string;
+    name: string;
+    marketCount: number;
+    requiresHedge: boolean;
+  }>;
   onAttachStrategy: (bundleId: string, strategyId: string) => Promise<void>;
   onUpdateAllocation: (
     bundleId: string,
     draft: {
       makerAccountId: string;
       takerAccountId: string;
-      mode: "paper";
       strategyId: string | null;
       updatedAt: string;
     },
@@ -68,7 +90,7 @@ type BundlesViewProps = {
     takerAccountId: string;
     strategyId: string | null;
     confirmWalletLimits: boolean;
-  }) => Promise<void>;
+  }) => Promise<BundleCreationResult>;
   onUpdateWalletLimits: (limits: {
     maxRunDrawdownUsd: number;
     maxInventoryUsd: number;
@@ -98,6 +120,10 @@ export function BundlesView({
   bundles,
   walletLimits,
   selectedBundleId,
+  editorRequest,
+  returnToStrategy = false,
+  onReturnToStrategy,
+  onOpenAccounts,
   busy,
   onSelect,
   onStart,
@@ -127,17 +153,27 @@ export function BundlesView({
     },
   );
   const [name, setName] = useState("");
+  const [createError, setCreateError] = useState<string | null>(null);
+  const createSubmitting = useRef(false);
+  const handledEditorRequest = useRef<number | null>(null);
   const [makerAccountId, setMakerAccountId] = useState("");
   const [takerAccountId, setTakerAccountId] = useState("");
   const [strategyId, setStrategyId] = useState("");
   const [editingBundle, setEditingBundle] = useState<BundleCard | null>(null);
   const [editMakerAccountId, setEditMakerAccountId] = useState("");
   const [editTakerAccountId, setEditTakerAccountId] = useState("");
-  const [editMode] = useState<"paper">("paper");
+  useEffect(
+    () => setCreateError(null),
+    [name, makerAccountId, takerAccountId, strategyId, walletLimitsDraft],
+  );
   const [editStrategyId, setEditStrategyId] = useState("");
-  const availableMakerAccounts = availableBundleAccounts(accounts, visible);
+  const authorizedAccounts = accounts.filter((account) => account.authorized);
+  const availableMakerAccounts = availableBundleAccounts(
+    authorizedAccounts,
+    visible,
+  );
   const availableTakerAccounts = availableBundleAccounts(
-    accounts,
+    authorizedAccounts,
     visible,
     makerAccountId || null,
   );
@@ -146,14 +182,21 @@ export function BundlesView({
         (account) =>
           account.accountId === editingBundle.makerAccountId ||
           account.accountId === editingBundle.takerAccountId ||
-          availableBundleAccounts(accounts, visible).some(
+          availableBundleAccounts(authorizedAccounts, visible).some(
             (available) => available.accountId === account.accountId,
           ),
       )
     : [];
+  const chosenCreateStrategy = strategies.find(
+    (strategy) => strategy.id === strategyId,
+  );
   const canCreate =
     visible.length < 4 &&
-    Boolean(name.trim() && makerAccountId && makerAccountId !== takerAccountId);
+    Boolean(
+      name.trim() && makerAccountId && makerAccountId !== takerAccountId,
+    ) &&
+    (!strategyId || Boolean(chosenCreateStrategy?.marketCount)) &&
+    (!chosenCreateStrategy?.requiresHedge || Boolean(takerAccountId));
   const editedWalletLimits = {
     maxRunDrawdownUsd: Number(walletLimitsDraft.maxRunDrawdownUsd),
     maxInventoryUsd: Number(walletLimitsDraft.maxInventoryUsd),
@@ -212,20 +255,35 @@ export function BundlesView({
     });
   };
   const submitCreate = async (confirmWalletLimits: boolean) => {
-    if (!canCreate) return;
-    if (confirmWalletLimits && walletLimitsChanged) {
-      const saved = await onUpdateWalletLimits(editedWalletLimits);
-      if (!saved) return;
+    if (!canCreate || createSubmitting.current) return;
+    createSubmitting.current = true;
+    setCreateError(null);
+    try {
+      if (confirmWalletLimits && walletLimitsChanged) {
+        const saved = await onUpdateWalletLimits(editedWalletLimits);
+        if (!saved) {
+          setCreateError(
+            "Wallet limits could not be confirmed. Review the limit values and try again.",
+          );
+          return;
+        }
+      }
+      const result = await onCreate({
+        name: name.trim(),
+        makerAccountId,
+        takerAccountId,
+        strategyId: strategyId || null,
+        confirmWalletLimits,
+      });
+      if (!result.ok) {
+        setCreateError(result.error);
+        return;
+      }
+      setConfirmOpen(false);
+      setCreateOpen(false);
+    } finally {
+      createSubmitting.current = false;
     }
-    await onCreate({
-      name: name.trim(),
-      makerAccountId,
-      takerAccountId,
-      strategyId: strategyId || null,
-      confirmWalletLimits,
-    });
-    setConfirmOpen(false);
-    setCreateOpen(false);
   };
   const openWalletLimitsEditor = () => {
     if (!walletLimits) return;
@@ -243,7 +301,6 @@ export function BundlesView({
     await onUpdateAllocation(editingBundle.id, {
       makerAccountId: editMakerAccountId,
       takerAccountId: editTakerAccountId,
-      mode: editMode,
       strategyId: editStrategyId || null,
       updatedAt: editingBundle.updatedAt,
     });
@@ -256,6 +313,34 @@ export function BundlesView({
     setConfirmLimitsEditOpen(false);
     setEditLimitsOpen(false);
   };
+  useEffect(() => {
+    if (!editorRequest || handledEditorRequest.current === editorRequest.token)
+      return;
+    handledEditorRequest.current = editorRequest.token;
+    if (editorRequest.kind === "create") {
+      setStrategyId(editorRequest.strategyId ?? "");
+      const chosen = strategies.find(
+        (strategy) => strategy.id === editorRequest.strategyId,
+      );
+      setName((current) =>
+        current.trim() ? current : `${chosen?.name ?? "New"} bundle`,
+      );
+      setCreateError(null);
+      setCreateOpen(true);
+    } else if (editorRequest.kind === "edit") {
+      const target = visible.find(
+        (bundle) => bundle.id === editorRequest.bundleId,
+      );
+      if (target) {
+        openEditBundle(target);
+        if (editorRequest.strategyId)
+          setEditStrategyId(editorRequest.strategyId);
+      }
+    } else if (walletLimits) {
+      openWalletLimitsEditor();
+    }
+  }, [editorRequest?.token, strategies, visible, walletLimits]);
+
   return (
     <ViewFrame active={active} name="bundles">
       <section className="bundles-page">
@@ -270,11 +355,19 @@ export function BundlesView({
             </p>
           </div>
           <div className="bundles-heading-actions">
+            {returnToStrategy && (
+              <Button variant="quiet" size="small" onClick={onReturnToStrategy}>
+                Back to Strategy
+              </Button>
+            )}
             <span className="bundles-count">{visible.length} of 4 active</span>
             <Button
               variant="primary"
               size="small"
-              onClick={() => setCreateOpen(true)}
+              onClick={() => {
+                setCreateError(null);
+                setCreateOpen(true);
+              }}
               disabled={visible.length >= 4 || busy}
             >
               <Plus size={15} aria-hidden="true" />
@@ -447,7 +540,7 @@ export function BundlesView({
               </Button>
               <Button
                 variant="primary"
-                disabled={!canCreate || busy}
+                disabled={!canCreate || busy || !walletLimits}
                 onClick={() => {
                   if (walletLimits?.confirmedAt) {
                     void submitCreate(false);
@@ -463,6 +556,40 @@ export function BundlesView({
             </>
           }
         >
+          {!walletLimits && (
+            <div className="bundle-create-note" role="status">
+              Finish Core setup and configure wallet limits before creating a
+              strategy bundle.
+              <Button
+                variant="quiet"
+                onClick={() => {
+                  setCreateOpen(false);
+                  onOpenAccounts?.();
+                }}
+              >
+                Open Accounts setup
+              </Button>
+            </div>
+          )}
+          {!availableMakerAccounts.length && (
+            <div className="bundle-create-note" role="status">
+              No authorized unassigned Maker account is available.
+              <Button
+                variant="quiet"
+                onClick={() => {
+                  setCreateOpen(false);
+                  onOpenAccounts?.();
+                }}
+              >
+                Open Accounts
+              </Button>
+            </div>
+          )}
+          {createError && (
+            <p className="bundle-create-note" role="alert">
+              {createError}
+            </p>
+          )}
           <div className="bundle-create-fields">
             <label>
               <span>Name</span>
@@ -494,12 +621,26 @@ export function BundlesView({
               </select>
             </label>
             <label>
-              <span>Taker account (optional)</span>
+              <span>
+                Taker account{" "}
+                {chosenCreateStrategy?.requiresHedge
+                  ? "(required for this strategy)"
+                  : "(optional)"}
+              </span>
               <select
+                aria-label={
+                  chosenCreateStrategy?.requiresHedge
+                    ? "Taker account (required for this strategy)"
+                    : "Taker account (optional)"
+                }
                 value={takerAccountId}
                 onChange={(event) => setTakerAccountId(event.target.value)}
               >
-                <option value="">Off</option>
+                <option value="">
+                  {chosenCreateStrategy?.requiresHedge
+                    ? "Choose a distinct authorized hedge account"
+                    : "Off"}
+                </option>
                 {availableTakerAccounts.map((account) => (
                   <option key={account.accountId} value={account.accountId}>
                     {account.label ?? `Account ${account.accountId}`}
@@ -510,6 +651,7 @@ export function BundlesView({
             <label>
               <span>Strategy</span>
               <select
+                aria-label="Strategy"
                 value={strategyId}
                 onChange={(event) => setStrategyId(event.target.value)}
               >
@@ -526,12 +668,26 @@ export function BundlesView({
               </select>
             </label>
           </div>
-          {!availableMakerAccounts.length && (
+          {strategyId && !chosenCreateStrategy?.marketCount && (
             <p className="bundle-create-note" role="status">
-              Add or authorize an unassigned account before creating another
+              Apply one or more markets to this strategy before creating a
               bundle.
             </p>
           )}
+          {chosenCreateStrategy?.requiresHedge && !takerAccountId && (
+            <p className="bundle-create-note" role="status">
+              This applied strategy offsets fills with a hedge account. Choose a
+              distinct authorized Taker account; creating without it would fail
+              validation.
+            </p>
+          )}
+          {chosenCreateStrategy?.requiresHedge &&
+            !availableTakerAccounts.length && (
+              <p className="bundle-create-note" role="status">
+                No unassigned authorized hedge account is available. Set one up
+                in Accounts before creating this bundle.
+              </p>
+            )}
         </Sheet>
 
         <Sheet
@@ -548,6 +704,7 @@ export function BundlesView({
                 variant="primary"
                 disabled={
                   busy ||
+                  editingBundle?.status === "running" ||
                   !editMakerAccountId ||
                   editMakerAccountId === editTakerAccountId
                 }
@@ -558,10 +715,17 @@ export function BundlesView({
             </>
           }
         >
+          {editingBundle?.status === "running" && (
+            <p className="bundle-create-note" role="status">
+              Pause this bundle in Run controls before editing account
+              allocation. Opening this editor never stops it automatically.
+            </p>
+          )}
           <div className="bundle-create-fields">
             <label>
               <span>Maker account</span>
               <select
+                aria-label="Maker account"
                 value={editMakerAccountId}
                 onChange={(event) => setEditMakerAccountId(event.target.value)}
               >
@@ -576,6 +740,7 @@ export function BundlesView({
             <label>
               <span>Taker account</span>
               <select
+                aria-label="Taker account"
                 value={editTakerAccountId}
                 onChange={(event) => setEditTakerAccountId(event.target.value)}
               >
@@ -592,6 +757,7 @@ export function BundlesView({
             <label>
               <span>Strategy</span>
               <select
+                aria-label="Strategy"
                 value={editStrategyId}
                 onChange={(event) => setEditStrategyId(event.target.value)}
               >
@@ -660,6 +826,11 @@ export function BundlesView({
             </>
           }
         >
+          {createError && (
+            <p className="bundle-create-note" role="alert">
+              {createError}
+            </p>
+          )}
           <p className="bundle-confirm-copy">
             Lowering a limit applies it to every bundle before this new bundle
             is created.
