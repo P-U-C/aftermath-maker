@@ -275,6 +275,11 @@ function createHarness(options: { configured?: boolean } = {}) {
         postedOrderIds: ["101", "102"],
       };
     },
+    simulateQuote: async (inputs: { shouldContinue: () => boolean }) => {
+      if (!inputs.shouldContinue()) throw new Error("cancelled");
+      executionSequence.push("paper-dry-run");
+      return { endpoint: "test", gasUsedMist: 12 };
+    },
   };
 
   const runtimeOptions = {
@@ -344,8 +349,8 @@ describe("runtime execution boundaries", () => {
     harness.store.close();
   });
 
-  it("keeps Paper and Observe bundle cycles out of the transaction queue", async () => {
-    for (const mode of ["observe", "paper"] as const) {
+  it("keeps internal Observe cycles out of the transaction queue", async () => {
+    for (const mode of ["observe"] as const) {
       const harness = createHarness();
       harness.tenant.setConfig(
         makerConfigSchema.parse({
@@ -363,6 +368,53 @@ describe("runtime execution boundaries", () => {
       await harness.runtime.stop();
       harness.store.close();
     }
+  });
+
+  it("records estimated Paper fills only when a later book crosses a scratch order", async () => {
+    const harness = createHarness();
+    harness.tenant.setConfig(
+      makerConfigSchema.parse({
+        ...harness.tenant.getConfig()!,
+        mode: "paper",
+        markets: [{ marketId: "0x5678", symbol: "SUI" }],
+      }),
+    );
+
+    harness.runtime.start();
+    await harness.runtime.cycle();
+    expect(harness.executions()).toBe(0);
+    expect(harness.runtime.snapshot.paper).toMatchObject({
+      estimated: true,
+      openOrders: 2,
+      fills: 0,
+    });
+
+    // The next sampled ask trades through the simulated bid, so this is an
+    // estimate in the Paper ledger rather than an exchange fill claim.
+    harness.setOrderbook({
+      bestBidPrice: 9.98,
+      bestAskPrice: 9.8,
+      bids: [],
+      asks: [],
+    });
+    await harness.runtime.cycle();
+
+    expect(harness.runtime.snapshot.paper).toMatchObject({
+      estimated: true,
+      fills: 1,
+    });
+    expect(harness.runtime.snapshot.balances.inventoryUsd).toBeGreaterThan(0);
+    const performance = await harness.runtime.performance();
+    expect(performance.paper).toMatchObject({
+      estimated: true,
+      makerFills: 1,
+      hedgeFills: 0,
+      notionalUsd: 10,
+    });
+    expect(performance.fills[0]).toMatchObject({ estimated: true });
+    expect(harness.executionSequence).toEqual(["paper-dry-run"]);
+    await harness.runtime.stop();
+    harness.store.close();
   });
 
   it("submits byte-identical Core quote intents and gateway payloads", async () => {
@@ -1828,7 +1880,7 @@ describe("runtime execution boundaries", () => {
     harness.store.close();
   });
 
-  it("sweeps Maker orders when Stop is called after restart or outside Live mode", async () => {
+  it("stops Paper by cancelling its scratch ledger without signing", async () => {
     const harness = createHarness();
     const config = harness.tenant.getConfig()!;
     harness.tenant.setConfig(
@@ -1838,10 +1890,13 @@ describe("runtime execution boundaries", () => {
       }),
     );
 
+    harness.runtime.start();
+    await harness.runtime.cycle();
+    expect(harness.runtime.snapshot.paper.openOrders).toBeGreaterThan(0);
     await harness.runtime.stop();
 
-    expect(harness.cancellations()).toBe(1);
-    expect(harness.cancelledMarketSets()).toEqual([["0x5678", "0x9999"]]);
+    expect(harness.cancellations()).toBe(0);
+    expect(harness.runtime.snapshot.paper.openOrders).toBe(0);
     harness.store.close();
   });
 
@@ -2302,49 +2357,7 @@ describe("runtime execution boundaries", () => {
     harness.store.close();
   });
 
-  it("runs three live objective rounds and restores the saved strategy after flattening", async () => {
-    const harness = createHarness();
-    const original = makerConfigSchema.parse({
-      ...harness.tenant.getConfig()!,
-      markets: [{ marketId: "0x5678", symbol: "SUI" }],
-      mode: "paper",
-      rotationMode: "single-slot",
-      quoteSizeUsd: 1.04,
-      maxInventoryUsd: 1.1,
-      maxGrossExposureUsd: 3,
-    });
-    harness.tenant.setConfig(original);
-
-    const result = await harness.runtime.runStrategyTrial({
-      mode: "live",
-      cadenceMs: 2_000,
-      maxSlippageBps: 100,
-    });
-
-    expect(result.rounds.map((round) => round.objective)).toEqual([
-      "farming",
-      "profit",
-      "both",
-    ]);
-    expect(result.rounds.map((round) => round.profile)).toEqual([
-      "active",
-      "cautious",
-      "balanced",
-    ]);
-    expect(result.rounds.map((round) => round.digest)).toEqual([
-      "digest-1",
-      "digest-2",
-      "digest-3",
-    ]);
-    expect(harness.executions()).toBe(3);
-    expect(harness.flattens()).toBe(1);
-    expect(harness.cancellations()).toBe(3);
-    expect(harness.tenant.getConfig()).toEqual(original);
-    expect(harness.runtime.snapshot.running).toBe(false);
-    harness.store.close();
-  });
-
-  it("simulates all three objective rounds without signing or flattening", async () => {
+  it("runs three isolated Paper cycles without signing, flattening, or writing config", async () => {
     const harness = createHarness();
     const original = makerConfigSchema.parse({
       ...harness.tenant.getConfig()!,
@@ -2356,11 +2369,7 @@ describe("runtime execution boundaries", () => {
     });
     harness.tenant.setConfig(original);
 
-    const result = await harness.runtime.runStrategyTrial({
-      mode: "paper",
-      cadenceMs: 2_000,
-      maxSlippageBps: 100,
-    });
+    const result = await harness.runtime.runPaperTrial({ cadenceMs: 2_000 });
 
     expect(result.rounds).toHaveLength(3);
     expect(result.rounds.every((round) => round.outcome === "simulated")).toBe(
@@ -2368,6 +2377,12 @@ describe("runtime execution boundaries", () => {
     );
     expect(harness.executions()).toBe(0);
     expect(harness.flattens()).toBe(0);
+    expect(harness.cancellations()).toBe(0);
+    expect(harness.executionSequence).toEqual([
+      "paper-dry-run",
+      "paper-dry-run",
+      "paper-dry-run",
+    ]);
     expect(harness.tenant.getConfig()).toEqual(original);
     expect(harness.runtime.snapshot.running).toBe(false);
     harness.store.close();

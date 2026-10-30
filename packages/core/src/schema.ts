@@ -53,7 +53,9 @@ export const makerConfigSchema = z
   .object({
     markets: z.array(makerMarketSchema).min(1).max(MAX_SELECTED_MARKETS),
     collateralCoinType: z.string().min(8).default(USDC_COIN_TYPE),
-    mode: runtimeModeSchema.default("observe"),
+    // Observe remains readable for historical records and internal readiness
+    // checks, but new saved strategies start in the user-facing Paper mode.
+    mode: runtimeModeSchema.default("paper"),
     rotationMode: rotationModeSchema.default("portfolio"),
     strategyObjective: strategyObjectiveSchema.default("both"),
     strategyProfile: z
@@ -332,6 +334,15 @@ export type RuntimeSnapshot = {
     avoidedTransactions: number;
     lastDecision: "quoted" | "switched" | "held" | "rebalanced" | null;
     lastExecutionAt: string | null;
+  };
+  paper: {
+    estimated: boolean;
+    openOrders: number;
+    fills: number;
+    hedges: number;
+    makerInventoryUsd: number;
+    hedgeInventoryUsd: number;
+    grossExposureUsd: number;
   };
   hedge: {
     enabled: boolean;

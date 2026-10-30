@@ -12,7 +12,8 @@ export const STRATEGY_TRIAL_OBJECTIVES = [
   "both",
 ] as const satisfies readonly StrategyObjective[];
 
-export type StrategyTrialMode = "paper" | "live";
+/** The user-facing test run is always an isolated Paper dry run. */
+export type StrategyTrialMode = "paper";
 
 export type StrategyTrialPlanRound = {
   objective: StrategyObjective;

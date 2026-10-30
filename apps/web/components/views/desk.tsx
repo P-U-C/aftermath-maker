@@ -50,6 +50,7 @@ export type DeskFill = {
   notionalUsd: number;
   realizedPnlUsd: number;
   txDigest: string;
+  estimated: boolean;
 };
 
 export type DeskEvent = {
@@ -80,6 +81,15 @@ type DeskViewProps = {
   lastFill: DeskFill | null;
   narration: string;
   mode: "observe" | "paper" | "live";
+  paper: {
+    estimated: boolean;
+    openOrders: number;
+    fills: number;
+    hedges: number;
+    makerInventoryUsd: number;
+    hedgeInventoryUsd: number;
+    grossExposureUsd: number;
+  };
   market: {
     symbol: string;
     tickSize: number | null;
@@ -182,6 +192,7 @@ export function DeskView({
   lastFill,
   narration,
   mode,
+  paper,
   market,
   risk,
   markets,
@@ -328,6 +339,15 @@ export function DeskView({
                     : "Waiting"}
                 </b>
               </span>
+              {paper.estimated && (
+                <span>
+                  Paper estimate{" "}
+                  <b>
+                    {paper.openOrders} orders / {paper.fills} fills /{" "}
+                    {paper.hedges} hedges
+                  </b>
+                </span>
+              )}
             </div>
           </div>
 
@@ -545,7 +565,11 @@ export function DeskView({
           <Card
             className="desk-fills-card"
             title="Fills"
-            subtitle="Confirmed fills from Maker-tagged orders."
+            subtitle={
+              paper.estimated
+                ? "Exchange fills are confirmed; Paper fills and results are estimates."
+                : "Confirmed fills from Maker-tagged orders."
+            }
             action={
               <Freshness
                 timestamp={fillsUpdatedAt}
@@ -572,6 +596,7 @@ export function DeskView({
                     <span className="desk-fill-row">
                       <strong>{fill.symbol}</strong>
                       <span className={`desk-fill-side is-${fill.side}`}>
+                        {fill.estimated ? "Estimated " : ""}
                         {fill.side === "bid" ? "Bought" : "Sold"}
                       </span>
                       <span>{formatMoney(fill.notionalUsd)}</span>

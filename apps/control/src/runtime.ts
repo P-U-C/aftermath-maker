@@ -63,6 +63,7 @@ export type MakerFill = {
   protocolFeesUsd: number;
   estimatedBuilderFeeUsd: number;
   orderId: string;
+  estimated: boolean;
 };
 
 export type FlattenResult = {
@@ -139,6 +140,12 @@ export type PerformanceSnapshot = {
     netAfterKnownCostsUsd: number;
   };
   combinedNetAfterKnownCostsUsd: number;
+  paper: {
+    estimated: boolean;
+    makerFills: number;
+    hedgeFills: number;
+    notionalUsd: number;
+  };
   volumeByMarket: Array<{
     marketId: string;
     symbol: string;
@@ -201,7 +208,7 @@ const snapshotBookLevels = (
     .slice(0, 50);
 
 const initialSnapshot = (): RuntimeSnapshot => ({
-  mode: "observe",
+  mode: "paper",
   running: false,
   cycle: 0,
   startedAt: null,
@@ -254,6 +261,15 @@ const initialSnapshot = (): RuntimeSnapshot => ({
     lastDecision: null,
     lastExecutionAt: null,
   },
+  paper: {
+    estimated: false,
+    openOrders: 0,
+    fills: 0,
+    hedges: 0,
+    makerInventoryUsd: 0,
+    hedgeInventoryUsd: 0,
+    grossExposureUsd: 0,
+  },
   hedge: {
     enabled: false,
     state: "off",
@@ -279,6 +295,32 @@ const emptyPortfolio = (): PortfolioSnapshot => ({
   gasSui: 0,
   positions: [],
 });
+
+const paperSnapshot = (paper: {
+  openOrders: number;
+  fills: number;
+  hedges: number;
+  positions: Array<{ role: "maker" | "hedge"; inventoryUsd: number }>;
+}) => {
+  const makerInventoryUsd = paper.positions
+    .filter((position) => position.role === "maker")
+    .reduce((total, position) => total + position.inventoryUsd, 0);
+  const hedgeInventoryUsd = paper.positions
+    .filter((position) => position.role === "hedge")
+    .reduce((total, position) => total + position.inventoryUsd, 0);
+  return {
+    estimated: true,
+    openOrders: paper.openOrders,
+    fills: paper.fills,
+    hedges: paper.hedges,
+    makerInventoryUsd,
+    hedgeInventoryUsd,
+    grossExposureUsd: paper.positions.reduce(
+      (total, position) => total + Math.abs(position.inventoryUsd),
+      0,
+    ),
+  };
+};
 
 const message = (error: unknown) =>
   error instanceof Error ? error.message : String(error);
@@ -395,6 +437,7 @@ export class MakerRuntime {
   private autoRebalancedOrderIds = new Set<string>();
   private singleSlotSwept = false;
   private strategyTrialActive = false;
+  private paperTrialId: string | null = null;
 
   constructor(
     private readonly store: TenantStore,
@@ -408,7 +451,7 @@ export class MakerRuntime {
       : null;
     this.snapshotValue = {
       ...this.snapshotValue,
-      mode: config?.mode ?? "observe",
+      mode: config?.mode ?? "paper",
       markets: config
         ? config.markets.map((market) => emptyRuntimeMarket(market, config))
         : [],
@@ -457,6 +500,19 @@ export class MakerRuntime {
       avoidedTransactions: this.snapshotValue.execution.avoidedTransactions,
       lastDecision: this.snapshotValue.execution.lastDecision,
     };
+    const paper = this.store.getPaperState("runtime");
+    snapshot.paper =
+      snapshot.mode === "paper"
+        ? paperSnapshot(paper)
+        : {
+            estimated: false,
+            openOrders: 0,
+            fills: 0,
+            hedges: 0,
+            makerInventoryUsd: 0,
+            hedgeInventoryUsd: 0,
+            grossExposureUsd: 0,
+          };
     return snapshot;
   }
 
@@ -792,6 +848,15 @@ export class MakerRuntime {
   }
 
   async stop(): Promise<void> {
+    // An isolated Paper test has no live orders and may run beside a real
+    // bundle. Stop must only cancel its scratch ledger, never inspect or
+    // cancel the saved bundle's exchange-backed orders.
+    if (this.paperTrialId) {
+      const trialId = this.paperTrialId;
+      this.stopScheduling();
+      this.store.cancelPaperOrders(trialId);
+      return;
+    }
     const config = this.store.getConfig();
     const activeCycle = this.cyclePromise;
     this.stopScheduling();
@@ -804,14 +869,17 @@ export class MakerRuntime {
         ),
       ]);
     }
-    if (config) {
+    if (config?.mode === "live") {
       const cancelled = await this.cancelOpenOrders(config, {
         attempts: 3,
         retryDelayMs: 2_000,
       });
       if (cancelled) this.clearActiveQuoteState();
+    } else if (config?.mode === "paper") {
+      this.store.cancelPaperOrders("runtime");
+      this.clearActiveQuoteState();
     }
-    if (!cycleSettled && activeCycle && config) {
+    if (!cycleSettled && activeCycle && config?.mode === "live") {
       void activeCycle
         .finally(() =>
           this.cancelOpenOrders(config, {
@@ -1030,6 +1098,12 @@ export class MakerRuntime {
           netAfterKnownCostsUsd: 0,
         },
         combinedNetAfterKnownCostsUsd: 0,
+        paper: {
+          estimated: false,
+          makerFills: 0,
+          hedgeFills: 0,
+          notionalUsd: 0,
+        },
         volumeByMarket: [],
         fills: [],
         note: "Authorize an agent to begin account and fill reconciliation.",
@@ -1079,7 +1153,7 @@ export class MakerRuntime {
       volumeByMarket.set(order.marketId, current);
     }
     const builderFeeRate = this.options.builderCode()?.integratorFee ?? 0;
-    const fills = history.orders
+    const confirmedFills = history.orders
       .filter(
         (order) =>
           order.maker && order.orderId && trackedIds.has(order.orderId),
@@ -1099,12 +1173,43 @@ export class MakerRuntime {
           protocolFeesUsd: order.feesUsd,
           estimatedBuilderFeeUsd: notionalUsd * builderFeeRate,
           orderId: order.orderId!,
+          estimated: false,
         };
       })
       .sort((left, right) => right.occurredAt.localeCompare(left.occurredAt));
 
+    const paperRows =
+      config?.mode === "paper"
+        ? this.store
+            .listPaperFills({ trialId: "runtime", limit: 2_000 })
+            .filter(
+              (fill) =>
+                sinceMs === undefined || Date.parse(fill.occurredAt) >= sinceMs,
+            )
+        : [];
+    const paperMakerFills = paperRows
+      .filter((fill) => fill.role === "maker")
+      .map<MakerFill>((fill) => ({
+        occurredAt: fill.occurredAt,
+        txDigest: `paper:${fill.orderKey}`,
+        marketId: fill.marketId,
+        symbol: fill.symbol,
+        side: fill.side,
+        price: fill.price,
+        size: fill.sizeUsd / fill.price,
+        notionalUsd: fill.sizeUsd,
+        realizedPnlUsd: 0,
+        protocolFeesUsd: 0,
+        estimatedBuilderFeeUsd: 0,
+        orderId: fill.orderKey,
+        estimated: true,
+      }));
+    const fills = [...confirmedFills, ...paperMakerFills].sort((left, right) =>
+      right.occurredAt.localeCompare(left.occurredAt),
+    );
+
     const sum = (selector: (fill: MakerFill) => number) =>
-      fills.reduce((total, fill) => total + selector(fill), 0);
+      confirmedFills.reduce((total, fill) => total + selector(fill), 0);
     const notionalUsd = sum((fill) => fill.notionalUsd);
     const realizedPnlUsd = sum((fill) => fill.realizedPnlUsd);
     const protocolFeesUsd = sum((fill) => fill.protocolFeesUsd);
@@ -1211,11 +1316,17 @@ export class MakerRuntime {
       hedge,
       combinedNetAfterKnownCostsUsd:
         makerNetAfterKnownCostsUsd + hedge.netAfterKnownCostsUsd,
+      paper: {
+        estimated: paperRows.length > 0,
+        makerFills: paperMakerFills.length,
+        hedgeFills: paperRows.filter((fill) => fill.role === "hedge").length,
+        notionalUsd: paperRows.reduce((total, fill) => total + fill.sizeUsd, 0),
+      },
       volumeByMarket: [...volumeByMarket.values()].sort((left, right) =>
         left.symbol.localeCompare(right.symbol),
       ),
       fills,
-      note: `Maker attribution uses recorded order IDs. Hedge attribution uses confirmed hedge transaction digests. Builder fees are deterministic estimates from filled notional; account metrics come from Aftermath's ${period === "1D" ? "24-hour" : period === "EPOCH" ? "current-epoch" : "all-time"} history.`,
+      note: `Maker attribution uses recorded order IDs. Hedge attribution uses confirmed hedge transaction digests. Builder fees are deterministic estimates from filled notional; account metrics come from Aftermath's ${period === "1D" ? "24-hour" : period === "EPOCH" ? "current-epoch" : "all-time"} history.${paperRows.length ? " Paper fills are book-crossing estimates, not exchange executions." : ""}`,
     };
   }
 
@@ -1839,7 +1950,12 @@ export class MakerRuntime {
   }
 
   async cycle(
-    inputs: { executeLive?: boolean; generation?: number } = {},
+    inputs: {
+      executeLive?: boolean;
+      generation?: number;
+      configOverride?: MakerConfig;
+      paperTrialId?: string;
+    } = {},
   ): Promise<void> {
     if (this.cyclePromise) return this.cyclePromise;
 
@@ -1847,6 +1963,10 @@ export class MakerRuntime {
     const task = this.runCycle({
       executeLive: inputs.executeLive ?? false,
       generation,
+      ...(inputs.configOverride
+        ? { configOverride: inputs.configOverride }
+        : {}),
+      ...(inputs.paperTrialId ? { paperTrialId: inputs.paperTrialId } : {}),
     });
     this.cyclePromise = task;
     try {
@@ -1859,14 +1979,17 @@ export class MakerRuntime {
   private async runCycle(inputs: {
     executeLive: boolean;
     generation: number;
+    configOverride?: MakerConfig;
+    paperTrialId?: string;
   }): Promise<void> {
     let selected: MakerMarket | null = null;
     let config: MakerConfig | null = null;
     let hedgeReconciliationCompleted = false;
     let switchFromMarketId: string | null = null;
     let usesDwellScheduler = false;
+    const paperTrialId = inputs.paperTrialId ?? "runtime";
     try {
-      const storedConfig = this.store.getConfig();
+      const storedConfig = inputs.configOverride ?? this.store.getConfig();
       if (!storedConfig) return;
       config = makerConfigSchema.parse(storedConfig);
       this.syncMarketRows(config);
@@ -1892,8 +2015,9 @@ export class MakerRuntime {
       const agent = this.store.getAgent();
       const executionIsCurrent = () =>
         this.snapshotValue.running && this.generation === inputs.generation;
+      const liveExecution = config.mode === "live" && inputs.executeLive;
 
-      if (config.mode === "live" && inputs.executeLive) {
+      if (liveExecution) {
         if (!this.singleSlotSwept) {
           const swept = await this.cancelOpenOrders(config, {
             attempts: 3,
@@ -1925,6 +2049,38 @@ export class MakerRuntime {
         throw new Error("Orderbook has no two-sided price");
       }
 
+      if (config.mode === "paper") {
+        const estimatedFills = this.store.matchPaperOrders({
+          trialId: paperTrialId,
+          marketId: selected.marketId,
+          bestBid,
+          bestAsk,
+        });
+        if (estimatedFills.length && config.hedge.enabled) {
+          for (const fill of estimatedFills) {
+            this.store.recordPaperHedge({
+              trialId: paperTrialId,
+              makerFill: fill,
+            });
+          }
+        }
+        if (estimatedFills.length) {
+          this.store.logEvent({
+            category: "paper",
+            action: "estimated-fill",
+            outcome: "estimated",
+            detail: {
+              trialId: paperTrialId,
+              marketId: selected.marketId,
+              fills: estimatedFills.length,
+              hedges: config.hedge.enabled ? estimatedFills.length : 0,
+            },
+          });
+        }
+      }
+      const paperState =
+        config.mode === "paper" ? this.store.getPaperState(paperTrialId) : null;
+
       let portfolio = emptyPortfolio();
       let hedgeRiskPortfolio: PortfolioSnapshot | null = config.hedge.enabled
         ? null
@@ -1948,6 +2104,54 @@ export class MakerRuntime {
           }
         }
       }
+      if (paperState) {
+        const virtualPortfolio = (
+          role: "maker" | "hedge",
+          base: PortfolioSnapshot,
+        ) => {
+          const positions = config!.markets.map((configuredMarket) => {
+            const existing = base.positions.find(
+              (position) => position.marketId === configuredMarket.marketId,
+            );
+            const estimated = paperState.positions.find(
+              (position) =>
+                position.role === role &&
+                position.marketId === configuredMarket.marketId,
+            );
+            return {
+              ...(existing ?? {
+                marketId: configuredMarket.marketId,
+                baseAssetAmount: 0,
+                pendingOrderCount: 0,
+                inventoryUsd: 0,
+                unrealizedPnlUsd: 0,
+                collateralUsd: 0,
+                freeMarginUsd: 0,
+                makerOrderIds: [],
+                hasPosition: false,
+              }),
+              inventoryUsd: estimated?.inventoryUsd ?? 0,
+              unrealizedPnlUsd: 0,
+              pendingOrderCount: 0,
+              makerOrderIds: [],
+              hasPosition: Boolean(estimated),
+            };
+          });
+          return {
+            ...base,
+            positions,
+            grossExposureUsd: positions.reduce(
+              (total, position) => total + Math.abs(position.inventoryUsd),
+              0,
+            ),
+            unrealizedPnlUsd: 0,
+          };
+        };
+        portfolio = virtualPortfolio("maker", portfolio);
+        hedgeRiskPortfolio = config.hedge.enabled
+          ? virtualPortfolio("hedge", hedgeRiskPortfolio ?? emptyPortfolio())
+          : emptyPortfolio();
+      }
       const combinedEquityUsd =
         portfolio.equityUsd + (hedgeRiskPortfolio?.equityUsd ?? 0);
       const combinedGrossExposureUsd =
@@ -1968,7 +2172,7 @@ export class MakerRuntime {
       );
 
       if (
-        inputs.executeLive &&
+        liveExecution &&
         config.hedge.enabled &&
         setup &&
         account?.agentCapId &&
@@ -2011,7 +2215,7 @@ export class MakerRuntime {
       }
 
       if (
-        inputs.executeLive &&
+        liveExecution &&
         config.autoRebalanceEnabled &&
         setup &&
         account?.agentCapId &&
@@ -2128,7 +2332,11 @@ export class MakerRuntime {
         quote,
         now: new Date(),
         setupComplete: Boolean(setup && account?.agentCapId && agent),
-        hasAgentKey: Boolean(agent && this.options.masterKey),
+        // Paper needs the authorized agent address to build and dry-run the
+        // transaction, not its private signing material.
+        hasAgentKey: Boolean(
+          agent && (config.mode === "paper" || this.options.masterKey),
+        ),
         liveEnabled: this.options.liveEnabled,
         mainnetAllowed: this.options.mainnetAllowed,
         portfolioGrossExposureUsd: combinedGrossExposureUsd,
@@ -2249,6 +2457,17 @@ export class MakerRuntime {
           accountId: config.hedge.accountId,
           error: config.hedge.enabled ? this.snapshotValue.hedge.error : null,
         },
+        paper: paperState
+          ? paperSnapshot(paperState)
+          : {
+              estimated: false,
+              openOrders: 0,
+              fills: 0,
+              hedges: 0,
+              makerInventoryUsd: 0,
+              hedgeInventoryUsd: 0,
+              grossExposureUsd: 0,
+            },
         quote,
         safety,
       };
@@ -2277,14 +2496,45 @@ export class MakerRuntime {
       }
 
       if (config.mode === "paper") {
-        this.store.logExecution({
-          mode: "paper",
+        if (!inputs.executeLive) {
+          this.snapshotValue.lastSuccessfulCycleAt = updatedAt;
+          return;
+        }
+        if (!executionIsCurrent()) return;
+        assertSafe(safety);
+        if (!setup || !account?.agentCapId || !agent) {
+          throw new Error(
+            "Paper mode requires a confirmed Maker account and agent",
+          );
+        }
+        const receipt = await this.gateway.simulateQuote({
+          setup,
+          config: marketConfig,
+          quote,
+          agentAddress: agent.address,
+          builderCode: this.options.builderCode(),
+          shouldContinue: executionIsCurrent,
+        });
+        if (!executionIsCurrent()) return;
+        this.store.recordPaperQuote({
+          trialId: paperTrialId,
           marketId: selected.marketId,
+          symbol: market.metadata?.symbol ?? selected.symbol,
           bidPrice: quote.bidPrice,
           askPrice: quote.askPrice,
           sizeUsd: quote.sizeUsd,
-          outcome: "simulated",
         });
+        this.store.logExecution({
+          mode: "paper",
+          marketId: selected.marketId,
+          endpoint: receipt.endpoint,
+          bidPrice: quote.bidPrice,
+          askPrice: quote.askPrice,
+          sizeUsd: quote.sizeUsd,
+          outcome: "dry-run",
+          gasUsedMist: receipt.gasUsedMist,
+        });
+        this.snapshotValue.execution.lastDecision = "quoted";
         this.snapshotValue.lastSuccessfulCycleAt = updatedAt;
         return;
       }
@@ -2495,6 +2745,37 @@ export class MakerRuntime {
       }
       if (!cancelled) {
         this.snapshotValue.lastError = errorText;
+        if (config?.mode === "paper") {
+          const paper = this.store.getPaperState(paperTrialId);
+          const makerInventory = selected
+            ? (paper.positions.find(
+                (position) =>
+                  position.role === "maker" &&
+                  position.marketId === selected!.marketId,
+              )?.inventoryUsd ?? 0)
+            : 0;
+          const grossExposureUsd = paper.positions.reduce(
+            (total, position) => total + Math.abs(position.inventoryUsd),
+            0,
+          );
+          this.snapshotValue.paper = paperSnapshot(paper);
+          this.snapshotValue.balances = {
+            ...this.snapshotValue.balances,
+            inventoryUsd: makerInventory,
+          };
+          this.snapshotValue.portfolio = {
+            ...this.snapshotValue.portfolio,
+            grossExposureUsd,
+          };
+          if (selected) {
+            this.snapshotValue.markets = this.snapshotValue.markets.map(
+              (row) =>
+                row.id === selected!.marketId
+                  ? { ...row, inventoryUsd: makerInventory }
+                  : row,
+            );
+          }
+        }
         if (config?.hedge.enabled && !hedgeReconciliationCompleted) {
           this.snapshotValue.hedge = {
             ...this.snapshotValue.hedge,
@@ -2524,12 +2805,15 @@ export class MakerRuntime {
         (this.snapshotValue.mode === "live" || this.options.pauseOnError)
       ) {
         this.stopScheduling();
-        if (config) {
+        if (config?.mode === "live") {
           const cancelledOrders = await this.cancelOpenOrders(config, {
             attempts: 3,
             retryDelayMs: 2_000,
           });
           if (cancelledOrders) this.clearActiveQuoteState();
+        } else if (config?.mode === "paper") {
+          this.store.cancelPaperOrders(paperTrialId);
+          this.clearActiveQuoteState();
         }
         if (this.options.pauseOnError) {
           await this.options.onBundleError?.();
@@ -2542,23 +2826,15 @@ export class MakerRuntime {
     }
   }
 
-  async runStrategyTrial(inputs: {
-    mode: StrategyTrialMode;
+  async runPaperTrial(inputs: {
     cadenceMs: number;
-    maxSlippageBps: number;
   }): Promise<StrategyTrialResult> {
     if (
       this.strategyTrialActive ||
       this.snapshotValue.running ||
       this.cyclePromise
     ) {
-      throw new Error("Stop the engine before starting a strategy trial");
-    }
-    if (
-      inputs.mode === "live" &&
-      (!this.options.liveEnabled || !this.options.mainnetAllowed)
-    ) {
-      throw new Error("A live strategy trial requires both mainnet gates");
+      throw new Error("A Paper test run is already in progress");
     }
 
     const originalConfig = makerConfigSchema.parse(this.store.getConfig());
@@ -2593,63 +2869,31 @@ export class MakerRuntime {
       originalConfig,
       dashboards: { farming, profit, both },
       availableCollateralUsd: makerPortfolio.availableCollateralUsd,
-      mode: inputs.mode,
+      mode: "paper",
       cadenceMs: inputs.cadenceMs,
     });
 
-    const hedgeSetup = originalConfig.hedge.accountId
-      ? this.store.getAccountSetup(originalConfig.hedge.accountId)
-      : null;
-    const hedgePortfolio = hedgeSetup
-      ? await this.gateway.getAgentPortfolioSnapshot({
-          setup: hedgeSetup,
-          agentAddress: agent.address,
-          marketIds,
-        })
-      : null;
-    const hasExposure = (portfolio: PortfolioSnapshot) =>
-      portfolio.positions.some(
-        (position) =>
-          Math.abs(position.inventoryUsd) > 0.01 ||
-          position.pendingOrderCount > 0,
-      );
-    if (
-      hasExposure(makerPortfolio) ||
-      (hedgePortfolio && hasExposure(hedgePortfolio))
-    ) {
-      throw new Error(
-        "The three-cycle trial requires both configured accounts to start flat with no resting orders",
-      );
-    }
-
-    const recoverySlippageBps = Math.min(
-      inputs.maxSlippageBps,
-      originalConfig.hedge.maxSlippageBps,
-    );
     const startedAt = new Date().toISOString();
+    const trialId = `trial-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
     const rounds: StrategyTrialRoundResult[] = [];
-    let recovery: FlattenResult | null = null;
-    let recoveryCompleted = inputs.mode === "paper";
-    let activeConfig: MakerConfig | null = null;
     this.strategyTrialActive = true;
+    this.paperTrialId = trialId;
     this.generation += 1;
     const trialGeneration = this.generation;
     this.snapshotValue.running = true;
+    this.snapshotValue.mode = "paper";
     this.snapshotValue.startedAt = startedAt;
     this.snapshotValue.lastError = null;
     this.runPeakEquityUsd = null;
     this.clearActiveQuoteState();
     this.marketSelectedAt = null;
-    this.awaitingFillAttribution.clear();
-    this.awaitingPositionAttribution.clear();
-    this.autoRebalancedOrderIds.clear();
     this.singleSlotSwept = true;
     this.store.logEvent({
-      category: "runtime",
-      action: "strategy-trial-start",
+      category: "paper",
+      action: "trial.start",
       outcome: "success",
       detail: {
-        mode: inputs.mode,
+        trialId,
         marketId: plan.marketId,
         objectives: STRATEGY_TRIAL_OBJECTIVES,
         cadenceMs: plan.cadenceMs,
@@ -2657,30 +2901,14 @@ export class MakerRuntime {
     });
 
     try {
-      for (const [index, round] of plan.rounds.entries()) {
+      for (const round of plan.rounds) {
         if (
           this.generation !== trialGeneration ||
           !this.snapshotValue.running
         ) {
-          throw new Error("Strategy trial was stopped by the operator");
+          throw new Error("Paper test run was stopped by the operator");
         }
-        if (index > 0 && activeConfig?.mode === "live") {
-          const cancelled = await this.cancelOpenOrders(activeConfig, {
-            attempts: 3,
-            retryDelayMs: 750,
-          });
-          if (!cancelled) {
-            throw new Error(
-              "Strategy trial could not confirm cancellation before changing policy",
-            );
-          }
-          this.clearActiveQuoteState();
-        }
-
-        activeConfig = round.config;
-        this.store.setConfig(round.config);
         this.marketIndex = 0;
-        this.snapshotValue.mode = round.config.mode;
         this.snapshotValue.markets = round.config.markets.map((market) =>
           emptyRuntimeMarket(market, round.config),
         );
@@ -2692,22 +2920,18 @@ export class MakerRuntime {
         };
 
         const roundStartedAt = new Date().toISOString();
-        const cycle = this.cycle({
-          executeLive: inputs.mode === "live",
-          generation: trialGeneration,
-        });
-        await withTimeout(cycle, 30_000, "Strategy trial cycle timed out");
+        await withTimeout(
+          this.cycle({
+            executeLive: true,
+            generation: trialGeneration,
+            configOverride: round.config,
+            paperTrialId: trialId,
+          }),
+          30_000,
+          "Paper test-run cycle timed out",
+        );
         if (this.snapshotValue.lastError) {
           throw new Error(this.snapshotValue.lastError);
-        }
-        const digest =
-          this.snapshotValue.markets.find(
-            (market) => market.id === plan.marketId,
-          )?.lastTransactionDigest ?? null;
-        if (inputs.mode === "live" && !digest) {
-          throw new Error(
-            "Live strategy trial did not confirm a quote transaction",
-          );
         }
         rounds.push({
           objective: round.objective,
@@ -2715,95 +2939,54 @@ export class MakerRuntime {
           score: round.score,
           quoteSizeUsd: round.quoteSizeUsd,
           spreadBps: round.spreadBps,
-          outcome: inputs.mode === "live" ? "confirmed" : "simulated",
-          digest,
+          outcome: "simulated",
+          digest: null,
           startedAt: roundStartedAt,
           completedAt: new Date().toISOString(),
         });
+        // Each policy gets its own scratch resting orders. This is a ledger
+        // operation only; no signer, queue cancellation, or live state changes.
+        this.store.cancelPaperOrders(trialId);
         await (this.options.sleep
           ? this.options.sleep(plan.cadenceMs)
           : new Promise((resolve) => setTimeout(resolve, plan.cadenceMs)));
       }
 
-      if (inputs.mode === "live") {
-        recovery = await this.flatten(recoverySlippageBps / 10_000, {
-          refreshSnapshot: false,
-        });
-        recoveryCompleted = true;
-      } else {
-        this.stopScheduling();
-      }
-
-      this.store.setConfig(originalConfig);
-      this.marketIndex = 0;
-      this.clearActiveQuoteState();
-      this.marketSelectedAt = null;
-      this.singleSlotSwept = false;
+      this.stopScheduling();
+      this.store.cancelPaperOrders(trialId);
       this.snapshotValue.mode = originalConfig.mode;
       this.syncMarketRows(originalConfig);
       const completedAt = new Date().toISOString();
       this.store.logEvent({
-        category: "runtime",
-        action: "strategy-trial-complete",
+        category: "paper",
+        action: "trial.complete",
         outcome: "success",
-        detail: {
-          mode: inputs.mode,
-          marketId: plan.marketId,
-          rounds: rounds.length,
-          recoveryTransactions: recovery?.transactions.length ?? 0,
-        },
+        detail: { trialId, marketId: plan.marketId, rounds: rounds.length },
       });
       return {
-        mode: inputs.mode,
+        mode: "paper",
         marketId: plan.marketId,
         symbol: plan.symbol,
         cadenceMs: plan.cadenceMs,
         startedAt,
         completedAt,
         rounds,
-        recovery,
+        recovery: null,
         restoredConfig: originalConfig,
       };
     } catch (error) {
       this.stopScheduling();
-      let recoveryError: string | null = null;
-      if (inputs.mode === "live" && activeConfig) {
-        try {
-          recovery = await this.flatten(recoverySlippageBps / 10_000, {
-            refreshSnapshot: false,
-          });
-          recoveryCompleted = true;
-        } catch (flattenError) {
-          recoveryError = message(flattenError);
-        }
-      }
-      if (recoveryCompleted) {
-        this.store.setConfig(originalConfig);
-        this.marketIndex = 0;
-        this.clearActiveQuoteState();
-        this.marketSelectedAt = null;
-        this.singleSlotSwept = false;
-        this.snapshotValue.mode = originalConfig.mode;
-        this.syncMarketRows(originalConfig);
-      }
+      this.store.cancelPaperOrders(trialId);
       const errorText = message(error);
       this.store.logEvent({
-        category: "runtime",
-        action: "strategy-trial",
+        category: "paper",
+        action: "trial",
         outcome: "error",
-        detail: {
-          error: errorText,
-          rounds: rounds.length,
-          recoveryCompleted,
-          ...(recoveryError ? { recoveryError } : {}),
-        },
+        detail: { trialId, error: errorText, rounds: rounds.length },
       });
-      throw new Error(
-        recoveryError
-          ? `${errorText}; automatic recovery also failed: ${recoveryError}`
-          : errorText,
-      );
+      throw error;
     } finally {
+      this.paperTrialId = null;
       this.strategyTrialActive = false;
     }
   }
