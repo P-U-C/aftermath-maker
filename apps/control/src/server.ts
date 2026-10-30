@@ -17,6 +17,7 @@ import {
 import { OnchainAllowlist } from "./allowlist.js";
 import { AuthError, WalletAuth } from "./auth.js";
 import { classifyHttpError } from "./http-error.js";
+import { activeBuilderCode } from "./integrator.js";
 import { RuntimeManager } from "./runtime-manager.js";
 import { Store, type TenantStore } from "./store.js";
 
@@ -124,17 +125,14 @@ if (
   );
 }
 
-const builderCode = (): BuilderFeePolicy | null => {
-  const integratorId =
-    env.AFTERMATH_INTEGRATOR_ID ??
-    store.getSystemValue<number>("aftermath_integrator_id");
-  return integratorId === null || integratorId === undefined
-    ? null
-    : {
-        integratorId,
-        integratorFee: env.AFTERMATH_INTEGRATOR_FEE_BPS / 10_000,
-      };
-};
+const builderCode = (): BuilderFeePolicy | null =>
+  activeBuilderCode({
+    confirmedIntegratorId: store.getSystemValue<number>(
+      "aftermath_integrator_id",
+    ),
+    configuredIntegratorId: env.AFTERMATH_INTEGRATOR_ID,
+    feeBps: env.AFTERMATH_INTEGRATOR_FEE_BPS,
+  });
 
 const runtimeManager = new RuntimeManager(
   store,
