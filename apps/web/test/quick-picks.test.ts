@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { quickPickMarketIds } from "../lib/quick-picks";
+import { quickPickMarketIds, suggestMarketIds } from "../lib/quick-picks";
 
 const opportunities = [
   {
@@ -51,6 +51,40 @@ const opportunities = [
 ] as const;
 
 describe("quickPickMarketIds", () => {
+  it("adjusts N independently of eligible candidate count without mutating accepted markets", () => {
+    const accepted = ["A", "B", "E"];
+    expect(suggestMarketIds(opportunities, "rewards", "all", 64)).toEqual([
+      "B",
+      "A",
+      "E",
+    ]);
+    expect(suggestMarketIds(opportunities, "balanced", "thin", 5)).toEqual([
+      "B",
+    ]);
+    expect(suggestMarketIds(opportunities, "steady", "all", 5)).toEqual([
+      "B",
+      "A",
+    ]);
+    expect(
+      suggestMarketIds(
+        [...opportunities].reverse().map((item, index) => ({
+          ...item,
+          rank:
+            ({ A: 1, B: 2, E: 3 } as Record<string, number>)[item.marketId] ??
+            9 + index,
+        })),
+        "ranked",
+        "all",
+        5,
+      ),
+    ).toEqual(["A", "B", "E"]);
+    expect(
+      suggestMarketIds(opportunities.slice(0, 2), "rewards", "all", 5),
+    ).toEqual(["B", "A"]);
+    expect(suggestMarketIds([], "rewards", "all", 5)).toEqual([]);
+    expect(accepted).toEqual(["A", "B", "E"]);
+  });
+
   it("applies every strategy pick and the selection cap", () => {
     expect(quickPickMarketIds(opportunities, "rewards", 5)).toEqual([
       "B",

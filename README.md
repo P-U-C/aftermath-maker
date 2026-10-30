@@ -56,7 +56,7 @@ The agent can trade but cannot withdraw collateral or grant another agent. Owner
 - Separate Maker and hedge attribution, protocol fees, estimated builder fees, and combined result after those known costs
 - Separate **Stop quoting** and **Flatten at market** actions
 
-In the Strategy wizard, **Save and next** writes only a wallet- and strategy-scoped draft in this browser. It does not reconfigure a running bundle. **Apply strategy** validates and submits the full versioned strategy once; the resulting changes reconfigure every attached bundle and take effect on its next cycle. Drafts do not sync across browsers or devices. The review step lists affected bundles and changed settings.
+In the Strategy wizard, **Save and next** writes only a wallet- and strategy-scoped draft in this browser. It does not reconfigure a running bundle. **Apply strategy** validates and submits the full versioned strategy once; the resulting changes reconfigure every attached bundle and take effect on its next cycle. Drafts do not sync across browsers or devices. Market suggestions are advisory: preset, Focus, and Up to N feed one Preview; changing rankings cannot change accepted markets or block a valid saved strategy. Review lists affected bundles and changed settings, then can open the existing bundle editor or create an attached, stopped Paper bundle. Bundle creation requires configured wallet limits, an authorized unassigned Maker account, and a distinct authorized hedge account if the applied strategy hedges fills.
 
 ## Execution and safety
 

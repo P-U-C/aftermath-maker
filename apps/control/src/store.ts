@@ -3680,6 +3680,15 @@ export class TenantStore {
       if (!name || name.length > 80 || name.toLowerCase() === "core") {
         throw new Error("Bundle name must be between 1 and 80 characters");
       }
+      if (
+        this.db
+          .prepare(
+            "SELECT 1 FROM bundles WHERE owner_address = ? AND name = ? COLLATE NOCASE",
+          )
+          .get(this.ownerAddress, name)
+      ) {
+        throw new Error("A bundle already uses that name");
+      }
       if (inputs.mode === "live") {
         throw new Error("Additional bundles can only use Paper mode");
       }
@@ -3730,6 +3739,11 @@ export class TenantStore {
             },
           });
       const walletLimits = this.getWalletLimits();
+      if (strategy && !walletLimits) {
+        throw new Error(
+          "Configure Core wallet limits before creating this bundle",
+        );
+      }
       if (strategy && walletLimits) {
         if (active.count >= 1 && !walletLimits.confirmedAt) {
           if (!inputs.confirmWalletLimits) {

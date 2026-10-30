@@ -105,6 +105,32 @@ function initialStrategies(fixture) {
   }));
 }
 
+function enableReserveUnhedgedStrategy(state) {
+  const reserve = state.fixture.accounts.accounts.find(
+    (account) => account.accountId === "1749",
+  );
+  state.fixture.setup.accounts.push({
+    ownerAddress,
+    accountId: reserve.accountId,
+    accountCapId: reserve.accountCapId,
+    collateralCoinType: reserve.collateralCoinType,
+    addedAt: "2026-10-27T10:00:00Z",
+    grantDigest: null,
+    agentCapId: `0x${"ab".repeat(32)}`,
+  });
+  state.strategies.push({
+    ...structuredClone(state.strategies[1]),
+    id: "unhedged-strategy",
+    name: "Unhedged",
+    config: {
+      ...state.strategies[1].config,
+      maxGrossExposureUsd: 3,
+      hedge: { ...state.strategies[1].config.hedge, enabled: false },
+    },
+    usedBy: [],
+  });
+}
+
 function routePathFor(url) {
   const marker = "/api/control/";
   return url.pathname.slice(url.pathname.indexOf(marker) + marker.length);
@@ -334,14 +360,34 @@ async function installStatefulControl(page, state) {
       bundle.updatedAt = "2026-10-27T17:09:00.000Z";
       return json(200, { bundle, config: state.fixture.config.config });
     }
+    if (
+      /^api\/bundles\/[^/]+\/config$/.test(routePath) &&
+      request.method() === "GET" &&
+      state.postCreateReadFailures > 0
+    ) {
+      state.postCreateReadFailures -= 1;
+      return json(503, {
+        error: "Bundle configuration is temporarily unavailable",
+      });
+    }
     if (routePath === "api/bundles" && request.method() === "POST") {
+      state.bundlePosts += 1;
+      if (state.delayBundleCreate)
+        await new Promise((resolve) => setTimeout(resolve, 250));
+      const failure = state.bundleCreateFailures.shift();
+      if (failure) return json(failure.status, { error: failure.message });
       const body = JSON.parse(request.postData() ?? "{}");
       const selectedStrategy = body.strategyId
         ? state.strategies.find((strategy) => strategy.id === body.strategyId)
         : null;
+      if (selectedStrategy?.config.hedge.enabled && !body.takerAccountId)
+        return json(400, {
+          error:
+            "This strategy requires a distinct authorized hedge account before bundle creation",
+        });
       const createdAt = "2026-10-27T17:08:32.000Z";
       const next = {
-        id: "audit-bundle",
+        id: `audit-bundle-${state.bundlePosts}`,
         name: body.name,
         strategyId: selectedStrategy?.id ?? null,
         strategyName: selectedStrategy?.name ?? null,
@@ -351,7 +397,7 @@ async function installStatefulControl(page, state) {
         takerAccountId:
           body.takerAccountId ?? body.config?.hedge?.accountId ?? null,
         mode: "paper",
-        status: "paused",
+        status: selectedStrategy ? "stopped" : "paused",
         marketIds: (
           selectedStrategy?.markets ??
           body.config?.markets ??
@@ -448,11 +494,15 @@ async function startServer() {
   throw new Error(`Timed out starting Next: ${output.slice(-2_000)}`);
 }
 
-async function newPage(browser, viewport) {
+async function newPage(
+  browser,
+  viewport,
+  { colorScheme = "light", deviceScaleFactor = 1 } = {},
+) {
   const context = await browser.newContext({
     viewport,
-    deviceScaleFactor: 1,
-    colorScheme: "light",
+    deviceScaleFactor,
+    colorScheme,
     locale: "en-US",
     timezoneId: "UTC",
   });
@@ -466,6 +516,10 @@ async function newPage(browser, viewport) {
     sessionExpired: false,
     delayStop: false,
     paperTrialRequests: 0,
+    bundlePosts: 0,
+    bundleCreateFailures: [],
+    postCreateReadFailures: 0,
+    delayBundleCreate: false,
   };
   await page.addInitScript((address) => {
     window.__makerMockWallet = {
@@ -864,11 +918,12 @@ async function serviceAndSessionFailures(browser) {
 }
 
 async function createBundleWithFreeChoices(browser) {
-  const { context, page } = await newPage(browser, {
+  const { context, page, state } = await newPage(browser, {
     width: 1440,
     height: 900,
   });
   try {
+    enableReserveUnhedgedStrategy(state);
     await goToDesk(page);
     await page.getByRole("link", { name: "Bundles", exact: true }).click();
     await page.getByRole("button", { name: "New bundle", exact: true }).click();
@@ -891,8 +946,8 @@ async function createBundleWithFreeChoices(browser) {
     await dialog.getByLabel("Name").fill("Audit reserve");
     await dialog.getByLabel("Maker account").selectOption({ label: "Reserve" });
     await dialog
-      .getByLabel("Strategy")
-      .selectOption({ label: "Rewards strategy" });
+      .getByLabel("Strategy", { exact: true })
+      .selectOption({ label: "Unhedged" });
     await capture(page, "rfc-0002-new-bundle-desktop.png");
     await dialog.getByRole("button", { name: "Continue", exact: true }).click();
     await page
@@ -916,6 +971,7 @@ async function lowerWalletLimitsWhenCreating(browser) {
   });
   try {
     state.fixture.bundles.walletLimits.confirmedAt = null;
+    enableReserveUnhedgedStrategy(state);
     await goToDesk(page);
     await page.getByRole("link", { name: "Bundles", exact: true }).click();
     await page.getByRole("button", { name: "New bundle", exact: true }).click();
@@ -923,8 +979,8 @@ async function lowerWalletLimitsWhenCreating(browser) {
     await create.getByLabel("Name").fill("Limits audit");
     await create.getByLabel("Maker account").selectOption({ label: "Reserve" });
     await create
-      .getByLabel("Strategy")
-      .selectOption({ label: "Rewards strategy" });
+      .getByLabel("Strategy", { exact: true })
+      .selectOption({ label: "Unhedged" });
     await create.getByRole("button", { name: "Continue", exact: true }).click();
     const confirmation = page.getByRole("dialog", {
       name: "Confirm wallet limits",
@@ -1267,6 +1323,676 @@ async function paperSimulationBlockerStaysVisible(browser) {
   }
 }
 
+async function round6MobilePicker(browser) {
+  const { context, page, state } = await newPage(
+    browser,
+    { width: 390, height: 844 },
+    { colorScheme: "dark" },
+  );
+  try {
+    state.fixture.config.config.maxGrossExposureUsd = 3;
+    state.strategies[0].config.maxGrossExposureUsd = 3;
+    for (let index = 0; index < 10; index += 1) {
+      state.strategies.push({
+        ...structuredClone(state.strategies[0]),
+        id: `strategy-long-${index}`,
+        name: `Long reusable strategy number ${index} for many markets`,
+        usedBy: [],
+      });
+    }
+    await goToDesk(page);
+    await page.getByRole("link", { name: "Strategy", exact: true }).click();
+    const strategy = page.locator(
+      '.maker-view[data-view="strategy"]:not([hidden])',
+    );
+    assert(
+      await strategy.getByLabel("Strategy name").isVisible(),
+      "Strategy name editor is hidden",
+    );
+    const picker = strategy.getByLabel("Choose strategy");
+    await picker.click();
+    const options = strategy
+      .getByRole("listbox", { name: "Strategies" })
+      .getByRole("option");
+    assert(
+      (await options.count()) === 12,
+      "The rich picker lost one of many strategies",
+    );
+    await page.waitForTimeout(100);
+    await capture(page, "r6-picker-options-phone-dark.png");
+    await picker.press("ArrowDown");
+    await page.keyboard.press("End");
+    await page.keyboard.press("Escape");
+    assert(
+      await picker.evaluate((element) => document.activeElement === element),
+      "Escape did not return focus on mobile",
+    );
+    await picker.click();
+    await options.last().click();
+    await page.waitForFunction(() =>
+      (
+        document.querySelector('input[aria-label="Strategy name"]')?.value ?? ""
+      ).includes("Long reusable strategy number 9"),
+    );
+    assert(
+      !(await page.evaluate(
+        () => document.documentElement.scrollWidth > window.innerWidth + 2,
+      )),
+      "Rich picker or New strategy overflowed 390px",
+    );
+    await capture(page, "r6-picker-phone-dark.png");
+  } finally {
+    await context.close();
+  }
+}
+
+async function round6PickerAndRename(browser) {
+  const { context, page, state } = await newPage(browser, {
+    width: 1440,
+    height: 900,
+  });
+  try {
+    state.fixture.config.config.maxGrossExposureUsd = 3;
+    state.strategies[0].config.maxGrossExposureUsd = 3;
+    await goToDesk(page);
+    await page.getByRole("link", { name: "Strategy", exact: true }).click();
+    const strategy = page.locator(
+      '.maker-view[data-view="strategy"]:not([hidden])',
+    );
+    assert(
+      (await strategy.locator(".strategy-library").count()) === 0,
+      "Duplicate strategy cards remain",
+    );
+    assert(
+      await strategy.getByLabel("Strategy name").isVisible(),
+      "Strategy name editor is hidden",
+    );
+    const picker = strategy.getByLabel("Choose strategy");
+    await picker.click();
+    const options = strategy
+      .getByRole("listbox", { name: "Strategies" })
+      .getByRole("option");
+    assert((await options.count()) === 2, "Rich picker lost strategy options");
+    await page.waitForTimeout(100);
+    await capture(page, "r6-picker-options-desktop-light.png");
+    await picker.press("ArrowDown");
+    await page.keyboard.press("Escape");
+    assert(
+      await picker.evaluate((element) => document.activeElement === element),
+      "Escape did not return focus to the picker",
+    );
+    await strategy.getByLabel("Strategy name").fill("Rewards strategy");
+    await strategy.getByRole("button", { name: "Save and next" }).click();
+    assert(
+      (await strategy
+        .locator(".settings-panel")
+        .getAttribute("data-strategy-step")) === "0",
+      "Duplicate name advanced",
+    );
+    assert(
+      (await strategy
+        .getByLabel("Strategy name")
+        .getAttribute("aria-invalid")) === "true",
+      "Duplicate name lacked inline error",
+    );
+    await strategy.getByLabel("Strategy name").fill("Applied B");
+    assert(
+      (await strategy.locator("#strategy-name-error").count()) === 0,
+      "Corrected name error persisted",
+    );
+    await strategy.getByRole("button", { name: "Save and next" }).click();
+    await page.getByRole("link", { name: "Bundles", exact: true }).click();
+    await page
+      .locator(".bundle-card")
+      .filter({ hasText: "Core" })
+      .getByText(/^From Core strategy:/)
+      .waitFor();
+    await page.getByRole("link", { name: "Strategy", exact: true }).click();
+    assert(
+      (await strategy.getByLabel("Strategy name").inputValue()) === "Applied B",
+      "Draft name was not restored",
+    );
+    await strategy.getByText(/Draft name · applied as Core strategy/).waitFor();
+    await goToStrategyStep(page, 4);
+    await strategy.getByRole("button", { name: "Apply strategy" }).click();
+    await page.getByText("Strategy saved.", { exact: true }).waitFor();
+    assert(
+      state.strategies[0].name === "Applied B",
+      "Apply did not persist the rename",
+    );
+    await strategy
+      .getByLabel("Choose strategy")
+      .getByText("Applied B")
+      .waitFor();
+    await page.getByRole("link", { name: "Bundles", exact: true }).click();
+    await page
+      .locator(".bundle-card")
+      .filter({ hasText: "Core" })
+      .getByText(/^From Applied B:/)
+      .waitFor();
+    await page.reload();
+    await page
+      .locator(".bundle-card")
+      .filter({ hasText: "Core" })
+      .getByText(/^From Applied B:/)
+      .waitFor();
+    await capture(page, "r6-applied-name-desktop.png");
+  } finally {
+    await context.close();
+  }
+}
+
+async function round6UniformMarketCards(browser) {
+  const sizes = [
+    { name: "phone", width: 390, height: 844, scale: 1 },
+    { name: "tablet", width: 768, height: 900, scale: 1 },
+    { name: "desktop", width: 1440, height: 900, scale: 1 },
+    { name: "zoom200", width: 195, height: 422, scale: 2 },
+  ];
+  for (const size of sizes) {
+    for (const colorScheme of ["light", "dark"]) {
+      const { context, page, state } = await newPage(
+        browser,
+        { width: size.width, height: size.height },
+        { colorScheme, deviceScaleFactor: size.scale },
+      );
+      try {
+        state.fixture.config.config.maxGrossExposureUsd = 3;
+        state.strategies[0].config.maxGrossExposureUsd = 3;
+        state.fixture.markets.markets[0].symbol = "LONGMARKETSYMBOL2026";
+        const opportunities =
+          state.fixture.rewards.rewards.marketModel.opportunities;
+        opportunities[0].reasons = [
+          "A long market observation that explains liquidity and venue activity without truncating the evidence when expanded. ".repeat(
+            3,
+          ),
+        ];
+        opportunities[1].preRiskEdgeBps = null;
+        opportunities[1].volume24hUsd = null;
+        await goToDesk(page);
+        await page.getByRole("link", { name: "Strategy", exact: true }).click();
+        await goToStrategyStep(page, 1);
+        const strategy = page.locator(
+          '.maker-view[data-view="strategy"]:not([hidden])',
+        );
+        const heights = await strategy
+          .locator(".strategy-market-row")
+          .evaluateAll((rows) =>
+            rows.map((row) => row.getBoundingClientRect().height),
+          );
+        assert(
+          heights.length >= 3 &&
+            Math.max(...heights) - Math.min(...heights) < 1,
+          `Unequal collapsed market card heights at ${size.name}/${colorScheme}: ${heights}`,
+        );
+        const overflow = await page.evaluate(() => ({
+          body: document.documentElement.scrollWidth,
+          viewport: window.innerWidth,
+          elements: [...document.querySelectorAll("body *")]
+            .filter(
+              (element) =>
+                element.getBoundingClientRect().right > window.innerWidth + 3,
+            )
+            .slice(0, 8)
+            .map((element) => ({
+              tag: element.tagName,
+              className: String(element.className).slice(0, 80),
+              right: Math.round(element.getBoundingClientRect().right),
+            })),
+        }));
+        assert(
+          overflow.body <= overflow.viewport + 2,
+          `Market picker overflow at ${size.name}/${colorScheme}: ${JSON.stringify(overflow)}`,
+        );
+        const explanation = strategy.getByText(
+          /Why LONGMARKETSYMBOL2026 ranks here/,
+        );
+        await explanation.click();
+        assert(
+          (
+            await strategy
+              .locator(".strategy-market-reasons[open] p")
+              .first()
+              .textContent()
+          )?.length > 100,
+          "Long evidence reasons were truncated instead of expanded",
+        );
+        if (size.name !== "zoom200")
+          await capture(
+            page,
+            `r6-market-cards-${size.name}-${colorScheme}.png`,
+          );
+      } finally {
+        await context.close();
+      }
+    }
+  }
+}
+
+async function round6ContextLinksAndHelp(browser) {
+  const { context, page, state } = await newPage(browser, {
+    width: 390,
+    height: 844,
+  });
+  try {
+    state.fixture.config.config.maxGrossExposureUsd = 3;
+    state.strategies[0].config.maxGrossExposureUsd = 3;
+    await goToDesk(page);
+    await page.getByRole("link", { name: "Strategy", exact: true }).click();
+    await goToStrategyStep(page, 2);
+    const strategy = page.locator(
+      '.maker-view[data-view="strategy"]:not([hidden])',
+    );
+    const drawdownSentence = strategy
+      .locator(".strategy-limit-sentences p")
+      .filter({ hasText: "Stop everything if equity falls" });
+    const help = drawdownSentence.locator(".glossary-term").last();
+    assert(
+      (await help.getAttribute("aria-label")) === "Explain run drawdown",
+      "Help control lacks a field-specific accessible name",
+    );
+    assert(
+      await drawdownSentence.evaluate((sentence) =>
+        sentence.lastElementChild?.classList.contains("glossary-term"),
+      ),
+      "Help appears before the end of the full sentence",
+    );
+    await help.focus();
+    await capture(page, "r6-size-help-phone.png");
+    await strategy
+      .getByRole("textbox", { name: "Quote size (USD)" })
+      .fill("1.25");
+    await strategy.getByRole("button", { name: "Edit wallet limits" }).click();
+    const wallet = page.getByRole("dialog", { name: "Edit wallet limits" });
+    await wallet.waitFor();
+    await wallet.getByRole("button", { name: "Cancel" }).click();
+    await page.getByRole("button", { name: "Back to Strategy" }).click();
+    assert(
+      (await strategy
+        .getByRole("textbox", { name: "Quote size (USD)" })
+        .inputValue()) === "1.25",
+      "Wallet editor navigation lost the local strategy draft",
+    );
+    await strategy
+      .getByRole("button", { name: "View Maker account 1745" })
+      .click();
+    await page.locator('[id="account-1745"]').waitFor();
+    await page.getByRole("button", { name: "Back to Strategy" }).click();
+    await strategy.getByRole("button", { name: "Edit Core bundle" }).click();
+    const bundle = page.getByRole("dialog", { name: "Edit Core" });
+    await bundle
+      .getByText(/Pause this bundle in Run controls before editing/)
+      .waitFor();
+    assert(
+      !(await bundle
+        .getByRole("button", { name: "Save allocation" })
+        .isEnabled()),
+      "Running Core allocation could be changed through a contextual link",
+    );
+    await bundle.getByRole("button", { name: "Cancel" }).click();
+    await page.getByRole("button", { name: "Back to Strategy" }).click();
+    assert(
+      (await strategy
+        .locator(".settings-panel")
+        .getAttribute("data-strategy-step")) === "2",
+      "Bundle editor return lost Size and limits",
+    );
+  } finally {
+    await context.close();
+  }
+}
+
+async function round6AttachmentDestinations(browser) {
+  {
+    const { context, page, state } = await newPage(browser, {
+      width: 1440,
+      height: 900,
+    });
+    try {
+      state.fixture.config.config.maxGrossExposureUsd = 3;
+      state.strategies[0].config.maxGrossExposureUsd = 3;
+      state.fixture.bundles.bundles.forEach((bundle) => {
+        bundle.archivedAt = new Date().toISOString();
+        bundle.status = "stopped";
+      });
+      state.strategies.forEach((strategy) => {
+        strategy.usedBy = [];
+      });
+      await goToDesk(page);
+      await page.getByRole("link", { name: "Strategy", exact: true }).click();
+      await goToStrategyStep(page, 4);
+      await page
+        .getByRole("button", { name: "Create bundle", exact: true })
+        .click();
+      await page.getByRole("dialog", { name: "New Paper bundle" }).waitFor();
+    } finally {
+      await context.close();
+    }
+  }
+  {
+    const { context, page, state } = await newPage(browser, {
+      width: 1440,
+      height: 900,
+    });
+    try {
+      state.fixture.config.config.maxGrossExposureUsd = 3;
+      state.strategies.forEach((strategy) => {
+        strategy.config.maxGrossExposureUsd = 3;
+      });
+      const detached = state.fixture.bundles.bundles.find(
+        (bundle) => bundle.name === "Rewards",
+      );
+      detached.strategyId = null;
+      detached.strategyName = null;
+      detached.needsStrategy = true;
+      detached.status = "paused";
+      state.strategies[1].usedBy = [];
+      await goToDesk(page);
+      await page.getByRole("link", { name: "Strategy", exact: true }).click();
+      const strategyView = page.locator(
+        '.maker-view[data-view="strategy"]:not([hidden])',
+      );
+      await strategyView.getByLabel("Choose strategy").click();
+      await strategyView
+        .getByRole("option", { name: /Rewards strategy;/ })
+        .click();
+      await goToStrategyStep(page, 4);
+      await page.getByRole("button", { name: "Attach to Rewards" }).click();
+      const edit = page.getByRole("dialog", { name: "Edit Rewards" });
+      await edit.waitFor();
+      assert(
+        (await edit.locator("select").last().inputValue()) ===
+          state.strategies[1].id,
+        "Attach action did not open the exact bundle with the selected applied strategy",
+      );
+      assert(
+        detached.strategyId === null,
+        "Navigating into attachment silently changed the bundle",
+      );
+      await edit.getByRole("button", { name: "Cancel" }).click();
+      await page.getByRole("button", { name: "Back to Strategy" }).click();
+      assert(
+        (await strategyView
+          .locator(".settings-panel")
+          .getAttribute("data-strategy-step")) === "4",
+        "Cancel lost the Review step",
+      );
+    } finally {
+      await context.close();
+    }
+  }
+  {
+    const { context, page, state } = await newPage(browser, {
+      width: 390,
+      height: 844,
+    });
+    try {
+      state.fixture.config.config.maxGrossExposureUsd = 3;
+      state.strategies[0].config.maxGrossExposureUsd = 3;
+      state.fixture.bundles.bundles = [];
+      state.fixture.status.bundles = [];
+      state.fixture.bundles.walletLimits = null;
+      state.strategies.forEach((strategy) => {
+        strategy.usedBy = [];
+      });
+      await goToDesk(page);
+      await page.getByRole("link", { name: "Strategy", exact: true }).click();
+      await goToStrategyStep(page, 4);
+      await page
+        .getByRole("button", { name: "Create bundle", exact: true })
+        .click();
+      const dialog = page.getByRole("dialog", { name: "New Paper bundle" });
+      await dialog
+        .getByText(/Finish Core setup and configure wallet limits/)
+        .waitFor();
+      assert(
+        !(await dialog.getByRole("button", { name: "Continue" }).isEnabled()),
+        "Missing wallet limits permitted a create",
+      );
+      await dialog.getByRole("button", { name: "Open Accounts setup" }).click();
+      await page
+        .locator('.maker-view[data-view="accounts"]:not([hidden])')
+        .waitFor();
+      await page.getByRole("button", { name: "Back to Strategy" }).click();
+      assert(
+        (await page
+          .locator(".settings-panel")
+          .getAttribute("data-strategy-step")) === "4",
+        "Setup navigation lost the strategy step",
+      );
+    } finally {
+      await context.close();
+    }
+  }
+}
+
+async function round6ReviewCreatesBundle(browser) {
+  const { context, page, state } = await newPage(browser, {
+    width: 1440,
+    height: 900,
+  });
+  try {
+    state.fixture.bundles.bundles = [];
+    state.fixture.status.bundles = [];
+    state.fixture.status.snapshot.running = false;
+    state.strategies.forEach((strategy) => {
+      strategy.usedBy = [];
+    });
+    state.fixture.config.config.maxGrossExposureUsd = 3;
+    state.strategies[0].config.maxGrossExposureUsd = 3;
+    await goToDesk(page);
+    await page.getByRole("link", { name: "Strategy", exact: true }).click();
+    await goToStrategyStep(page, 4);
+    await page
+      .getByRole("button", { name: "Create bundle", exact: true })
+      .click();
+    const dialog = page.getByRole("dialog", { name: "New Paper bundle" });
+    await dialog.waitFor();
+    assert(
+      (await dialog.getByLabel("Strategy", { exact: true }).inputValue()) ===
+        state.strategies[0].id,
+      "Review did not preselect its applied strategy",
+    );
+    await dialog.getByLabel("Name").fill("Duplicate");
+    await dialog.getByLabel("Maker account").selectOption("1745");
+    assert(
+      !(await dialog.getByRole("button", { name: "Continue" }).isEnabled()),
+      "Paired strategy allowed creation without a hedge account",
+    );
+    await dialog
+      .getByText(/Choose a distinct authorized Taker account/)
+      .waitFor();
+    await dialog
+      .getByLabel("Taker account (required for this strategy)")
+      .selectOption("1746");
+    state.bundleCreateFailures.push({
+      status: 409,
+      message: "A bundle already uses that name",
+    });
+    await dialog.getByRole("button", { name: "Continue" }).click();
+    await dialog
+      .getByRole("alert")
+      .getByText("A bundle already uses that name")
+      .waitFor();
+    assert(
+      (await dialog.getByLabel("Name").inputValue()) === "Duplicate",
+      "Failed create discarded the form",
+    );
+    await dialog.getByLabel("Name").fill("Fresh Paper");
+    assert(
+      (await dialog.getByRole("alert").count()) === 0,
+      "Corrected creation error did not clear",
+    );
+    state.postCreateReadFailures = 2;
+    state.delayBundleCreate = true;
+    await dialog
+      .getByRole("button", { name: "Continue" })
+      .evaluate((button) => {
+        button.click();
+        button.click();
+      });
+    await page
+      .getByText(
+        /Paper bundle Fresh Paper was created, but its latest configuration could not be reloaded/,
+      )
+      .waitFor();
+    assert(
+      state.bundlePosts === 2,
+      `Rapid clicks created multiple bundles: ${state.bundlePosts} POSTs`,
+    );
+    const created = state.fixture.bundles.bundles.filter(
+      (bundle) => bundle.name === "Fresh Paper",
+    );
+    assert(
+      created.length === 1 &&
+        created[0].mode === "paper" &&
+        created[0].status === "stopped" &&
+        created[0].strategyId === state.strategies[0].id,
+      "Review creation did not yield exactly one attached, non-running Paper bundle",
+    );
+    assert(
+      (await page.getByRole("dialog", { name: "New Paper bundle" }).count()) ===
+        0,
+      "Confirmed creation did not close its sheet",
+    );
+    await page.getByRole("button", { name: "Back to Strategy" }).click();
+    assert(
+      (await page
+        .locator(
+          '.maker-view[data-view="strategy"]:not([hidden]) .settings-panel',
+        )
+        .getAttribute("data-strategy-step")) === "4",
+      "Returning from bundle creation lost the Review step",
+    );
+    await capture(page, "r6-review-created-bundle-desktop.png");
+  } finally {
+    await context.close();
+  }
+}
+
+async function round6SuggestionRefresh(browser) {
+  const { context, page, state } = await newPage(browser, {
+    width: 1440,
+    height: 900,
+  });
+  try {
+    state.fixture.config.config.maxGrossExposureUsd = 3;
+    state.strategies[0].config.maxGrossExposureUsd = 3;
+    const originalCandidates = structuredClone(
+      state.fixture.rewards.rewards.marketModel.opportunities,
+    );
+    const mon = state.fixture.markets.markets.find(
+      (market) => market.symbol === "MON",
+    );
+    await goToDesk(page);
+    await page.getByRole("link", { name: "Strategy", exact: true }).click();
+    await goToStrategyStep(page, 1);
+    const strategy = page.locator(
+      '.maker-view[data-view="strategy"]:not([hidden])',
+    );
+    await strategy
+      .getByRole("button", { name: "Balanced", exact: true })
+      .click();
+    await strategy.getByRole("button", { name: "Preview selection" }).click();
+    await strategy.getByText(/Proposed 5 markets/).waitFor();
+    await strategy.getByRole("button", { name: "Use these markets" }).click();
+    await strategy.getByText(/Accepted draft selection \(5\/64\)/).waitFor();
+    await goToStrategyStep(page, 2);
+    await strategy.locator("#strategy-market-overrides summary").click();
+    const policy = strategy.locator(`[id="strategy-policy-${mon.id}"]`);
+    await policy.locator('input[type="checkbox"]').check();
+    await policy
+      .getByRole("textbox", { name: "Quote size (USD)" })
+      .fill("1.25");
+    state.fixture.rewards.rewards.marketModel.opportunities =
+      originalCandidates.slice(0, 2);
+    await page.waitForTimeout(160);
+    await strategy.getByRole("button", { name: "Back", exact: true }).click();
+    await strategy.getByText(/Accepted draft selection \(5\/64\)/).waitFor();
+    await strategy
+      .getByText(/Only 2 candidates|2 candidates available/)
+      .waitFor();
+    await strategy.getByRole("button", { name: "Preview selection" }).click();
+    await strategy.getByText(/Proposed 2 markets/).waitFor();
+    state.fixture.rewards.rewards.marketModel.opportunities = [];
+    await strategy.getByRole("button", { name: "Refresh suggestions" }).click();
+    await strategy
+      .getByText(/No current candidates pass this preset and focus/)
+      .waitFor();
+    assert(
+      (await strategy.getByText(/Proposed 2 markets/).count()) > 0,
+      "Polling silently replaced the frozen proposal",
+    );
+    await strategy.getByRole("button", { name: "Thin books" }).click();
+    assert(
+      (await strategy.getByText(/Proposed 2 markets/).count()) === 0,
+      "Changing Focus failed to discard the stale proposal",
+    );
+    assert(
+      (await strategy.locator(".strategy-market-row").count()) === 5,
+      "Focus hid accepted markets from the selection list",
+    );
+    const n = strategy.getByRole("textbox", {
+      name: "Up to N markets (markets)",
+    });
+    await n.fill("");
+    assert(
+      (await n.getAttribute("aria-invalid")) === "true",
+      "Invalid suggestion count was not inline",
+    );
+    assert(
+      !(await strategy
+        .getByRole("button", { name: "Preview selection" })
+        .isEnabled()),
+      "Invalid helper input allowed Preview",
+    );
+    await goToStrategyStep(page, 4);
+    assert(
+      await strategy
+        .getByRole("button", { name: "Apply strategy" })
+        .isEnabled(),
+      "An advisory candidate refresh blocked a valid saved strategy",
+    );
+    await strategy.getByRole("button", { name: "Apply strategy" }).click();
+    await page.getByText("Strategy saved.", { exact: true }).waitFor();
+    assert(
+      state.strategies[0].markets.length === 5 &&
+        state.strategies[0].markets.some(
+          (market) =>
+            market.marketId === mon.id &&
+            market.overrides?.quoteSizeUsd === 1.25,
+        ),
+      "Accepted market order or override was lost when rankings changed",
+    );
+    state.fixture.rewards.rewards.marketModel.opportunities =
+      originalCandidates;
+    for (let step = 0; step < 3; step += 1)
+      await strategy.getByRole("button", { name: "Back", exact: true }).click();
+    await strategy.getByRole("button", { name: "All eligible" }).click();
+    await strategy.getByRole("button", { name: "Refresh suggestions" }).click();
+    await strategy.getByText(/5 candidates available/).waitFor();
+    await strategy.getByText(/Accepted draft selection \(5\/64\)/).waitFor();
+    await n.fill("5");
+    assert(
+      (await n.getAttribute("aria-invalid")) === "false",
+      "Correcting helper input left an inline error",
+    );
+    await n.fill("");
+    await strategy.getByRole("button", { name: "Best for rewards" }).click();
+    assert(
+      (await n.inputValue()) === "3" &&
+        (await n.getAttribute("aria-invalid")) === "false",
+      "Changing presets did not reset invalid helper input",
+    );
+    await strategy
+      .getByRole("button", { name: "Balanced", exact: true })
+      .click();
+    await capture(page, "r6-stable-markets-desktop.png");
+  } finally {
+    await context.close();
+  }
+}
+
 async function v7BundleDeskAndStrategy(browser) {
   const { context, page, state } = await newPage(browser, {
     width: 1440,
@@ -1385,10 +2111,13 @@ async function v7BundleDeskAndStrategy(browser) {
       .getByRole("button", { name: "Balanced", exact: true })
       .click();
     await strategyView
-      .getByText(/Proposed selection — not yet applied/, { exact: false })
+      .getByRole("button", { name: "Preview selection" })
+      .click();
+    await strategyView
+      .getByText(/Proposed .* market.*not yet used/, { exact: false })
       .waitFor();
     await strategyView
-      .getByRole("button", { name: "Accept selection" })
+      .getByRole("button", { name: "Use these markets" })
       .click();
     await goToStrategyStep(page, 2);
     await page
@@ -1441,7 +2170,7 @@ async function v7BundleDeskAndStrategy(browser) {
         .getByRole("button", { name: "Back", exact: true })
         .click();
     await page
-      .getByText(/Saved effective selection/, { exact: false })
+      .getByText(/Accepted draft selection/, { exact: false })
       .waitFor();
     await strategyView
       .locator(".strategy-market-table")
@@ -1484,6 +2213,13 @@ try {
   await paperTrialRunsBesideBundles(browser);
   await staleStrategyDraftCannotApply(browser);
   await paperSimulationBlockerStaysVisible(browser);
+  await round6MobilePicker(browser);
+  await round6PickerAndRename(browser);
+  await round6UniformMarketCards(browser);
+  await round6ContextLinksAndHelp(browser);
+  await round6AttachmentDestinations(browser);
+  await round6ReviewCreatesBundle(browser);
+  await round6SuggestionRefresh(browser);
   await v7BundleDeskAndStrategy(browser);
   await revokeWithoutWallet(browser);
   await withdrawsToOwnerWallet(browser);

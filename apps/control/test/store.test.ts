@@ -1421,6 +1421,111 @@ describe("persistent control store", () => {
     legacyDatabase.close();
   });
 
+  it("creates a stopped Paper bundle for an applied strategy and rejects setup failures atomically", () => {
+    const directory = join(
+      process.env.TMPDIR ?? "/tmp",
+      `aftermath-maker-${randomBytes(8).toString("hex")}`,
+    );
+    mkdirSync(directory, { recursive: true });
+    const databaseStore = new Store(join(directory, "maker.db"));
+    const tenant = databaseStore.forTenant(`0x${"c".repeat(64)}`);
+    const config = makerConfigSchema.parse({
+      markets: [{ marketId: "0xa001", symbol: "ALPHA" }],
+      makerAccountId: "1",
+      hedge: {
+        enabled: false,
+        accountId: null,
+        thresholdUsd: 25,
+        maxOrderUsd: 100,
+        maxSlippageBps: 75,
+      },
+      maxInventoryUsd: 20,
+      maxGrossExposureUsd: 40,
+    });
+    tenant.setConfig(config);
+    tenant.confirmWalletLimits();
+    const core = tenant.listBundles().find((bundle) => bundle.name === "Core")!;
+    const strategy = tenant.getStrategy(core.strategyId!)!;
+    const created = tenant.createAllocatedBundle({
+      name: "Rewards",
+      makerAccountId: "3",
+      takerAccountId: null,
+      mode: "paper",
+      strategyId: strategy.id,
+    });
+    expect(created).toMatchObject({
+      mode: "paper",
+      status: "stopped",
+      strategyId: strategy.id,
+      makerAccountId: "3",
+      marketIds: ["0xa001"],
+    });
+    expect(() =>
+      tenant.createAllocatedBundle({
+        name: "Duplicate",
+        makerAccountId: "3",
+        takerAccountId: null,
+        mode: "paper",
+        strategyId: strategy.id,
+      }),
+    ).toThrow("Each account can hold one bundle role");
+    expect(() =>
+      tenant.createAllocatedBundle({
+        name: "Rewards",
+        makerAccountId: "4",
+        takerAccountId: null,
+        mode: "paper",
+        strategyId: strategy.id,
+      }),
+    ).toThrow("A bundle already uses that name");
+    const empty = tenant.createStrategy({
+      name: "Empty strategy",
+      config: strategy.config,
+      marketRule: { kind: "quick-pick", pick: "clear" },
+      markets: [],
+    });
+    expect(() =>
+      tenant.createAllocatedBundle({
+        name: "No markets",
+        makerAccountId: "4",
+        takerAccountId: null,
+        mode: "paper",
+        strategyId: empty.id,
+      }),
+    ).toThrow("Choose a strategy with one or more markets");
+    expect(() =>
+      tenant.createAllocatedBundle({
+        name: "Missing strategy",
+        makerAccountId: "4",
+        takerAccountId: null,
+        mode: "paper",
+        strategyId: "strategy-unknown",
+      }),
+    ).toThrow("Strategy was not found for this wallet");
+    expect(
+      tenant.listBundles().filter((bundle) => !bundle.archivedAt),
+    ).toHaveLength(2);
+
+    const freshTenant = databaseStore.forTenant(`0x${"d".repeat(64)}`);
+    const unattached = freshTenant.createStrategy({
+      name: "Unattached",
+      config: strategy.config,
+      marketRule: strategy.marketRule,
+      markets: strategy.markets,
+    });
+    expect(() =>
+      freshTenant.createAllocatedBundle({
+        name: "First",
+        makerAccountId: "5",
+        takerAccountId: null,
+        mode: "paper",
+        strategyId: unattached.id,
+      }),
+    ).toThrow("Configure Core wallet limits");
+    expect(freshTenant.listBundles()).toHaveLength(0);
+    databaseStore.close();
+  });
+
   it("enforces Paper and Observe bundle constraints, wallet confirmation, and scoped attribution", () => {
     const directory = join(
       process.env.TMPDIR ?? "/tmp",
