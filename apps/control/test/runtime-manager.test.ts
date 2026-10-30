@@ -358,4 +358,49 @@ describe("runtime endpoint management", () => {
     manager.close();
     store.close();
   });
+
+  it("does not count retained order attribution as a cancellation reserve", async () => {
+    const store = storeHarness();
+    const ownerAddress = `0x${"7".repeat(64)}`;
+    const tenant = store.forTenant(ownerAddress);
+    const config = makerConfigSchema.parse({
+      markets: [{ marketId: "0x7001", symbol: "CORE" }],
+      maxGasMist: 50_000_000,
+      rotationMode: "single-slot",
+    });
+    tenant.setConfig(config);
+    tenant.trackMakerOrders({
+      accountId: "7",
+      marketId: "0x7001",
+      quoteDigest: "history",
+      orderIds: Array.from({ length: 100 }, (_, index) => `old-${index}`),
+    });
+    const core = tenant.listBundles()[0]!;
+    const manager = new RuntimeManager(
+      store,
+      {} as never,
+      {},
+      vi.fn().mockResolvedValue(gateway("https://shared.example")),
+    );
+    await manager.initialize();
+    const runtime = manager.getBundle(ownerAddress, core.id) as unknown as {
+      snapshotValue: { balances: { gasSui: number | null } };
+    };
+    runtime.snapshotValue.balances.gasSui = 0.3;
+
+    expect(() =>
+      (
+        manager as unknown as {
+          assertStartGasReserve: (
+            owner: string,
+            bundle: typeof core,
+            candidateRuntime: unknown,
+          ) => void;
+        }
+      ).assertStartGasReserve(ownerAddress, core, runtime),
+    ).not.toThrow();
+
+    manager.close();
+    store.close();
+  });
 });
