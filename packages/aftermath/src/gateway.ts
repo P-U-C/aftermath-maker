@@ -1961,6 +1961,7 @@ export class AftermathGateway {
           accountCapId: cap.objectId,
           accountObjectId: cap.accountObjectId,
           collateralCoinType: inputs.setup.collateralCoinType,
+          maxLeverage: inputs.config.maxLeverage,
           markets: authorities,
           builderCode: null,
           orderIdsByMarket: Object.fromEntries(
@@ -2157,6 +2158,7 @@ export class AftermathGateway {
             accountCapId: cap.objectId,
             accountObjectId: cap.accountObjectId,
             collateralCoinType: inputs.setup.collateralCoinType,
+            maxLeverage: inputs.config.maxLeverage,
             markets: verifiedOrders.map((item) => item.authority),
             builderCode: null,
             orders: verifiedOrders.map((item) => item.order),
@@ -2301,6 +2303,7 @@ export class AftermathGateway {
           accountCapId: cap.objectId,
           accountObjectId: cap.accountObjectId,
           collateralCoinType: inputs.setup.collateralCoinType,
+          maxLeverage: inputs.config.maxLeverage,
           markets: [
             {
               marketId: inputs.marketId,
@@ -2542,6 +2545,7 @@ export class AftermathGateway {
           accountCapId: cap.objectId,
           accountObjectId: cap.accountObjectId,
           collateralCoinType: inputs.setup.collateralCoinType,
+          maxLeverage: inputs.config.maxLeverage,
           markets: authorities,
           builderCode: inputs.builderCode,
           marketId: inputs.quote.marketId,

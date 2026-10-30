@@ -21,6 +21,7 @@ type CommonIntent = {
   accountObjectId: string;
   collateralCoinType: string;
   markets: MarketAuthority[];
+  maxLeverage: number;
   builderCode: BuilderCode | null;
 };
 
@@ -77,8 +78,14 @@ type Input = {
   $kind?: string;
 };
 
+type MakeMoveVec = {
+  type?: string | null;
+  elements?: Argument[];
+};
+
 type Command = {
   MoveCall?: MoveCall;
+  MakeMoveVec?: MakeMoveVec;
   $kind?: string;
 };
 
@@ -92,6 +99,7 @@ const SYSTEM_PACKAGE = normalizeSuiAddress("0x1");
 const ALLOWED_CLEARING_HOUSE_CALLS = new Set([
   "create_market_position",
   "deallocate_free_collateral",
+  "set_position_initial_margin_ratio",
   "start_session",
   "try_cancel_orders",
   "place_limit_order",
@@ -101,6 +109,7 @@ const ALLOWED_CLEARING_HOUSE_CALLS = new Set([
 const CLEARING_HOUSE_ARGUMENT_COUNTS: Record<string, number> = {
   create_market_position: 3,
   deallocate_free_collateral: 6,
+  set_position_initial_margin_ratio: 4,
   start_session: 7,
   try_cancel_orders: 4,
   place_limit_order: 8,
@@ -110,10 +119,14 @@ const CLEARING_HOUSE_ARGUMENT_COUNTS: Record<string, number> = {
 const SESSION_AUTHORITY_TYPE =
   "0x4e2df80a5e2fd0392878298c51ce15164222111ccea05504b9291b158f552677::authority::ASSISTANT";
 const SESSION_AUTHORITY_CALLS = new Set([
+  "create_market_position",
   "deallocate_free_collateral",
+  "set_position_initial_margin_ratio",
   "start_session",
+  "try_cancel_orders",
   "end_session",
 ]);
+const IFIXED_ONE = 1_000_000_000_000_000_000n;
 const BCS_FEE_SCALE = 1_000_000_000;
 
 function fail(detail: string): never {
@@ -191,6 +204,30 @@ function parseU64(
   }
 }
 
+function parseU128(
+  snapshot: Snapshot,
+  argument: Argument | undefined,
+  label: string,
+): bigint {
+  try {
+    return BigInt(bcs.u128().parse(pureBytes(snapshot, argument, label)));
+  } catch {
+    return fail(`${label} is not a u128`);
+  }
+}
+
+function parseU256(
+  snapshot: Snapshot,
+  argument: Argument | undefined,
+  label: string,
+): bigint {
+  try {
+    return BigInt(bcs.u256().parse(pureBytes(snapshot, argument, label)));
+  } catch {
+    return fail(`${label} is not a u256`);
+  }
+}
+
 function parseOptionalU64(
   snapshot: Snapshot,
   argument: Argument | undefined,
@@ -235,14 +272,28 @@ function parseU128Vector(
   argument: Argument | undefined,
   label: string,
 ): bigint[] {
-  try {
-    return bcs
-      .vector(bcs.u128())
-      .parse(pureBytes(snapshot, argument, label))
-      .map(BigInt);
-  } catch {
-    return fail(`${label} is not a vector<u128>`);
+  if (typeof argument?.Input === "number") {
+    try {
+      return bcs
+        .vector(bcs.u128())
+        .parse(pureBytes(snapshot, argument, label))
+        .map(BigInt);
+    } catch {
+      return fail(`${label} is not a vector<u128>`);
+    }
   }
+
+  if (typeof argument?.Result === "number") {
+    const vector = snapshot.commands[argument.Result]?.MakeMoveVec;
+    if (vector?.type !== "u128" || !Array.isArray(vector.elements)) {
+      fail(`${label} is not a verified vector<u128>`);
+    }
+    return vector.elements.map((element, index) =>
+      parseU128(snapshot, element, `${label} element ${index}`),
+    );
+  }
+
+  return fail(`${label} is not a vector<u128>`);
 }
 
 function objectId(input: Input | undefined): string | null {
@@ -277,6 +328,36 @@ function sameBigInts(actual: bigint[], expected: bigint[]): boolean {
   return a.length === b.length && a.every((value, index) => value === b[index]);
 }
 
+function decimalRatio(value: number): {
+  numerator: bigint;
+  denominator: bigint;
+} {
+  if (!Number.isFinite(value) || value < 1 || value > 3) {
+    fail("max leverage is outside the configured range");
+  }
+  const serialized = JSON.stringify(value);
+  const match = serialized.match(/^(\d+)(?:\.(\d+))?(?:e([+-]?\d+))?$/i);
+  if (!match) fail("max leverage has an invalid decimal representation");
+
+  const whole = match[1]!;
+  const fractional = match[2] ?? "";
+  const exponent = Number(match[3] ?? "0");
+  const digits = BigInt(`${whole}${fractional}`);
+  const scale = fractional.length - exponent;
+  if (scale <= 0) {
+    return {
+      numerator: digits * 10n ** BigInt(-scale),
+      denominator: 1n,
+    };
+  }
+  return { numerator: digits, denominator: 10n ** BigInt(scale) };
+}
+
+function expectedInitialMarginRatio(maxLeverage: number): bigint {
+  const leverage = decimalRatio(maxLeverage);
+  return (IFIXED_ONE * leverage.denominator) / leverage.numerator;
+}
+
 function mapByAddress<T extends { marketId: string }>(
   values: T[],
 ): Map<string, T> {
@@ -295,13 +376,48 @@ function expectedIds(
 }
 
 function moveCalls(snapshot: Snapshot): Array<MoveCall & { index: number }> {
-  return snapshot.commands.map((command, index) => {
-    if (!command.MoveCall) {
+  return snapshot.commands.flatMap((command, index) =>
+    command.MoveCall ? [{ ...command.MoveCall, index }] : [],
+  );
+}
+
+function assertMakeMoveVectors(
+  snapshot: Snapshot,
+  calls: Array<MoveCall & { index: number }>,
+): void {
+  snapshot.commands.forEach((command, index) => {
+    if (command.MoveCall) return;
+    const vector = command.MakeMoveVec;
+    if (!vector) {
       fail(
         `command ${index} is ${command.$kind ?? "not a MoveCall"}; coin, transfer, publish, and upgrade commands are forbidden`,
       );
     }
-    return { ...command.MoveCall, index };
+    if (vector.type !== "u128" || !Array.isArray(vector.elements)) {
+      fail(`MakeMoveVec ${index} is not a vector<u128>`);
+    }
+    vector.elements.forEach((element, elementIndex) => {
+      parseU128(
+        snapshot,
+        element,
+        `MakeMoveVec ${index} element ${elementIndex}`,
+      );
+    });
+
+    const consumers = calls.flatMap((call) =>
+      call.arguments.flatMap((argument, argumentIndex) =>
+        argument.Result === index ? [{ call, argumentIndex }] : [],
+      ),
+    );
+    if (
+      consumers.length !== 1 ||
+      consumers[0]!.call.function !== "try_cancel_orders" ||
+      consumers[0]!.argumentIndex !== 3
+    ) {
+      fail(
+        `MakeMoveVec ${index} must be used only as the cancel order-ID vector`,
+      );
+    }
   });
 }
 
@@ -347,7 +463,8 @@ function assertCommonStructure(
       if (
         call.module !== "option" ||
         call.function !== "none" ||
-        call.arguments.length !== 0
+        call.arguments.length !== 0 ||
+        call.typeArguments.length !== 1
       ) {
         fail(`system call ${call.module}::${call.function} is forbidden`);
       }
@@ -391,6 +508,7 @@ function assertCommonStructure(
       [
         "create_market_position",
         "deallocate_free_collateral",
+        "set_position_initial_margin_ratio",
         "start_session",
         "try_cancel_orders",
       ].includes(call.function)
@@ -415,7 +533,36 @@ function assertCommonStructure(
       ) {
         fail(`${call.function} uses an unexpected account`);
       }
+      if (
+        call.function === "set_position_initial_margin_ratio" &&
+        parseU256(snapshot, call.arguments[3], "initial margin ratio") !==
+          expectedInitialMarginRatio(intent.maxLeverage)
+      ) {
+        fail("initial margin ratio does not match the configured leverage");
+      }
       commandMarket.set(call.index, marketId);
+    }
+  }
+
+  for (const call of calls.filter(
+    (candidate) => candidate.function === "start_session",
+  )) {
+    const builderIndex = resultIndex(
+      call.arguments[5],
+      "start_session builder info",
+    );
+    const builder = calls.find((candidate) => candidate.index === builderIndex);
+    if (
+      !builder ||
+      !(
+        (builder.module === "account" &&
+          builder.function === "create_integrator_info") ||
+        (address(builder.package) === SYSTEM_PACKAGE &&
+          builder.module === "option" &&
+          builder.function === "none")
+      )
+    ) {
+      fail("start_session builder info is not an approved result");
     }
   }
 
@@ -500,6 +647,9 @@ function assertSessionGraph(
   const positions = calls.filter(
     (call) => call.function === "create_market_position",
   );
+  const marginUpdates = calls.filter(
+    (call) => call.function === "set_position_initial_margin_ratio",
+  );
   const shares = calls.filter((call) => call.function === "share");
 
   const sessionMarkets = sessions
@@ -534,6 +684,21 @@ function assertSessionGraph(
     )
   ) {
     fail("market-position creation graph does not match placement intent");
+  }
+
+  const updatedMarkets = marginUpdates.map((call) =>
+    commandMarket.get(call.index),
+  );
+  if (
+    updatedMarkets.length !== createdMarkets.length ||
+    updatedMarkets.some(
+      (marketId, index) =>
+        !marketId ||
+        marketId !== createdMarkets[index] ||
+        updatedMarkets.indexOf(marketId) !== index,
+    )
+  ) {
+    fail("initial-margin updates do not match created positions");
   }
 
   if (shares.length !== endings.length) {
@@ -600,6 +765,7 @@ export function assertAgentTransactionIntent(
 ): void {
   const snapshot = snapshotOf(tx);
   const calls = moveCalls(snapshot);
+  assertMakeMoveVectors(snapshot, calls);
   const { commandMarket } = assertCommonStructure(snapshot, intent, calls);
   assertBuilder(snapshot, calls, intent.builderCode);
 

@@ -21,6 +21,7 @@ const bidPrice = 21_511_000n;
 const askPrice = 21_597_000n;
 const bidClientOrderId = 576_460_752_303_423_500n;
 const askClientOrderId = 576_460_752_303_423_501n;
+const initialMarginRatio = 1_000_000_000_000_000_000n;
 
 function pure(bytes: Uint8Array) {
   return { Pure: { bytes: toBase64(bytes) }, $kind: "Pure" };
@@ -78,6 +79,13 @@ function moveCall(
   };
 }
 
+function makeMoveVec(elements: ReturnType<typeof input>[]) {
+  return {
+    MakeMoveVec: { type: "u128", elements },
+    $kind: "MakeMoveVec",
+  };
+}
+
 function quoteFixture() {
   return {
     getData: () => ({
@@ -101,13 +109,23 @@ function quoteFixture() {
         pure(bcs.option(bcs.u64()).serialize(askClientOrderId).toBytes()),
         pure(bcs.u32().serialize(7).toBytes()),
         pure(bcs.u32().serialize(100_000).toBytes()),
+        pure(bcs.u256().serialize(initialMarginRatio).toBytes()),
       ],
       commands: [
-        moveCall(packageId, "clearing_house", "create_market_position", [
-          input(2),
-          input(0),
-          input(1),
-        ]),
+        moveCall(
+          packageId,
+          "clearing_house",
+          "create_market_position",
+          [input(2), input(0), input(1)],
+          [collateralCoinType, sessionAuthorityType],
+        ),
+        moveCall(
+          packageId,
+          "clearing_house",
+          "set_position_initial_margin_ratio",
+          [input(2), input(0), input(1), input(15)],
+          [collateralCoinType, sessionAuthorityType],
+        ),
         {
           MoveCall: {
             package: packageId,
@@ -128,13 +146,13 @@ function quoteFixture() {
             input(1),
             input(3),
             input(3),
-            result(1),
+            result(2),
             input(4),
           ],
           [collateralCoinType, sessionAuthorityType],
         ),
         moveCall(packageId, "clearing_house", "place_limit_order", [
-          result(2),
+          result(3),
           input(6),
           input(9),
           input(8),
@@ -144,7 +162,7 @@ function quoteFixture() {
           input(6),
         ]),
         moveCall(packageId, "clearing_house", "place_limit_order", [
-          result(2),
+          result(3),
           input(7),
           input(9),
           input(11),
@@ -157,10 +175,10 @@ function quoteFixture() {
           packageId,
           "clearing_house",
           "end_session",
-          [result(2), input(0), input(1), input(7), input(6)],
+          [result(3), input(0), input(1), input(7), input(6)],
           [collateralCoinType, sessionAuthorityType],
         ),
-        moveCall(packageId, "clearing_house", "share", [nestedResult(5, 0)]),
+        moveCall(packageId, "clearing_house", "share", [nestedResult(6, 0)]),
       ],
     }),
   };
@@ -172,6 +190,7 @@ const quoteIntent: AgentTransactionIntent = {
   accountCapId: capId,
   accountObjectId: accountId,
   collateralCoinType,
+  maxLeverage: 1,
   markets: [{ marketId, packageId }],
   builderCode: { integratorId: 7, integratorFee: 0.0001 },
   marketId,
@@ -202,13 +221,48 @@ function quoteWithDeallocationFixture() {
         [collateralCoinType, sessionAuthorityType],
       ) as never,
     );
-    snapshot.commands[3]!.MoveCall!.arguments[5] = result(2);
-    snapshot.commands[4]!.MoveCall!.arguments[0] = result(3);
-    snapshot.commands[5]!.MoveCall!.arguments[0] = result(3);
-    snapshot.commands[6]!.MoveCall!.arguments[0] = result(3);
-    snapshot.commands[7]!.MoveCall!.arguments[0] = nestedResult(6, 0);
+    snapshot.commands[4]!.MoveCall!.arguments[5] = result(3);
+    snapshot.commands[5]!.MoveCall!.arguments[0] = result(4);
+    snapshot.commands[6]!.MoveCall!.arguments[0] = result(4);
+    snapshot.commands[7]!.MoveCall!.arguments[0] = result(4);
+    snapshot.commands[8]!.MoveCall!.arguments[0] = nestedResult(7, 0);
   });
 }
+
+function currentLiveQuoteFixture() {
+  return mutate(quoteFixture(), (snapshot) => {
+    snapshot.inputs.push(pure(bcs.u128().serialize(123n).toBytes()));
+    snapshot.commands = [
+      makeMoveVec([input(16)]),
+      moveCall(
+        packageId,
+        "clearing_house",
+        "try_cancel_orders",
+        [input(2), input(0), input(1), result(0)],
+        [collateralCoinType, sessionAuthorityType],
+      ),
+      structuredClone(snapshot.commands[0]!),
+      structuredClone(snapshot.commands[1]!),
+      moveCall("0x1", "option", "none", [], [collateralCoinType]),
+      structuredClone(snapshot.commands[3]!),
+      structuredClone(snapshot.commands[4]!),
+      structuredClone(snapshot.commands[5]!),
+      structuredClone(snapshot.commands[6]!),
+      structuredClone(snapshot.commands[7]!),
+    ] as never;
+    snapshot.commands[5]!.MoveCall!.arguments[5] = result(4);
+    snapshot.commands[6]!.MoveCall!.arguments[0] = result(5);
+    snapshot.commands[7]!.MoveCall!.arguments[0] = result(5);
+    snapshot.commands[8]!.MoveCall!.arguments[0] = result(5);
+    snapshot.commands[9]!.MoveCall!.arguments[0] = nestedResult(8, 0);
+  });
+}
+
+const currentLiveQuoteIntent: AgentTransactionIntent = {
+  ...quoteIntent,
+  builderCode: null,
+  orderIdsByMarket: { [marketId]: [123n] },
+};
 
 describe("agent transaction intent", () => {
   it("accepts a quote whose command graph matches the exact intent", () => {
@@ -223,6 +277,70 @@ describe("agent transaction intent", () => {
     ).not.toThrow();
   });
 
+  it("accepts the current live cancellation and position graph", () => {
+    expect(() =>
+      assertAgentTransactionIntent(
+        currentLiveQuoteFixture(),
+        currentLiveQuoteIntent,
+      ),
+    ).not.toThrow();
+  });
+
+  it("rejects a cancellation vector detached from its cancellation", () => {
+    const changed = mutate(currentLiveQuoteFixture(), (snapshot) => {
+      snapshot.commands[1]!.MoveCall!.arguments[3] = input(16);
+    });
+    expect(() =>
+      assertAgentTransactionIntent(changed, currentLiveQuoteIntent),
+    ).toThrow("MakeMoveVec 0 must be used only");
+  });
+
+  it("rejects a cancellation vector with a changed element type", () => {
+    const changed = mutate(currentLiveQuoteFixture(), (snapshot) => {
+      snapshot.commands[0]!.MakeMoveVec!.type = "u64";
+    });
+    expect(() =>
+      assertAgentTransactionIntent(changed, currentLiveQuoteIntent),
+    ).toThrow("MakeMoveVec 0 is not a vector<u128>");
+  });
+
+  it("rejects a cancellation vector with unexpected IDs", () => {
+    const changed = mutate(currentLiveQuoteFixture(), (snapshot) => {
+      snapshot.inputs[16] = pure(bcs.u128().serialize(124n).toBytes());
+    });
+    expect(() =>
+      assertAgentTransactionIntent(changed, currentLiveQuoteIntent),
+    ).toThrow("cancel order IDs do not match");
+  });
+
+  it("rejects an initial margin ratio outside the configured leverage", () => {
+    const changed = mutate(currentLiveQuoteFixture(), (snapshot) => {
+      snapshot.inputs[15] = pure(
+        bcs
+          .u256()
+          .serialize(initialMarginRatio - 1n)
+          .toBytes(),
+      );
+    });
+    expect(() =>
+      assertAgentTransactionIntent(changed, currentLiveQuoteIntent),
+    ).toThrow("initial margin ratio does not match");
+  });
+
+  it("accepts the exact fractional-leverage margin ratio", () => {
+    const changed = mutate(currentLiveQuoteFixture(), (snapshot) => {
+      snapshot.inputs[15] = pure(
+        bcs.u256().serialize(666_666_666_666_666_666n).toBytes(),
+      );
+    });
+    expect(() =>
+      assertAgentTransactionIntent(changed, {
+        ...currentLiveQuoteIntent,
+        maxLeverage: 1.5,
+      }),
+    ).not.toThrow();
+  });
+
   it("rejects an untrusted deallocation authority type", () => {
     const changed = mutate(quoteWithDeallocationFixture(), (snapshot) => {
       snapshot.commands[0]!.MoveCall!.typeArguments[1] = `0x${"99".repeat(32)}::authority::ASSISTANT`;
@@ -232,9 +350,20 @@ describe("agent transaction intent", () => {
     );
   });
 
+  it("rejects an untrusted initial-margin authority type", () => {
+    const changed = mutate(currentLiveQuoteFixture(), (snapshot) => {
+      snapshot.commands[3]!.MoveCall!.typeArguments[1] = `0x${"99".repeat(32)}::authority::ASSISTANT`;
+    });
+    expect(() =>
+      assertAgentTransactionIntent(changed, currentLiveQuoteIntent),
+    ).toThrow(
+      "set_position_initial_margin_ratio changed arguments or collateral type",
+    );
+  });
+
   it("rejects a share detached from its ended session", () => {
     const changed = mutate(quoteFixture(), (snapshot) => {
-      snapshot.commands[6]!.MoveCall!.arguments[0] = nestedResult(4, 0);
+      snapshot.commands[7]!.MoveCall!.arguments[0] = nestedResult(5, 0);
     });
     expect(() => assertAgentTransactionIntent(changed, quoteIntent)).toThrow(
       "clearing-house share is not attached",
@@ -269,7 +398,7 @@ describe("agent transaction intent", () => {
 
   it("rejects a call to an untrusted package", () => {
     const changed = mutate(quoteFixture(), (snapshot) => {
-      snapshot.commands[3]!.MoveCall!.package = `0x${"99".repeat(32)}`;
+      snapshot.commands[4]!.MoveCall!.package = `0x${"99".repeat(32)}`;
     });
     expect(() => assertAgentTransactionIntent(changed, quoteIntent)).toThrow(
       "untrusted package",
@@ -287,7 +416,7 @@ describe("agent transaction intent", () => {
 
   it("rejects an extra allowed session call in the returned graph", () => {
     const changed = mutate(quoteFixture(), (snapshot) => {
-      snapshot.commands.push(structuredClone(snapshot.commands[2]!));
+      snapshot.commands.push(structuredClone(snapshot.commands[3]!));
     });
     expect(() => assertAgentTransactionIntent(changed, quoteIntent)).toThrow(
       "market sessions do not match",
@@ -296,7 +425,7 @@ describe("agent transaction intent", () => {
 
   it("rejects a changed collateral type argument", () => {
     const changed = mutate(quoteFixture(), (snapshot) => {
-      snapshot.commands[3]!.MoveCall!.typeArguments = [
+      snapshot.commands[4]!.MoveCall!.typeArguments = [
         `0x${"99".repeat(32)}::coin::COIN`,
       ];
     });
@@ -307,7 +436,7 @@ describe("agent transaction intent", () => {
 
   it("rejects an untrusted session authority type", () => {
     const changed = mutate(quoteFixture(), (snapshot) => {
-      snapshot.commands[2]!.MoveCall!.typeArguments[1] = `0x${"99".repeat(32)}::authority::ASSISTANT`;
+      snapshot.commands[3]!.MoveCall!.typeArguments[1] = `0x${"99".repeat(32)}::authority::ASSISTANT`;
     });
     expect(() => assertAgentTransactionIntent(changed, quoteIntent)).toThrow(
       "start_session changed arguments or collateral type",
@@ -316,7 +445,7 @@ describe("agent transaction intent", () => {
 
   it("rejects an untrusted end-session authority type", () => {
     const changed = mutate(quoteFixture(), (snapshot) => {
-      snapshot.commands[5]!.MoveCall!.typeArguments[1] = `0x${"99".repeat(32)}::authority::ASSISTANT`;
+      snapshot.commands[6]!.MoveCall!.typeArguments[1] = `0x${"99".repeat(32)}::authority::ASSISTANT`;
     });
     expect(() => assertAgentTransactionIntent(changed, quoteIntent)).toThrow(
       "end_session changed arguments or collateral type",
@@ -334,11 +463,11 @@ describe("agent transaction intent", () => {
 
   it("rejects a market order outside its slippage bound", () => {
     const fixture = mutate(quoteFixture(), (snapshot) => {
-      snapshot.commands.splice(4, 1);
-      snapshot.commands[3]!.MoveCall!.arguments[1] = input(7);
-      snapshot.commands[3]!.MoveCall!.arguments[3] = input(11);
-      snapshot.commands[3]!.MoveCall!.arguments[4] = input(15);
-      snapshot.commands[5]!.MoveCall!.arguments[0] = nestedResult(4, 0);
+      snapshot.commands.splice(5, 1);
+      snapshot.commands[4]!.MoveCall!.arguments[1] = input(7);
+      snapshot.commands[4]!.MoveCall!.arguments[3] = input(11);
+      snapshot.commands[4]!.MoveCall!.arguments[4] = input(16);
+      snapshot.commands[6]!.MoveCall!.arguments[0] = nestedResult(5, 0);
       snapshot.inputs.push(pure(bcs.u64().serialize(1).toBytes()));
     });
     const intent: AgentTransactionIntent = {
@@ -347,6 +476,7 @@ describe("agent transaction intent", () => {
       accountCapId: capId,
       accountObjectId: accountId,
       collateralCoinType,
+      maxLeverage: 1,
       markets: [{ marketId, packageId }],
       builderCode: { integratorId: 7, integratorFee: 0.0001 },
       orders: [
@@ -397,12 +527,13 @@ describe("agent transaction intent", () => {
         pure(bcs.vector(bcs.u128()).serialize(ids).toBytes()),
       );
       snapshot.commands = [
-        moveCall(packageId, "clearing_house", "try_cancel_orders", [
-          input(2),
-          input(0),
-          input(1),
-          input(15),
-        ]),
+        moveCall(
+          packageId,
+          "clearing_house",
+          "try_cancel_orders",
+          [input(2), input(0), input(1), input(16)],
+          [collateralCoinType, sessionAuthorityType],
+        ),
       ];
     });
     const intent: AgentTransactionIntent = {
@@ -411,6 +542,7 @@ describe("agent transaction intent", () => {
       accountCapId: capId,
       accountObjectId: accountId,
       collateralCoinType,
+      maxLeverage: 1,
       markets: [{ marketId, packageId }],
       builderCode: null,
       orderIdsByMarket: { [marketId]: ids },
