@@ -24,6 +24,7 @@ import {
   type Setup,
 } from "@puc/core";
 import type { TenantStore } from "./store.js";
+import { confirmedRestingMarketIds } from "./resting-quotes.js";
 import {
   buildStrategyTrialPlan,
   STRATEGY_TRIAL_OBJECTIVES,
@@ -234,6 +235,8 @@ const initialSnapshot = (): RuntimeSnapshot => ({
     measuredAt: null,
   },
   markets: [],
+  restingQuoteMarketIds: [],
+  restingQuoteVerifiedAt: null,
   portfolio: {
     selectedMarkets: 0,
     grossExposureUsd: 0,
@@ -336,6 +339,14 @@ function paperSimulationBlocker(inputs: {
   safety: SafetyCheck[];
   symbol: string;
   requiredGasSui: number;
+  collateral?: {
+    availableUsd: number;
+    requiredUsd: number;
+    concurrentMarkets: number;
+    quoteSizeUsd: number;
+    leverage: number;
+    observedAt: string;
+  };
 }): { code: string; message: string } | null {
   const accountLabel = inputs.setup
     ? `account ${inputs.setup.accountId}`
@@ -359,7 +370,9 @@ function paperSimulationBlocker(inputs: {
   if (first.code === "collateral") {
     return {
       code: "collateral",
-      message: `Paper can't simulate: ${accountLabel} has ${first.detail}. Add collateral or lower the quote size; Maker will keep reading the market.`,
+      message: inputs.collateral
+        ? `Paper can't simulate: ${accountLabel} has $${inputs.collateral.availableUsd.toFixed(2)} available collateral; $${inputs.collateral.requiredUsd.toFixed(2)} required for ${inputs.collateral.concurrentMarkets} concurrent ${inputs.collateral.concurrentMarkets === 1 ? "market" : "markets"}, including a $${inputs.collateral.quoteSizeUsd.toFixed(2)} quote per side at ${inputs.collateral.leverage}x. Account read recorded ${inputs.collateral.observedAt}. ${inputs.collateral.availableUsd <= 0 ? `Deposit collateral into ${accountLabel}; smaller positive orders cannot run with zero available.` : "Add collateral or review smaller sizes within venue and risk limits."} Maker will keep reading the market.`
+        : `Paper can't simulate: ${accountLabel} has ${first.detail}. Add collateral or review sizing; Maker will keep reading the market.`,
     };
   }
   if (first.code === "fair-value") {
@@ -609,6 +622,9 @@ export class MakerRuntime {
   private clearActiveQuoteState(): void {
     this.activeQuoteMarketId = null;
     this.activeQuote = null;
+    // A cancellation or handoff invalidates prior venue-order observations.
+    this.snapshotValue.restingQuoteMarketIds = [];
+    this.snapshotValue.restingQuoteVerifiedAt = null;
   }
 
   async listMarkets(collateralCoinType: string): Promise<MarketSummary[]> {
@@ -848,6 +864,8 @@ export class MakerRuntime {
       marketIds?: string[];
     } = {},
   ): Promise<boolean> {
+    this.snapshotValue.restingQuoteMarketIds = [];
+    this.snapshotValue.restingQuoteVerifiedAt = null;
     const setup = this.store.getSetup();
     const account = setup ? this.store.getAccountSetup(setup.accountId) : null;
     const agent = this.store.getAgent();
@@ -2479,6 +2497,17 @@ export class MakerRuntime {
               : null,
           measuredAt: setup && account?.agentCapId && agent ? updatedAt : null,
         },
+        restingQuoteMarketIds:
+          config.mode === "live" && setup
+            ? confirmedRestingMarketIds(
+                portfolio.positions,
+                this.store.listTrackedMakerOrders({
+                  accountId: setup.accountId,
+                }),
+              )
+            : [],
+        restingQuoteVerifiedAt:
+          config.mode === "live" && setup ? portfolio.markedAt : null,
         markets: this.snapshotValue.markets.map((row) => {
           const rowPosition = portfolio.positions.find(
             (item) => item.marketId === row.id,
@@ -2602,6 +2631,15 @@ export class MakerRuntime {
           safety,
           symbol: market.metadata?.symbol ?? selected.symbol,
           requiredGasSui: (config.maxGasMist * 3) / 1_000_000_000,
+          collateral: {
+            availableUsd: portfolio.availableCollateralUsd,
+            requiredUsd: portfolioQuoteRisk.requiredQuoteCollateralUsd,
+            concurrentMarkets:
+              config.rotationMode === "single-slot" ? 1 : config.markets.length,
+            quoteSizeUsd: quote.sizeUsd,
+            leverage: marketConfig.maxLeverage,
+            observedAt: portfolio.markedAt,
+          },
         });
         if (blocker) {
           this.recordPaperSimulationBlocker({
@@ -2766,6 +2804,10 @@ export class MakerRuntime {
             )
         : [];
 
+      // Atomic cancel-and-place can invalidate all previously observed resting IDs.
+      // Require a fresh account read on a later cycle before reporting them.
+      this.snapshotValue.restingQuoteMarketIds = [];
+      this.snapshotValue.restingQuoteVerifiedAt = null;
       const receipt = await this.gateway.executeQuote({
         setup,
         config: marketConfig,

@@ -553,6 +553,13 @@ describe("runtime execution boundaries", () => {
     expect(runtime.snapshot.lastError).toContain(
       "account 42 has $0.00 available",
     );
+    expect(runtime.snapshot.lastError).toMatch(
+      /\$40\.00 required for 2 concurrent markets/,
+    );
+    expect(runtime.snapshot.lastError).toContain(
+      "smaller positive orders cannot run with zero available",
+    );
+    expect(runtime.snapshot.lastError).toContain("Account read recorded");
     expect(runtime.snapshot.markets[0]).toMatchObject({
       status: "healthy",
       error: runtime.snapshot.lastError,

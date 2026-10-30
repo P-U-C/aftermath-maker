@@ -44,6 +44,16 @@ const ExplainContext = createContext<{
   toggle: () => void;
 } | null>(null);
 
+const RunControlsContext = createContext<{
+  open: (bundleId?: string) => void;
+} | null>(null);
+
+export function useMakerRunControls() {
+  const context = useContext(RunControlsContext);
+  if (!context) throw new Error("Run controls must be inside MakerShell");
+  return context;
+}
+
 export function useMakerExplain() {
   const context = useContext(ExplainContext);
   if (!context)
@@ -606,11 +616,27 @@ type MakerShellProps = {
   activeView: MakerView;
   selectView: (view: MakerView) => void;
   markState: SpreadMarkState;
-  mode: "observe" | "paper" | "live";
+  mode: "observe" | "paper" | "live" | "mixed modes";
   running: boolean;
   canStopAll: boolean;
   stopState: "ready" | "stopping" | "stopped";
   phoneDeskStopAvailable: boolean;
+  runBundles: Array<{
+    id: string;
+    name: string;
+    mode: "observe" | "paper" | "live";
+    status: "stopped" | "running" | "paused" | "error";
+    lastError: string | null;
+    needsStrategy: boolean;
+    createdAt: string;
+    updatedAt: string;
+  }>;
+  onBundleAction: (
+    bundleId: string,
+    action: "start" | "pause" | "resume",
+  ) => void;
+  runActionBusy: boolean;
+  runStartBlocked: boolean;
   live: boolean;
   canOperate: boolean;
   serviceUnavailable: boolean;
@@ -641,6 +667,10 @@ export function MakerShell({
   canStopAll,
   stopState,
   phoneDeskStopAvailable,
+  runBundles,
+  onBundleAction,
+  runActionBusy,
+  runStartBlocked,
   live,
   canOperate,
   serviceUnavailable,
@@ -657,6 +687,17 @@ export function MakerShell({
   children,
 }: MakerShellProps) {
   const [addressCopied, setAddressCopied] = useState(false);
+  const [runControlsOpen, setRunControlsOpen] = useState(false);
+  const [controlBundleId, setControlBundleId] = useState<string | null>(null);
+  const openRunControls = (bundleId?: string) => {
+    if (bundleId) setControlBundleId(bundleId);
+    setRunControlsOpen(true);
+    window.requestAnimationFrame(() => {
+      document
+        .getElementById("maker-run-controls")
+        ?.scrollIntoView({ block: "nearest" });
+    });
+  };
   const [explainOpen, setExplainOpen] = useState(false);
   const [tourPrompt, setTourPrompt] = useState(false);
   const toggleExplain = useCallback(() => setExplainOpen((open) => !open), []);
@@ -731,12 +772,7 @@ export function MakerShell({
         : "neutral";
   const activeLabel =
     makerViews.find((view) => view.id === activeView)?.label ?? "Desk";
-  const stopLabel =
-    stopState === "stopping"
-      ? "Stopping…"
-      : stopState === "stopped"
-        ? "Stopped"
-        : "Stop all";
+  const stopLabel = stopState === "stopping" ? "Stopping…" : "Stop all";
   const showPhoneStopAll =
     canStopAll &&
     activeView !== "strategy" &&
@@ -758,225 +794,346 @@ export function MakerShell({
     <ExplainContext.Provider
       value={{ open: explainOpen, toggle: toggleExplain }}
     >
-      <main className="shell">
-        {live && <div className="live-rail" aria-hidden="true" />}
-        <header className="maker-nav">
-          <div className="maker-phone-heading">
-            <span className="maker-phone-title">
-              <SpreadMark
-                state={markState}
-                size={30}
-                label={`Maker is ${displayedMode}`}
-              />
-              <strong>{activeLabel}</strong>
-            </span>
-            <div className="maker-phone-actions">
-              {showPhoneStopAll ? (
+      <RunControlsContext.Provider value={{ open: openRunControls }}>
+        <main className="shell">
+          {live && <div className="live-rail" aria-hidden="true" />}
+          <header className="maker-nav">
+            <div className="maker-phone-heading">
+              <span className="maker-phone-title">
+                <SpreadMark
+                  state={markState}
+                  size={30}
+                  label={`Maker is ${displayedMode}`}
+                />
+                <strong>{activeLabel}</strong>
+              </span>
+              <div className="maker-phone-actions">
                 <button
-                  className="maker-phone-stop-all"
+                  type="button"
+                  className="maker-phone-run-control"
+                  onClick={() => openRunControls()}
+                  aria-expanded={runControlsOpen}
+                  aria-controls="maker-run-controls"
+                  aria-label="Open run controls"
+                >
+                  Run
+                </button>
+                {showPhoneStopAll ? (
+                  <button
+                    className="maker-phone-stop-all"
+                    type="button"
+                    onClick={onStopAll}
+                  >
+                    <CircleStop size={17} aria-hidden="true" />
+                    {stopLabel}
+                  </button>
+                ) : (
+                  <Pill tone={modeTone} dot={running}>
+                    {displayedMode[0]?.toUpperCase()}
+                    {displayedMode.slice(1)}
+                  </Pill>
+                )}
+                <button
+                  ref={phoneExplainSwitch}
+                  className="maker-phone-explain"
+                  type="button"
+                  aria-label="Explain"
+                  title="Explain"
+                  aria-pressed={explainOpen}
+                  onClick={toggleExplain}
+                >
+                  <CircleHelp size={19} aria-hidden="true" />
+                </button>
+              </div>
+            </div>
+            <a
+              className="maker-nav-brand"
+              href="#desk"
+              onClick={(event) => {
+                event.preventDefault();
+                selectView("desk");
+              }}
+            >
+              <MakerWordmark state={markState} />
+            </a>
+
+            <nav className="maker-view-tabs" aria-label="Maker views">
+              {makerViews
+                .filter((view) => view.id !== "learn" && view.id !== "accounts")
+                .map((view) => (
+                  <a
+                    key={view.id}
+                    href={`#${view.id}`}
+                    ref={activeView === view.id ? activeTab : undefined}
+                    className={activeView === view.id ? "is-active" : undefined}
+                    aria-current={activeView === view.id ? "page" : undefined}
+                    onClick={(event) => {
+                      event.preventDefault();
+                      selectView(view.id);
+                    }}
+                  >
+                    {view.label}
+                  </a>
+                ))}
+            </nav>
+
+            <div className="maker-nav-right">
+              <button
+                className="maker-run-control-trigger"
+                type="button"
+                onClick={() => setRunControlsOpen((open) => !open)}
+                aria-expanded={runControlsOpen}
+                aria-controls="maker-run-controls"
+              >
+                Run controls
+              </button>
+              {canStopAll && (
+                <button
+                  className="maker-stop-all"
                   type="button"
                   onClick={onStopAll}
                 >
-                  <CircleStop size={17} aria-hidden="true" />
+                  <CircleStop size={15} aria-hidden="true" />
                   {stopLabel}
                 </button>
-              ) : (
-                <Pill tone={modeTone} dot={running}>
-                  {displayedMode[0]?.toUpperCase()}
-                  {displayedMode.slice(1)}
-                </Pill>
               )}
               <button
-                ref={phoneExplainSwitch}
-                className="maker-phone-explain"
+                ref={explainSwitch}
+                className="maker-explain-toggle"
                 type="button"
-                aria-label="Explain"
-                title="Explain"
                 aria-pressed={explainOpen}
                 onClick={toggleExplain}
               >
-                <CircleHelp size={19} aria-hidden="true" />
+                Explain
               </button>
+              <Pill tone={modeTone} dot={running}>
+                {displayedMode[0]?.toUpperCase()}
+                {displayedMode.slice(1)}
+              </Pill>
+              <details className="maker-wallet-menu" ref={walletMenu}>
+                <summary aria-label={`Wallet ${walletLabel}`}>
+                  <WalletCards size={15} aria-hidden="true" />
+                  <span>{walletLabel}</span>
+                  <ChevronDown size={14} aria-hidden="true" />
+                </summary>
+                <div className="maker-wallet-popover">
+                  <div className="maker-wallet-heading">
+                    <span>Connected wallet</span>
+                    <strong>{walletLabel}</strong>
+                    <small title={walletAddress}>{walletLabel}</small>
+                  </div>
+                  <dl className="maker-wallet-facts">
+                    <div>
+                      <dt>Access</dt>
+                      <dd>{operator ? "Operator" : "Whitelisted"}</dd>
+                    </div>
+                    <div>
+                      <dt>Venues enabled</dt>
+                      <dd>
+                        <button
+                          type="button"
+                          onClick={() => selectView("venues")}
+                        >
+                          Aftermath {walletSummary.enabledVenues ? "✓" : "—"}
+                        </button>
+                      </dd>
+                    </div>
+                    <div>
+                      <dt>Bundles</dt>
+                      <dd>
+                        <button
+                          type="button"
+                          onClick={() => selectView("bundles")}
+                        >
+                          {walletSummary.runningBundles} running of{" "}
+                          {walletSummary.totalBundles}
+                        </button>
+                      </dd>
+                    </div>
+                    <div>
+                      <dt>Accounts</dt>
+                      <dd>
+                        <button
+                          type="button"
+                          onClick={() => selectView("accounts")}
+                        >
+                          {walletSummary.authorizedAccounts} authorized
+                        </button>
+                      </dd>
+                    </div>
+                  </dl>
+                  <div className="maker-wallet-actions">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        void navigator.clipboard
+                          .writeText(walletAddress)
+                          .then(() => {
+                            setAddressCopied(true);
+                            window.setTimeout(
+                              () => setAddressCopied(false),
+                              1_500,
+                            );
+                          });
+                      }}
+                    >
+                      <Copy size={15} aria-hidden="true" />
+                      {addressCopied ? "Copied" : "Copy address"}
+                    </button>
+                    <button type="button" onClick={onLogout}>
+                      <LogOut size={15} aria-hidden="true" />
+                      Disconnect
+                    </button>
+                  </div>
+                </div>
+              </details>
             </div>
-          </div>
-          <a
-            className="maker-nav-brand"
-            href="#desk"
-            onClick={(event) => {
-              event.preventDefault();
-              selectView("desk");
-            }}
-          >
-            <MakerWordmark state={markState} />
-          </a>
+          </header>
 
-          <nav className="maker-view-tabs" aria-label="Maker views">
-            {makerViews
-              .filter((view) => view.id !== "learn" && view.id !== "accounts")
-              .map((view) => (
-                <a
-                  key={view.id}
-                  href={`#${view.id}`}
-                  ref={activeView === view.id ? activeTab : undefined}
-                  className={activeView === view.id ? "is-active" : undefined}
-                  aria-current={activeView === view.id ? "page" : undefined}
-                  onClick={(event) => {
-                    event.preventDefault();
-                    selectView(view.id);
-                  }}
-                >
-                  {view.label}
-                </a>
-              ))}
-          </nav>
-
-          <div className="maker-nav-right">
-            {canStopAll && (
-              <button
-                className="maker-stop-all"
-                type="button"
-                onClick={onStopAll}
-              >
-                <CircleStop size={15} aria-hidden="true" />
-                {stopLabel}
-              </button>
-            )}
-            <button
-              ref={explainSwitch}
-              className="maker-explain-toggle"
-              type="button"
-              aria-pressed={explainOpen}
-              onClick={toggleExplain}
+          {runControlsOpen && (
+            <section
+              className="maker-run-control-panel"
+              id="maker-run-controls"
+              aria-label="Bundle run controls"
+              tabIndex={-1}
             >
-              Explain
-            </button>
-            <Pill tone={modeTone} dot={running}>
-              {displayedMode[0]?.toUpperCase()}
-              {displayedMode.slice(1)}
-            </Pill>
-            <details className="maker-wallet-menu" ref={walletMenu}>
-              <summary aria-label={`Wallet ${walletLabel}`}>
-                <WalletCards size={15} aria-hidden="true" />
-                <span>{walletLabel}</span>
-                <ChevronDown size={14} aria-hidden="true" />
-              </summary>
-              <div className="maker-wallet-popover">
-                <div className="maker-wallet-heading">
-                  <span>Connected wallet</span>
-                  <strong>{walletLabel}</strong>
-                  <small title={walletAddress}>{walletLabel}</small>
+              <header>
+                <div>
+                  <strong>Run controls</strong>
+                  <span>
+                    {
+                      runBundles.filter((bundle) => bundle.status === "running")
+                        .length
+                    }{" "}
+                    running ·{" "}
+                    {serviceUnavailable
+                      ? "observations stale"
+                      : "check each bundle below"}
+                  </span>
                 </div>
-                <dl className="maker-wallet-facts">
-                  <div>
-                    <dt>Access</dt>
-                    <dd>{operator ? "Operator" : "Whitelisted"}</dd>
-                  </div>
-                  <div>
-                    <dt>Venues enabled</dt>
-                    <dd>
-                      <button
-                        type="button"
-                        onClick={() => selectView("venues")}
-                      >
-                        Aftermath {walletSummary.enabledVenues ? "✓" : "—"}
-                      </button>
-                    </dd>
-                  </div>
-                  <div>
-                    <dt>Bundles</dt>
-                    <dd>
-                      <button
-                        type="button"
-                        onClick={() => selectView("bundles")}
-                      >
-                        {walletSummary.runningBundles} running of{" "}
-                        {walletSummary.totalBundles}
-                      </button>
-                    </dd>
-                  </div>
-                  <div>
-                    <dt>Accounts</dt>
-                    <dd>
-                      <button
-                        type="button"
-                        onClick={() => selectView("accounts")}
-                      >
-                        {walletSummary.authorizedAccounts} authorized
-                      </button>
-                    </dd>
-                  </div>
-                </dl>
-                <div className="maker-wallet-actions">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      void navigator.clipboard
-                        .writeText(walletAddress)
-                        .then(() => {
-                          setAddressCopied(true);
-                          window.setTimeout(
-                            () => setAddressCopied(false),
-                            1_500,
-                          );
-                        });
-                    }}
+                <button
+                  type="button"
+                  className="maker-run-panel-close"
+                  onClick={() => setRunControlsOpen(false)}
+                  aria-label="Close run controls"
+                >
+                  ×
+                </button>
+              </header>
+              <div className="maker-run-control-list">
+                {runBundles.map((bundle) => (
+                  <div
+                    className={
+                      bundle.id === controlBundleId
+                        ? "maker-run-control-row is-selected"
+                        : "maker-run-control-row"
+                    }
+                    key={bundle.id}
                   >
-                    <Copy size={15} aria-hidden="true" />
-                    {addressCopied ? "Copied" : "Copy address"}
-                  </button>
-                  <button type="button" onClick={onLogout}>
-                    <LogOut size={15} aria-hidden="true" />
-                    Disconnect
-                  </button>
-                </div>
+                    <div>
+                      <strong>{bundle.name}</strong>
+                      <span>
+                        {bundle.mode.toUpperCase()} · {bundle.status}
+                        {bundle.lastError ? ` · ${bundle.lastError}` : ""}
+                      </span>
+                    </div>
+                    <button
+                      type="button"
+                      disabled={
+                        runActionBusy ||
+                        (bundle.status !== "running" &&
+                          (runStartBlocked || bundle.needsStrategy))
+                      }
+                      onClick={() =>
+                        onBundleAction(
+                          bundle.id,
+                          bundle.status === "running"
+                            ? "pause"
+                            : bundle.status === "error" ||
+                                (bundle.status === "paused" &&
+                                  bundle.updatedAt !== bundle.createdAt)
+                              ? "resume"
+                              : "start",
+                        )
+                      }
+                    >
+                      {bundle.status === "running"
+                        ? `Pause ${bundle.name}`
+                        : bundle.status === "error" ||
+                            (bundle.status === "paused" &&
+                              bundle.updatedAt !== bundle.createdAt)
+                          ? `Resume ${bundle.name} · ${bundle.mode}`
+                          : `Start ${bundle.name} · ${bundle.mode}`}
+                    </button>
+                  </div>
+                ))}
               </div>
-            </details>
-          </div>
-        </header>
+              {runStartBlocked && (
+                <p className="maker-run-control-warning">
+                  Apply or discard strategy changes before starting or resuming
+                  a bundle.
+                </p>
+              )}
+              <footer>
+                <button
+                  type="button"
+                  onClick={onStopAll}
+                  disabled={stopState === "stopping"}
+                >
+                  Stop all · cancel owned orders
+                </button>
+                <span>
+                  Stop does not flatten positions. Flatten is a separate
+                  confirmed action in Desk.
+                </span>
+              </footer>
+            </section>
+          )}
 
-        {tourPrompt && canOperate && (
-          <div className="maker-tour-prompt" role="status">
-            <span>New here? Take the 30-second tour</span>
-            <div>
-              <button type="button" onClick={() => chooseTour(true)}>
-                Start
-              </button>
-              <button type="button" onClick={() => chooseTour(false)}>
-                Not now
+          {tourPrompt && canOperate && (
+            <div className="maker-tour-prompt" role="status">
+              <span>New here? Take the 30-second tour</span>
+              <div>
+                <button type="button" onClick={() => chooseTour(true)}>
+                  Start
+                </button>
+                <button type="button" onClick={() => chooseTour(false)}>
+                  Not now
+                </button>
+              </div>
+            </div>
+          )}
+
+          {serviceUnavailable && (
+            <div className="maker-service-banner" role="status">
+              <AlertTriangle size={16} aria-hidden="true" />
+              <span>
+                Can&apos;t reach Maker. Showing data from {lastGoodDataText}.
+              </span>
+            </div>
+          )}
+
+          {notice && (
+            <div
+              className={`notice notice-${noticeTone}`}
+              role={noticeTone === "error" ? "alert" : "status"}
+            >
+              <NoticeIcon size={16} aria-hidden="true" />
+              <span>{notice}</span>
+              <button onClick={onDismissNotice} aria-label="Dismiss notice">
+                ×
               </button>
             </div>
-          </div>
-        )}
+          )}
 
-        {serviceUnavailable && (
-          <div className="maker-service-banner" role="status">
-            <AlertTriangle size={16} aria-hidden="true" />
-            <span>
-              Can&apos;t reach Maker. Showing data from {lastGoodDataText}.
-            </span>
-          </div>
-        )}
-
-        {notice && (
-          <div
-            className={`notice notice-${noticeTone}`}
-            role={noticeTone === "error" ? "alert" : "status"}
-          >
-            <NoticeIcon size={16} aria-hidden="true" />
-            <span>{notice}</span>
-            <button onClick={onDismissNotice} aria-label="Dismiss notice">
-              ×
-            </button>
-          </div>
-        )}
-
-        <div className="maker-view-content">{children}</div>
-        <CoachLayer
-          activeView={activeView}
-          open={explainOpen}
-          onClose={closeCoach}
-        />
-      </main>
+          <div className="maker-view-content">{children}</div>
+          <CoachLayer
+            activeView={activeView}
+            open={explainOpen}
+            onClose={closeCoach}
+          />
+        </main>
+      </RunControlsContext.Provider>
     </ExplainContext.Provider>
   );
 }

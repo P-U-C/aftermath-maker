@@ -8,6 +8,7 @@ import {
 import { ConnectModal } from "@mysten/dapp-kit-react/ui";
 import type { DAppKitConnectModal } from "@mysten/dapp-kit-core/web";
 import { Transaction } from "@mysten/sui/transactions";
+import { aggregatePortfolioQuoteRisk, makerConfigSchema } from "@puc/core";
 import {
   assertOwnerTransactionIntent,
   deserializeOwnerTransactionIntent,
@@ -60,7 +61,19 @@ import {
   moneyTone,
 } from "../lib/format";
 import { narrate } from "../lib/narrate";
+import { marketActivity } from "../lib/market-activity";
+import { hedgeSizingSuggestion } from "../lib/hedge-suggestion";
+import { strategyIssueFromServer } from "../lib/strategy-validation";
 import { quickPickMarketIds, type MarketQuickPick } from "../lib/quick-picks";
+import {
+  draftMarketsForSave,
+  selectDraftMarkets,
+} from "../lib/strategy-market-selection";
+import {
+  readStrategyDraft,
+  strategyDraftKey,
+  writeStrategyDraft,
+} from "../lib/strategy-draft-storage";
 import {
   advancedFieldTips,
   type AdvancedFieldTipId,
@@ -76,6 +89,7 @@ import {
   type MakerView,
 } from "./maker-shell";
 import { Button, Sheet } from "./ui/primitives";
+import { NumericDraftInput } from "./ui/numeric-draft-input";
 import { SpreadMark } from "./spread-mark";
 import { VenueChip } from "./venue-chip";
 import { AccountsView } from "./views/accounts";
@@ -227,6 +241,8 @@ type Snapshot = {
     measuredAt: string | null;
   };
   markets: RuntimeMarket[];
+  restingQuoteMarketIds?: string[];
+  restingQuoteVerifiedAt?: string | null;
   portfolio: {
     selectedMarkets: number;
     grossExposureUsd: number;
@@ -408,6 +424,15 @@ const configWithStrategySettings = (
   ...settings,
   hedge: { ...settings.hedge, accountId: config.hedge.accountId },
 });
+
+type StoredStrategyDraft = {
+  baseVersion: number;
+  name: string;
+  settings: StrategySettings;
+  markets: MakerConfig["markets"];
+  marketRule: StrategyMarketRule;
+  savedAt: string;
+};
 
 type BundleStatus = "stopped" | "running" | "paused" | "error";
 
@@ -866,13 +891,6 @@ const money = (value: number | null, digits = 2) =>
     maximumFractionDigits: digits,
   });
 
-const plainMarketState = (status: "queued" | "healthy" | "error") =>
-  status === "healthy"
-    ? "Quoting now"
-    : status === "queued"
-      ? "Waiting its turn"
-      : "Paused";
-
 const compactUsd = (value: number | null) => formatCompactMoney(value);
 
 const compactNumber = (value: number | null) =>
@@ -885,19 +903,6 @@ const compactNumber = (value: number | null) =>
 
 const percent = (value: number | null, digits = 2) =>
   value === null ? "-" : `${value.toFixed(digits)}%`;
-
-const inventoryCapacityFloor = (
-  quoteSizeUsd: number,
-  spreadBps: number,
-  inventorySkewBps: number,
-) =>
-  Math.ceil(
-    quoteSizeUsd *
-      (1 +
-        Math.max(0, spreadBps) / 20_000 +
-        Math.max(0, inventorySkewBps) / 10_000) *
-      100,
-  ) / 100;
 
 const timeUntil = (timestamp: string | null) => {
   if (!timestamp) return "Schedule unavailable";
@@ -934,6 +939,10 @@ function DashboardBody() {
   const [strategyMarketRule, setStrategyMarketRule] =
     useState<StrategyMarketRule>({ kind: "quick-pick", pick: "balanced" });
   const [strategyNameDraft, setStrategyNameDraft] = useState("");
+  const [pendingMarketSuggestion, setPendingMarketSuggestion] = useState<{
+    ids: string[];
+    pick: MarketQuickPick | null;
+  } | null>(null);
   const [walletLimits, setWalletLimits] = useState<BundleWalletLimits | null>(
     null,
   );
@@ -967,11 +976,21 @@ function DashboardBody() {
     mainnetAllowed: false,
   });
   const [strategyStep, setStrategyStep] = useState(0);
+  const [draftBaseVersion, setDraftBaseVersion] = useState<number | null>(null);
+  const loadedStrategyDraft = useRef<string | null>(null);
+  const [invalidNumeric, setInvalidNumeric] = useState<Record<string, string>>(
+    {},
+  );
+  const [marketOverridesOpen, setMarketOverridesOpen] = useState(false);
+  const [hedgeSuggestionOpen, setHedgeSuggestionOpen] = useState(false);
+  const [overrideResetEpochs, setOverrideResetEpochs] = useState<
+    Record<string, number>
+  >({});
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [trialResult, setTrialResult] = useState<StrategyTrialResult | null>(
     null,
   );
-  const [rewardMarketCount, setRewardMarketCount] = useState(3);
+  const [rewardMarketCount, setRewardMarketCount] = useState(1);
   const [rewardFocus, setRewardFocus] = useState<"all" | "thin">("all");
   const [marketVenueFilter, setMarketVenueFilter] = useState<
     "all" | "aftermath"
@@ -1229,28 +1248,79 @@ function DashboardBody() {
   );
 
   useEffect(() => {
-    setStrategyNameDraft(selectedStrategy?.name ?? "");
-  }, [selectedStrategy?.id]);
+    if (!selectedStrategy || !identity?.ownerAddress || !configLoaded.current)
+      return;
+    const key = strategyDraftKey(identity.ownerAddress, selectedStrategy.id);
+    if (loadedStrategyDraft.current === key) return;
+    loadedStrategyDraft.current = key;
+    setInvalidNumeric({});
+    let stored: StoredStrategyDraft | null = null;
+    try {
+      stored = readStrategyDraft<StoredStrategyDraft>(
+        window.localStorage,
+        identity.ownerAddress,
+        selectedStrategy.id,
+      );
+    } catch {
+      setNotice(
+        "Browser storage is unavailable; drafts cannot be restored here.",
+        "warning",
+      );
+    }
+    setDraftBaseVersion(stored?.baseVersion ?? selectedStrategy.version);
+    if (
+      stored &&
+      typeof stored.name === "string" &&
+      Array.isArray(stored.markets) &&
+      stored.settings &&
+      stored.marketRule
+    ) {
+      setStrategyNameDraft(stored.name);
+      setStrategyMarketRule(stored.marketRule);
+      setConfig((current) => ({
+        ...configWithStrategySettings(current, stored.settings),
+        markets: stored.markets,
+      }));
+      if (stored.baseVersion !== selectedStrategy.version)
+        setNotice(
+          "Draft is based on an older strategy version. Review the conflict before applying.",
+          "warning",
+        );
+      return;
+    }
+    setStrategyNameDraft(selectedStrategy.name);
+    setStrategyMarketRule(selectedStrategy.marketRule);
+    setConfig((current) => ({
+      ...configWithStrategySettings(current, selectedStrategy.config),
+      markets: selectedStrategy.markets,
+    }));
+  }, [selectedStrategy?.id, selectedStrategy?.version, identity?.ownerAddress]);
 
-  async function selectStrategy(strategyId: string) {
-    const result = await request<{ strategy: MakerStrategy }>(
-      `api/strategies/${encodeURIComponent(strategyId)}`,
-    );
+  async function selectStrategy(strategyId: string): Promise<boolean> {
+    if (selectedStrategy?.id === strategyId) return true;
+    if (selectedStrategy && configDirty && !persistStrategyDraft())
+      return false;
+    let result: { strategy: MakerStrategy };
+    try {
+      result = await request<{ strategy: MakerStrategy }>(
+        `api/strategies/${encodeURIComponent(strategyId)}`,
+      );
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : String(error));
+      return false;
+    }
+    setInvalidNumeric({});
     setSelectedStrategyId(result.strategy.id);
+    setDraftBaseVersion(result.strategy.version);
     setStrategyNameDraft(result.strategy.name);
     setStrategyMarketRule(result.strategy.marketRule);
+    setPendingMarketSuggestion(null);
+    setHedgeSuggestionOpen(false);
     setConfig((current) => ({
       ...configWithStrategySettings(current, result.strategy.config),
       markets: result.strategy.markets,
     }));
-    setSavedConfig((current) =>
-      current
-        ? {
-            ...configWithStrategySettings(current, result.strategy.config),
-            markets: result.strategy.markets,
-          }
-        : current,
-    );
+    return true;
   }
 
   async function createStrategy() {
@@ -2145,19 +2215,7 @@ function DashboardBody() {
       kind: "preferred-list",
       marketIds: nextMarkets.map((item) => item.marketId),
     });
-    setConfig((current) => {
-      const minimumQuoteAge = minimumObservationWindowMs(
-        current.refreshMs,
-        nextMarkets.length,
-        current.rotationMode,
-        current.maxRestingMs,
-      );
-      return {
-        ...current,
-        markets: nextMarkets,
-        maxQuoteAgeMs: Math.max(current.maxQuoteAgeMs, minimumQuoteAge),
-      };
-    });
+    setConfig((current) => ({ ...current, markets: nextMarkets }));
   }
 
   function applyProfile(profile: MakerConfig["strategyProfile"]) {
@@ -2172,18 +2230,16 @@ function DashboardBody() {
       maxInventoryUsd: values.maxInventoryUsd,
       inventorySkewBps: values.inventorySkewBps,
       strategyProfile: profile,
-      marketDwellMs: Math.max(current.marketDwellMs, values.refreshMs),
-      maxRestingMs: Math.max(current.maxRestingMs, values.refreshMs),
-      maxQuoteAgeMs: Math.max(
-        current.maxQuoteAgeMs,
-        minimumObservationWindowMs(
-          values.refreshMs,
-          current.markets.length,
-          current.rotationMode,
-          Math.max(current.maxRestingMs, values.refreshMs),
-        ),
-      ),
     }));
+  }
+
+  function setNumericValidity(fieldId: string, error: string | null) {
+    setInvalidNumeric((current) => {
+      const next = { ...current };
+      if (error) next[fieldId] = error;
+      else delete next[fieldId];
+      return next;
+    });
   }
 
   function focusStrategyField(fieldId: string, step: number) {
@@ -2197,6 +2253,13 @@ function DashboardBody() {
   }
 
   function toggleMarketOverrides(marketId: string) {
+    setInvalidNumeric((current) =>
+      Object.fromEntries(
+        Object.entries(current).filter(
+          ([id]) => !id.startsWith(`market-${marketId}-`),
+        ),
+      ),
+    );
     setConfig((current) => ({
       ...current,
       markets: current.markets.map((market) => {
@@ -2205,17 +2268,29 @@ function DashboardBody() {
           const { overrides: _overrides, ...withoutOverrides } = market;
           return withoutOverrides;
         }
-        return {
-          ...market,
-          overrides: {
-            quoteSizeUsd: current.quoteSizeUsd,
-            spreadBps: current.spreadBps,
-            maxInventoryUsd: current.maxInventoryUsd,
-            inventoryTargetUsd: current.inventoryTargetUsd,
-            inventorySkewBps: current.inventorySkewBps,
-            maxLeverage: current.maxLeverage,
-          },
-        };
+        return { ...market, overrides: {} };
+      }),
+    }));
+  }
+
+  function resetMarketOverride(marketId: string, key: keyof MarketOverrides) {
+    const fieldId = `market-${marketId}-${key}`;
+    setInvalidNumeric((current) => {
+      const next = { ...current };
+      delete next[fieldId];
+      return next;
+    });
+    setOverrideResetEpochs((current) => ({
+      ...current,
+      [fieldId]: (current[fieldId] ?? 0) + 1,
+    }));
+    setConfig((current) => ({
+      ...current,
+      markets: current.markets.map((market) => {
+        if (market.marketId !== marketId || !market.overrides) return market;
+        const next = { ...market.overrides };
+        delete next[key];
+        return { ...market, overrides: next };
       }),
     }));
   }
@@ -2242,20 +2317,33 @@ function DashboardBody() {
   }
 
   function applyQuickPick(pick: MarketQuickPick) {
-    const selected = new Set(
-      quickPickMarketIds(
+    setPendingMarketSuggestion({
+      ids: quickPickMarketIds(
         rewards?.marketModel.opportunities ?? [],
         pick,
         MAX_SELECTED_MARKETS,
       ),
+      pick,
+    });
+  }
+
+  function acceptMarketSuggestion() {
+    if (!pendingMarketSuggestion) return;
+    const nextMarkets = selectDraftMarkets(
+      pendingMarketSuggestion.ids,
+      config.markets,
+      markets,
     );
-    setStrategyMarketRule({ kind: "quick-pick", pick });
-    setConfig((current) => ({
-      ...current,
-      markets: markets
-        .filter((market) => selected.has(market.id))
-        .map((market) => ({ marketId: market.id, symbol: market.symbol })),
-    }));
+    setConfig((current) => ({ ...current, markets: nextMarkets }));
+    setStrategyMarketRule(
+      pendingMarketSuggestion.pick
+        ? { kind: "quick-pick", pick: pendingMarketSuggestion.pick }
+        : {
+            kind: "preferred-list",
+            marketIds: nextMarkets.map((market) => market.marketId),
+          },
+    );
+    setPendingMarketSuggestion(null);
   }
 
   function stageRewardRotation() {
@@ -2263,137 +2351,156 @@ function DashboardBody() {
       rewards?.marketModel.opportunities
         .filter(
           (opportunity) =>
+            opportunity.eligible &&
             opportunity.objectiveEligible &&
             (rewardFocus === "all" || opportunity.thinActive),
         )
         .slice(0, rewardMarketCount) ?? [];
     if (!candidates.length) {
       setNotice(
-        rewardFocus === "thin"
-          ? `No thin markets pass the ${config.strategyObjective} objective gates in the latest scan.`
-          : `No markets pass the ${config.strategyObjective} objective gates in the latest scan.`,
+        `No markets pass the ${config.strategyObjective} objective and selected focus in the latest scan.`,
         "warning",
       );
       return;
     }
-    if (snapshot?.running || (snapshot?.portfolio.grossExposureUsd ?? 0) > 0) {
-      setNotice(
-        "Stop quoting and clear portfolio exposure before changing the market rotation.",
-        "warning",
-      );
-      return;
-    }
-
-    const availableCollateral = makerAvailableCollateralUsd;
-    const capitalBudget =
-      availableCollateral !== null && availableCollateral > 0
-        ? Math.min(config.maxGrossExposureUsd, availableCollateral * 0.5)
-        : config.maxGrossExposureUsd;
-    const marketCapacityFloors = candidates.map((opportunity) =>
-      inventoryCapacityFloor(
-        opportunity.minimumQuoteSizeUsd,
-        opportunity.suggestedSpreadBps,
-        config.inventorySkewBps,
-      ),
-    );
-    const minimumQuoteCapital =
-      config.rotationMode === "single-slot"
-        ? Math.max(...marketCapacityFloors)
-        : marketCapacityFloors.reduce((total, value) => total + value, 0);
-    if (minimumQuoteCapital > capitalBudget) {
-      setNotice(
-        `These ${candidates.length} markets need at least ${money(minimumQuoteCapital)} of inventory capacity after venue minimums, lot-size rounding, and quote-price headroom. Reduce the market count or raise the gross exposure limit.`,
-        "warning",
-      );
-      return;
-    }
-
-    setConfig((current) => {
-      const simultaneousMarkets =
-        current.rotationMode === "single-slot" ? 1 : candidates.length;
-      const basePerMarketInventory = Math.max(
-        1,
-        Math.min(current.maxInventoryUsd, capitalBudget / simultaneousMarkets),
-      );
-      const collateralQuoteCap =
-        availableCollateral !== null && availableCollateral > 0
-          ? availableCollateral / (4 * simultaneousMarkets)
-          : Number.POSITIVE_INFINITY;
-      const plannedMarkets = candidates.map((opportunity) => {
-        const minimumQuoteSizeUsd = opportunity.minimumQuoteSizeUsd;
-        const quoteSizeUsd = Math.max(
-          minimumQuoteSizeUsd,
-          Math.min(
-            opportunity.suggestedQuoteSizeUsd,
-            Math.max(minimumQuoteSizeUsd, basePerMarketInventory / 2),
-            Math.max(minimumQuoteSizeUsd, collateralQuoteCap),
-          ),
-        );
-        return {
-          marketId: opportunity.marketId,
-          symbol: opportunity.symbol,
-          overrides: {
-            quoteSizeUsd,
-            spreadBps: opportunity.suggestedSpreadBps,
-            maxInventoryUsd: Math.max(
-              basePerMarketInventory,
-              inventoryCapacityFloor(
-                quoteSizeUsd,
-                opportunity.suggestedSpreadBps,
-                current.inventorySkewBps,
-              ),
-            ),
-            inventoryTargetUsd: 0,
-            inventorySkewBps: current.inventorySkewBps,
-            maxLeverage: 1,
-          },
-        };
-      });
-      const stagedMaxInventory = Math.max(
-        ...plannedMarkets.map((market) => market.overrides.maxInventoryUsd),
-      );
-      const minimumQuoteAge = minimumObservationWindowMs(
-        current.refreshMs,
-        plannedMarkets.length,
-        current.rotationMode,
-        current.maxRestingMs,
-      );
-      return {
-        ...current,
-        mode: "paper",
-        strategyObjective: config.strategyObjective,
-        markets: plannedMarkets,
-        maxInventoryUsd: stagedMaxInventory,
-        maxGrossExposureUsd: Math.max(stagedMaxInventory, capitalBudget),
-        maxQuoteAgeMs: Math.max(current.maxQuoteAgeMs, minimumQuoteAge),
-      };
+    setPendingMarketSuggestion({
+      ids: candidates.map((candidate) => candidate.marketId),
+      pick: null,
     });
-    setNotice(
-      `${config.strategyObjective[0]?.toUpperCase()}${config.strategyObjective.slice(1)} rotation staged across ${candidates.length} market${candidates.length === 1 ? "" : "s"} in Paper mode using ${config.rotationMode === "single-slot" ? "one market at a time" : "all selected markets"}. Review, then save.`,
-      "success",
-    );
+  }
+
+  function persistStrategyDraft(baseVersion?: number) {
+    if (!selectedStrategy || !identity) return false;
+    const invalid = Object.entries(invalidNumeric)[0];
+    if (invalid) {
+      setNotice(`Fix ${invalid[1]} before saving this draft.`, "warning");
+      return false;
+    }
+    try {
+      writeStrategyDraft(
+        window.localStorage,
+        identity.ownerAddress,
+        selectedStrategy.id,
+        {
+          baseVersion:
+            baseVersion ?? draftBaseVersion ?? selectedStrategy.version,
+          name: strategyNameDraft,
+          settings: strategySettingsFromConfig(config),
+          marketRule: strategyMarketRule,
+          markets: config.markets,
+          savedAt: new Date().toISOString(),
+        } satisfies StoredStrategyDraft,
+      );
+      return true;
+    } catch {
+      setNotice(
+        "Could not save this local draft. Check browser storage; the active strategy was not changed.",
+        "error",
+      );
+      return false;
+    }
+  }
+
+  function saveAndNextStrategyStep() {
+    const issue =
+      strategyStep === 0 && !strategyNameDraft.trim()
+        ? {
+            message: "Name this strategy before continuing.",
+            step: 0,
+            fieldId: "strategy-name",
+          }
+        : strategySaveBlocker && strategySaveBlocker.step <= strategyStep
+          ? strategySaveBlocker
+          : null;
+    if (issue) {
+      setNotice(issue.message, "warning");
+      if ("fieldId" in issue && issue.fieldId)
+        focusStrategyField(issue.fieldId, issue.step);
+      return;
+    }
+    if (selectedStrategy && !persistStrategyDraft()) return;
+    setStrategyStep((step) => Math.min(4, step + 1));
   }
 
   async function saveConfig(event?: FormEvent) {
     event?.preventDefault();
+    if (selectedStrategy && strategyStep !== 4) {
+      setNotice(
+        "Finish the wizard and apply from Review; navigation only saves a local draft.",
+        "warning",
+      );
+      return false;
+    }
+    if (strategySaveBlocker) {
+      setStrategyStep(strategySaveBlocker.step);
+      if ("fieldId" in strategySaveBlocker && strategySaveBlocker.fieldId) {
+        focusStrategyField(
+          strategySaveBlocker.fieldId,
+          strategySaveBlocker.step,
+        );
+      }
+      setNotice(strategySaveBlocker.message, "warning");
+      return false;
+    }
     return mutate("save", async () => {
       if (selectedStrategy) {
-        const result = await request<{
-          strategy: MakerStrategy;
-          affectedBundles: MakerBundle[];
-        }>(`api/strategies/${encodeURIComponent(selectedStrategy.id)}`, {
-          method: "PATCH",
-          body: JSON.stringify({
-            name: strategyNameDraft.trim(),
-            config: strategySettingsFromConfig(config),
-            marketRule: strategyMarketRule,
-            markets: strategyRulePreviewMarkets.map((market) => ({
-              marketId: market.id,
-              symbol: market.symbol,
-            })),
-            expectedVersion: selectedStrategy.version,
-          }),
-        });
+        let result: { strategy: MakerStrategy; affectedBundles: MakerBundle[] };
+        try {
+          result = await request<{
+            strategy: MakerStrategy;
+            affectedBundles: MakerBundle[];
+          }>(`api/strategies/${encodeURIComponent(selectedStrategy.id)}`, {
+            method: "PATCH",
+            body: JSON.stringify({
+              name: strategyNameDraft.trim(),
+              config: strategySettingsFromConfig(config),
+              marketRule: strategyMarketRule,
+              markets: draftMarketsForSave(config.markets),
+              expectedVersion: draftBaseVersion ?? selectedStrategy.version,
+            }),
+          });
+        } catch (error) {
+          const issue =
+            error instanceof RequestError && error.status === 400
+              ? strategyIssueFromServer(error.message, config.markets)
+              : null;
+          if (issue) {
+            if (issue.fieldId?.startsWith("market-"))
+              setMarketOverridesOpen(true);
+            if (issue.fieldId) focusStrategyField(issue.fieldId, issue.step);
+            else setStrategyStep(issue.step);
+            throw new Error(issue.message);
+          }
+          if (
+            error instanceof RequestError &&
+            error.status === 409 &&
+            error.message.includes("Strategy changed elsewhere")
+          ) {
+            const latest = await request<{ strategy: MakerStrategy }>(
+              `api/strategies/${encodeURIComponent(selectedStrategy.id)}`,
+            ).catch(() => null);
+            if (latest)
+              setStrategies((current) =>
+                current.map((item) =>
+                  item.id === latest.strategy.id ? latest.strategy : item,
+                ),
+              );
+            throw new Error(
+              "Strategy changed elsewhere. Your draft is preserved; compare the new saved version before explicitly rebasing.",
+            );
+          }
+          throw error;
+        }
+        if (identity) {
+          try {
+            window.localStorage.removeItem(
+              strategyDraftKey(identity.ownerAddress, selectedStrategy.id),
+            );
+          } catch {
+            /* Applied configuration is authoritative. */
+          }
+        }
+        setDraftBaseVersion(result.strategy.version);
         setStrategies((current) =>
           current.map((strategy) =>
             strategy.id === result.strategy.id ? result.strategy : strategy,
@@ -2404,7 +2511,22 @@ function DashboardBody() {
           markets: result.strategy.markets,
         };
         setConfig(savedStrategyConfig);
-        setSavedConfig(savedStrategyConfig);
+        if (
+          bundles.find((bundle) => bundle.id === selectedBundleId)
+            ?.strategyId === result.strategy.id
+        ) {
+          setSavedConfig((current) =>
+            current
+              ? {
+                  ...configWithStrategySettings(
+                    current,
+                    result.strategy.config,
+                  ),
+                  markets: result.strategy.markets,
+                }
+              : current,
+          );
+        }
         setStrategyNameDraft(result.strategy.name);
         setNotice(
           result.affectedBundles.length > 1
@@ -2509,7 +2631,12 @@ function DashboardBody() {
       setStopState("stopped");
     } catch (error) {
       setStopState("ready");
-      setStopError(error instanceof Error ? error.message : String(error));
+      const reason = error instanceof Error ? error.message : String(error);
+      setStopError(reason);
+      setNotice(
+        `Stop failed or cancellation is uncertain: ${reason}. Inspect the venue and retry Stop all; do not assume positions are flat.`,
+        "error",
+      );
     }
   }
 
@@ -2613,37 +2740,67 @@ function DashboardBody() {
     JSON.stringify(strategyMarketRule) !==
       JSON.stringify(selectedStrategy?.marketRule);
   const configDirty =
-    savedConfig === undefined ||
-    !configsEqual(config, savedConfig) ||
+    (selectedStrategy
+      ? !configsEqual(
+          strategySettingsFromConfig(config),
+          selectedStrategy.config,
+        ) || !configsEqual(config.markets, selectedStrategy.markets)
+      : savedConfig === undefined || !configsEqual(config, savedConfig)) ||
     strategyNameDirty ||
-    strategyRuleDirty;
+    strategyRuleDirty ||
+    Object.keys(invalidNumeric).length > 0;
 
-  const requestStrategyExit = useCallback(
-    (view: MakerView) => {
-      if (configDirty) {
-        setPendingStrategyExit(view);
-        return;
-      }
-      selectView(view);
-    },
-    [configDirty, selectView],
-  );
+  const requestStrategyExit = (view: MakerView) => {
+    if (configDirty && selectedStrategy && !persistStrategyDraft()) return;
+    if (configDirty && !selectedStrategy) {
+      setPendingStrategyExit(view);
+      return;
+    }
+    selectView(view);
+  };
 
   const discardStrategyChanges = useCallback(() => {
     const target = pendingStrategyExit;
     if (!target) return;
-    if (savedConfig) setConfig(savedConfig);
+    if (selectedStrategy)
+      setConfig((current) => ({
+        ...configWithStrategySettings(current, selectedStrategy.config),
+        markets: selectedStrategy.markets,
+      }));
+    else if (savedConfig) setConfig(savedConfig);
+    if (selectedStrategy && identity) {
+      try {
+        window.localStorage.removeItem(
+          strategyDraftKey(identity.ownerAddress, selectedStrategy.id),
+        );
+      } catch {
+        /* Browser storage may be unavailable. */
+      }
+    }
     if (selectedStrategy) {
       setStrategyNameDraft(selectedStrategy.name);
       setStrategyMarketRule(selectedStrategy.marketRule);
     }
     setPendingStrategyExit(null);
     selectView(target);
-  }, [pendingStrategyExit, savedConfig, selectView, selectedStrategy]);
+  }, [
+    pendingStrategyExit,
+    savedConfig,
+    identity,
+    selectView,
+    selectedStrategy,
+  ]);
 
   const saveStrategyChangesThenLeave = useCallback(() => {
     const target = pendingStrategyExit;
     if (!target) return;
+    if (selectedStrategy) {
+      if (persistStrategyDraft()) {
+        setPendingStrategyExit(null);
+        selectView(target);
+      }
+      return;
+    }
     void saveConfig().then((saved) => {
       if (!saved) return;
       setPendingStrategyExit(null);
@@ -2690,12 +2847,27 @@ function DashboardBody() {
       }
       event.preventDefault();
       event.stopImmediatePropagation();
-      setPendingStrategyExit(destination as MakerView);
+      if (selectedStrategy) {
+        if (persistStrategyDraft()) selectView(destination as MakerView);
+      } else {
+        setPendingStrategyExit(destination as MakerView);
+      }
     };
     document.addEventListener("click", warnBeforeLeavingStrategy, true);
     return () =>
       document.removeEventListener("click", warnBeforeLeavingStrategy, true);
-  }, [activeView, configDirty, identity, savedConfig]);
+  }, [
+    activeView,
+    configDirty,
+    identity,
+    savedConfig,
+    selectedStrategy,
+    config,
+    strategyNameDraft,
+    strategyMarketRule,
+    draftBaseVersion,
+    selectView,
+  ]);
 
   if (!authChecked) {
     return (
@@ -2802,13 +2974,53 @@ function DashboardBody() {
     (market) => market.id === snapshot.market.id,
   );
   const makerEquityShare = (value: number) =>
-    makerEquityUsd !== null && makerEquityUsd > 0
+    !selectedStrategy && makerEquityUsd !== null && makerEquityUsd > 0
       ? (value / makerEquityUsd) * 100
       : null;
   const quoteEquityPct = makerEquityShare(config.quoteSizeUsd);
-  const grossCapEquityPct = makerEquityShare(config.maxGrossExposureUsd);
   const rebalanceEquityPct = makerEquityShare(config.rebalanceGrossExposureUsd);
-  const drawdownEquityPct = makerEquityShare(config.maxRunDrawdownUsd);
+  const quoteRiskInputs = config.markets.map((market) => ({
+    inventoryUsd: 0,
+    restingQuoteSizeUsd: market.overrides?.quoteSizeUsd ?? config.quoteSizeUsd,
+    maxLeverage: market.overrides?.maxLeverage ?? config.maxLeverage,
+  }));
+  const quoteOnlyCollateralUsd =
+    config.rotationMode === "portfolio"
+      ? aggregatePortfolioQuoteRisk(quoteRiskInputs).requiredQuoteCollateralUsd
+      : Math.max(
+          0,
+          ...quoteRiskInputs.map(
+            (input) =>
+              aggregatePortfolioQuoteRisk([input]).requiredQuoteCollateralUsd,
+          ),
+        );
+  const hedgeSizing = hedgeSizingSuggestion({
+    markets: config.markets.map((market) => ({
+      quoteSizeUsd: market.overrides?.quoteSizeUsd ?? config.quoteSizeUsd,
+      minimumOrderUsd:
+        markets.find((listed) => listed.id === market.marketId)
+          ?.minOrderUsdValue ?? null,
+    })),
+    bundles: (selectedStrategy?.usedBy ?? []).map((used) => {
+      const bundle = bundles.find((item) => item.id === used.id);
+      const maker = bundle?.makerAccountId ?? null;
+      const hedge = bundle?.takerAccountId ?? null;
+      return {
+        name: used.name,
+        makerAccountId: maker,
+        hedgeAccountId: hedge,
+        authorizedMaker: Boolean(
+          setup.accounts.find((item) => item.accountId === maker)?.agentCapId,
+        ),
+        authorizedHedge: Boolean(
+          setup.accounts.find((item) => item.accountId === hedge)?.agentCapId,
+        ),
+        hedgeAvailableUsd:
+          accounts.find((item) => item.accountId === hedge)
+            ?.availableCollateralUsd ?? null,
+      };
+    }),
+  });
   const rewardOpportunities =
     rewards?.marketModel.opportunities
       .filter((opportunity) => opportunity.eligible)
@@ -2823,34 +3035,122 @@ function DashboardBody() {
       return left.rank - right.rank;
     },
   );
-  const strategyRulePreviewIds =
-    strategyMarketRule.kind === "preferred-list"
-      ? strategyMarketRule.marketIds
-      : quickPickMarketIds(
-          rewards?.marketModel.opportunities ?? [],
-          strategyMarketRule.pick,
-          MAX_SELECTED_MARKETS,
-        );
-  const strategyRulePreviewMarkets = markets.filter((market) =>
-    strategyRulePreviewIds.includes(market.id),
+  const focusedRewardOpportunities = rewardOpportunities.filter(
+    (opportunity) =>
+      opportunity.objectiveEligible &&
+      (rewardFocus === "all" || opportunity.thinActive),
   );
-  const strategyMarketCount = selectedStrategy
-    ? strategyRulePreviewMarkets.length
-    : config.markets.length;
+  const strategyRulePreviewMarkets = config.markets;
+  const strategyMarketCount = config.markets.length;
+  const firstNumericError = Object.entries(invalidNumeric)[0];
+  // The same core schema protects venue/risk relationships at the review
+  // boundary. Account allocation is bundle-owned, so validate with a distinct
+  // synthetic pair without persisting those account IDs.
+  const schemaResult = makerConfigSchema.safeParse({
+    ...config,
+    makerAccountId: "1",
+    hedge: { ...config.hedge, accountId: "2" },
+  });
+  const schemaIssue = schemaResult.success
+    ? null
+    : (schemaResult.error.issues[0] ?? null);
+  const schemaIssueStep = schemaIssue
+    ? schemaIssue.path[0] === "markets"
+      ? schemaIssue.path.length > 2
+        ? 2
+        : 1
+      : schemaIssue.path[0] === "hedge" ||
+          schemaIssue.path[0] === "autoRebalanceEnabled" ||
+          schemaIssue.path[0] === "rebalanceGrossExposureUsd"
+        ? 3
+        : 2
+    : 2;
+  const incompatibleHedgeBundle = config.hedge.enabled
+    ? selectedStrategy?.usedBy
+        .map((used) => bundles.find((bundle) => bundle.id === used.id))
+        .find(
+          (bundle) =>
+            !bundle?.makerAccountId ||
+            !bundle.takerAccountId ||
+            bundle.makerAccountId === bundle.takerAccountId ||
+            !setup.accounts.some(
+              (account) =>
+                account.accountId === bundle.makerAccountId &&
+                account.agentCapId,
+            ) ||
+            !setup.accounts.some(
+              (account) =>
+                account.accountId === bundle.takerAccountId &&
+                account.agentCapId,
+            ),
+        )
+    : null;
   const strategySaveBlocker =
-    strategyMarketCount === 0
-      ? { message: "Choose at least one market before saving.", step: 1 }
-      : quoteSizeError
+    selectedStrategy && !strategyNameDraft.trim()
+      ? {
+          message: "Strategy name is required (1–80 characters).",
+          step: 0,
+          fieldId: "strategy-name",
+        }
+      : firstNumericError
         ? {
-            message: "Fix quote size in Size and limits before saving.",
-            step: 2,
+            message: firstNumericError[1],
+            fieldId: firstNumericError[0],
+            step: firstNumericError[0].includes("top-count")
+              ? 1
+              : firstNumericError[0].includes("hedge")
+                ? 3
+                : 2,
           }
-        : grossExposureError
+        : config.hedge.enabled &&
+            config.hedge.maxOrderUsd < config.hedge.thresholdUsd
           ? {
-              message: "Fix gross exposure in Size and limits before saving.",
-              step: 2,
+              message: "Maximum hedge order must cover the hedge trigger.",
+              step: 3,
+              fieldId: "strategy-hedge-max",
             }
-          : null;
+          : config.autoRebalanceEnabled &&
+              config.rebalanceGrossExposureUsd > config.maxGrossExposureUsd
+            ? {
+                message: "Rebalance exposure cannot exceed the gross limit.",
+                step: 3,
+                fieldId: "strategy-gross",
+              }
+            : incompatibleHedgeBundle
+              ? {
+                  message: `${incompatibleHedgeBundle.name} needs two distinct authorized Maker/hedge accounts before this hedge can be applied. Fix the bundle allocation in Bundles.`,
+                  step: 3,
+                }
+              : focusedRewardOpportunities.length > 0 &&
+                  rewardMarketCount > focusedRewardOpportunities.length
+                ? {
+                    message: `Select top N must be at most ${focusedRewardOpportunities.length} available candidate${focusedRewardOpportunities.length === 1 ? "" : "s"} for this focus.`,
+                    step: 1,
+                    fieldId: "strategy-top-count",
+                  }
+                : schemaIssue
+                  ? {
+                      message: `${schemaIssue.path.join(".")}: ${schemaIssue.message}`,
+                      step: schemaIssueStep,
+                    }
+                  : strategyMarketCount === 0
+                    ? {
+                        message: "Choose at least one market before saving.",
+                        step: 1,
+                      }
+                    : quoteSizeError
+                      ? {
+                          message:
+                            "Fix quote size in Size and limits before saving.",
+                          step: 2,
+                        }
+                      : grossExposureError
+                        ? {
+                            message:
+                              "Fix gross exposure in Size and limits before saving.",
+                            step: 2,
+                          }
+                        : null;
   const strategySteps = [
     {
       label: "Goal",
@@ -2883,6 +3183,30 @@ function DashboardBody() {
       complete: true,
     },
   ];
+  const reviewFieldChanges = selectedStrategy
+    ? Object.entries(strategySettingsFromConfig(config)).flatMap(
+        ([field, value]) => {
+          const saved = (selectedStrategy.config as Record<string, unknown>)[
+            field
+          ];
+          return configsEqual(value, saved)
+            ? []
+            : [{ field, saved, draft: value }];
+        },
+      )
+    : [];
+  const reviewMarketChanges = selectedStrategy
+    ? config.markets.flatMap((market) => {
+        const saved = selectedStrategy.markets.find(
+          (item) => item.marketId === market.marketId,
+        );
+        return configsEqual(market.overrides ?? null, saved?.overrides ?? null)
+          ? []
+          : [
+              `${market.symbol} policy: ${JSON.stringify(saved?.overrides ?? "Inherit")} → ${JSON.stringify(market.overrides ?? "Inherit")}`,
+            ];
+      })
+    : [];
   const strategyReady = strategySteps.every((step) => step.complete);
   const strategyReadyLabel = !strategyReady
     ? "Finish the highlighted steps"
@@ -2892,11 +3216,6 @@ function DashboardBody() {
         ? `Saved · used by ${selectedStrategy.usedBy.map((bundle) => bundle.name).join(", ")}`
         : "Saved · not used by a bundle";
 
-  const focusedRewardOpportunities = rewardOpportunities.filter(
-    (opportunity) =>
-      opportunity.objectiveEligible &&
-      (rewardFocus === "all" || opportunity.thinActive),
-  );
   const topRewardOpportunity = focusedRewardOpportunities[0] ?? null;
   const uptimeQualifiedPct =
     rewards &&
@@ -2984,6 +3303,14 @@ function DashboardBody() {
       market.displayName.toLowerCase().includes(query)
     );
   });
+  const strategyVisibleMarkets = visibleMarkets.filter(
+    (market) =>
+      rewardFocus === "all" ||
+      rewards?.marketModel.opportunities.some(
+        (opportunity) =>
+          opportunity.marketId === market.id && opportunity.thinActive,
+      ),
+  );
   const rotationRowsFor = (strategy: MakerConfig) =>
     strategy.markets.map((selected) => {
       const runtimeMarket = snapshot?.markets.find(
@@ -3028,21 +3355,39 @@ function DashboardBody() {
   const bundleRotationRows = bundles
     .filter((bundle) => !bundle.archivedAt)
     .flatMap((bundle) => {
-      const bundleSnapshot = bundleSnapshots.find(
-        (entry) => entry.bundle.id === bundle.id,
-      )?.snapshot;
+      const bundleSnapshot =
+        bundleSnapshots.find((entry) => entry.bundle.id === bundle.id)
+          ?.snapshot ?? null;
+      const savedStrategy = strategies.find(
+        (strategy) => strategy.id === bundle.strategyId,
+      );
       return bundle.marketIds.map((marketId) => {
-        const runtimeMarket = bundleSnapshot?.markets.find(
-          (market) => market.id === marketId,
+        const savedMarket = savedStrategy?.markets.find(
+          (market) => market.marketId === marketId,
         );
+        const runtimeMarket =
+          bundle.status === "running" && bundleSnapshot?.running
+            ? bundleSnapshot.markets.find((market) => market.id === marketId)
+            : null;
+        const activity = marketActivity({
+          mode: bundle.mode,
+          status: bundle.status,
+          marketId,
+          marketError: runtimeMarket?.error ?? null,
+          snapshot: bundleSnapshot,
+          now: Date.now(),
+        });
         const listed = markets.find((market) => market.id === marketId);
         return {
           id: marketId,
           symbol: runtimeMarket?.symbol ?? listed?.symbol ?? marketId,
           bundleName: bundle.name,
-          status:
-            runtimeMarket?.status ??
-            (bundle.status === "paused" ? "error" : "queued"),
+          activityLabel: activity.label,
+          status: (activity.active
+            ? "healthy"
+            : bundle.status === "error"
+              ? "error"
+              : "queued") as "healthy" | "error" | "queued",
           indexPrice: runtimeMarket?.indexPrice ?? listed?.indexPrice ?? null,
           openInterestBase:
             runtimeMarket?.openInterestBase ?? listed?.openInterestBase ?? null,
@@ -3058,10 +3403,14 @@ function DashboardBody() {
             runtimeMarket?.fundingRate ?? listed?.fundingRate ?? null,
           inventoryUsd: runtimeMarket?.inventoryUsd ?? 0,
           unrealizedPnlUsd: runtimeMarket?.unrealizedPnlUsd ?? 0,
-          effectiveSpreadBps:
-            runtimeMarket?.effectiveSpreadBps ?? deskConfig.spreadBps,
-          effectiveQuoteSizeUsd:
-            runtimeMarket?.effectiveQuoteSizeUsd ?? deskConfig.quoteSizeUsd,
+          effectiveSpreadBps: savedMarket
+            ? (savedMarket.overrides?.spreadBps ??
+              savedStrategy!.config.spreadBps)
+            : null,
+          effectiveQuoteSizeUsd: savedMarket
+            ? (savedMarket.overrides?.quoteSizeUsd ??
+              savedStrategy!.config.quoteSizeUsd)
+            : null,
           lastTransactionDigest: runtimeMarket?.lastTransactionDigest ?? null,
           updatedAt: runtimeMarket?.updatedAt ?? null,
           error: runtimeMarket?.error ?? null,
@@ -3070,34 +3419,92 @@ function DashboardBody() {
     });
   const deskRotationRows = bundleRotationRows.length
     ? bundleRotationRows
-    : rotationRowsFor(deskConfig).map((row) => ({ ...row, bundleName: null }));
+    : rotationRowsFor(deskConfig).map((row) => ({
+        ...row,
+        bundleName: null,
+        activityLabel: snapshot?.running ? "Reading markets" : "Stopped",
+      }));
   const marketTableRows = visibleMarkets
     .map((listed) => {
-      const assignedBundle = bundles.find(
-        (bundle) => !bundle.archivedAt && bundle.marketIds.includes(listed.id),
-      );
-      const matchingBundleSnapshots = bundleSnapshots.filter(
-        (entry) => entry.snapshot?.market.id === listed.id,
-      );
+      const assigned = bundles
+        .filter(
+          (bundle) =>
+            !bundle.archivedAt && bundle.marketIds.includes(listed.id),
+        )
+        .sort(
+          (left, right) =>
+            Number(right.status === "running") -
+            Number(left.status === "running"),
+        );
+      const assignedBundle = assigned[0] ?? null;
+      const assignedSnapshot =
+        bundleSnapshots.find((entry) => entry.bundle.id === assignedBundle?.id)
+          ?.snapshot ?? null;
       const runtimeMarket =
-        matchingBundleSnapshots
-          .map(
-            (entry) =>
-              entry.snapshot?.markets.find(
-                (market) => market.id === listed.id,
-              ) ?? null,
-          )
-          .find(Boolean) ??
-        snapshot?.markets.find((market) => market.id === listed.id);
-      const activeBundleNames = matchingBundleSnapshots
-        .filter((entry) => entry.bundle.status === "running")
-        .map((entry) => entry.bundle.name);
+        assignedBundle?.status === "running" && assignedSnapshot?.running
+          ? (assignedSnapshot.markets.find(
+              (market) => market.id === listed.id,
+            ) ?? null)
+          : null;
+      const savedStrategy = strategies.find(
+        (strategy) => strategy.id === assignedBundle?.strategyId,
+      );
+      const savedMarket = savedStrategy?.markets.find(
+        (market) => market.marketId === listed.id,
+      );
+      const bundlePolicies = assigned.flatMap((bundle) => {
+        const strategy = strategies.find(
+          (item) => item.id === bundle.strategyId,
+        );
+        const market = strategy?.markets.find(
+          (item) => item.marketId === listed.id,
+        );
+        return strategy && market
+          ? [
+              {
+                bundleName: bundle.name,
+                strategyId: strategy.id,
+                sizeUsd:
+                  market.overrides?.quoteSizeUsd ??
+                  strategy.config.quoteSizeUsd,
+                spreadBps:
+                  market.overrides?.spreadBps ?? strategy.config.spreadBps,
+              },
+            ]
+          : [];
+      });
+      const activity = assignedBundle
+        ? marketActivity({
+            mode: assignedBundle.mode,
+            status: assignedBundle.status,
+            marketId: listed.id,
+            marketError: runtimeMarket?.error ?? null,
+            snapshot: assignedSnapshot,
+            now: Date.now(),
+          })
+        : { label: "Not assigned", active: false, error: null };
       return {
         id: listed.id,
         symbol: listed.symbol,
         bundleName: assignedBundle?.name ?? "Available",
-        activeBundleNames,
-        status: runtimeMarket?.status ?? "queued",
+        bundleLabels: assigned.map(
+          (bundle) => `${bundle.name} · ${bundle.mode} · ${bundle.status}`,
+        ),
+        bundlePolicies,
+        activeBundleNames: assigned
+          .filter((bundle) => bundle.status === "running")
+          .map((bundle) => `${bundle.name} · ${bundle.mode}`),
+        activityLabel: activity.label,
+        checkingNow: Boolean(
+          assignedBundle?.status === "running" &&
+          assignedSnapshot?.running &&
+          assignedSnapshot.market.id === listed.id,
+        ),
+        status: (activity.active
+          ? "healthy"
+          : assignedBundle?.status === "error"
+            ? "error"
+            : "queued") as "healthy" | "error" | "queued",
         indexPrice: runtimeMarket?.indexPrice ?? listed.indexPrice,
         openInterestBase:
           runtimeMarket?.openInterestBase ?? listed.openInterestBase,
@@ -3110,11 +3517,19 @@ function DashboardBody() {
         fundingRate: runtimeMarket?.fundingRate ?? listed.fundingRate,
         inventoryUsd: runtimeMarket?.inventoryUsd ?? 0,
         unrealizedPnlUsd: runtimeMarket?.unrealizedPnlUsd ?? 0,
-        effectiveSpreadBps: runtimeMarket?.effectiveSpreadBps ?? null,
-        effectiveQuoteSizeUsd: runtimeMarket?.effectiveQuoteSizeUsd ?? null,
+        effectiveSpreadBps: savedMarket
+          ? (savedMarket.overrides?.spreadBps ??
+            savedStrategy!.config.spreadBps)
+          : null,
+        effectiveQuoteSizeUsd: savedMarket
+          ? (savedMarket.overrides?.quoteSizeUsd ??
+            savedStrategy!.config.quoteSizeUsd)
+          : null,
         lastTransactionDigest: runtimeMarket?.lastTransactionDigest ?? null,
         updatedAt: runtimeMarket?.updatedAt ?? null,
-        error: runtimeMarket?.error ?? null,
+        error:
+          activity.error ??
+          (activity.active ? (runtimeMarket?.error ?? null) : null),
       };
     })
     .sort((left, right) => {
@@ -3190,6 +3605,9 @@ function DashboardBody() {
               {bundleName}
             </i>
           ))}
+          {row.checkingNow && (
+            <small className="market-checking-now">Checking this market</small>
+          )}
         </span>
         <span>{compact(row.id)}</span>
       </td>
@@ -3201,7 +3619,11 @@ function DashboardBody() {
               : "market-bundle-state is-assigned"
           }
         >
-          {row.bundleName}
+          {row.bundleLabels.length
+            ? row.bundleLabels.map((label) => (
+                <small key={label}>{label}</small>
+              ))
+            : row.bundleName}
         </span>
       </td>
       <td>
@@ -3209,8 +3631,11 @@ function DashboardBody() {
       </td>
       <td className="market-state-cell">
         <span className={`desk-state state-${row.status}`}>
-          {plainMarketState(row.status)}
+          {row.activityLabel}
         </span>
+        {row.error && (
+          <small className="market-activity-error">{row.error}</small>
+        )}
         {row.lastTransactionDigest && (
           <a
             className="tx-link"
@@ -3225,12 +3650,41 @@ function DashboardBody() {
         )}
       </td>
       <td className="dual-value">
-        <strong>{money(row.effectiveQuoteSizeUsd, 0)}</strong>
-        <span>
-          {row.effectiveSpreadBps === null
-            ? "—"
-            : `${row.effectiveSpreadBps} bps`}
-        </span>
+        <div className="market-policy-set">
+          {row.bundlePolicies.length ? (
+            row.bundlePolicies.map((policy) => (
+              <div key={`${policy.strategyId}:${policy.bundleName}`}>
+                <strong>
+                  {policy.bundleName}: {money(policy.sizeUsd)}
+                </strong>
+                <span>{policy.spreadBps} bps</span>
+                <button
+                  type="button"
+                  className="market-policy-link"
+                  onClick={() => {
+                    void selectStrategy(policy.strategyId).then((selected) => {
+                      if (!selected) return;
+                      setStrategyStep(2);
+                      setMarketOverridesOpen(true);
+                      selectView("strategy");
+                      window.setTimeout(() => {
+                        const target = document.getElementById(
+                          `strategy-policy-${row.id}`,
+                        );
+                        target?.scrollIntoView({ block: "center" });
+                        target?.focus({ preventScroll: true });
+                      }, 120);
+                    });
+                  }}
+                >
+                  Edit {policy.bundleName} policy
+                </button>
+              </div>
+            ))
+          ) : (
+            <span>No saved policy</span>
+          )}
+        </div>
       </td>
       <td>{money(row.indexPrice, 4)}</td>
       <td className="dual-value">
@@ -3267,17 +3721,48 @@ function DashboardBody() {
     },
     null,
   );
-  const deskSelectedMarketIndex = deskConfig.markets.findIndex(
-    (market) => market.marketId === snapshot?.market.id,
+  const deskRunningBundle =
+    bundles.find(
+      (bundle) => !bundle.archivedAt && bundle.status === "running",
+    ) ?? null;
+  const deskRunningSnapshot =
+    bundleSnapshots.find((entry) => entry.bundle.id === deskRunningBundle?.id)
+      ?.snapshot ?? null;
+  const deskReportSnapshot = deskRunningBundle ? deskRunningSnapshot : snapshot;
+  const deskRunningStrategy = strategies.find(
+    (strategy) => strategy.id === deskRunningBundle?.strategyId,
+  );
+  const deskReportConfig =
+    deskRunningBundle && deskRunningStrategy
+      ? {
+          ...configWithStrategySettings(deskConfig, deskRunningStrategy.config),
+          mode: deskRunningBundle.mode,
+          makerAccountId: deskRunningBundle.makerAccountId,
+          hedge: {
+            ...deskRunningStrategy.config.hedge,
+            accountId: deskRunningBundle.takerAccountId,
+          },
+          markets: deskRunningStrategy.markets,
+        }
+      : deskConfig;
+  const deskReportMarket = markets.find(
+    (market) => market.id === deskReportSnapshot?.market.id,
+  );
+  const deskReportRuntimeMarket = deskReportSnapshot?.markets.find(
+    (market) => market.id === deskReportSnapshot.market.id,
+  );
+  const deskSelectedMarketIndex = deskReportConfig.markets.findIndex(
+    (market) => market.marketId === deskReportSnapshot?.market.id,
   );
   const deskNextSelectedMarket =
-    deskConfig.markets.length > 1
-      ? deskConfig.markets[
-          (Math.max(0, deskSelectedMarketIndex) + 1) % deskConfig.markets.length
+    deskReportConfig.markets.length > 1
+      ? deskReportConfig.markets[
+          (Math.max(0, deskSelectedMarketIndex) + 1) %
+            deskReportConfig.markets.length
         ]
       : null;
   const worstSideFillUsd =
-    snapshot?.markets
+    deskReportSnapshot?.markets
       .filter((market) => market.status === "healthy")
       .reduce((total, market) => total + market.effectiveQuoteSizeUsd, 0) ?? 0;
   const deskFills =
@@ -3293,20 +3778,21 @@ function DashboardBody() {
       estimated: fill.estimated,
     })) ?? [];
   const deskNarration = narrate({
-    name: "Maker",
-    running: Boolean(
-      snapshot?.running ||
-      bundles.some((bundle) => bundle.status === "running"),
-    ),
-    mode: snapshot?.mode ?? deskConfig.mode,
+    name: deskRunningBundle?.name ?? "Maker",
+    running: Boolean(deskReportSnapshot?.running || deskRunningBundle),
+    mode:
+      deskRunningBundle?.mode ??
+      deskReportSnapshot?.mode ??
+      deskReportConfig.mode,
     market: {
-      symbol: snapshot?.market.symbol ?? activeMarket?.symbol ?? null,
-      bid: snapshot?.quote?.bidPrice ?? null,
-      ask: snapshot?.quote?.askPrice ?? null,
-      tickSize: activeMarket?.tickSize ?? null,
+      symbol:
+        deskReportSnapshot?.market.symbol ?? deskReportMarket?.symbol ?? null,
+      bid: deskReportSnapshot?.quote?.bidPrice ?? null,
+      ask: deskReportSnapshot?.quote?.askPrice ?? null,
+      tickSize: deskReportMarket?.tickSize ?? null,
     },
-    inventoryUsd: snapshot?.balances.inventoryUsd ?? null,
-    maxInventoryUsd: deskConfig.maxInventoryUsd,
+    inventoryUsd: deskReportSnapshot?.balances.inventoryUsd ?? null,
+    maxInventoryUsd: deskReportConfig.maxInventoryUsd,
     lastFillAgeSeconds: deskFills[0]?.occurredAt
       ? Math.max(
           0,
@@ -3441,20 +3927,26 @@ function DashboardBody() {
     (bundle) => bundle.id === selectedBundleId,
   );
 
+  const runningBundles = bundles.filter(
+    (bundle) => !bundle.archivedAt && bundle.status === "running",
+  );
+  const runningMode = runningBundles.some((bundle) => bundle.mode === "live")
+    ? "live"
+    : runningBundles.some((bundle) => bundle.mode === "paper")
+      ? "paper"
+      : "observe";
   const markState = !(snapshot?.running || anyBundleRunning)
     ? "stopped"
-    : snapshot?.mode === "live"
+    : runningMode === "live"
       ? "live"
       : "paper";
   const canOperate = onboardingComplete && deskConfig.markets.length > 0;
+  // Stop is a recovery action too: do not hide it because a cached snapshot
+  // claims that the runtime is stopped or the wallet is not ready to Start.
   const canStopAll =
-    canOperate &&
-    Boolean(
-      snapshot?.running ||
-      anyBundleRunning ||
-      stopState === "stopping" ||
-      stopState === "stopped",
-    );
+    bundles.some((bundle) => !bundle.archivedAt) ||
+    Boolean(snapshot?.running) ||
+    stopState === "stopping";
   const displayedView = activeView;
 
   return (
@@ -3462,12 +3954,30 @@ function DashboardBody() {
       activeView={displayedView}
       selectView={selectView}
       markState={markState}
-      mode={snapshot?.mode ?? "paper"}
+      mode={
+        runningBundles.some((bundle) => bundle.mode === "live") &&
+        runningBundles.some((bundle) => bundle.mode === "paper")
+          ? "mixed modes"
+          : runningMode
+      }
       running={Boolean(snapshot?.running || anyBundleRunning)}
       canStopAll={canStopAll}
       stopState={stopState}
       phoneDeskStopAvailable={canStopAll}
-      live={Boolean(snapshot?.running && snapshot.mode === "live")}
+      runBundles={bundles.filter((bundle) => !bundle.archivedAt)}
+      onBundleAction={(bundleId, action) => {
+        if (action !== "pause" && configDirty) {
+          setNotice(
+            "Apply or discard strategy changes before starting a bundle.",
+            "warning",
+          );
+          return;
+        }
+        void bundleAction(bundleId, action);
+      }}
+      runActionBusy={Boolean(busy)}
+      runStartBlocked={configDirty}
+      live={runningBundles.some((bundle) => bundle.mode === "live")}
       canOperate={canOperate}
       serviceUnavailable={controlUnavailable}
       lastGoodDataAt={lastGoodDataAt}
@@ -3985,7 +4495,7 @@ function DashboardBody() {
       <DeskView
         active={displayedView === "desk"}
         venue={primaryVenue}
-        running={Boolean(snapshot?.running || anyBundleRunning)}
+        running={Boolean(deskReportSnapshot?.running || anyBundleRunning)}
         configDirty={configDirty}
         refreshBusy={busy === "refresh"}
         startBusy={busy === "start"}
@@ -4001,15 +4511,30 @@ function DashboardBody() {
         flattenArmed={flattenArmed}
         stopError={stopError}
         pnlUsd={performance?.combinedNetAfterKnownCostsUsd ?? null}
-        equityUsd={makerEquityUsd}
-        grossExposureUsd={snapshot?.portfolio.grossExposureUsd ?? null}
+        equityUsd={
+          deskRunningBundle
+            ? (accounts.find(
+                (owned) => owned.accountId === deskRunningBundle.makerAccountId,
+              )?.equityUsd ?? null)
+            : makerEquityUsd
+        }
+        reportBundleName={deskRunningBundle?.name ?? null}
+        grossExposureUsd={
+          deskReportSnapshot?.portfolio.grossExposureUsd ?? null
+        }
         marketCount={deskRotationRows.length}
-        startedAt={snapshot?.startedAt ?? null}
+        startedAt={deskReportSnapshot?.startedAt ?? null}
         lastFill={deskFills[0] ?? null}
-        narration={deskNarration}
-        mode={snapshot?.mode ?? deskConfig.mode}
+        narration={
+          deskReportSnapshot?.running &&
+          deskReportSnapshot.mode === "paper" &&
+          deskReportSnapshot.lastError
+            ? `Paper · Reading markets · Simulation blocked: ${deskReportSnapshot.lastError}`
+            : deskNarration
+        }
+        mode={runningBundles.length ? runningMode : deskReportConfig.mode}
         paper={
-          snapshot?.paper ?? {
+          deskReportSnapshot?.paper ?? {
             estimated: false,
             openOrders: 0,
             fills: 0,
@@ -4021,38 +4546,42 @@ function DashboardBody() {
         }
         market={{
           symbol:
-            snapshot?.market.symbol ?? activeMarket?.symbol ?? "Pick a market",
-          tickSize: activeMarket?.tickSize ?? null,
-          indexPrice: snapshot?.market.indexPrice ?? null,
-          bestBid: snapshot?.market.bestBid ?? null,
-          bestAsk: snapshot?.market.bestAsk ?? null,
-          ourBid: snapshot?.quote?.bidPrice ?? null,
-          ourAsk: snapshot?.quote?.askPrice ?? null,
+            deskReportSnapshot?.market.symbol ??
+            deskReportMarket?.symbol ??
+            "Pick a market",
+          tickSize: deskReportMarket?.tickSize ?? null,
+          indexPrice: deskReportSnapshot?.market.indexPrice ?? null,
+          bestBid: deskReportSnapshot?.market.bestBid ?? null,
+          bestAsk: deskReportSnapshot?.market.bestAsk ?? null,
+          ourBid: deskReportSnapshot?.quote?.bidPrice ?? null,
+          ourAsk: deskReportSnapshot?.quote?.askPrice ?? null,
           spreadBps:
-            activeRuntimeMarket?.effectiveSpreadBps ?? deskConfig.spreadBps,
-          updatedAt: snapshot?.market.updatedAt ?? null,
-          book: snapshot?.market.book ?? null,
+            deskReportRuntimeMarket?.effectiveSpreadBps ??
+            deskReportConfig.spreadBps,
+          updatedAt: deskReportSnapshot?.market.updatedAt ?? null,
+          book: deskReportSnapshot?.market.book ?? null,
           subtitle:
-            deskConfig.rotationMode === "single-slot"
+            deskReportConfig.rotationMode === "single-slot"
               ? deskNextSelectedMarket
                 ? `One live pair at a time. ${deskNextSelectedMarket.symbol} is next.`
                 : "One live pair at a time."
-              : "Quotes remain active across the saved markets.",
+              : "Portfolio checks all saved markets; verify resting orders on the venue.",
         }}
         risk={{
-          grossExposureUsd: snapshot?.portfolio.grossExposureUsd ?? 0,
-          grossExposureLimitUsd: deskConfig.maxGrossExposureUsd,
-          hedgeTriggerUsd: deskConfig.hedge.enabled
-            ? deskConfig.hedge.thresholdUsd
+          grossExposureUsd:
+            deskReportSnapshot?.portfolio.grossExposureUsd ?? null,
+          grossExposureLimitUsd: deskReportConfig.maxGrossExposureUsd,
+          hedgeTriggerUsd: deskReportConfig.hedge.enabled
+            ? deskReportConfig.hedge.thresholdUsd
             : null,
           worstSideFillUsd,
-          runDrawdownUsd: snapshot?.risk.runDrawdownUsd ?? null,
-          runDrawdownLimitUsd: deskConfig.maxRunDrawdownUsd,
+          runDrawdownUsd: deskReportSnapshot?.risk.runDrawdownUsd ?? null,
+          runDrawdownLimitUsd: deskReportConfig.maxRunDrawdownUsd,
           gasRunwayTransactions:
-            snapshot?.execution.gasRunwayTransactions ?? null,
+            deskReportSnapshot?.execution.gasRunwayTransactions ?? null,
           updatedAt:
-            snapshot?.risk.measuredAt ??
-            snapshot?.lastSuccessfulCycleAt ??
+            deskReportSnapshot?.risk.measuredAt ??
+            deskReportSnapshot?.lastSuccessfulCycleAt ??
             null,
         }}
         markets={deskRotationRows}
@@ -4060,8 +4589,8 @@ function DashboardBody() {
         fills={deskFills}
         fillsUpdatedAt={performance?.asOf ?? null}
         events={deskEvents}
-        staleAfterMs={deskConfig.refreshMs * 2}
-        lastHedgeDigest={snapshot?.hedge.lastDigest ?? null}
+        staleAfterMs={deskReportConfig.refreshMs * 2}
+        lastHedgeDigest={deskReportSnapshot?.hedge.lastDigest ?? null}
         unavailable={controlUnavailable}
         showMarketLane={activeBundleLanes.length === 0}
         bundleLanes={<BundleDeskLanes lanes={activeBundleLanes} />}
@@ -4096,6 +4625,7 @@ function DashboardBody() {
                 <label className="strategy-name-input">
                   <span className="sr-only">Strategy name</span>
                   <input
+                    id="strategy-name"
                     value={strategyNameDraft}
                     onChange={(event) =>
                       setStrategyNameDraft(event.target.value)
@@ -4185,144 +4715,25 @@ function DashboardBody() {
               )}
             </section>
 
-            {selectedStrategy ? (
-              <fieldset className="strategy-market-rule strategy-step strategy-step-markets">
-                <legend>Market rule</legend>
-                <p className="strategy-section-copy">
-                  These are this strategy's markets. Saving changes every bundle
-                  that uses it.
-                </p>
-                <label className="strategy-rule-kind">
-                  <span>Rule</span>
-                  <select
-                    value={strategyMarketRule.kind}
-                    onChange={(event) =>
-                      setStrategyMarketRule(
-                        event.target.value === "quick-pick"
-                          ? { kind: "quick-pick", pick: "balanced" }
-                          : {
-                              kind: "preferred-list",
-                              marketIds: config.markets.map(
-                                (market) => market.marketId,
-                              ),
-                            },
-                      )
-                    }
-                  >
-                    <option value="quick-pick">Quick pick</option>
-                    <option value="preferred-list">Preferred list</option>
-                  </select>
-                </label>
-                {strategyMarketRule.kind === "quick-pick" ? (
-                  <label className="strategy-rule-kind">
-                    <span>Quick pick</span>
-                    <select
-                      value={strategyMarketRule.pick}
-                      onChange={(event) =>
-                        setStrategyMarketRule({
-                          kind: "quick-pick",
-                          pick: event.target.value as
-                            | "rewards"
-                            | "balanced"
-                            | "quiet"
-                            | "steady"
-                            | "clear",
-                        })
-                      }
-                    >
-                      <option value="rewards">Best for rewards</option>
-                      <option value="balanced">Balanced</option>
-                      <option value="quiet">Quiet books</option>
-                      <option value="steady">Steadiest</option>
-                      <option value="clear">Clear</option>
-                    </select>
-                  </label>
-                ) : (
-                  <div className="strategy-rule-market-rows" role="list">
-                    {markets.map((market) => {
-                      const selected = strategyMarketRule.marketIds.includes(
-                        market.id,
-                      );
-                      const opportunity =
-                        rewards?.marketModel.opportunities.find(
-                          (candidate) => candidate.marketId === market.id,
-                        );
-                      return (
-                        <button
-                          className={selected ? "is-selected" : undefined}
-                          key={market.id}
-                          type="button"
-                          role="listitem"
-                          aria-pressed={selected}
-                          onClick={() =>
-                            setStrategyMarketRule((current) =>
-                              current.kind !== "preferred-list"
-                                ? current
-                                : {
-                                    ...current,
-                                    marketIds: selected
-                                      ? current.marketIds.filter(
-                                          (id) => id !== market.id,
-                                        )
-                                      : [...current.marketIds, market.id],
-                                  },
-                            )
-                          }
-                        >
-                          <strong>{market.symbol}</strong>
-                          <span
-                            className="strategy-reward-bar"
-                            aria-label={`Reward potential ${Math.round(opportunity?.score ?? 0)} out of 100`}
-                          >
-                            <i
-                              style={{
-                                width: `${Math.min(100, Math.max(0, opportunity?.score ?? 0))}%`,
-                              }}
-                            />
-                          </span>
-                          <span>
-                            {opportunity?.preRiskEdgeBps?.toFixed(1) ?? "—"} bps
-                            after fees
-                          </span>
-                          <span>
-                            {compactUsd(
-                              opportunity?.volume24hUsd ?? market.volume24hUsd,
-                            )}{" "}
-                            24h
-                          </span>
-                        </button>
-                      );
-                    })}
-                  </div>
-                )}
-                <div className="strategy-rule-preview" aria-live="polite">
-                  <strong>
-                    {strategyRulePreviewMarkets.length} market
-                    {strategyRulePreviewMarkets.length === 1 ? "" : "s"}{" "}
-                    included
-                  </strong>
-                  <span>
-                    {strategyRulePreviewMarkets.length
-                      ? strategyRulePreviewMarkets
-                          .map((market) => market.symbol)
-                          .join(", ")
-                      : "No available markets match this rule yet."}
-                  </span>
-                </div>
-              </fieldset>
-            ) : null}
+            {selectedStrategy && (
+              <p className="strategy-section-copy strategy-step strategy-step-markets">
+                Saved market membership is fixed until you accept a suggestion
+                or change the selection below. A ranking refresh never changes
+                this strategy or its attached bundles.
+              </p>
+            )}
 
             <section className="strategy-builder" aria-label="Strategy builder">
               <ol>
                 {strategySteps.map(({ label, answer, complete }, index) => (
                   <li key={label}>
-                    <button
-                      type="button"
+                    <div
                       className={
-                        strategyStep === index ? "is-active" : undefined
+                        strategyStep === index
+                          ? "step-progress is-active"
+                          : "step-progress"
                       }
                       aria-current={strategyStep === index ? "step" : undefined}
-                      onClick={() => setStrategyStep(index)}
                     >
                       <span>
                         {complete ? (
@@ -4333,7 +4744,7 @@ function DashboardBody() {
                       </span>
                       <strong>{label}</strong>
                       <small>{answer}</small>
-                    </button>
+                    </div>
                   </li>
                 ))}
               </ol>
@@ -4347,6 +4758,81 @@ function DashboardBody() {
                     ? `Quote ${strategyMarketCount} selected market${strategyMarketCount === 1 ? "" : "s"} with ${money(config.quoteSizeUsd)} on each side, and stop before ${money(config.maxRunDrawdownUsd)} of run drawdown.`
                     : "Choose one or more markets before saving this strategy."}
                 </p>
+                {strategyStep === 4 && selectedStrategy && (
+                  <div className="strategy-review-changes" role="status">
+                    <p>
+                      Apply once to {selectedStrategy.name} (version{" "}
+                      {draftBaseVersion ?? selectedStrategy.version}); affects{" "}
+                      {selectedStrategy.usedBy.length
+                        ? selectedStrategy.usedBy
+                            .map((used) => used.name)
+                            .join(", ")
+                        : "no attached bundles"}
+                      .
+                    </p>
+                    {draftBaseVersion !== null &&
+                      draftBaseVersion !== selectedStrategy.version && (
+                        <div className="field-error">
+                          <p>
+                            The saved version changed elsewhere. Compare the
+                            fields below before accepting a new base version;
+                            your draft is unchanged.
+                          </p>
+                          <button
+                            type="button"
+                            className="button secondary"
+                            onClick={() => {
+                              if (
+                                persistStrategyDraft(selectedStrategy.version)
+                              ) {
+                                setDraftBaseVersion(selectedStrategy.version);
+                                setNotice(
+                                  "Draft rebased on the latest saved strategy. Recheck every changed field before Apply.",
+                                  "warning",
+                                );
+                              }
+                            }}
+                          >
+                            Rebase draft after review
+                          </button>
+                        </div>
+                      )}
+                    <ul>
+                      {strategyNameDirty && (
+                        <li>
+                          Name: {selectedStrategy.name} → {strategyNameDraft}
+                        </li>
+                      )}
+                      {!configsEqual(
+                        config.markets.map((market) => market.marketId),
+                        selectedStrategy.markets.map(
+                          (market) => market.marketId,
+                        ),
+                      ) && (
+                        <li>
+                          Markets:{" "}
+                          {selectedStrategy.markets
+                            .map((market) => market.symbol)
+                            .join(", ")}{" "}
+                          →{" "}
+                          {config.markets
+                            .map((market) => market.symbol)
+                            .join(", ")}
+                        </li>
+                      )}
+                      {reviewFieldChanges.map(({ field, saved, draft }) => (
+                        <li key={field}>
+                          {field}: {JSON.stringify(saved)} →{" "}
+                          {JSON.stringify(draft)}
+                        </li>
+                      ))}
+                      {reviewMarketChanges.map((change) => (
+                        <li key={change}>{change}</li>
+                      ))}
+                      {!configDirty && <li>No active strategy changes.</li>}
+                    </ul>
+                  </div>
+                )}
                 <div className="strategy-step-nav">
                   <button
                     type="button"
@@ -4362,37 +4848,32 @@ function DashboardBody() {
                     type="button"
                     className="button primary"
                     onClick={() => {
-                      if (strategyStep === 4) {
-                        void saveConfig();
-                        return;
-                      }
-                      setStrategyStep((step) => Math.min(4, step + 1));
+                      if (strategyStep === 4) void saveConfig();
+                      else saveAndNextStrategyStep();
                     }}
-                    disabled={
-                      (strategyStep === 4 && Boolean(strategySaveBlocker)) ||
-                      busy === "save"
-                    }
+                    disabled={busy === "save"}
                   >
                     {strategyStep === 4
                       ? busy === "save"
                         ? "Saving..."
-                        : "Save"
-                      : strategyStep === 3
-                        ? "Review"
-                        : "Next"}
+                        : "Apply strategy"
+                      : "Save and next"}
                   </button>
                 </div>
-                {strategyStep === 4 && strategySaveBlocker && (
-                  <p className="strategy-save-reason" role="status">
-                    {strategySaveBlocker.message}{" "}
-                    <button
-                      type="button"
-                      onClick={() => setStrategyStep(strategySaveBlocker.step)}
-                    >
-                      Go to that step
-                    </button>
-                  </p>
-                )}
+                {strategySaveBlocker &&
+                  strategySaveBlocker.step <= strategyStep && (
+                    <p className="strategy-save-reason" role="status">
+                      {strategySaveBlocker.message}{" "}
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setStrategyStep(strategySaveBlocker.step)
+                        }
+                      >
+                        Go to that step
+                      </button>
+                    </p>
+                  )}
               </aside>
             </section>
 
@@ -4535,71 +5016,6 @@ function DashboardBody() {
               </div>
             </fieldset>
 
-            <fieldset className="rotation-mode-control strategy-step strategy-step-markets">
-              <legend>Rotation</legend>
-              <div
-                className="rotation-mode-segments"
-                role="group"
-                aria-label="Market rotation mode"
-              >
-                <button
-                  type="button"
-                  className={
-                    config.rotationMode === "portfolio" ? "selected" : ""
-                  }
-                  aria-pressed={config.rotationMode === "portfolio"}
-                  onClick={() =>
-                    setConfig((current) => ({
-                      ...current,
-                      rotationMode: "portfolio",
-                      maxQuoteAgeMs: Math.max(
-                        current.maxQuoteAgeMs,
-                        minimumObservationWindowMs(
-                          current.refreshMs,
-                          current.markets.length,
-                          "portfolio",
-                        ),
-                      ),
-                    }))
-                  }
-                >
-                  All selected markets at once
-                </button>
-                <button
-                  type="button"
-                  className={
-                    config.rotationMode === "single-slot" ? "selected" : ""
-                  }
-                  aria-pressed={config.rotationMode === "single-slot"}
-                  onClick={() =>
-                    setConfig((current) => ({
-                      ...current,
-                      rotationMode: "single-slot",
-                      marketDwellMs: Math.max(
-                        current.marketDwellMs,
-                        current.refreshMs,
-                      ),
-                      maxRestingMs: Math.max(
-                        current.maxRestingMs,
-                        current.refreshMs,
-                      ),
-                      maxQuoteAgeMs: Math.max(
-                        current.maxQuoteAgeMs,
-                        minimumObservationWindowMs(
-                          current.refreshMs,
-                          current.markets.length,
-                          "single-slot",
-                          Math.max(current.maxRestingMs, current.refreshMs),
-                        ),
-                      ),
-                    }))
-                  }
-                >
-                  {`One market at a time, moving to the next every ${config.marketDwellMs / 1_000} s`}
-                </button>
-              </div>
-            </fieldset>
-
             <div
               className="strategy-trial strategy-step strategy-step-review"
               aria-label="Three-cycle strategy trial"
@@ -4624,7 +5040,7 @@ function DashboardBody() {
               {trialBlocker && (
                 <p className="trial-blocker" role="status">
                   {trialBlocker}{" "}
-                  {configDirty ? (
+                  {configDirty && !selectedStrategy ? (
                     <button
                       type="button"
                       onClick={() => void saveConfig()}
@@ -4743,54 +5159,164 @@ function DashboardBody() {
                   type="checkbox"
                   checked={config.hedge.enabled}
                   disabled={
-                    !activeMakerAccountId || authorizedAccounts.length < 2
+                    !selectedStrategy &&
+                    (!activeMakerAccountId || authorizedAccounts.length < 2)
                   }
                   onChange={(event) => {
                     const enabled = event.target.checked;
-                    const fallback = authorizedAccounts.find(
-                      (managed) => managed.accountId !== activeMakerAccountId,
-                    );
+                    if (!enabled)
+                      setInvalidNumeric((current) =>
+                        Object.fromEntries(
+                          Object.entries(current).filter(
+                            ([id]) =>
+                              !id.startsWith("strategy-hedge") &&
+                              id !== "strategy-rebalance-gross-exposure-usd",
+                          ),
+                        ),
+                      );
                     setConfig((current) => ({
                       ...current,
-                      makerAccountId:
-                        current.makerAccountId ?? activeMakerAccountId,
                       autoRebalanceEnabled: enabled
                         ? current.autoRebalanceEnabled
                         : false,
                       hedge: {
                         ...current.hedge,
                         enabled,
-                        accountId: enabled
-                          ? (current.hedge.accountId ??
-                            fallback?.accountId ??
-                            null)
-                          : current.hedge.accountId,
                       },
                     }));
                   }}
                 />
                 <span aria-hidden="true" />
-                <strong>Fill-driven same-venue delta hedge</strong>
+                <strong>
+                  Offset filled exposure · optional for new drafts
+                </strong>
               </label>
               {config.hedge.enabled && (
                 <>
+                  <p className="strategy-section-copy">
+                    Maker acts only after attributed fills reach the trigger: it
+                    cancels its quotes, then the distinct hedge account sends a
+                    capped opposite market order. Partial fills can leave
+                    residual net exposure; the two accounts still hold gross
+                    positions and each needs margin. This does not guarantee
+                    delta neutrality, profitability or rewards.
+                  </p>
+                  {selectedStrategy?.usedBy.map((used) => {
+                    const bundle = bundles.find((item) => item.id === used.id);
+                    const maker = bundle?.makerAccountId ?? null;
+                    const hedge = bundle?.takerAccountId ?? null;
+                    const lane = bundleSnapshots.find(
+                      (entry) => entry.bundle.id === used.id,
+                    )?.snapshot;
+                    const hedgeBalance =
+                      accounts.find((item) => item.accountId === hedge)
+                        ?.availableCollateralUsd ?? null;
+                    return (
+                      <p className="strategy-section-copy" key={used.id}>
+                        {used.name}: Maker{" "}
+                        {maker ? `account ${maker}` : "account missing"} → hedge{" "}
+                        {hedge ? `account ${hedge}` : "account missing"};{" "}
+                        {maker && hedge && maker !== hedge
+                          ? "confirm collateral and authorization in Bundles"
+                          : "cannot activate without two distinct authorized accounts"}
+                        . Hedge available collateral: {money(hedgeBalance)}{" "}
+                        (latest loaded; timestamp not provided). Last observed
+                        combined net exposure:{" "}
+                        {lane?.hedge.combinedDeltaUsd === null ||
+                        lane?.hedge.combinedDeltaUsd === undefined
+                          ? "unknown"
+                          : `${bundle?.mode === "paper" ? "Paper estimate " : ""}${money(lane.hedge.combinedDeltaUsd)} at ${lane.hedge.lastHedgeAt ?? "unspecified time"}`}
+                        .
+                      </p>
+                    );
+                  })}
+                  <p className="strategy-section-copy">
+                    Trigger {money(config.hedge.thresholdUsd)} of accumulated
+                    fills; maximum {money(config.hedge.maxOrderUsd)} per hedge
+                    order; slippage ceiling {config.hedge.maxSlippageBps} bps.
+                    Quote size is {money(config.quoteSizeUsd)} per side before
+                    per-market overrides.
+                  </p>
+                  {selectedStrategy && (
+                    <div className="hedge-suggestion">
+                      <button
+                        type="button"
+                        className="button secondary"
+                        disabled={"blocker" in hedgeSizing}
+                        onClick={() => setHedgeSuggestionOpen(true)}
+                      >
+                        Preview hedge sizing from effective quote settings
+                      </button>
+                      {"blocker" in hedgeSizing ? (
+                        <p role="status">
+                          {hedgeSizing.blocker} Existing settings remain
+                          unchanged.
+                        </p>
+                      ) : (
+                        <p>
+                          Draft estimate from the latest loaded order minimums
+                          and each attached hedge account’s available
+                          collateral. Recheck venue and account state before
+                          activation; this is not proof of readiness.
+                        </p>
+                      )}
+                      {hedgeSuggestionOpen && !("blocker" in hedgeSizing) && (
+                        <div className="strategy-rule-preview" role="status">
+                          <strong>Review proposed hedge amounts</strong>
+                          <span>
+                            Trigger: {money(config.hedge.thresholdUsd)} →{" "}
+                            {money(hedgeSizing.thresholdUsd)}. Maximum order:{" "}
+                            {money(config.hedge.maxOrderUsd)} →{" "}
+                            {money(hedgeSizing.maxOrderUsd)}. Slippage stays{" "}
+                            {config.hedge.maxSlippageBps} bps. This does not
+                            apply to running bundles until Apply strategy.
+                          </span>
+                          <button
+                            className="button secondary"
+                            type="button"
+                            onClick={() => {
+                              setConfig((current) => ({
+                                ...current,
+                                hedge: {
+                                  ...current.hedge,
+                                  thresholdUsd: hedgeSizing.thresholdUsd,
+                                  maxOrderUsd: hedgeSizing.maxOrderUsd,
+                                },
+                              }));
+                              setHedgeSuggestionOpen(false);
+                            }}
+                          >
+                            Accept amounts in draft
+                          </button>
+                          <button
+                            className="button secondary"
+                            type="button"
+                            onClick={() => setHedgeSuggestionOpen(false)}
+                          >
+                            Dismiss
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  )}
                   <div className="hedge-limit-grid">
                     <label>
                       <span>Trigger</span>
                       <div className="input-unit">
                         <b>$</b>
-                        <input
-                          type="number"
-                          min="1"
-                          max="10000"
+                        <NumericDraftInput
+                          key={selectedStrategyId ?? "core"}
+                          id="strategy-hedge-trigger"
+                          label="Hedge trigger"
+                          unit="USD"
                           value={config.hedge.thresholdUsd}
-                          onChange={(event) =>
+                          min={0.01}
+                          max={10000}
+                          onValidity={setNumericValidity}
+                          onValue={(value) =>
                             setConfig((current) => ({
                               ...current,
-                              hedge: {
-                                ...current.hedge,
-                                thresholdUsd: Number(event.target.value),
-                              },
+                              hedge: { ...current.hedge, thresholdUsd: value },
                             }))
                           }
                         />
@@ -4800,18 +5326,19 @@ function DashboardBody() {
                       <span>Max order</span>
                       <div className="input-unit">
                         <b>$</b>
-                        <input
-                          type="number"
-                          min={config.hedge.thresholdUsd}
-                          max="10000"
+                        <NumericDraftInput
+                          key={selectedStrategyId ?? "core"}
+                          id="strategy-hedge-max"
+                          label="Maximum hedge order"
+                          unit="USD"
                           value={config.hedge.maxOrderUsd}
-                          onChange={(event) =>
+                          min={0.01}
+                          max={10000}
+                          onValidity={setNumericValidity}
+                          onValue={(value) =>
                             setConfig((current) => ({
                               ...current,
-                              hedge: {
-                                ...current.hedge,
-                                maxOrderUsd: Number(event.target.value),
-                              },
+                              hedge: { ...current.hedge, maxOrderUsd: value },
                             }))
                           }
                         />
@@ -4820,17 +5347,22 @@ function DashboardBody() {
                     <label>
                       <span>Slippage</span>
                       <div className="input-unit suffix">
-                        <input
-                          type="number"
-                          min="5"
-                          max="500"
+                        <NumericDraftInput
+                          key={selectedStrategyId ?? "core"}
+                          id="strategy-hedge-slippage"
+                          label="Hedge slippage"
+                          unit="bps"
                           value={config.hedge.maxSlippageBps}
-                          onChange={(event) =>
+                          min={5}
+                          max={500}
+                          integer
+                          onValidity={setNumericValidity}
+                          onValue={(value) =>
                             setConfig((current) => ({
                               ...current,
                               hedge: {
                                 ...current.hedge,
-                                maxSlippageBps: Number(event.target.value),
+                                maxSlippageBps: value,
                               },
                             }))
                           }
@@ -4843,16 +5375,17 @@ function DashboardBody() {
                     <input
                       type="checkbox"
                       checked={config.autoRebalanceEnabled}
-                      onChange={(event) =>
+                      onChange={(event) => {
+                        if (!event.target.checked)
+                          setNumericValidity(
+                            "strategy-rebalance-gross-exposure-usd",
+                            null,
+                          );
                         setConfig((current) => ({
                           ...current,
                           autoRebalanceEnabled: event.target.checked,
-                          rebalanceGrossExposureUsd: Math.min(
-                            current.rebalanceGrossExposureUsd,
-                            current.maxGrossExposureUsd,
-                          ),
-                        }))
-                      }
+                        }));
+                      }}
                     />
                     <span aria-hidden="true" />
                     <strong>Auto-rebalance dedicated accounts</strong>
@@ -4862,18 +5395,19 @@ function DashboardBody() {
                       <span>Rebalance before gross exposure reaches</span>
                       <div className="input-unit">
                         <b>$</b>
-                        <input
-                          type="number"
-                          min="1"
-                          max={config.maxGrossExposureUsd}
-                          step="0.1"
+                        <NumericDraftInput
+                          key={selectedStrategyId ?? "core"}
+                          id="strategy-rebalance-gross-exposure-usd"
+                          label="Rebalance gross threshold"
+                          unit="USD"
                           value={config.rebalanceGrossExposureUsd}
-                          onChange={(event) =>
+                          min={0.01}
+                          max={Math.min(config.maxGrossExposureUsd, 100000)}
+                          onValidity={setNumericValidity}
+                          onValue={(value) =>
                             setConfig((current) => ({
                               ...current,
-                              rebalanceGrossExposureUsd: Number(
-                                event.target.value,
-                              ),
+                              rebalanceGrossExposureUsd: value,
                             }))
                           }
                         />
@@ -4955,8 +5489,8 @@ function DashboardBody() {
                   [
                     ["rewards", "Best for rewards"],
                     ["balanced", "Balanced"],
-                    ["quiet", "Quiet books"],
-                    ["steady", "Steadiest"],
+                    ["quiet", "Thin books"],
+                    ["steady", "Smallest 24h move"],
                     ["clear", "Clear"],
                   ] as const
                 ).map(([pick, label]) => (
@@ -4979,11 +5513,68 @@ function DashboardBody() {
                   </button>
                 ))}
               </div>
-              <p className="strategy-quick-preview" aria-live="polite">
-                {strategyMarketRule.kind === "quick-pick"
-                  ? `Quick pick includes ${strategyRulePreviewMarkets.length} market${strategyRulePreviewMarkets.length === 1 ? "" : "s"}: ${strategyRulePreviewMarkets.map((market) => market.symbol).join(", ") || "none yet"}.`
-                  : `${config.markets.length} market${config.markets.length === 1 ? "" : "s"} included: ${config.markets.map((market) => market.symbol).join(", ") || "none yet"}.`}
+              <p className="strategy-section-copy">
+                Suggestions are capped at 3 (rewards) or 5 (other presets) and
+                only include markets passing the selected objective. Thin books
+                have $100–$1,000 of balanced depth within 50 bps; smallest 24h
+                move is a price-change ranking, not a volatility forecast.
+                Rankings are suggestions, not saved policy.
               </p>
+              <details className="strategy-market-legend">
+                <summary>What the market evidence means</summary>
+                <p>
+                  Score is a 0–100 heuristic for the selected objective, not a
+                  payoff forecast. Edge is estimated pre-risk basis points after
+                  known fees. 24h shows reported traded volume, not volatility.
+                  Open a market’s evidence for the full reasons.
+                </p>
+              </details>
+              <p className="strategy-quick-preview" aria-live="polite">
+                Saved effective selection ({strategyMarketCount}/64):{" "}
+                {strategyRulePreviewMarkets
+                  .map((market) => market.symbol)
+                  .join(", ") || "none yet"}
+                .
+                {strategyMarketRule.kind === "quick-pick" && (
+                  <>
+                    {" "}
+                    Last applied preset: {strategyMarketRule.pick}; it does not
+                    auto-refresh.
+                  </>
+                )}
+              </p>
+              {pendingMarketSuggestion && (
+                <div className="strategy-rule-preview" role="status">
+                  <strong>Proposed selection — not yet applied</strong>
+                  <span>
+                    {pendingMarketSuggestion.ids.length
+                      ? pendingMarketSuggestion.ids
+                          .map(
+                            (id) =>
+                              markets.find((market) => market.id === id)
+                                ?.symbol ?? id,
+                          )
+                          .join(", ")
+                      : "No markets (you must choose at least one before saving)."}{" "}
+                    This changes only the selected market set; retained markets
+                    keep their overrides.
+                  </span>
+                  <button
+                    type="button"
+                    className="button secondary"
+                    onClick={acceptMarketSuggestion}
+                  >
+                    Accept selection
+                  </button>
+                  <button
+                    type="button"
+                    className="button secondary"
+                    onClick={() => setPendingMarketSuggestion(null)}
+                  >
+                    Dismiss
+                  </button>
+                </div>
+              )}
               <div className="strategy-rotation-stage">
                 <div
                   className="reward-focus"
@@ -5005,25 +5596,29 @@ function DashboardBody() {
                       aria-pressed={rewardFocus === "thin"}
                       onClick={() => setRewardFocus("thin")}
                     >
-                      Quiet books
+                      Thin books
                     </button>
                   </div>
                 </div>
                 <label className="reward-count">
-                  <span>Markets</span>
-                  <input
-                    type="number"
-                    min="1"
-                    max={Math.max(1, focusedRewardOpportunities.length)}
+                  <span>
+                    Select top N (of {focusedRewardOpportunities.length}{" "}
+                    eligible)
+                  </span>
+                  <NumericDraftInput
+                    key={selectedStrategyId ?? "core"}
+                    id="strategy-top-count"
+                    label="Select top N"
+                    unit="markets"
                     value={rewardMarketCount}
-                    onChange={(event) =>
-                      setRewardMarketCount(
-                        Math.min(
-                          MAX_SELECTED_MARKETS,
-                          Math.max(1, Number(event.target.value) || 1),
-                        ),
-                      )
-                    }
+                    min={1}
+                    max={Math.max(
+                      1,
+                      Math.min(64, focusedRewardOpportunities.length),
+                    )}
+                    integer
+                    onValidity={setNumericValidity}
+                    onValue={(value) => setRewardMarketCount(value)}
                   />
                 </label>
                 <button
@@ -5036,7 +5631,7 @@ function DashboardBody() {
                   }
                 >
                   <Target size={16} aria-hidden="true" />
-                  Stage rotation
+                  Preview selection
                 </button>
               </div>
               <div
@@ -5063,7 +5658,7 @@ function DashboardBody() {
                 </button>
               </div>
               <div className="pair-picker-head">
-                <strong>{config.markets.length} selected</strong>
+                <strong>{config.markets.length}/64 selected</strong>
                 <span>each pair every {effectiveRefreshSeconds}s</span>
               </div>
               <label className="pair-search">
@@ -5081,57 +5676,74 @@ function DashboardBody() {
                 <span>{primaryVenue.network}</span>
               </div>
               <div className="pair-options strategy-market-table" role="list">
-                {!visibleMarkets.length && (
-                  <p className="pair-empty">No matching markets</p>
+                {!strategyVisibleMarkets.length && (
+                  <p className="pair-empty">
+                    No matching markets for this focus. Try All eligible or
+                    change your search.
+                  </p>
                 )}
-                {visibleMarkets.map((item) => {
+                {strategyVisibleMarkets.map((item) => {
                   const selected = selectedMarketIds.has(item.id);
                   const opportunity = rewards?.marketModel.opportunities.find(
                     (candidate) => candidate.marketId === item.id,
                   );
                   return (
-                    <label
-                      className={
-                        selected
-                          ? "pair-option strategy-market-row selected"
-                          : "pair-option strategy-market-row"
-                      }
+                    <div
+                      className="market-select-item"
                       key={item.id}
                       role="listitem"
                     >
-                      <input
-                        type="checkbox"
-                        checked={selected}
-                        onChange={() => toggleMarket(item)}
-                        disabled={
-                          (selected && config.markets.length === 1) ||
-                          (!selected &&
-                            config.markets.length >= MAX_SELECTED_MARKETS)
+                      <label
+                        className={
+                          selected
+                            ? "pair-option strategy-market-row selected"
+                            : "pair-option strategy-market-row"
                         }
-                      />
-                      <span>
-                        <strong>{item.symbol}</strong>
-                        <small>{money(item.openInterestUsd, 0)} OI</small>
-                        {opportunity && (
-                          <small className="strategy-market-evidence">
-                            <span>
-                              Potential {Math.round(opportunity.score)} / 100
-                            </span>
-                            <span>
-                              Edge{" "}
-                              {opportunity.preRiskEdgeBps?.toFixed(1) ?? "—"}{" "}
-                              bps
-                            </span>
-                            <span>
-                              {compactUsd(opportunity.volume24hUsd)} 24h
-                            </span>
-                            <span>
-                              {opportunity.reasons[0] ?? "thin + active"}
-                            </span>
-                          </small>
-                        )}
-                      </span>
-                    </label>
+                      >
+                        <input
+                          type="checkbox"
+                          checked={selected}
+                          onChange={() => toggleMarket(item)}
+                          disabled={
+                            (selected && config.markets.length === 1) ||
+                            (!selected &&
+                              config.markets.length >= MAX_SELECTED_MARKETS)
+                          }
+                        />
+                        <span>
+                          <strong>{item.symbol}</strong>
+                          <small>{money(item.openInterestUsd, 0)} OI</small>
+                          {opportunity && (
+                            <small className="strategy-market-evidence">
+                              <span>
+                                Score {Math.round(opportunity.score)} / 100
+                              </span>
+                              <span>
+                                Edge{" "}
+                                {opportunity.preRiskEdgeBps?.toFixed(1) ?? "—"}{" "}
+                                bps
+                              </span>
+                              <span>
+                                {compactUsd(opportunity.volume24hUsd)} 24h
+                              </span>
+                              <span>
+                                {opportunity.reasons[0] ?? "Reason unavailable"}
+                              </span>
+                            </small>
+                          )}
+                        </span>
+                      </label>
+                      {opportunity && (
+                        <details className="strategy-market-reasons">
+                          <summary>Why {item.symbol} ranks here</summary>
+                          <p>
+                            {opportunity.reasons.length
+                              ? opportunity.reasons.join(" · ")
+                              : "No evidence reasons were reported."}
+                          </p>
+                        </details>
+                      )}
+                    </div>
                   );
                 })}
               </div>
@@ -5143,7 +5755,14 @@ function DashboardBody() {
                   <span className="eyebrow">Market rank</span>
                   <h2>Eligible pairs</h2>
                 </div>
-                <span>{sortedRewardOpportunities.length} ranked</span>
+                <span>
+                  {
+                    sortedRewardOpportunities.filter(
+                      (item) => rewardFocus === "all" || item.thinActive,
+                    ).length
+                  }{" "}
+                  ranked
+                </span>
               </header>
               <div className="strategy-market-ranks-wrap">
                 <table>
@@ -5154,194 +5773,122 @@ function DashboardBody() {
                       <th>Score</th>
                       <th>24h flow</th>
                       <th>Depth</th>
-                      <th>Policy</th>
+                      <th>Suggested quote settings</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {sortedRewardOpportunities.map((opportunity, index) => (
-                      <tr key={opportunity.marketId}>
-                        <td>{index + 1}</td>
-                        <td>{opportunity.symbol}</td>
-                        <td>{opportunity.score}</td>
-                        <td>{compactUsd(opportunity.volume24hUsd)}</td>
-                        <td>{compactUsd(opportunity.balancedDepth50BpsUsd)}</td>
-                        <td>
-                          {money(opportunity.suggestedQuoteSizeUsd)} /{" "}
-                          {opportunity.suggestedSpreadBps} bps
-                        </td>
-                      </tr>
-                    ))}
+                    {sortedRewardOpportunities
+                      .filter(
+                        (item) => rewardFocus === "all" || item.thinActive,
+                      )
+                      .map((opportunity, index) => (
+                        <tr key={opportunity.marketId}>
+                          <td>{index + 1}</td>
+                          <td>{opportunity.symbol}</td>
+                          <td>{opportunity.score}</td>
+                          <td>{compactUsd(opportunity.volume24hUsd)}</td>
+                          <td>
+                            {compactUsd(opportunity.balancedDepth50BpsUsd)}
+                          </td>
+                          <td>
+                            {money(opportunity.suggestedQuoteSizeUsd)} /{" "}
+                            {opportunity.suggestedSpreadBps} bps
+                            {config.markets.some(
+                              (market) =>
+                                market.marketId === opportunity.marketId,
+                            ) && (
+                              <>
+                                {" "}
+                                ·{" "}
+                                <a
+                                  href="#strategy-market-overrides"
+                                  onClick={(event) => {
+                                    event.preventDefault();
+                                    setStrategyStep(2);
+                                    setMarketOverridesOpen(true);
+                                    window.requestAnimationFrame(() =>
+                                      document
+                                        .getElementById(
+                                          `strategy-policy-${opportunity.marketId}`,
+                                        )
+                                        ?.scrollIntoView({ block: "start" }),
+                                    );
+                                  }}
+                                >
+                                  Edit saved policy
+                                </a>
+                              </>
+                            )}
+                          </td>
+                        </tr>
+                      ))}
                   </tbody>
                 </table>
               </div>
             </section>
 
-            <details
-              className={
-                selectedStrategy
-                  ? "market-overrides strategy-market-overrides strategy-step strategy-step-markets strategy-allocation-owned"
-                  : "market-overrides strategy-market-overrides strategy-step strategy-step-markets"
-              }
-            >
-              <summary>
-                <SlidersHorizontal size={15} />
-                <span>Per-market overrides</span>
-                <strong>
-                  {config.markets.filter((market) => market.overrides).length}
-                </strong>
-              </summary>
-              <div className="override-list">
-                {config.markets.map((market) => (
-                  <div className="override-row" key={market.marketId}>
-                    <label className="override-toggle">
-                      <input
-                        type="checkbox"
-                        checked={Boolean(market.overrides)}
-                        onChange={() => toggleMarketOverrides(market.marketId)}
-                      />
-                      <strong>{market.symbol}</strong>
-                    </label>
-                    {market.overrides ? (
-                      <div className="override-fields">
-                        <label>
-                          <span>Size $</span>
-                          <input
-                            type="number"
-                            min="0.01"
-                            max="1000"
-                            step="0.01"
-                            value={
-                              market.overrides.quoteSizeUsd ??
-                              config.quoteSizeUsd
-                            }
-                            onChange={(event) =>
-                              updateMarketOverride(
-                                market.marketId,
-                                "quoteSizeUsd",
-                                Number(event.target.value),
-                              )
-                            }
-                          />
-                        </label>
-                        <label>
-                          <span>Spread bps</span>
-                          <input
-                            type="number"
-                            min="8"
-                            max="500"
-                            value={
-                              market.overrides.spreadBps ?? config.spreadBps
-                            }
-                            onChange={(event) =>
-                              updateMarketOverride(
-                                market.marketId,
-                                "spreadBps",
-                                Number(event.target.value),
-                              )
-                            }
-                          />
-                        </label>
-                        <label>
-                          <span>Inventory cap $</span>
-                          <input
-                            type="number"
-                            min="0.01"
-                            max={config.maxGrossExposureUsd}
-                            step="0.01"
-                            value={
-                              market.overrides.maxInventoryUsd ??
-                              config.maxInventoryUsd
-                            }
-                            onChange={(event) =>
-                              updateMarketOverride(
-                                market.marketId,
-                                "maxInventoryUsd",
-                                Number(event.target.value),
-                              )
-                            }
-                          />
-                        </label>
-                        <label>
-                          <span>Target $</span>
-                          <input
-                            type="number"
-                            value={
-                              market.overrides.inventoryTargetUsd ??
-                              config.inventoryTargetUsd
-                            }
-                            onChange={(event) =>
-                              updateMarketOverride(
-                                market.marketId,
-                                "inventoryTargetUsd",
-                                Number(event.target.value),
-                              )
-                            }
-                          />
-                        </label>
-                        <label>
-                          <span>Skew bps</span>
-                          <input
-                            type="number"
-                            min="0"
-                            max="250"
-                            value={
-                              market.overrides.inventorySkewBps ??
-                              config.inventorySkewBps
-                            }
-                            onChange={(event) =>
-                              updateMarketOverride(
-                                market.marketId,
-                                "inventorySkewBps",
-                                Number(event.target.value),
-                              )
-                            }
-                          />
-                        </label>
-                        <label>
-                          <span>Leverage</span>
-                          <input
-                            type="number"
-                            min="1"
-                            max="3"
-                            step="0.1"
-                            value={
-                              market.overrides.maxLeverage ?? config.maxLeverage
-                            }
-                            onChange={(event) =>
-                              updateMarketOverride(
-                                market.marketId,
-                                "maxLeverage",
-                                Number(event.target.value),
-                              )
-                            }
-                          />
-                        </label>
-                      </div>
-                    ) : (
-                      <span className="override-inherited">
-                        Global defaults
-                      </span>
-                    )}
-                  </div>
-                ))}
-              </div>
-            </details>
-
             <section className="strategy-limit-sentences strategy-step strategy-step-size">
               <h2>Size and limits</h2>
+              <p className="strategy-section-copy">
+                Wallet maximum across all bundles:{" "}
+                {walletLimits
+                  ? `${money(walletLimits.maxGrossExposureUsd)} gross exposure, ${money(walletLimits.maxRunDrawdownUsd)} run drawdown`
+                  : "not available"}
+                . This strategy’s limits apply per running bundle and do not
+                edit the shared wallet ceiling. Account equity percentages need
+                an attached bundle’s actual Maker account; no Core balance is
+                assumed for a shared strategy.
+              </p>
+              <p className="strategy-section-copy">
+                Quote-only collateral estimate: {money(quoteOnlyCollateralUsd)}{" "}
+                at the saved size and leverage,{" "}
+                {config.rotationMode === "portfolio"
+                  ? "summing all selected markets"
+                  : "one market at a time"}
+                . This excludes existing positions and other bundles; the live
+                risk gate still uses the full account state.
+              </p>
+              {selectedStrategy?.usedBy.map((used) => {
+                const bundle = bundles.find((item) => item.id === used.id);
+                const account = accounts.find(
+                  (item) => item.accountId === bundle?.makerAccountId,
+                );
+                return (
+                  <p className="strategy-section-copy" key={used.id}>
+                    {used.name}: Maker{" "}
+                    {bundle?.makerAccountId
+                      ? `account ${bundle.makerAccountId}`
+                      : "account unassigned"}
+                    , hedge{" "}
+                    {bundle?.takerAccountId
+                      ? `account ${bundle.takerAccountId}`
+                      : "off"}{" "}
+                    · available collateral{" "}
+                    {account
+                      ? money(account.availableCollateralUsd)
+                      : "unavailable"}{" "}
+                    (latest loaded account read; timestamp not provided).
+                  </p>
+                );
+              })}
               <p>
-                Stop everything if equity falls $
+                Stop everything if equity falls ${" "}
+                <AdvancedTip id="run-drawdown" />
                 <label>
                   <span className="sr-only">Maximum run drawdown in USD</span>
-                  <input
-                    aria-label="Maximum run drawdown in USD"
-                    type="number"
-                    min="1"
+                  <NumericDraftInput
+                    key={selectedStrategyId ?? "core"}
+                    id="strategy-drawdown"
+                    label="Maximum run drawdown"
+                    unit="USD"
                     value={config.maxRunDrawdownUsd}
-                    onChange={(event) =>
+                    min={0.01}
+                    max={10000}
+                    onValidity={setNumericValidity}
+                    onValue={(value) =>
                       setConfig((current) => ({
                         ...current,
-                        maxRunDrawdownUsd: Number(event.target.value),
+                        maxRunDrawdownUsd: value,
                       }))
                     }
                   />
@@ -5349,19 +5896,23 @@ function DashboardBody() {
                 from its highest point this run.
               </p>
               <p>
-                In any one market, hold at most $
+                In any one market, hold at most ${" "}
+                <AdvancedTip id="per-pair-inventory" />
                 <label>
                   <span className="sr-only">Maximum inventory in USD</span>
-                  <input
-                    aria-label="Maximum inventory in USD"
-                    type="number"
-                    min="0.01"
-                    step="0.01"
+                  <NumericDraftInput
+                    key={selectedStrategyId ?? "core"}
+                    id="strategy-inventory-cap"
+                    label="Maximum per-market inventory"
+                    unit="USD"
                     value={config.maxInventoryUsd}
-                    onChange={(event) =>
+                    min={0.01}
+                    max={10000}
+                    onValidity={setNumericValidity}
+                    onValue={(value) =>
                       setConfig((current) => ({
                         ...current,
-                        maxInventoryUsd: Number(event.target.value),
+                        maxInventoryUsd: value,
                       }))
                     }
                   />
@@ -5369,45 +5920,55 @@ function DashboardBody() {
                 of position, long or short.
               </p>
               <p>
-                Across all markets, keep the total position value under $
+                Across all markets, keep the total position value under ${" "}
+                <AdvancedTip id="gross-exposure" />
                 <label>
                   <span className="sr-only">Maximum gross exposure in USD</span>
-                  <input
-                    aria-label="Maximum gross exposure in USD"
-                    type="number"
-                    min={config.maxInventoryUsd}
-                    step="0.01"
+                  <NumericDraftInput
+                    key={selectedStrategyId ?? "core"}
+                    id="strategy-gross"
+                    label="Gross exposure"
+                    unit="USD"
                     value={config.maxGrossExposureUsd}
-                    onChange={(event) => {
-                      const maxGrossExposureUsd = Number(event.target.value);
+                    min={0.01}
+                    max={100000}
+                    onValidity={setNumericValidity}
+                    onValue={(value) =>
                       setConfig((current) => ({
                         ...current,
-                        maxGrossExposureUsd,
-                        rebalanceGrossExposureUsd: Math.min(
-                          current.rebalanceGrossExposureUsd,
-                          maxGrossExposureUsd,
-                        ),
-                      }));
-                    }}
+                        maxGrossExposureUsd: value,
+                      }))
+                    }
                   />
                 </label>
+                {grossExposureError && (
+                  <small className="field-error">
+                    Gross exposure must cover the per-market inventory limit.
+                    Raise the gross cap or lower the inventory cap.
+                  </small>
+                )}
                 .
               </p>
               <p>
-                Pause quoting a market when its open position is down $
+                Pause quoting a market when its open position is down ${" "}
+                <AdvancedTip id="unrealized-loss" />
                 <label>
                   <span className="sr-only">
                     Maximum unrealized loss in USD
                   </span>
-                  <input
-                    aria-label="Maximum unrealized loss in USD"
-                    type="number"
-                    min="1"
+                  <NumericDraftInput
+                    key={selectedStrategyId ?? "core"}
+                    id="strategy-unrealized-loss"
+                    label="Maximum unrealized loss"
+                    unit="USD"
                     value={config.maxUnrealizedLossUsd}
-                    onChange={(event) =>
+                    min={0.01}
+                    max={10000}
+                    onValidity={setNumericValidity}
+                    onValue={(value) =>
                       setConfig((current) => ({
                         ...current,
-                        maxUnrealizedLossUsd: Number(event.target.value),
+                        maxUnrealizedLossUsd: value,
                       }))
                     }
                   />
@@ -5427,16 +5988,19 @@ function DashboardBody() {
                   <span>Quote {money(config.quoteSizeUsd)} on each side</span>
                   <div className="input-unit">
                     <b>$</b>
-                    <input
-                      type="number"
-                      min="0.01"
-                      max="1000"
-                      step="0.01"
+                    <NumericDraftInput
+                      key={selectedStrategyId ?? "core"}
+                      id="strategy-quote-size"
+                      label="Quote size"
+                      unit="USD"
                       value={config.quoteSizeUsd}
-                      onChange={(event) =>
+                      min={0.01}
+                      max={1000}
+                      onValidity={setNumericValidity}
+                      onValue={(value) =>
                         setConfig((current) => ({
                           ...current,
-                          quoteSizeUsd: Number(event.target.value),
+                          quoteSizeUsd: value,
                         }))
                       }
                     />
@@ -5453,7 +6017,7 @@ function DashboardBody() {
                           <button
                             type="button"
                             onClick={() =>
-                              focusStrategyField("strategy-max-inventory", 2)
+                              focusStrategyField("strategy-inventory-cap", 2)
                             }
                           >
                             raise “hold at most” above it.
@@ -5473,16 +6037,19 @@ function DashboardBody() {
                     </GlossaryTerm>
                   </span>
                   <div className="input-unit suffix">
-                    <input
-                      type="number"
-                      aria-label="Spread in basis points"
-                      min="8"
-                      max="500"
+                    <NumericDraftInput
+                      key={selectedStrategyId ?? "core"}
+                      id="strategy-spread"
+                      label="Spread"
+                      unit="bps"
                       value={config.spreadBps}
-                      onChange={(event) =>
+                      min={8}
+                      max={500}
+                      onValidity={setNumericValidity}
+                      onValue={(value) =>
                         setConfig((current) => ({
                           ...current,
-                          spreadBps: Number(event.target.value),
+                          spreadBps: value,
                         }))
                       }
                     />
@@ -5491,6 +6058,345 @@ function DashboardBody() {
                 </label>
               </div>
             </section>
+
+            <fieldset
+              id="strategy-rotation-mode"
+              className="rotation-mode-control strategy-step strategy-step-size"
+            >
+              <legend>Rotation and concurrent collateral</legend>
+              <p className="strategy-section-copy">
+                Portfolio can leave a pair on every selected market and needs
+                collateral for all concurrent two-sided quotes; one live pair
+                requires collateral for one market at a time. These are strategy
+                settings, not separate wallet allowances.
+              </p>
+              <div
+                className="rotation-mode-segments"
+                role="group"
+                aria-label="Market rotation mode"
+              >
+                <button
+                  type="button"
+                  className={
+                    config.rotationMode === "portfolio" ? "selected" : ""
+                  }
+                  aria-pressed={config.rotationMode === "portfolio"}
+                  onClick={() =>
+                    setConfig((current) => ({
+                      ...current,
+                      rotationMode: "portfolio",
+                    }))
+                  }
+                >
+                  All selected markets at once
+                </button>
+                <button
+                  type="button"
+                  className={
+                    config.rotationMode === "single-slot" ? "selected" : ""
+                  }
+                  aria-pressed={config.rotationMode === "single-slot"}
+                  onClick={() =>
+                    setConfig((current) => ({
+                      ...current,
+                      rotationMode: "single-slot",
+                    }))
+                  }
+                >
+                  {`One market at a time, moving to the next every ${config.marketDwellMs / 1_000} s`}
+                </button>
+              </div>
+            </fieldset>
+
+            <details
+              id="strategy-market-overrides"
+              className="market-overrides strategy-market-overrides strategy-step strategy-step-size"
+              open={marketOverridesOpen}
+              onToggle={(event) =>
+                setMarketOverridesOpen(event.currentTarget.open)
+              }
+            >
+              <summary>
+                <SlidersHorizontal size={15} />
+                <span>Saved effective policy · per-market exceptions</span>
+                <strong>
+                  {config.markets.filter((market) => market.overrides).length}
+                </strong>
+              </summary>
+              <div className="override-list">
+                {config.markets.map((market) => (
+                  <div
+                    className="override-row"
+                    key={market.marketId}
+                    id={`strategy-policy-${market.marketId}`}
+                    tabIndex={-1}
+                  >
+                    <label className="override-toggle">
+                      <input
+                        type="checkbox"
+                        checked={Boolean(market.overrides)}
+                        onChange={() => toggleMarketOverrides(market.marketId)}
+                      />
+                      <strong>{market.symbol}</strong>
+                      <small>
+                        {market.overrides
+                          ? "Custom fields below"
+                          : "Inherit all strategy defaults"}
+                      </small>
+                    </label>
+                    {market.overrides ? (
+                      <div className="override-fields">
+                        <label>
+                          <span>Size $</span>
+                          <NumericDraftInput
+                            key={
+                              overrideResetEpochs[
+                                `market-${market.marketId}-quoteSizeUsd`
+                              ] ?? 0
+                            }
+                            id={`market-${market.marketId}-quoteSizeUsd`}
+                            label="Quote size"
+                            unit="USD"
+                            value={
+                              market.overrides.quoteSizeUsd ??
+                              config.quoteSizeUsd
+                            }
+                            min={0.01}
+                            max={1000}
+                            onValidity={setNumericValidity}
+                            onValue={(value) =>
+                              updateMarketOverride(
+                                market.marketId,
+                                "quoteSizeUsd",
+                                value,
+                              )
+                            }
+                          />
+                        </label>
+                        <button
+                          type="button"
+                          className="override-reset"
+                          onClick={() =>
+                            resetMarketOverride(market.marketId, "quoteSizeUsd")
+                          }
+                          disabled={market.overrides.quoteSizeUsd === undefined}
+                          aria-label={`Inherit strategy size $ for ${market.symbol}`}
+                        >
+                          Inherit
+                        </button>
+                        <label>
+                          <span>Spread bps</span>
+                          <NumericDraftInput
+                            key={
+                              overrideResetEpochs[
+                                `market-${market.marketId}-spreadBps`
+                              ] ?? 0
+                            }
+                            id={`market-${market.marketId}-spreadBps`}
+                            label="Spread"
+                            unit="bps"
+                            value={
+                              market.overrides.spreadBps ?? config.spreadBps
+                            }
+                            min={8}
+                            max={500}
+                            onValidity={setNumericValidity}
+                            onValue={(value) =>
+                              updateMarketOverride(
+                                market.marketId,
+                                "spreadBps",
+                                value,
+                              )
+                            }
+                          />
+                        </label>
+                        <button
+                          type="button"
+                          className="override-reset"
+                          onClick={() =>
+                            resetMarketOverride(market.marketId, "spreadBps")
+                          }
+                          disabled={market.overrides.spreadBps === undefined}
+                          aria-label={`Inherit strategy spread bps for ${market.symbol}`}
+                        >
+                          Inherit
+                        </button>
+                        <label>
+                          <span>Inventory cap $</span>
+                          <NumericDraftInput
+                            key={
+                              overrideResetEpochs[
+                                `market-${market.marketId}-maxInventoryUsd`
+                              ] ?? 0
+                            }
+                            id={`market-${market.marketId}-maxInventoryUsd`}
+                            label="Inventory cap"
+                            unit="USD"
+                            value={
+                              market.overrides.maxInventoryUsd ??
+                              config.maxInventoryUsd
+                            }
+                            min={0.01}
+                            max={Math.min(10000, config.maxGrossExposureUsd)}
+                            onValidity={setNumericValidity}
+                            onValue={(value) =>
+                              updateMarketOverride(
+                                market.marketId,
+                                "maxInventoryUsd",
+                                value,
+                              )
+                            }
+                          />
+                        </label>
+                        <button
+                          type="button"
+                          className="override-reset"
+                          onClick={() =>
+                            resetMarketOverride(
+                              market.marketId,
+                              "maxInventoryUsd",
+                            )
+                          }
+                          disabled={
+                            market.overrides.maxInventoryUsd === undefined
+                          }
+                          aria-label={`Inherit strategy inventory cap $ for ${market.symbol}`}
+                        >
+                          Inherit
+                        </button>
+                        <label>
+                          <span>Target $</span>
+                          <NumericDraftInput
+                            key={
+                              overrideResetEpochs[
+                                `market-${market.marketId}-inventoryTargetUsd`
+                              ] ?? 0
+                            }
+                            id={`market-${market.marketId}-inventoryTargetUsd`}
+                            label="Inventory target"
+                            unit="USD"
+                            value={
+                              market.overrides.inventoryTargetUsd ??
+                              config.inventoryTargetUsd
+                            }
+                            min={-10000}
+                            max={10000}
+                            onValidity={setNumericValidity}
+                            onValue={(value) =>
+                              updateMarketOverride(
+                                market.marketId,
+                                "inventoryTargetUsd",
+                                value,
+                              )
+                            }
+                          />
+                        </label>
+                        <button
+                          type="button"
+                          className="override-reset"
+                          onClick={() =>
+                            resetMarketOverride(
+                              market.marketId,
+                              "inventoryTargetUsd",
+                            )
+                          }
+                          disabled={
+                            market.overrides.inventoryTargetUsd === undefined
+                          }
+                          aria-label={`Inherit strategy target $ for ${market.symbol}`}
+                        >
+                          Inherit
+                        </button>
+                        <label>
+                          <span>Skew bps</span>
+                          <NumericDraftInput
+                            key={
+                              overrideResetEpochs[
+                                `market-${market.marketId}-inventorySkewBps`
+                              ] ?? 0
+                            }
+                            id={`market-${market.marketId}-inventorySkewBps`}
+                            label="Inventory skew"
+                            unit="bps"
+                            value={
+                              market.overrides.inventorySkewBps ??
+                              config.inventorySkewBps
+                            }
+                            min={0}
+                            max={250}
+                            onValidity={setNumericValidity}
+                            onValue={(value) =>
+                              updateMarketOverride(
+                                market.marketId,
+                                "inventorySkewBps",
+                                value,
+                              )
+                            }
+                          />
+                        </label>
+                        <button
+                          type="button"
+                          className="override-reset"
+                          onClick={() =>
+                            resetMarketOverride(
+                              market.marketId,
+                              "inventorySkewBps",
+                            )
+                          }
+                          disabled={
+                            market.overrides.inventorySkewBps === undefined
+                          }
+                          aria-label={`Inherit strategy skew bps for ${market.symbol}`}
+                        >
+                          Inherit
+                        </button>
+                        <label>
+                          <span>Leverage</span>
+                          <NumericDraftInput
+                            key={
+                              overrideResetEpochs[
+                                `market-${market.marketId}-maxLeverage`
+                              ] ?? 0
+                            }
+                            id={`market-${market.marketId}-maxLeverage`}
+                            label="Leverage"
+                            unit="x"
+                            value={
+                              market.overrides.maxLeverage ?? config.maxLeverage
+                            }
+                            min={1}
+                            max={3}
+                            onValidity={setNumericValidity}
+                            onValue={(value) =>
+                              updateMarketOverride(
+                                market.marketId,
+                                "maxLeverage",
+                                value,
+                              )
+                            }
+                          />
+                        </label>
+                        <button
+                          type="button"
+                          className="override-reset"
+                          onClick={() =>
+                            resetMarketOverride(market.marketId, "maxLeverage")
+                          }
+                          disabled={market.overrides.maxLeverage === undefined}
+                          aria-label={`Inherit strategy leverage for ${market.symbol}`}
+                        >
+                          Inherit
+                        </button>
+                      </div>
+                    ) : (
+                      <span className="override-inherited">
+                        Global defaults
+                      </span>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </details>
 
             <details
               className="strategy-section strategy-advanced strategy-step strategy-step-size"
@@ -5504,125 +6410,27 @@ function DashboardBody() {
               <div className="risk-field-grid">
                 <label>
                   <span>
-                    Per-pair inventory <AdvancedTip id="per-pair-inventory" />
-                  </span>
-                  <div className="input-unit">
-                    <b>$</b>
-                    <input
-                      id="strategy-max-inventory"
-                      type="number"
-                      min="0.01"
-                      step="0.01"
-                      value={config.maxInventoryUsd}
-                      onChange={(event) =>
-                        setConfig((current) => ({
-                          ...current,
-                          maxInventoryUsd: Number(event.target.value),
-                        }))
-                      }
-                    />
-                  </div>
-                </label>
-                <label>
-                  <span>
                     Inventory target <AdvancedTip id="inventory-target" />
                   </span>
                   <div className="input-unit">
                     <b>$</b>
-                    <input
-                      type="number"
+                    <NumericDraftInput
+                      key={selectedStrategyId ?? "core"}
+                      id="strategy-inventory-target"
+                      label="Inventory target"
+                      unit="USD"
                       value={config.inventoryTargetUsd}
-                      onChange={(event) =>
+                      min={-10000}
+                      max={10000}
+                      onValidity={setNumericValidity}
+                      onValue={(value) =>
                         setConfig((current) => ({
                           ...current,
-                          inventoryTargetUsd: Number(event.target.value),
+                          inventoryTargetUsd: value,
                         }))
                       }
                     />
                   </div>
-                </label>
-                <label>
-                  <span>
-                    Gross exposure <AdvancedTip id="gross-exposure" />
-                  </span>
-                  <div className="input-unit">
-                    <b>$</b>
-                    <input
-                      id="strategy-max-gross-exposure"
-                      type="number"
-                      min={config.maxInventoryUsd}
-                      step="0.01"
-                      value={config.maxGrossExposureUsd}
-                      onChange={(event) => {
-                        const maxGrossExposureUsd = Number(event.target.value);
-                        setConfig((current) => ({
-                          ...current,
-                          maxGrossExposureUsd,
-                          rebalanceGrossExposureUsd: Math.min(
-                            current.rebalanceGrossExposureUsd,
-                            maxGrossExposureUsd,
-                          ),
-                        }));
-                      }}
-                    />
-                  </div>
-                  {grossExposureError ? (
-                    <small className="field-error">
-                      Gross exposure must cover at least one market&apos;s
-                      inventory limit.{" "}
-                      <button
-                        type="button"
-                        onClick={() =>
-                          focusStrategyField("strategy-max-gross-exposure", 2)
-                        }
-                      >
-                        Raise gross exposure above.
-                      </button>
-                    </small>
-                  ) : (
-                    <small>
-                      {percent(grossCapEquityPct, 1)} of Maker equity
-                    </small>
-                  )}
-                </label>
-                <label>
-                  <span>
-                    Unrealized loss <AdvancedTip id="unrealized-loss" />
-                  </span>
-                  <div className="input-unit">
-                    <b>$</b>
-                    <input
-                      type="number"
-                      min="1"
-                      value={config.maxUnrealizedLossUsd}
-                      onChange={(event) =>
-                        setConfig((current) => ({
-                          ...current,
-                          maxUnrealizedLossUsd: Number(event.target.value),
-                        }))
-                      }
-                    />
-                  </div>
-                </label>
-                <label>
-                  <span>
-                    Run drawdown <AdvancedTip id="run-drawdown" />
-                  </span>
-                  <div className="input-unit">
-                    <b>$</b>
-                    <input
-                      type="number"
-                      min="1"
-                      value={config.maxRunDrawdownUsd}
-                      onChange={(event) =>
-                        setConfig((current) => ({
-                          ...current,
-                          maxRunDrawdownUsd: Number(event.target.value),
-                        }))
-                      }
-                    />
-                  </div>
-                  <small>{percent(drawdownEquityPct, 1)} of Maker equity</small>
                 </label>
                 <label>
                   <span>
@@ -5633,15 +6441,19 @@ function DashboardBody() {
                     <AdvancedTip id="book-index-divergence" />
                   </span>
                   <div className="input-unit suffix">
-                    <input
-                      type="number"
-                      min="1"
-                      max="5000"
+                    <NumericDraftInput
+                      key={selectedStrategyId ?? "core"}
+                      id="strategy-max-book-divergence-bps"
+                      label="Book / index divergence"
+                      unit="bps"
                       value={config.maxBookDivergenceBps}
-                      onChange={(event) =>
+                      min={1}
+                      max={5000}
+                      onValidity={setNumericValidity}
+                      onValue={(value) =>
                         setConfig((current) => ({
                           ...current,
-                          maxBookDivergenceBps: Number(event.target.value),
+                          maxBookDivergenceBps: value,
                         }))
                       }
                     />
@@ -5657,15 +6469,19 @@ function DashboardBody() {
                     <AdvancedTip id="inventory-skew" />
                   </span>
                   <div className="input-unit suffix">
-                    <input
-                      type="number"
-                      min="0"
-                      max="250"
+                    <NumericDraftInput
+                      key={selectedStrategyId ?? "core"}
+                      id="strategy-inventory-skew-bps"
+                      label="Inventory skew"
+                      unit="bps"
                       value={config.inventorySkewBps}
-                      onChange={(event) =>
+                      min={0}
+                      max={250}
+                      onValidity={setNumericValidity}
+                      onValue={(value) =>
                         setConfig((current) => ({
                           ...current,
-                          inventorySkewBps: Number(event.target.value),
+                          inventorySkewBps: value,
                         }))
                       }
                     />
@@ -5677,16 +6493,19 @@ function DashboardBody() {
                     Max leverage <AdvancedTip id="max-leverage" />
                   </span>
                   <div className="input-unit suffix">
-                    <input
-                      type="number"
-                      min="1"
-                      max="3"
-                      step="0.1"
+                    <NumericDraftInput
+                      key={selectedStrategyId ?? "core"}
+                      id="strategy-max-leverage"
+                      label="Maximum leverage"
+                      unit="x"
                       value={config.maxLeverage}
-                      onChange={(event) =>
+                      min={1}
+                      max={3}
+                      onValidity={setNumericValidity}
+                      onValue={(value) =>
                         setConfig((current) => ({
                           ...current,
-                          maxLeverage: Number(event.target.value),
+                          maxLeverage: value,
                         }))
                       }
                     />
@@ -5711,20 +6530,6 @@ function DashboardBody() {
                       setConfig((current) => ({
                         ...current,
                         refreshMs,
-                        marketDwellMs: Math.max(
-                          current.marketDwellMs,
-                          refreshMs,
-                        ),
-                        maxRestingMs: Math.max(current.maxRestingMs, refreshMs),
-                        maxQuoteAgeMs: Math.max(
-                          current.maxQuoteAgeMs,
-                          minimumObservationWindowMs(
-                            refreshMs,
-                            current.markets.length,
-                            current.rotationMode,
-                            Math.max(current.maxRestingMs, refreshMs),
-                          ),
-                        ),
                       }));
                     }}
                   />
@@ -5737,19 +6542,20 @@ function DashboardBody() {
                     Market dwell <AdvancedTip id="market-dwell" />
                   </span>
                   <div className="input-unit suffix">
-                    <input
-                      type="number"
-                      min={Math.ceil(config.refreshMs / 1_000)}
-                      max="3600"
-                      step="1"
+                    <NumericDraftInput
+                      key={selectedStrategyId ?? "core"}
+                      id="strategy-market-dwell-ms"
+                      label="Market dwell"
+                      unit="seconds"
                       value={config.marketDwellMs / 1_000}
-                      onChange={(event) =>
+                      min={Math.max(2, Math.ceil(config.refreshMs / 1000))}
+                      max={3600}
+                      integer
+                      onValidity={setNumericValidity}
+                      onValue={(value) =>
                         setConfig((current) => ({
                           ...current,
-                          marketDwellMs: Math.max(
-                            current.refreshMs,
-                            Number(event.target.value) * 1_000,
-                          ),
+                          marketDwellMs: value * 1000,
                         }))
                       }
                     />
@@ -5762,16 +6568,19 @@ function DashboardBody() {
                     Requote movement <AdvancedTip id="requote-movement" />
                   </span>
                   <div className="input-unit suffix">
-                    <input
-                      type="number"
-                      min="0"
-                      max="500"
-                      step="0.5"
+                    <NumericDraftInput
+                      key={selectedStrategyId ?? "core"}
+                      id="strategy-requote-threshold-bps"
+                      label="Requote movement"
+                      unit="bps"
                       value={config.requoteThresholdBps}
-                      onChange={(event) =>
+                      min={0}
+                      max={500}
+                      onValidity={setNumericValidity}
+                      onValue={(value) =>
                         setConfig((current) => ({
                           ...current,
-                          requoteThresholdBps: Number(event.target.value),
+                          requoteThresholdBps: value,
                         }))
                       }
                     />
@@ -5784,34 +6593,22 @@ function DashboardBody() {
                     Forced refresh <AdvancedTip id="forced-refresh" />
                   </span>
                   <div className="input-unit suffix">
-                    <input
-                      type="number"
-                      min={Math.ceil(config.refreshMs / 1_000)}
-                      max="3600"
-                      step="1"
+                    <NumericDraftInput
+                      key={selectedStrategyId ?? "core"}
+                      id="strategy-max-resting-ms"
+                      label="Forced refresh"
+                      unit="seconds"
                       value={config.maxRestingMs / 1_000}
-                      onChange={(event) => {
-                        const requestedMs = Number(event.target.value) * 1_000;
-                        setConfig((current) => {
-                          const maxRestingMs = Math.max(
-                            current.refreshMs,
-                            requestedMs,
-                          );
-                          return {
-                            ...current,
-                            maxRestingMs,
-                            maxQuoteAgeMs: Math.max(
-                              current.maxQuoteAgeMs,
-                              minimumObservationWindowMs(
-                                current.refreshMs,
-                                current.markets.length,
-                                current.rotationMode,
-                                maxRestingMs,
-                              ),
-                            ),
-                          };
-                        });
-                      }}
+                      min={Math.max(5, Math.ceil(config.refreshMs / 1000))}
+                      max={3600}
+                      integer
+                      onValidity={setNumericValidity}
+                      onValue={(value) =>
+                        setConfig((current) => ({
+                          ...current,
+                          maxRestingMs: value * 1000,
+                        }))
+                      }
                     />
                     <b>sec</b>
                   </div>
@@ -5823,22 +6620,27 @@ function DashboardBody() {
                     <AdvancedTip id="stale-observation-cutoff" />
                   </span>
                   <div className="input-unit suffix">
-                    <input
-                      type="number"
+                    <NumericDraftInput
+                      key={selectedStrategyId ?? "core"}
+                      id="strategy-max-quote-age-ms"
+                      label="Stale observation cutoff"
+                      unit="seconds"
+                      value={config.maxQuoteAgeMs / 1_000}
                       min={Math.ceil(
                         minimumObservationWindowMs(
                           config.refreshMs,
                           config.markets.length,
                           config.rotationMode,
                           config.maxRestingMs,
-                        ) / 1_000,
+                        ) / 1000,
                       )}
-                      max="86400"
-                      value={config.maxQuoteAgeMs / 1_000}
-                      onChange={(event) =>
+                      max={86400}
+                      integer
+                      onValidity={setNumericValidity}
+                      onValue={(value) =>
                         setConfig((current) => ({
                           ...current,
-                          maxQuoteAgeMs: Number(event.target.value) * 1_000,
+                          maxQuoteAgeMs: value * 1000,
                         }))
                       }
                     />
@@ -5851,7 +6653,7 @@ function DashboardBody() {
               </div>
             </details>
 
-            {configDirty && (
+            {configDirty && !selectedStrategy && (
               <div className="strategy-save-bar" role="status">
                 <span>Unsaved changes, review and save</span>
                 <div>

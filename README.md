@@ -56,7 +56,7 @@ The agent can trade but cannot withdraw collateral or grant another agent. Owner
 - Separate Maker and hedge attribution, protocol fees, estimated builder fees, and combined result after those known costs
 - Separate **Stop quoting** and **Flatten at market** actions
 
-Strategy changes reconfigure the running engine and apply on its next cycle.
+In the Strategy wizard, **Save and next** writes only a wallet- and strategy-scoped draft in this browser. It does not reconfigure a running bundle. **Apply strategy** validates and submits the full versioned strategy once; the resulting changes reconfigure every attached bundle and take effect on its next cycle. Drafts do not sync across browsers or devices. The review step lists affected bundles and changed settings.
 
 ## Execution and safety
 

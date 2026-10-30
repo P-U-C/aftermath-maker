@@ -4878,7 +4878,7 @@ mysten-dapp-kit-connect-modal,
   margin: 0 -28px;
   padding: 0 32px;
   display: grid;
-  grid-template-columns: minmax(132px, 1fr) auto minmax(220px, 1fr);
+  grid-template-columns: minmax(132px, 1fr) auto minmax(520px, 1fr);
   align-items: center;
   gap: 18px;
   background: var(--material);
@@ -4951,6 +4951,109 @@ mysten-dapp-kit-connect-modal,
 [data-theme="dark"] .maker-view-tabs a.is-active {
   background: var(--raised);
   box-shadow: none;
+}
+
+.maker-phone-run-control {
+  display: none;
+}
+.maker-run-control-trigger {
+  min-height: 34px;
+  white-space: nowrap;
+  flex: none;
+  padding: 0 11px;
+  color: var(--ink);
+  background: var(--surface);
+  border: 1px solid var(--hair);
+  border-radius: 9px;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.maker-run-control-trigger[aria-expanded="true"] {
+  border-color: var(--tide);
+}
+.maker-run-control-panel {
+  scroll-margin-top: 92px;
+  margin: 16px auto;
+  padding: 18px;
+  max-width: 1120px;
+  color: var(--ink);
+  background: var(--surface);
+  border: 1px solid var(--hair);
+  border-radius: 14px;
+  box-shadow: 0 10px 28px color-mix(in srgb, var(--ink) 9%, transparent);
+}
+.maker-run-control-panel header,
+.maker-run-control-panel footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.maker-run-control-panel header > div,
+.maker-run-control-row > div {
+  display: grid;
+  gap: 3px;
+}
+.maker-run-control-panel span {
+  color: var(--ink-2);
+  font-size: 12px;
+}
+.maker-run-panel-close {
+  min-width: 44px;
+  min-height: 44px;
+  color: var(--ink);
+  background: var(--fill);
+  border: 0;
+  border-radius: 9px;
+  font-size: 20px;
+  cursor: pointer;
+}
+.maker-run-control-list {
+  margin: 12px 0;
+  display: grid;
+  gap: 8px;
+}
+.maker-run-control-row {
+  padding: 10px 12px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  border: 1px solid var(--hair);
+  border-radius: 10px;
+}
+.maker-run-control-row.is-selected {
+  border-color: var(--tide);
+}
+.maker-run-control-row button,
+.maker-run-control-panel footer button {
+  min-height: 44px;
+  padding: 8px 12px;
+  color: var(--ink);
+  background: var(--fill);
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.maker-run-control-row button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+.maker-run-control-panel footer button {
+  color: var(--on-stop);
+  background: var(--stop);
+  border-color: var(--stop);
+}
+.maker-run-control-warning {
+  color: var(--amber-text);
+  font-size: 13px;
 }
 
 .maker-nav-right {
@@ -6122,7 +6225,7 @@ mysten-dapp-kit-connect-modal,
   list-style: none;
 }
 
-.strategy-builder button {
+.strategy-builder .step-progress {
   width: 100%;
   min-height: 76px;
   padding: 10px;
@@ -6133,13 +6236,13 @@ mysten-dapp-kit-connect-modal,
   border-radius: 12px;
 }
 
-.strategy-builder button.is-active {
+.strategy-builder .step-progress.is-active {
   color: var(--ink);
   border-color: var(--ink);
   box-shadow: inset 0 0 0 1px var(--ink);
 }
 
-.strategy-builder button span {
+.strategy-builder .step-progress span {
   display: inline-grid;
   width: 18px;
   height: 18px;
@@ -6152,13 +6255,45 @@ mysten-dapp-kit-connect-modal,
   font-weight: 700;
 }
 
-.strategy-builder button.is-active span {
+.strategy-builder .step-progress.is-active span {
   background: var(--ink);
 }
 
-.strategy-builder button span svg {
+.strategy-builder .step-progress span svg {
   width: 14px;
   height: 14px;
+}
+
+.hedge-suggestion {
+  margin: 12px 0 18px;
+  display: grid;
+  justify-items: start;
+  gap: 7px;
+}
+.hedge-suggestion p {
+  margin: 0;
+  color: var(--ink-2);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.strategy-review-changes {
+  max-height: 220px;
+  margin-top: 12px;
+  padding: 8px 10px;
+  overflow: auto;
+  overflow-wrap: anywhere;
+  color: var(--ink-2);
+  background: var(--fill);
+  border-radius: 9px;
+  font-size: 12px;
+}
+.strategy-review-changes ul {
+  margin: 8px 0 0;
+  padding-left: 18px;
+}
+.strategy-review-changes li + li {
+  margin-top: 4px;
 }
 
 .strategy-ready-state {
@@ -6168,17 +6303,17 @@ mysten-dapp-kit-connect-modal,
   font-size: 13px;
 }
 
-.strategy-builder button strong,
-.strategy-builder button small {
+.strategy-builder .step-progress strong,
+.strategy-builder .step-progress small {
   display: block;
 }
 
-.strategy-builder button strong {
+.strategy-builder .step-progress strong {
   margin-top: 5px;
   font-size: 13px;
 }
 
-.strategy-builder button small {
+.strategy-builder .step-progress small {
   margin-top: 2px;
   overflow: hidden;
   font-size: 12px;
@@ -6225,7 +6360,7 @@ mysten-dapp-kit-connect-modal,
   color: var(--ink-2);
   background: var(--surface);
   border: 1px solid var(--line);
-  border-radius: 999px;
+  border-radius: 10px;
   font-size: 13px;
   font-weight: 650;
 }
@@ -6297,7 +6432,7 @@ mysten-dapp-kit-connect-modal,
   color: var(--ink-2);
   background: var(--fill);
   border-bottom: 1px solid var(--hair);
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 700;
   letter-spacing: 0.06em;
   text-align: left;
@@ -7196,7 +7331,7 @@ mysten-dapp-kit-connect-modal,
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
-  .strategy-builder button {
+  .strategy-builder .step-progress {
     min-height: 66px;
   }
 
@@ -7845,6 +7980,37 @@ mysten-dapp-kit-connect-modal,
 .workspace-strategy .strategy-market-table {
   grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
 }
+.market-select-item {
+  min-width: 0;
+  display: grid;
+  align-content: start;
+  gap: 4px;
+}
+.market-select-item .strategy-market-row {
+  width: 100%;
+}
+.strategy-market-legend,
+.strategy-market-reasons {
+  margin: 8px 0;
+  padding: 9px 11px;
+  color: var(--ink-2);
+  background: var(--fill);
+  border: 1px solid var(--hair);
+  border-radius: 9px;
+  font-size: 12px;
+  line-height: 1.4;
+}
+.strategy-market-legend summary,
+.strategy-market-reasons summary {
+  color: var(--tide-text);
+  font-weight: 700;
+  cursor: pointer;
+}
+.strategy-market-legend p,
+.strategy-market-reasons p {
+  margin: 8px 0 0;
+  overflow-wrap: anywhere;
+}
 
 .workspace-strategy .strategy-market-row {
   min-height: 88px;
@@ -7861,14 +8027,86 @@ mysten-dapp-kit-connect-modal,
 }
 
 .workspace-strategy .strategy-market-evidence span {
-  overflow: hidden;
+  overflow-wrap: anywhere;
   padding: 2px 5px;
   color: var(--ink-2);
   background: var(--canvas);
   border-radius: 5px;
   font-size: 11px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  white-space: normal;
+}
+
+.override-row {
+  scroll-margin-top: 96px;
+}
+.override-reset {
+  align-self: end;
+  min-height: 32px;
+  padding: 4px 8px;
+  color: var(--tide-text);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.override-reset:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.numeric-field-error {
+  display: block;
+  flex-basis: 100%;
+  color: var(--ember-text);
+  line-height: 1.35;
+}
+.market-policy-set {
+  display: grid;
+  gap: 6px;
+  min-width: 118px;
+}
+.market-policy-set > div {
+  display: grid;
+  gap: 2px;
+  padding: 2px 0;
+}
+.market-policy-set > div + div {
+  border-top: 1px solid var(--hair);
+}
+.market-policy-link {
+  display: inline-flex;
+  min-height: 28px;
+  align-items: center;
+  padding: 0;
+  color: var(--tide-text);
+  background: none;
+  border: 0;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+.market-policy-link:focus-visible {
+  outline: 2px solid var(--tide);
+  outline-offset: 2px;
+}
+.market-checking-now {
+  display: block;
+  color: var(--tide-text);
+  font-size: 12px;
+}
+.market-bundle-state small {
+  display: block;
+  font-size: 12px;
+  line-height: 1.4;
+}
+.market-activity-error {
+  display: block;
+  max-width: 260px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
 }
 
 .strategy-market-overrides summary,
@@ -8328,6 +8566,20 @@ mysten-dapp-kit-connect-modal,
     display: flex;
     align-items: center;
     gap: 8px;
+  }
+
+  .maker-phone-run-control {
+    min-height: 44px;
+    padding: 0 10px;
+    display: inline-flex;
+    align-items: center;
+    color: var(--ink);
+    background: var(--fill);
+    border: 1px solid var(--hair);
+    border-radius: 9px;
+    font: inherit;
+    font-size: 13px;
+    font-weight: 700;
   }
 
   .maker-phone-explain {
@@ -9781,11 +10033,14 @@ mysten-dapp-kit-connect-modal,
   color: var(--ink-2);
   background: var(--fill);
   border: 1px solid var(--line);
-  border-radius: 999px;
+  border-radius: 10px;
   font-size: 12px;
   font-weight: 620;
 }
 
+.workspace-strategy .strategy-bundle-picker > span {
+  color: var(--ink);
+}
 .strategy-bundle-picker select {
   min-height: 28px;
   max-width: 160px;
@@ -9808,7 +10063,7 @@ mysten-dapp-kit-connect-modal,
   overflow: hidden;
   background: var(--fill);
   border: 1px solid var(--line);
-  border-radius: 999px;
+  border-radius: 10px;
 }
 
 .strategy-control-family .strategy-bundle-picker {

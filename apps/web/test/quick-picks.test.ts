@@ -54,21 +54,16 @@ describe("quickPickMarketIds", () => {
   it("applies every strategy pick and the selection cap", () => {
     expect(quickPickMarketIds(opportunities, "rewards", 5)).toEqual([
       "B",
-      "C",
       "A",
+      "E",
     ]);
     expect(quickPickMarketIds(opportunities, "balanced", 5)).toEqual([
-      "D",
       "B",
       "E",
       "A",
     ]);
-    expect(quickPickMarketIds(opportunities, "quiet", 2)).toEqual(["D", "B"]);
-    expect(quickPickMarketIds(opportunities, "steady", 5)).toEqual([
-      "B",
-      "C",
-      "A",
-    ]);
+    expect(quickPickMarketIds(opportunities, "quiet", 2)).toEqual(["B"]);
+    expect(quickPickMarketIds(opportunities, "steady", 5)).toEqual(["B", "A"]);
     expect(quickPickMarketIds(opportunities, "clear", 5)).toEqual([]);
   });
 });

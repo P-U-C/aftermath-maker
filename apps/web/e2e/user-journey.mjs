@@ -271,6 +271,10 @@ async function installStatefulControl(page, state) {
       }
       if (request.method() === "PATCH") {
         const body = JSON.parse(request.postData() ?? "{}");
+        if (body.expectedVersion !== strategy.version)
+          return json(409, {
+            error: "Strategy changed elsewhere; refresh before saving",
+          });
         Object.assign(strategy, {
           name: body.name ?? strategy.name,
           config: body.config,
@@ -496,6 +500,124 @@ async function capture(page, name) {
   });
 }
 
+async function goToStrategyStep(page, target) {
+  const form = page.locator(".settings-panel");
+  for (let count = 0; count < 5; count += 1) {
+    const step = Number(await form.getAttribute("data-strategy-step"));
+    if (step >= target) return;
+    await form
+      .getByRole("button", { name: "Save and next", exact: true })
+      .click();
+    await page.waitForFunction(
+      (next) =>
+        Number(
+          document
+            .querySelector(".settings-panel")
+            ?.getAttribute("data-strategy-step"),
+        ) === next,
+      step + 1,
+    );
+  }
+  throw new Error(`Could not reach strategy step ${target}`);
+}
+
+async function nonCoreOnlyReport(browser) {
+  const { context, page, state } = await newPage(browser, {
+    width: 1440,
+    height: 900,
+  });
+  try {
+    state.fixture.status.bundles[1].snapshot = structuredClone(
+      state.fixture.status.bundles[1].snapshot,
+    );
+    state.fixture.bundles.bundles[0].status = "stopped";
+    state.fixture.status.snapshot.running = false;
+    state.fixture.status.bundles[0].bundle.status = "stopped";
+    state.fixture.status.bundles[0].snapshot.running = false;
+    const rewards = state.fixture.status.bundles[1].snapshot;
+    rewards.running = true;
+    rewards.market.id = state.fixture.bundles.bundles[1].marketIds[0];
+    rewards.market.symbol = "ETH";
+    rewards.lastCycleAt = new Date().toISOString();
+    rewards.market.updatedAt = rewards.lastCycleAt;
+    rewards.markets.find(
+      (market) => market.id === rewards.market.id,
+    ).updatedAt = rewards.lastCycleAt;
+    await goToDesk(page);
+    await page
+      .locator(".desk-narration")
+      .getByText(/Rewards is reading markets in Paper/)
+      .waitFor();
+    await page
+      .locator(".desk-facts")
+      .getByText(/Maker equity · Rewards/)
+      .waitFor();
+    await page.getByRole("link", { name: "Markets", exact: true }).click();
+    const marketsView = page.locator(
+      '.maker-view[data-view="markets"]:not([hidden])',
+    );
+    await marketsView.waitFor();
+    assert(
+      (await marketsView
+        .getByText("Paper · Dry run succeeded (no real order)", { exact: true })
+        .count()) > 0,
+      `Non-Core Paper activity was not projected: ${(await marketsView.locator(".market-state-cell").allTextContents()).join(" / ")}`,
+    );
+    await capture(page, "r5-noncore-market-activity-desktop.png");
+    await marketsView
+      .getByRole("button", { name: "Edit Rewards policy" })
+      .last()
+      .click();
+    await page
+      .locator(
+        '[data-view="strategy"]:not([hidden]) .settings-panel[data-strategy-step="2"]',
+      )
+      .waitFor();
+    await page
+      .locator(
+        `[id="strategy-policy-${state.fixture.bundles.bundles[1].marketIds[0]}"]`,
+      )
+      .waitFor();
+  } finally {
+    await context.close();
+  }
+}
+
+async function runControlMobile(browser) {
+  const { context, page } = await newPage(browser, { width: 390, height: 844 });
+  try {
+    await goToDesk(page);
+    await page.getByRole("button", { name: "Open run controls" }).click();
+    const panel = page.getByRole("region", { name: "Bundle run controls" });
+    await panel.waitFor();
+    assert(
+      (await panel.getByRole("button", { name: /Pause Core/ }).count()) > 0,
+      "Run control panel did not name the active bundle",
+    );
+    assert(
+      (await panel
+        .getByRole("button", { name: /Stop all · cancel owned orders/ })
+        .count()) > 0,
+      "Emergency Stop all is missing on the phone",
+    );
+    const overflow = await page.evaluate(
+      () => document.documentElement.scrollWidth > window.innerWidth + 2,
+    );
+    assert(!overflow, "Run controls overflow the 390px viewport");
+    await capture(page, "r5-run-controls-phone.png");
+    await page.getByRole("link", { name: "Strategy", exact: true }).click();
+    assert(
+      !(await page.evaluate(
+        () => document.documentElement.scrollWidth > window.innerWidth + 2,
+      )),
+      "Strategy and Stop all controls overflow 390px",
+    );
+    await capture(page, "r5-strategy-phone.png");
+  } finally {
+    await context.close();
+  }
+}
+
 async function stopWithInventory(browser) {
   const { context, page } = await newPage(browser, {
     width: 1440,
@@ -510,7 +632,8 @@ async function stopWithInventory(browser) {
     await page
       .locator(".desk-narration")
       .filter({
-        hasText: "Stopped. Orders are cancelled; you still hold $1.04 of MON.",
+        hasText:
+          "Stopped in this view; confirm orders are cancelled on the venue. You still hold $1.04 of MON.",
       })
       .waitFor();
     await capture(page, "v5-audit-stopped-inventory-desktop.png");
@@ -537,7 +660,7 @@ async function stopAllShowsProgress(browser) {
       .waitFor();
     await page
       .locator(".maker-nav-right")
-      .getByRole("button", { name: "Stopped", exact: true })
+      .getByRole("button", { name: "Stop all", exact: true })
       .waitFor();
     await capture(page, "v6-stop-progress-desktop.png");
   } finally {
@@ -558,16 +681,11 @@ async function savedDeskOnly(browser) {
       .first()
       .waitFor();
     await page.getByRole("link", { name: "Strategy", exact: true }).click();
+    await goToStrategyStep(page, 2);
     await page
-      .getByRole("button", { name: /Size and limits/ })
-      .first()
-      .click();
-    await page
-      .getByRole("spinbutton", { name: "Maximum gross exposure in USD" })
+      .getByRole("textbox", { name: "Gross exposure (USD)" })
       .fill("1.50");
-    await page
-      .getByText("Unsaved changes, review and save", { exact: true })
-      .waitFor();
+    await page.getByText("Save and next", { exact: true }).waitFor();
     assert(
       (await page
         .locator('.maker-view[data-view="desk"] .desk-risk-card')
@@ -576,19 +694,27 @@ async function savedDeskOnly(browser) {
       "Hidden Desk read the unsaved strategy draft",
     );
     await page.getByRole("link", { name: "Desk", exact: true }).click();
-    const leaveSheet = page.getByRole("dialog", {
-      name: "Save strategy changes?",
-    });
-    await leaveSheet.waitFor();
-    await leaveSheet
-      .getByRole("button", { name: "Discard", exact: true })
-      .click();
+    assert(
+      (await page
+        .getByRole("dialog", { name: "Save strategy changes?" })
+        .count()) === 0,
+      "Leaving a strategy should keep a local draft without a competing save popup",
+    );
     await page
       .locator(".desk-risk-card")
       .getByText("$0.01 of $0.90", { exact: true })
       .first()
       .waitFor();
     await capture(page, "v5-audit-saved-desk-desktop.png");
+    await page.reload();
+    await page.getByRole("link", { name: "Strategy", exact: true }).click();
+    await goToStrategyStep(page, 2);
+    assert(
+      (await page
+        .getByRole("textbox", { name: "Gross exposure (USD)" })
+        .inputValue()) === "1.5",
+      "Wallet-scoped draft did not survive reload",
+    );
   } finally {
     await context.close();
   }
@@ -709,7 +835,9 @@ async function serviceAndSessionFailures(browser) {
       .getByRole("button", { name: "Stop all", exact: true })
       .first()
       .click();
-    await desktop.page.getByText("Stopped.", { exact: false }).waitFor();
+    await desktop.page
+      .getByText("Stopped in this view", { exact: false })
+      .waitFor();
     await capture(desktop.page, "v5-audit-service-down-desktop.png");
   } finally {
     await desktop.context.close();
@@ -771,7 +899,7 @@ async function createBundleWithFreeChoices(browser) {
       .getByRole("heading", { name: "Audit reserve", exact: true })
       .waitFor();
     const start = page
-      .getByRole("button", { name: "Start", exact: true })
+      .getByRole("button", { name: /Run controls · Audit reserve/ })
       .last();
     await start.waitFor();
     await start.scrollIntoViewIfNeeded();
@@ -808,7 +936,19 @@ async function lowerWalletLimitsWhenCreating(browser) {
         { exact: true },
       )
       .waitFor();
-    await confirmation.getByLabel("Gross exposure").fill("15.00");
+    const walletGross = confirmation.getByLabel("Gross exposure");
+    await walletGross.fill("");
+    assert(
+      (await walletGross.getAttribute("aria-invalid")) === "true",
+      "Blank wallet limit did not show a field error",
+    );
+    assert(
+      !(await confirmation
+        .getByRole("button", { name: "Confirm limits and create", exact: true })
+        .isEnabled()),
+      "Blank wallet limit could be saved",
+    );
+    await walletGross.fill("15.00");
     assert(
       await confirmation
         .getByRole("button", { name: "Confirm limits and create", exact: true })
@@ -1002,7 +1142,9 @@ async function strategyLibraryAndBundleAttachment(browser) {
       })
       .waitFor();
     await card.getByText(/^From Strategy 3:/, { exact: false }).waitFor();
-    await card.getByRole("button", { name: "Start", exact: true }).waitFor();
+    await card
+      .getByRole("button", { name: /Run controls · Strategy audit/ })
+      .waitFor();
     await capture(page, "rfc-0002-strategy-attachment-desktop.png");
   } finally {
     await context.close();
@@ -1023,16 +1165,13 @@ async function paperTrialRunsBesideBundles(browser) {
     state.strategies[0].config.maxRunDrawdownUsd = 1;
     await goToDesk(page);
     await page.getByRole("link", { name: "Strategy", exact: true }).click();
-    await page
-      .getByRole("button", { name: /Review/ })
-      .first()
-      .click();
+    await goToStrategyStep(page, 4);
     const trial = page.getByLabel("Three-cycle strategy trial");
     assert(
       await trial
         .getByRole("button", { name: "Paper test run: 3 cycles", exact: true })
         .isEnabled(),
-      "Paper test run was blocked by another running bundle",
+      `Paper test run was blocked: ${await trial.textContent()}; notices: ${await page.locator(".notice").allTextContents()}`,
     );
     await trial
       .getByRole("button", { name: "Paper test run: 3 cycles", exact: true })
@@ -1043,6 +1182,50 @@ async function paperTrialRunsBesideBundles(browser) {
     assert(state.paperTrialRequests === 1, "Paper test request was not sent");
     await trial.scrollIntoViewIfNeeded();
     await capture(page, "rfc-0003-paper-trial-desktop.png");
+  } finally {
+    await context.close();
+  }
+}
+
+async function staleStrategyDraftCannotApply(browser) {
+  const { context, page, state } = await newPage(browser, {
+    width: 1440,
+    height: 900,
+  });
+  try {
+    state.fixture.config.config.maxGrossExposureUsd = 3;
+    state.strategies[0].config.maxGrossExposureUsd = 3;
+    await goToDesk(page);
+    await page.getByRole("link", { name: "Strategy", exact: true }).click();
+    await goToStrategyStep(page, 4);
+    state.strategies[0].version += 1;
+    const draftName = page.getByLabel("Strategy name");
+    await draftName.fill("Unapplied stale draft");
+    await page.getByRole("button", { name: "Apply strategy" }).click();
+    await page
+      .getByText(/Strategy changed elsewhere\. Your draft is preserved/, {
+        exact: false,
+      })
+      .waitFor();
+    assert(
+      (await draftName.inputValue()) === "Unapplied stale draft",
+      "A version conflict lost the user's draft",
+    );
+    assert(
+      state.strategies[0].name !== "Unapplied stale draft",
+      "Stale draft incorrectly changed the active strategy",
+    );
+    const rebase = page.getByRole("button", {
+      name: "Rebase draft after review",
+    });
+    await rebase.waitFor();
+    await rebase.click();
+    await page.getByRole("button", { name: "Apply strategy" }).click();
+    await page.getByText("Strategy saved.", { exact: true }).waitFor();
+    assert(
+      state.strategies[0].name === "Unapplied stale draft",
+      "Reviewed rebase did not apply the preserved draft",
+    );
   } finally {
     await context.close();
   }
@@ -1169,14 +1352,23 @@ async function v7BundleDeskAndStrategy(browser) {
     const strategyView = page.locator(
       '.maker-view[data-view="strategy"]:not([hidden])',
     );
-    await strategyView
-      .getByRole("button", { name: /Markets/ })
-      .first()
-      .click();
+    await goToStrategyStep(page, 1);
     const builder = strategyView.locator(".strategy-builder");
     const marketStep = strategyView.locator(".strategy-markets-section");
     await builder.waitFor();
     await marketStep.waitFor();
+    await strategyView.getByText("What the market evidence means").click();
+    await strategyView.getByText(/Score is a 0–100 heuristic/).waitFor();
+    await strategyView.getByText(/Why MON ranks here/).click();
+    assert(
+      (
+        await strategyView
+          .locator(".strategy-market-reasons[open] p")
+          .first()
+          .textContent()
+      )?.length > 10,
+      "Full market evidence is not expandable",
+    );
     const builderBox = await builder.boundingBox();
     const marketStepBox = await marketStep.boundingBox();
     assert(
@@ -1188,31 +1380,43 @@ async function v7BundleDeskAndStrategy(browser) {
         0,
       "The retired market-rule control remained visible",
     );
-    await strategyView
-      .getByRole("button", { name: /Markets/ })
-      .first()
-      .click();
     await strategyView.locator(".strategy-market-table").waitFor();
     await strategyView
       .getByRole("button", { name: "Balanced", exact: true })
       .click();
     await strategyView
-      .getByText(/Quick pick includes .* market/, { exact: false })
+      .getByText(/Proposed selection — not yet applied/, { exact: false })
       .waitFor();
     await strategyView
-      .getByRole("button", { name: /Size and limits/ })
-      .first()
+      .getByRole("button", { name: "Accept selection" })
       .click();
-    await strategyView.locator(".strategy-advanced > summary").click();
+    await goToStrategyStep(page, 2);
     await page
-      .getByRole("spinbutton", { name: "Maximum gross exposure in USD" })
+      .getByRole("textbox", { name: "Gross exposure (USD)" })
       .fill("3.00");
     await page
-      .getByRole("spinbutton", { name: "Maximum run drawdown in USD" })
+      .getByRole("textbox", { name: "Maximum run drawdown (USD)" })
       .fill("1.00");
+    const quoteSize = page.getByRole("textbox", { name: "Quote size (USD)" });
+    await quoteSize.fill("");
+    assert(
+      (await quoteSize.getAttribute("aria-invalid")) === "true",
+      "Blank quote size did not show a field error",
+    );
+    await strategyView
+      .getByRole("button", { name: "Save and next", exact: true })
+      .click();
+    assert(
+      (await strategyView
+        .locator(".settings-panel")
+        .getAttribute("data-strategy-step")) === "2",
+      "Invalid quote size advanced the wizard",
+    );
+    await quoteSize.fill("1.04");
     await page.getByLabel("Strategy name").fill("Core maker");
+    await goToStrategyStep(page, 4);
     const saveStrategy = page.getByRole("button", {
-      name: "Save strategy",
+      name: "Apply strategy",
       exact: true,
     });
     assert(
@@ -1232,17 +1436,29 @@ async function v7BundleDeskAndStrategy(browser) {
       .getByText(/^From Core maker:/)
       .waitFor();
     await page.getByRole("link", { name: "Strategy", exact: true }).click();
-    await strategyView
-      .getByRole("button", { name: /Markets/ })
-      .first()
-      .click();
+    for (let step = 0; step < 3; step += 1)
+      await strategyView
+        .getByRole("button", { name: "Back", exact: true })
+        .click();
     await page
-      .getByText(/Quick pick includes .* market/, { exact: false })
+      .getByText(/Saved effective selection/, { exact: false })
       .waitFor();
     await strategyView
       .locator(".strategy-market-table")
       .scrollIntoViewIfNeeded();
     await capture(page, "v8-strategy-market-table-desktop.png");
+    await strategyView
+      .getByRole("link", { name: "Edit saved policy" })
+      .first()
+      .click();
+    await strategyView.locator("#strategy-market-overrides:visible").waitFor();
+    assert(
+      (await strategyView
+        .locator(".settings-panel")
+        .getAttribute("data-strategy-step")) === "2",
+      "Policy link did not open the Size and limits editor",
+    );
+    await capture(page, "r5-saved-policy-desktop.png");
   } finally {
     await context.close();
   }
@@ -1257,6 +1473,8 @@ const browser = await chromium.launch({
 });
 
 try {
+  await nonCoreOnlyReport(browser);
+  await runControlMobile(browser);
   await stopWithInventory(browser);
   await stopAllShowsProgress(browser);
   await savedDeskOnly(browser);
@@ -1264,6 +1482,7 @@ try {
   await plainControlLog(browser);
   await strategyLibraryAndBundleAttachment(browser);
   await paperTrialRunsBesideBundles(browser);
+  await staleStrategyDraftCannotApply(browser);
   await paperSimulationBlockerStaysVisible(browser);
   await v7BundleDeskAndStrategy(browser);
   await revokeWithoutWallet(browser);

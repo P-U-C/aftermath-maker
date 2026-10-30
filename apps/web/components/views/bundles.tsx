@@ -1,6 +1,6 @@
 "use client";
 
-import { Archive, Pencil, Pause, Play, Plus, RotateCcw } from "lucide-react";
+import { Archive, Pencil, Plus } from "lucide-react";
 import { useState } from "react";
 
 import {
@@ -8,7 +8,9 @@ import {
   availableBundleAccounts,
 } from "../../lib/bundle-options";
 import { formatMoney } from "../../lib/format";
+import { parseNumericDraft } from "../../lib/numeric-draft";
 import { Button, Card, Sheet } from "../ui/primitives";
+import { useMakerRunControls } from "../maker-shell";
 import { ViewFrame } from "./view-frame";
 
 export type BundleCard = {
@@ -84,7 +86,7 @@ type WalletLimitsDraft = {
 
 const plainStatus = (status: BundleCard["status"]) =>
   status === "running"
-    ? "Quoting now"
+    ? "Running · verify orders"
     : status === "paused"
       ? "Paused"
       : status === "error"
@@ -110,6 +112,7 @@ export function BundlesView({
   onCreate,
   onUpdateWalletLimits,
 }: BundlesViewProps) {
+  const { open: openRunControls } = useMakerRunControls();
   const visible = activeBundles(bundles);
   const [createOpen, setCreateOpen] = useState(false);
   const [confirmOpen, setConfirmOpen] = useState(false);
@@ -157,9 +160,32 @@ export function BundlesView({
     maxGrossExposureUsd: Number(walletLimitsDraft.maxGrossExposureUsd),
     maxUnrealizedLossUsd: Number(walletLimitsDraft.maxUnrealizedLossUsd),
   };
-  const canConfirmWalletLimitsEdit = Object.values(editedWalletLimits).every(
-    (value) => Number.isFinite(value) && value > 0,
-  );
+  const walletLimitErrors = {
+    maxGrossExposureUsd: parseNumericDraft(
+      walletLimitsDraft.maxGrossExposureUsd,
+      { label: "Wallet gross exposure", unit: "USD", min: 0.01, max: 100_000 },
+    ).error,
+    maxInventoryUsd: parseNumericDraft(walletLimitsDraft.maxInventoryUsd, {
+      label: "Wallet inventory",
+      unit: "USD",
+      min: 0.01,
+      max: 10_000,
+    }).error,
+    maxRunDrawdownUsd: parseNumericDraft(walletLimitsDraft.maxRunDrawdownUsd, {
+      label: "Wallet run drawdown",
+      unit: "USD",
+      min: 0.01,
+      max: 10_000,
+    }).error,
+    maxUnrealizedLossUsd: parseNumericDraft(
+      walletLimitsDraft.maxUnrealizedLossUsd,
+      { label: "Wallet unrealized loss", unit: "USD", min: 0.01, max: 10_000 },
+    ).error,
+  };
+  const canConfirmWalletLimitsEdit =
+    Object.values(walletLimitErrors).every((error) => error === null) &&
+    editedWalletLimits.maxGrossExposureUsd >=
+      editedWalletLimits.maxInventoryUsd;
   const walletLimitsOnlyLowered =
     walletLimits !== null &&
     editedWalletLimits.maxRunDrawdownUsd <= walletLimits.maxRunDrawdownUsd &&
@@ -302,12 +328,6 @@ export function BundlesView({
         <div className="bundle-card-grid">
           {visible.map((bundle) => {
             const selected = selectedBundleId === bundle.id;
-            const hasRun =
-              bundle.status !== "paused" ||
-              bundle.updatedAt !== bundle.createdAt;
-            const resumable =
-              bundle.status === "error" ||
-              (bundle.status === "paused" && hasRun);
             return (
               <Card
                 key={bundle.id}
@@ -381,32 +401,12 @@ export function BundlesView({
                         ))}
                       </select>
                     </label>
-                  ) : bundle.status === "running" ? (
-                    <Button
-                      variant="quiet"
-                      onClick={() => onPause(bundle.id)}
-                      disabled={busy}
-                    >
-                      <Pause size={15} aria-hidden="true" />
-                      Pause
-                    </Button>
-                  ) : resumable ? (
-                    <Button
-                      variant="primary"
-                      onClick={() => onResume(bundle.id)}
-                      disabled={busy}
-                    >
-                      <RotateCcw size={15} aria-hidden="true" />
-                      Resume
-                    </Button>
                   ) : (
                     <Button
                       variant="primary"
-                      onClick={() => onStart(bundle.id)}
-                      disabled={busy}
+                      onClick={() => openRunControls(bundle.id)}
                     >
-                      <Play size={15} aria-hidden="true" />
-                      Start
+                      Run controls · {bundle.name}
                     </Button>
                   )}
                   {bundle.name !== "Core" && (
@@ -668,11 +668,18 @@ export function BundlesView({
             <label>
               <span>Gross exposure</span>
               <input
-                type="number"
+                type="text"
                 min="0.01"
                 max={walletLimits?.maxGrossExposureUsd}
                 step="0.01"
                 inputMode="decimal"
+                id="wallet-confirm-maxGrossExposureUsd"
+                aria-invalid={Boolean(walletLimitErrors.maxGrossExposureUsd)}
+                aria-describedby={
+                  walletLimitErrors.maxGrossExposureUsd
+                    ? "wallet-confirm-maxGrossExposureUsd-error"
+                    : undefined
+                }
                 value={walletLimitsDraft.maxGrossExposureUsd}
                 onChange={(event) =>
                   setWalletLimitsDraft((current) => ({
@@ -681,15 +688,37 @@ export function BundlesView({
                   }))
                 }
               />
+              {walletLimitErrors.maxGrossExposureUsd && (
+                <small
+                  className="field-error"
+                  id="wallet-confirm-maxGrossExposureUsd-error"
+                  role="alert"
+                >
+                  {walletLimitErrors.maxGrossExposureUsd}
+                </small>
+              )}
+              {editedWalletLimits.maxGrossExposureUsd <
+                editedWalletLimits.maxInventoryUsd && (
+                <small className="field-error" role="alert">
+                  Wallet gross exposure must cover the wallet inventory ceiling.
+                </small>
+              )}
             </label>
             <label>
               <span>Inventory</span>
               <input
-                type="number"
+                type="text"
                 min="0.01"
                 max={walletLimits?.maxInventoryUsd}
                 step="0.01"
                 inputMode="decimal"
+                id="wallet-confirm-maxInventoryUsd"
+                aria-invalid={Boolean(walletLimitErrors.maxInventoryUsd)}
+                aria-describedby={
+                  walletLimitErrors.maxInventoryUsd
+                    ? "wallet-confirm-maxInventoryUsd-error"
+                    : undefined
+                }
                 value={walletLimitsDraft.maxInventoryUsd}
                 onChange={(event) =>
                   setWalletLimitsDraft((current) => ({
@@ -698,15 +727,31 @@ export function BundlesView({
                   }))
                 }
               />
+              {walletLimitErrors.maxInventoryUsd && (
+                <small
+                  className="field-error"
+                  id="wallet-confirm-maxInventoryUsd-error"
+                  role="alert"
+                >
+                  {walletLimitErrors.maxInventoryUsd}
+                </small>
+              )}
             </label>
             <label>
               <span>Run drawdown</span>
               <input
-                type="number"
+                type="text"
                 min="0.01"
                 max={walletLimits?.maxRunDrawdownUsd}
                 step="0.01"
                 inputMode="decimal"
+                id="wallet-confirm-maxRunDrawdownUsd"
+                aria-invalid={Boolean(walletLimitErrors.maxRunDrawdownUsd)}
+                aria-describedby={
+                  walletLimitErrors.maxRunDrawdownUsd
+                    ? "wallet-confirm-maxRunDrawdownUsd-error"
+                    : undefined
+                }
                 value={walletLimitsDraft.maxRunDrawdownUsd}
                 onChange={(event) =>
                   setWalletLimitsDraft((current) => ({
@@ -715,15 +760,31 @@ export function BundlesView({
                   }))
                 }
               />
+              {walletLimitErrors.maxRunDrawdownUsd && (
+                <small
+                  className="field-error"
+                  id="wallet-confirm-maxRunDrawdownUsd-error"
+                  role="alert"
+                >
+                  {walletLimitErrors.maxRunDrawdownUsd}
+                </small>
+              )}
             </label>
             <label>
               <span>Unrealized loss</span>
               <input
-                type="number"
+                type="text"
                 min="0.01"
                 max={walletLimits?.maxUnrealizedLossUsd}
                 step="0.01"
                 inputMode="decimal"
+                id="wallet-confirm-maxUnrealizedLossUsd"
+                aria-invalid={Boolean(walletLimitErrors.maxUnrealizedLossUsd)}
+                aria-describedby={
+                  walletLimitErrors.maxUnrealizedLossUsd
+                    ? "wallet-confirm-maxUnrealizedLossUsd-error"
+                    : undefined
+                }
                 value={walletLimitsDraft.maxUnrealizedLossUsd}
                 onChange={(event) =>
                   setWalletLimitsDraft((current) => ({
@@ -732,6 +793,15 @@ export function BundlesView({
                   }))
                 }
               />
+              {walletLimitErrors.maxUnrealizedLossUsd && (
+                <small
+                  className="field-error"
+                  id="wallet-confirm-maxUnrealizedLossUsd-error"
+                  role="alert"
+                >
+                  {walletLimitErrors.maxUnrealizedLossUsd}
+                </small>
+              )}
             </label>
           </div>
           {!walletLimitsOnlyLowered && (
@@ -769,11 +839,18 @@ export function BundlesView({
             <label>
               <span>Gross exposure</span>
               <input
-                type="number"
+                type="text"
                 min="0.01"
                 max="100000"
                 step="0.01"
                 inputMode="decimal"
+                id="wallet-edit-maxGrossExposureUsd"
+                aria-invalid={Boolean(walletLimitErrors.maxGrossExposureUsd)}
+                aria-describedby={
+                  walletLimitErrors.maxGrossExposureUsd
+                    ? "wallet-edit-maxGrossExposureUsd-error"
+                    : undefined
+                }
                 value={walletLimitsDraft.maxGrossExposureUsd}
                 onChange={(event) =>
                   setWalletLimitsDraft((current) => ({
@@ -782,15 +859,37 @@ export function BundlesView({
                   }))
                 }
               />
+              {walletLimitErrors.maxGrossExposureUsd && (
+                <small
+                  className="field-error"
+                  id="wallet-edit-maxGrossExposureUsd-error"
+                  role="alert"
+                >
+                  {walletLimitErrors.maxGrossExposureUsd}
+                </small>
+              )}
+              {editedWalletLimits.maxGrossExposureUsd <
+                editedWalletLimits.maxInventoryUsd && (
+                <small className="field-error" role="alert">
+                  Wallet gross exposure must cover the wallet inventory ceiling.
+                </small>
+              )}
             </label>
             <label>
               <span>Inventory</span>
               <input
-                type="number"
+                type="text"
                 min="0.01"
                 max="10000"
                 step="0.01"
                 inputMode="decimal"
+                id="wallet-edit-maxInventoryUsd"
+                aria-invalid={Boolean(walletLimitErrors.maxInventoryUsd)}
+                aria-describedby={
+                  walletLimitErrors.maxInventoryUsd
+                    ? "wallet-edit-maxInventoryUsd-error"
+                    : undefined
+                }
                 value={walletLimitsDraft.maxInventoryUsd}
                 onChange={(event) =>
                   setWalletLimitsDraft((current) => ({
@@ -799,15 +898,31 @@ export function BundlesView({
                   }))
                 }
               />
+              {walletLimitErrors.maxInventoryUsd && (
+                <small
+                  className="field-error"
+                  id="wallet-edit-maxInventoryUsd-error"
+                  role="alert"
+                >
+                  {walletLimitErrors.maxInventoryUsd}
+                </small>
+              )}
             </label>
             <label>
               <span>Run drawdown</span>
               <input
-                type="number"
+                type="text"
                 min="0.01"
                 max="10000"
                 step="0.01"
                 inputMode="decimal"
+                id="wallet-edit-maxRunDrawdownUsd"
+                aria-invalid={Boolean(walletLimitErrors.maxRunDrawdownUsd)}
+                aria-describedby={
+                  walletLimitErrors.maxRunDrawdownUsd
+                    ? "wallet-edit-maxRunDrawdownUsd-error"
+                    : undefined
+                }
                 value={walletLimitsDraft.maxRunDrawdownUsd}
                 onChange={(event) =>
                   setWalletLimitsDraft((current) => ({
@@ -816,15 +931,31 @@ export function BundlesView({
                   }))
                 }
               />
+              {walletLimitErrors.maxRunDrawdownUsd && (
+                <small
+                  className="field-error"
+                  id="wallet-edit-maxRunDrawdownUsd-error"
+                  role="alert"
+                >
+                  {walletLimitErrors.maxRunDrawdownUsd}
+                </small>
+              )}
             </label>
             <label>
               <span>Unrealized loss</span>
               <input
-                type="number"
+                type="text"
                 min="0.01"
                 max="10000"
                 step="0.01"
                 inputMode="decimal"
+                id="wallet-edit-maxUnrealizedLossUsd"
+                aria-invalid={Boolean(walletLimitErrors.maxUnrealizedLossUsd)}
+                aria-describedby={
+                  walletLimitErrors.maxUnrealizedLossUsd
+                    ? "wallet-edit-maxUnrealizedLossUsd-error"
+                    : undefined
+                }
                 value={walletLimitsDraft.maxUnrealizedLossUsd}
                 onChange={(event) =>
                   setWalletLimitsDraft((current) => ({
@@ -833,6 +964,15 @@ export function BundlesView({
                   }))
                 }
               />
+              {walletLimitErrors.maxUnrealizedLossUsd && (
+                <small
+                  className="field-error"
+                  id="wallet-edit-maxUnrealizedLossUsd-error"
+                  role="alert"
+                >
+                  {walletLimitErrors.maxUnrealizedLossUsd}
+                </small>
+              )}
             </label>
           </div>
         </Sheet>
