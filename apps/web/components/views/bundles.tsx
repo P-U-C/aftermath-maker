@@ -55,7 +55,7 @@ type BundlesViewProps = {
     draft: {
       makerAccountId: string;
       takerAccountId: string;
-      mode: "observe" | "paper";
+      mode: "paper";
       strategyId: string | null;
       updatedAt: string;
     },
@@ -130,7 +130,7 @@ export function BundlesView({
   const [editingBundle, setEditingBundle] = useState<BundleCard | null>(null);
   const [editMakerAccountId, setEditMakerAccountId] = useState("");
   const [editTakerAccountId, setEditTakerAccountId] = useState("");
-  const [editMode, setEditMode] = useState<"observe" | "paper">("paper");
+  const [editMode] = useState<"paper">("paper");
   const [editStrategyId, setEditStrategyId] = useState("");
   const availableMakerAccounts = availableBundleAccounts(accounts, visible);
   const availableTakerAccounts = availableBundleAccounts(
@@ -210,7 +210,6 @@ export function BundlesView({
     setEditingBundle(bundle);
     setEditMakerAccountId(bundle.makerAccountId ?? "");
     setEditTakerAccountId(bundle.takerAccountId ?? "");
-    setEditMode(bundle.mode === "observe" ? "observe" : "paper");
     setEditStrategyId(bundle.strategyId ?? "");
   };
   const saveAllocation = async () => {
@@ -588,18 +587,6 @@ export function BundlesView({
                       {account.label ?? `Account ${account.accountId}`}
                     </option>
                   ))}
-              </select>
-            </label>
-            <label>
-              <span>Mode</span>
-              <select
-                value={editMode}
-                onChange={(event) =>
-                  setEditMode(event.target.value as "observe" | "paper")
-                }
-              >
-                <option value="observe">Observe</option>
-                <option value="paper">Paper</option>
               </select>
             </label>
             <label>

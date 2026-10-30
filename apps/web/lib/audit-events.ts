@@ -184,6 +184,23 @@ const copies: Record<string, AuditCopy> = {
     severity: "error",
     sentence: () => "Test run failed.",
   },
+  "paper:estimated-fill:estimated": {
+    severity: "info",
+    sentence: (detail) =>
+      `Estimated Paper fill${market(detail)}. No order was sent.`,
+  },
+  "paper:trial.start:success": {
+    severity: "info",
+    sentence: () => "Paper test run started.",
+  },
+  "paper:trial.complete:success": {
+    severity: "info",
+    sentence: () => "Paper test run completed.",
+  },
+  "paper:trial:error": {
+    severity: "error",
+    sentence: () => "Paper test run failed.",
+  },
   "risk:stale-quote-watchdog:tripped": {
     severity: "warning",
     sentence: (detail) =>

@@ -185,6 +185,12 @@ export type ExecutionReceipt = {
   postedOrderIds: string[];
 };
 
+/** A fully-built, chain-simulated quote that was never signed or broadcast. */
+export type PaperQuoteReceipt = {
+  endpoint: string;
+  gasUsedMist: number;
+};
+
 export type FlattenReceipt = ExecutionReceipt & {
   flattenedMarketIds: string[];
   digests?: string[];
@@ -694,7 +700,11 @@ function transactionDigest(result: unknown): string {
 
 export function executionGasUsedMist(result: unknown): number {
   const tx = successfulTransaction(result);
-  const effects = tx.effects as
+  return gasUsedMistFromEffects(tx.effects);
+}
+
+function gasUsedMistFromEffects(effects: unknown): number {
+  const typedEffects = effects as
     | {
         gasUsed?: {
           computationCost?: string;
@@ -704,13 +714,20 @@ export function executionGasUsedMist(result: unknown): number {
         };
       }
     | undefined;
-  const gas = effects?.gasUsed;
+  const gas = typedEffects?.gasUsed;
   if (!gas) return 0;
   const used =
     BigInt(gas.computationCost ?? "0") +
     BigInt(gas.storageCost ?? "0") -
     BigInt(gas.storageRebate ?? "0");
   return Number(used > 0n ? used : 0n);
+}
+
+function simulationGasUsedMist(result: unknown): number {
+  if (!result || typeof result !== "object") return 0;
+  const transaction = (result as { Transaction?: { effects?: unknown } })
+    .Transaction;
+  return gasUsedMistFromEffects(transaction?.effects);
 }
 
 export function postedOrderIds(result: unknown): string[] {
@@ -1999,7 +2016,7 @@ export class AftermathGateway {
     tx: Transaction;
     config: MakerConfig;
     intent: AgentTransactionIntent;
-  }): Promise<void> {
+  }): Promise<{ gasUsedMist: number }> {
     assertAgentTransactionIntent(inputs.tx, inputs.intent);
     const gasBudgetMist = BigInt(inputs.config.maxGasMist);
     inputs.tx.setGasBudget(gasBudgetMist);
@@ -2025,6 +2042,7 @@ export class AftermathGateway {
       );
     }
     assertAgentSimulationEffects(simulation, inputs.intent.sender);
+    return { gasUsedMist: simulationGasUsedMist(simulation) };
   }
 
   async flattenPositions(inputs: {
@@ -2338,18 +2356,20 @@ export class AftermathGateway {
     });
   }
 
-  async executeQuote(inputs: {
+  private async executeQuoteInternal(inputs: {
     setup: Setup;
     config: MakerConfig;
     quote: QuoteIntent;
-    signer: Ed25519Keypair;
+    signer?: Ed25519Keypair;
+    agentAddress: string;
+    simulationOnly: boolean;
     builderCode: BuilderFeePolicy | null;
     shouldContinue: () => boolean;
     knownMakerOrderIds?: bigint[];
     cancelMarketIds?: string[];
     expectedCancelOrderIds?: Record<string, bigint[]>;
-  }): Promise<ExecutionReceipt> {
-    const signerAddress = inputs.signer.toSuiAddress();
+  }): Promise<ExecutionReceipt | PaperQuoteReceipt> {
+    const signerAddress = inputs.agentAddress;
     const cap = await this.findAccountCap({
       walletAddress: signerAddress,
       accountId: inputs.setup.accountId,
@@ -2513,7 +2533,7 @@ export class AftermathGateway {
       if (!inputs.shouldContinue()) {
         throw new Error("Live execution cancelled before signing");
       }
-      await this.inspectTransaction({
+      const inspection = await this.inspectTransaction({
         tx,
         config: inputs.config,
         intent: {
@@ -2533,8 +2553,14 @@ export class AftermathGateway {
           orderIdsByMarket,
         },
       });
+      if (inputs.simulationOnly) {
+        return { endpoint: this.endpoint, gasUsedMist: inspection.gasUsedMist };
+      }
       if (!inputs.shouldContinue()) {
         throw new Error("Live execution cancelled before signing");
+      }
+      if (!inputs.signer) {
+        throw new Error("Live execution requires an agent signer");
       }
 
       const result = await this.client.signAndExecuteTransaction({
@@ -2554,5 +2580,52 @@ export class AftermathGateway {
         postedOrderIds: postedOrderIds(result),
       };
     });
+  }
+
+  /**
+   * Build exactly the same quote transaction and run the same on-chain
+   * simulation as Live, while deliberately stopping before signing.
+   */
+  async simulateQuote(inputs: {
+    setup: Setup;
+    config: MakerConfig;
+    quote: QuoteIntent;
+    agentAddress: string;
+    builderCode: BuilderFeePolicy | null;
+    shouldContinue: () => boolean;
+    knownMakerOrderIds?: bigint[];
+    cancelMarketIds?: string[];
+    expectedCancelOrderIds?: Record<string, bigint[]>;
+  }): Promise<PaperQuoteReceipt> {
+    const receipt = await this.executeQuoteInternal({
+      ...inputs,
+      simulationOnly: true,
+    });
+    if ("digest" in receipt) {
+      throw new Error("Paper quote unexpectedly reached the signing path");
+    }
+    return receipt;
+  }
+
+  async executeQuote(inputs: {
+    setup: Setup;
+    config: MakerConfig;
+    quote: QuoteIntent;
+    signer: Ed25519Keypair;
+    builderCode: BuilderFeePolicy | null;
+    shouldContinue: () => boolean;
+    knownMakerOrderIds?: bigint[];
+    cancelMarketIds?: string[];
+    expectedCancelOrderIds?: Record<string, bigint[]>;
+  }): Promise<ExecutionReceipt> {
+    const receipt = await this.executeQuoteInternal({
+      ...inputs,
+      agentAddress: inputs.signer.toSuiAddress(),
+      simulationOnly: false,
+    });
+    if (!("digest" in receipt)) {
+      throw new Error("Live quote did not reach the signing path");
+    }
+    return receipt;
   }
 }

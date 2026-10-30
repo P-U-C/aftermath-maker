@@ -6,7 +6,11 @@ import {
   hasBundleGasReserve,
 } from "./bundle-supervisor.js";
 import type { BundleWalletUsage, Store, StoredBundle } from "./store.js";
-import { MakerRuntime, type RuntimeOptions } from "./runtime.js";
+import {
+  MakerRuntime,
+  type RuntimeOptions,
+  type StrategyTrialResult,
+} from "./runtime.js";
 
 type GatewayOptions = {
   preferredEndpoint?: string;
@@ -24,6 +28,8 @@ export class RuntimeManager {
   private gateway: AftermathGateway | null = null;
   private gatewayError: string | null = null;
   private readonly runtimes = new Map<string, MakerRuntime>();
+  /** Detached runtimes keep Paper trials from touching a running bundle. */
+  private readonly paperTrials = new Map<string, MakerRuntime>();
   private endpointTimer: NodeJS.Timeout | null = null;
   private refreshPromise: Promise<void> | null = null;
 
@@ -139,6 +145,48 @@ export class RuntimeManager {
     );
     this.runtimes.set(legacyKey, runtime);
     return runtime;
+  }
+
+  async runPaperTrial(inputs: {
+    ownerAddress: string;
+    cadenceMs: number;
+  }): Promise<StrategyTrialResult> {
+    const owner = inputs.ownerAddress.toLowerCase();
+    const bundleId = this.store.coreRuntimeBundleId(owner);
+    if (!bundleId) {
+      throw new Error("A saved Core bundle is required for a Paper test run");
+    }
+    const tenant = this.store.forTenant(owner);
+    const bundle = tenant.getStoredBundle(bundleId);
+    if (!bundle || bundle.archivedAt) {
+      throw new Error("Core bundle was not found for this wallet");
+    }
+    // The detached runtime is scratch-only, but admission starts from the same
+    // saved config, account, wallet-limit, and gas-reserve checks as a bundle.
+    this.assertStartAllowed(owner, bundle);
+    this.assertStartGasReserve(owner, bundle, this.getBundle(owner, bundle.id));
+    const key = `${owner}:${bundleId}:paper-trial`;
+    if (this.paperTrials.has(key)) {
+      throw new Error("A Paper test run is already in progress");
+    }
+    const trial = new MakerRuntime(
+      this.store.forBundle(owner, bundleId),
+      this.requireGateway(),
+      {
+        ...this.runtimeOptions,
+        // A scratch runtime must never pause or mutate the real bundle after a
+        // simulated RPC failure. It owns only its trial ledger.
+        pauseOnError: false,
+        admitBundleProposal: (proposal) =>
+          this.admitBundleProposal(owner, bundleId, proposal),
+      },
+    );
+    this.paperTrials.set(key, trial);
+    try {
+      return await trial.runPaperTrial({ cadenceMs: inputs.cadenceMs });
+    } finally {
+      this.paperTrials.delete(key);
+    }
   }
 
   get activeEndpoint(): string | null {
@@ -487,6 +535,9 @@ export class RuntimeManager {
     for (const [key, runtime] of this.runtimes.entries()) {
       if (key.startsWith(`${owner}:`)) runtimes.set(key, runtime);
     }
+    for (const [key, trial] of this.paperTrials.entries()) {
+      if (key.startsWith(`${owner}:`)) runtimes.set(key, trial);
+    }
     if (!runtimes.size) {
       if (!this.store.listTenantOwners().includes(owner)) return false;
       const core = tenant.getStoredBundle(
@@ -516,6 +567,7 @@ export class RuntimeManager {
     const owners = new Set([
       ...this.store.listTenantOwners(),
       ...[...this.runtimes.keys()].map((key) => key.split(":", 1)[0]!),
+      ...[...this.paperTrials.keys()].map((key) => key.split(":", 1)[0]!),
     ]);
     return Promise.all(
       [...owners].map(async (ownerAddress) => {

@@ -99,6 +99,45 @@ describe("persistent control store", () => {
     databaseStore.close();
   });
 
+  it("keeps estimated Paper orders, fills, and hedges outside live order state", () => {
+    const directory = join(
+      process.env.TMPDIR ?? "/tmp",
+      `aftermath-maker-${randomBytes(8).toString("hex")}`,
+    );
+    mkdirSync(directory, { recursive: true });
+    const databaseStore = new Store(join(directory, "maker.db"));
+    const tenant = databaseStore.forTenant(`0x${"9".repeat(64)}`);
+
+    tenant.recordPaperQuote({
+      trialId: "runtime",
+      marketId: "0x9001",
+      symbol: "PAPER",
+      bidPrice: 10,
+      askPrice: 11,
+      sizeUsd: 1,
+    });
+    const [makerFill] = tenant.matchPaperOrders({
+      trialId: "runtime",
+      marketId: "0x9001",
+      bestBid: 9.9,
+      bestAsk: 9.8,
+    });
+    expect(makerFill).toBeDefined();
+    tenant.recordPaperHedge({ trialId: "runtime", makerFill: makerFill! });
+
+    expect(tenant.getPaperState("runtime")).toMatchObject({
+      openOrders: 1,
+      fills: 2,
+      hedges: 1,
+      positions: expect.arrayContaining([
+        expect.objectContaining({ role: "maker", inventoryUsd: 1 }),
+        expect.objectContaining({ role: "hedge", inventoryUsd: -1 }),
+      ]),
+    });
+    expect(tenant.listTrackedMakerOrders()).toEqual([]);
+    databaseStore.close();
+  });
+
   it("does not coerce user strings that look like legacy bigint values", () => {
     const directory = join(
       process.env.TMPDIR ?? "/tmp",
@@ -954,6 +993,84 @@ describe("persistent control store", () => {
     second.close();
   });
 
+  it("migrates an editable Observe bundle to stopped Paper without rewriting history", () => {
+    const directory = join(
+      process.env.TMPDIR ?? "/tmp",
+      `aftermath-maker-${randomBytes(8).toString("hex")}`,
+    );
+    mkdirSync(directory, { recursive: true });
+    const path = join(directory, "maker.db");
+    const ownerAddress = `0x${"8".repeat(64)}`;
+    const initial = new Store(path);
+    const tenant = initial.forTenant(ownerAddress);
+    const legacy = makerConfigSchema.parse({
+      markets: [{ marketId: "0x8001", symbol: "LEGACY" }],
+      mode: "observe",
+    });
+    tenant.setConfig(legacy);
+    const core = tenant.listBundles().find((bundle) => bundle.name === "Core")!;
+    tenant.logExecution({
+      mode: "observe",
+      marketId: "0x8001",
+      bidPrice: 10,
+      askPrice: 11,
+      sizeUsd: 1,
+      outcome: "simulated",
+    });
+    initial.close();
+
+    const raw = new Database(path);
+    raw
+      .prepare(
+        `UPDATE bundles SET config = ?, mode = 'observe', status = 'running'
+         WHERE id = ?`,
+      )
+      .run(JSON.stringify(legacy), core.id);
+    raw
+      .prepare(
+        `UPDATE tenant_settings SET value = ?
+         WHERE owner_address = ? AND key = 'maker_config'`,
+      )
+      .run(JSON.stringify(legacy), ownerAddress);
+    raw.close();
+
+    const migrated = new Store(path);
+    const migratedTenant = migrated.forTenant(ownerAddress);
+    expect(migratedTenant.getStoredBundle(core.id)).toMatchObject({
+      mode: "paper",
+      status: "stopped",
+    });
+    expect(migratedTenant.getConfig()).toMatchObject({ mode: "paper" });
+    expect(
+      migratedTenant
+        .listEvents()
+        .some(
+          (event) =>
+            event.action === "mode.observe-migrated" &&
+            event.outcome === "success",
+        ),
+    ).toBe(true);
+    const historyDb = new Database(path);
+    const history = historyDb
+      .prepare(
+        `SELECT mode FROM tenant_executions
+         WHERE owner_address = ? ORDER BY id DESC LIMIT 1`,
+      )
+      .get(ownerAddress) as { mode: string };
+    historyDb.close();
+    expect(history.mode).toBe("observe");
+    migrated.close();
+
+    const rerun = new Store(path);
+    expect(
+      rerun
+        .forTenant(ownerAddress)
+        .listEvents()
+        .filter((event) => event.action === "mode.observe-migrated"),
+    ).toHaveLength(1);
+    rerun.close();
+  });
+
   it("attributes Core records and backfills only unambiguous legacy history", () => {
     const directory = join(
       process.env.TMPDIR ?? "/tmp",
@@ -1528,7 +1645,7 @@ describe("persistent control store", () => {
         name: "Live paper",
         config: { ...config(4), mode: "live" },
       }),
-    ).toThrow("Observe or Paper");
+    ).toThrow("Paper mode");
     databaseStore.close();
   });
 });

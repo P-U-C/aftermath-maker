@@ -147,6 +147,37 @@ async function installStatefulControl(page, state) {
       );
       return json(200, { ok: true });
     }
+    if (
+      routePath === "api/runtime/paper-trial" &&
+      request.method() === "POST"
+    ) {
+      state.paperTrialRequests += 1;
+      const now = "2026-10-27T10:08:30.000Z";
+      return json(200, {
+        result: {
+          mode: "paper",
+          marketId: state.fixture.config.config.markets[0]?.marketId ?? "0x1",
+          symbol: state.fixture.config.config.markets[0]?.symbol ?? "MON",
+          cadenceMs: 2000,
+          startedAt: now,
+          completedAt: now,
+          rounds: ["farming", "profit", "both"].map((objective) => ({
+            objective,
+            profile: "balanced",
+            score: 70,
+            quoteSizeUsd: 1.04,
+            spreadBps: 16,
+            outcome: "simulated",
+            digest: null,
+            startedAt: now,
+            completedAt: now,
+          })),
+          recovery: null,
+          restoredConfig: state.fixture.config.config,
+        },
+        snapshot: state.fixture.status.snapshot,
+      });
+    }
     if (routePath === "api/strategies") {
       if (request.method() === "GET") {
         return json(200, { strategies: state.strategies });
@@ -380,6 +411,7 @@ async function newPage(browser, viewport) {
     serviceDown: false,
     sessionExpired: false,
     delayStop: false,
+    paperTrialRequests: 0,
   };
   await page.addInitScript({ path: mockWalletPath });
   await page.addInitScript(() => {
@@ -855,12 +887,18 @@ async function strategyLibraryAndBundleAttachment(browser) {
   }
 }
 
-async function trialExplainsItsBlocker(browser) {
-  const { context, page } = await newPage(browser, {
+async function paperTrialRunsBesideBundles(browser) {
+  const { context, page, state } = await newPage(browser, {
     width: 1440,
     height: 900,
   });
   try {
+    // Start from a valid saved strategy: the enabled control must prove that
+    // another running bundle does not block this isolated Paper trial.
+    state.fixture.config.config.maxGrossExposureUsd = 3;
+    state.fixture.config.config.maxRunDrawdownUsd = 1;
+    state.strategies[0].config.maxGrossExposureUsd = 3;
+    state.strategies[0].config.maxRunDrawdownUsd = 1;
     await goToDesk(page);
     await page.getByRole("link", { name: "Strategy", exact: true }).click();
     await page
@@ -868,16 +906,21 @@ async function trialExplainsItsBlocker(browser) {
       .first()
       .click();
     const trial = page.getByLabel("Three-cycle strategy trial");
-    await page.waitForTimeout(150);
-    const trialText = await trial.textContent();
     assert(
-      trialText?.includes("Stop all before running the test."),
-      `Test-run blocker was unclear: ${trialText}`,
+      await trial
+        .getByRole("button", { name: "Paper test run: 3 cycles", exact: true })
+        .isEnabled(),
+      "Paper test run was blocked by another running bundle",
     );
     await trial
-      .getByRole("button", { name: "Stop all", exact: true })
+      .getByRole("button", { name: "Paper test run: 3 cycles", exact: true })
+      .click();
+    await page
+      .getByText(/Paper test run completed: 3 dry-run cycles/, { exact: false })
       .waitFor();
-    await capture(page, "v6-trial-blocker-desktop.png");
+    assert(state.paperTrialRequests === 1, "Paper test request was not sent");
+    await trial.scrollIntoViewIfNeeded();
+    await capture(page, "rfc-0003-paper-trial-desktop.png");
   } finally {
     await context.close();
   }
@@ -1036,7 +1079,7 @@ try {
   await cleanStrategyLeavesWithoutPrompt(browser);
   await plainControlLog(browser);
   await strategyLibraryAndBundleAttachment(browser);
-  await trialExplainsItsBlocker(browser);
+  await paperTrialRunsBesideBundles(browser);
   await v7BundleDeskAndStrategy(browser);
   await revokeWithoutWallet(browser);
   await serviceAndSessionFailures(browser);

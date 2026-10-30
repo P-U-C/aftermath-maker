@@ -316,6 +316,9 @@ function assertConfiguredAccounts(
 function assertLiveModeEnabled(
   config: ReturnType<typeof makerConfigSchema.parse>,
 ): void {
+  if (config.mode === "observe") {
+    throw new AuthError(400, "Observe is internal; choose Paper or Live");
+  }
   if (
     config.mode === "live" &&
     (!env.LIVE_TRADING_ENABLED || !env.ALLOW_MAINNET)
@@ -624,7 +627,7 @@ app.post("/api/bundles", async (request) => {
           name: z.string().trim().min(1).max(80),
           makerAccountId: z.string().regex(/^\d+$/).nullable(),
           takerAccountId: z.string().regex(/^\d+$/).nullable(),
-          mode: z.enum(["observe", "paper"]),
+          mode: z.literal("paper"),
           /** Compatibility-only: canonical markets come from strategyId. */
           markets: z.array(bundleMarketSchema).min(1).max(64).optional(),
           strategyId: z.string().min(1).max(200).nullable(),
@@ -727,7 +730,7 @@ app.patch("/api/bundles/:bundleId", async (request) => {
     .object({
       makerAccountId: z.string().regex(/^\d+$/).nullable().optional(),
       takerAccountId: z.string().regex(/^\d+$/).nullable().optional(),
-      mode: z.enum(["observe", "paper"]).optional(),
+      mode: z.literal("paper").optional(),
       strategyId: z.string().min(1).max(200).nullable().optional(),
       expectedUpdatedAt: z.string().datetime().optional(),
     })
@@ -1310,7 +1313,7 @@ app.post("/api/setup/revoke-confirm", async (request) => {
     const revokedHedge = current.hedge.accountId === body.accountId;
     await runtime(request).reconfigure({
       ...current,
-      mode: revokedMaker ? "observe" : current.mode,
+      mode: revokedMaker ? "paper" : current.mode,
       makerAccountId: revokedMaker ? null : current.makerAccountId,
       hedge: revokedHedge
         ? { ...current.hedge, enabled: false, accountId: null }
@@ -1341,30 +1344,17 @@ app.post("/api/runtime/stop", async (request) => {
   return { snapshot: runtime(request).snapshot };
 });
 
-app.post("/api/runtime/strategy-trial", async (request) => {
+app.post("/api/runtime/paper-trial", async (request) => {
   const body = z
     .object({
-      mode: z.enum(["paper", "live"]),
       cadenceMs: z.number().int().min(2_000).max(15_000).default(2_000),
-      maxSlippageBps: z.number().int().min(5).max(500).default(100),
-      confirmation: z.string().optional(),
     })
     .strict()
     .parse(request.body);
-  if (
-    body.mode === "live" &&
-    body.confirmation !== "RUN 3 LIVE CYCLES AND FLATTEN"
-  ) {
-    throw new AuthError(
-      400,
-      "Live trial requires the exact confirmation phrase",
-    );
-  }
   return {
-    result: await runtime(request).runStrategyTrial({
-      mode: body.mode,
+    result: await runtimeManager.runPaperTrial({
+      ownerAddress: requestAuth(request).ownerAddress,
       cadenceMs: body.cadenceMs,
-      maxSlippageBps: body.maxSlippageBps,
     }),
     snapshot: runtime(request).snapshot,
   };
