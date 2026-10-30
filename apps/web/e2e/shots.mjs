@@ -42,6 +42,9 @@ const verifyStrategyBuilder = process.argv.includes(
   "--verify-strategy-builder",
 );
 const verifyPerformance = process.argv.includes("--verify-performance");
+const verifyPadding = process.argv.includes("--verify-padding");
+const verifyFavicon = process.argv.includes("--verify-favicon");
+const verifyMarketTable = process.argv.includes("--verify-market-table");
 const verifyExplain = process.argv.includes("--verify-explain");
 const verifyLearn = process.argv.includes("--verify-learn");
 const verifyMotion = process.argv.includes("--verify-motion");
@@ -372,6 +375,42 @@ async function capture(browser, stateName, captureConfig, view) {
       waitUntil: "networkidle",
     });
     await waitForFixture(page, stateName);
+    if (verifyFavicon) {
+      const iconHrefs = await page
+        .locator('link[rel~="icon"]')
+        .evaluateAll((links) => links.map((link) => link.getAttribute("href")));
+      if (!iconHrefs.length) {
+        throw new Error(
+          `${stateName}/${view}/${captureConfig.name} has no favicon`,
+        );
+      }
+      if (stateName === "signed-out") {
+        if (iconHrefs.some((href) => href?.includes("icon-stopped"))) {
+          throw new Error(
+            "Landing retained the stopped favicon instead of the brand mark",
+          );
+        }
+      } else {
+        const expectedState =
+          stateName === "live-running"
+            ? "live"
+            : stateName === "paper-running"
+              ? "paper"
+              : "stopped";
+        if (
+          !iconHrefs.every((href) =>
+            href?.includes(`icon-${expectedState}.svg`),
+          )
+        ) {
+          throw new Error(
+            `${stateName}/${view}/${captureConfig.name} favicon did not follow ${expectedState}: ${JSON.stringify(iconHrefs)}`,
+          );
+        }
+      }
+      process.stdout.write(
+        `${stateName}/${view}/${captureConfig.name}: favicon follows the landing or runtime state\n`,
+      );
+    }
     if (exerciseAccessRequest && stateName === "not-on-list") {
       await page
         .getByRole("textbox", { name: "Sui wallet address" })
@@ -590,6 +629,41 @@ async function capture(browser, stateName, captureConfig, view) {
         .waitFor();
     }
     if (
+      verifyMarketTable &&
+      stateName === "paper-running" &&
+      captureConfig.name === "desktop-light" &&
+      view === "markets"
+    ) {
+      const headers = page.locator(".market-table thead th button");
+      const headerCount = await headers.count();
+      if (headerCount !== 13) {
+        throw new Error(
+          `Market table exposed ${headerCount} sortable headers, expected 13`,
+        );
+      }
+      for (let index = 0; index < headerCount; index += 1) {
+        await headers.nth(index).click();
+        const sort = await headers
+          .nth(index)
+          .locator("..")
+          .getAttribute("aria-sort");
+        if (sort === "none" || !sort) {
+          throw new Error(`Market header ${index} did not sort when clicked`);
+        }
+      }
+      const groups = await page
+        .locator(".market-table .market-group-heading")
+        .allTextContents();
+      if (groups.join("|") !== "In use|Available") {
+        throw new Error(
+          `Market groups were not ordered In use then Available: ${groups}`,
+        );
+      }
+      process.stdout.write(
+        `${stateName}/${view}/${captureConfig.name}: all market headers sort within In use and Available groups\n`,
+      );
+    }
+    if (
       showLiveSheet &&
       stateName === "stopped" &&
       (view === null || view === "strategy")
@@ -689,6 +763,7 @@ async function capture(browser, stateName, captureConfig, view) {
       } = fixture.config.config;
       const { accountId: _accountId, ...sharedHedge } = hedge;
       const expectedBody = JSON.stringify({
+        name: "Core strategy",
         config: {
           ...settings,
           spreadBps: nextSpread,
@@ -931,6 +1006,50 @@ async function capture(browser, stateName, captureConfig, view) {
       }
       process.stdout.write(
         `${stateName}/${view}/${captureConfig.name}: centred tabs do not overlap controls\n`,
+      );
+    }
+
+    if (verifyPadding) {
+      const paddingViolations = await page.evaluate(() =>
+        Array.from(document.querySelectorAll("[data-padding-check]")).flatMap(
+          (container) => {
+            const outer = container.getBoundingClientRect();
+            return Array.from(
+              container.querySelectorAll(":scope > header, :scope > div"),
+            )
+              .filter((child) => {
+                const style = getComputedStyle(child);
+                return (
+                  style.display !== "none" && style.visibility !== "hidden"
+                );
+              })
+              .map((child) => {
+                const rect = child.getBoundingClientRect();
+                return {
+                  check: container.getAttribute("data-padding-check"),
+                  left: Math.round(rect.left - outer.left),
+                  right: Math.round(outer.right - rect.right),
+                  top: Math.round(rect.top - outer.top),
+                  bottom: Math.round(outer.bottom - rect.bottom),
+                };
+              })
+              .filter(
+                (measurement) =>
+                  measurement.left < 12 ||
+                  measurement.right < 12 ||
+                  measurement.top < 12 ||
+                  measurement.bottom < 12,
+              );
+          },
+        ),
+      );
+      if (paddingViolations.length) {
+        throw new Error(
+          `${stateName}/${view}/${captureConfig.name} card padding is under 12px: ${JSON.stringify(paddingViolations)}`,
+        );
+      }
+      process.stdout.write(
+        `${stateName}/${view}/${captureConfig.name}: card text and tables have at least 12px of inner padding\n`,
       );
     }
 

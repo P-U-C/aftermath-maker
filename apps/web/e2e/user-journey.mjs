@@ -13,9 +13,10 @@ import net from "node:net";
 import path from "node:path";
 import process from "node:process";
 import { chromium } from "playwright-core";
+import { Transaction } from "@mysten/sui/transactions";
 
 import { apiResponse } from "./fixtures/api.mjs";
-import { fixtureStates } from "./fixtures/control.ts";
+import { fixtureStates, ownerAddress } from "./fixtures/control.ts";
 
 const projectRoot = path.resolve(import.meta.dirname, "../../..");
 const mockWalletPath = path.join(
@@ -176,6 +177,55 @@ async function installStatefulControl(page, state) {
           restoredConfig: state.fixture.config.config,
         },
         snapshot: state.fixture.status.snapshot,
+      });
+    }
+    if (
+      routePath === "api/accounts/withdraw-transaction" &&
+      request.method() === "POST"
+    ) {
+      const body = JSON.parse(request.postData() ?? "{}");
+      const account = state.fixture.accounts.accounts.find(
+        (candidate) => candidate.accountId === body.accountId,
+      );
+      if (!account) return json(404, { error: "Account was not found" });
+      const amount = BigInt(Math.round(Number(body.amountUsdc) * 1_000_000));
+      const protocolPackageId = `0x${"99".repeat(32)}`;
+      const registryObjectId = `0x${"33".repeat(32)}`;
+      const accountObjectId = `0x${"88".repeat(32)}`;
+      const intent = {
+        kind: "withdraw",
+        sender: ownerAddress,
+        protocolPackageId,
+        registryObjectId,
+        collateralCoinType: account.collateralCoinType,
+        accountCapId: account.accountCapId,
+        accountObjectId,
+        allowedMarketIds: state.fixture.config.config.markets.map(
+          (market) => market.marketId,
+        ),
+        amount,
+        recipient: ownerAddress,
+      };
+      const transaction = new Transaction();
+      transaction.setSender(ownerAddress);
+      const withdrawn = transaction.moveCall({
+        target: `${protocolPackageId}::account::withdraw_collateral`,
+        typeArguments: [account.collateralCoinType],
+        arguments: [
+          transaction.object(accountObjectId),
+          transaction.object(account.accountCapId),
+          transaction.object(registryObjectId),
+          transaction.pure.u64(amount),
+        ],
+      });
+      transaction.transferObjects(
+        [withdrawn],
+        transaction.pure.address(ownerAddress),
+      );
+      state.lastWithdrawIntent = intent;
+      return json(200, {
+        transaction: await transaction.toJSON(),
+        intent: { ...intent, amount: amount.toString() },
       });
     }
     if (routePath === "api/strategies") {
@@ -413,6 +463,12 @@ async function newPage(browser, viewport) {
     delayStop: false,
     paperTrialRequests: 0,
   };
+  await page.addInitScript((address) => {
+    window.__makerMockWallet = {
+      addresses: [address],
+      signPersonalMessage: "resolve",
+    };
+  }, ownerAddress);
   await page.addInitScript({ path: mockWalletPath });
   await page.addInitScript(() => {
     Object.defineProperty(document, "startViewTransition", {
@@ -563,6 +619,71 @@ async function revokeWithoutWallet(browser) {
       .filter({ visible: true })
       .waitFor();
     await capture(page, "v5-audit-revoke-wallet-desktop.png");
+  } finally {
+    await context.close();
+  }
+}
+
+async function withdrawsToOwnerWallet(browser) {
+  const { context, page, state } = await newPage(browser, {
+    width: 1440,
+    height: 900,
+  });
+  try {
+    state.fixture.status.snapshot.running = false;
+    state.fixture.status.bundles = state.fixture.status.bundles.map(
+      (entry) => ({
+        ...entry,
+        bundle: { ...entry.bundle, status: "stopped" },
+      }),
+    );
+    await goToDesk(page);
+    await page.evaluate(() => {
+      window.location.hash = "accounts";
+    });
+    await page
+      .locator('.maker-view[data-view="accounts"]:not([hidden])')
+      .waitFor();
+    const withdraw = page
+      .getByRole("button", { name: "Withdraw", exact: true })
+      .first();
+    await withdraw.waitFor();
+    await withdraw.click();
+    await page
+      .getByText("Connect your owner wallet to withdraw", { exact: true })
+      .waitFor();
+    await page
+      .locator("mysten-dapp-kit-connect-modal")
+      .getByText("Mock Sui Wallet", { exact: true })
+      .filter({ visible: true })
+      .click();
+    await page.waitForTimeout(100);
+    assert(
+      await withdraw.isEnabled(),
+      "Withdraw did not become ready after the owner wallet connected",
+    );
+    await withdraw.click();
+    const withdrawalNotice = page.getByText(
+      "10 USDC withdrawn from account 1745.",
+      { exact: true },
+    );
+    await page.waitForTimeout(1_500);
+    assert(
+      (await withdrawalNotice.count()) > 0,
+      `Withdraw did not complete: ${JSON.stringify(await page.locator(".notice").allTextContents())}`,
+    );
+    assert(
+      state.lastWithdrawIntent?.recipient === ownerAddress &&
+        state.lastWithdrawIntent?.sender === ownerAddress,
+      "Withdraw did not build an owner-wallet-only transaction",
+    );
+    await page
+      .getByRole("link", { name: "View trading-key permission", exact: true })
+      .first()
+      .waitFor();
+    await capture(page, "v8-withdraw-owner-wallet-desktop.png");
+    await page.locator(".account-security").scrollIntoViewIfNeeded();
+    await capture(page, "v8-account-security-desktop.png");
   } finally {
     await context.close();
   }
@@ -853,17 +974,18 @@ async function strategyLibraryAndBundleAttachment(browser) {
 
     await goToDesk(page);
     await page.getByRole("link", { name: "Strategy", exact: true }).click();
+    await page.getByRole("button", { name: "Delete", exact: true }).click();
+    await page
+      .getByText(
+        "Can't delete Core strategy: it is used by Core. Remove it from that bundle first.",
+        { exact: true },
+      )
+      .waitFor();
     await page
       .getByRole("button", { name: "New strategy", exact: true })
       .click();
     await page
       .getByText("Strategy created. Attach it to a bundle when ready.", {
-        exact: true,
-      })
-      .waitFor();
-    await page.getByRole("button", { name: "Duplicate", exact: true }).click();
-    await page
-      .getByText("Strategy duplicated. It can now be edited independently.", {
         exact: true,
       })
       .waitFor();
@@ -1052,16 +1174,31 @@ async function v7BundleDeskAndStrategy(browser) {
       .first()
       .click();
     const builder = strategyView.locator(".strategy-builder");
-    const marketRule = strategyView.locator(".strategy-market-rule");
+    const marketStep = strategyView.locator(".strategy-markets-section");
     await builder.waitFor();
-    await marketRule.waitFor();
+    await marketStep.waitFor();
     const builderBox = await builder.boundingBox();
-    const marketRuleBox = await marketRule.boundingBox();
+    const marketStepBox = await marketStep.boundingBox();
     assert(
-      builderBox && marketRuleBox && builderBox.y < marketRuleBox.y,
-      "Strategy steps were not placed before the market rule",
+      builderBox && marketStepBox && builderBox.y < marketStepBox.y,
+      "Strategy steps were not placed before the market table",
     );
-    await strategyView.getByLabel("Rule").selectOption("preferred-list");
+    assert(
+      (await strategyView.locator(".strategy-market-rule:visible").count()) ===
+        0,
+      "The retired market-rule control remained visible",
+    );
+    await strategyView
+      .getByRole("button", { name: /Markets/ })
+      .first()
+      .click();
+    await strategyView.locator(".strategy-market-table").waitFor();
+    await strategyView
+      .getByRole("button", { name: "Balanced", exact: true })
+      .click();
+    await strategyView
+      .getByText(/Quick pick includes .* market/, { exact: false })
+      .waitFor();
     await strategyView
       .getByRole("button", { name: /Size and limits/ })
       .first()
@@ -1088,13 +1225,24 @@ async function v7BundleDeskAndStrategy(browser) {
       state.strategies.some((strategy) => strategy.name === "Core maker"),
       "Strategy rename did not reach the API",
     );
+    await page.getByRole("link", { name: "Bundles", exact: true }).click();
+    await page
+      .locator(".bundle-card")
+      .filter({ hasText: "Core" })
+      .getByText(/^From Core maker:/)
+      .waitFor();
+    await page.getByRole("link", { name: "Strategy", exact: true }).click();
     await strategyView
       .getByRole("button", { name: /Markets/ })
       .first()
       .click();
-    await page.getByText("5 markets included", { exact: false }).waitFor();
-    await page.evaluate(() => window.scrollTo({ top: 0, behavior: "auto" }));
-    await capture(page, "v7-strategy-builder-desktop.png");
+    await page
+      .getByText(/Quick pick includes .* market/, { exact: false })
+      .waitFor();
+    await strategyView
+      .locator(".strategy-market-table")
+      .scrollIntoViewIfNeeded();
+    await capture(page, "v8-strategy-market-table-desktop.png");
   } finally {
     await context.close();
   }
@@ -1119,6 +1267,7 @@ try {
   await paperSimulationBlockerStaysVisible(browser);
   await v7BundleDeskAndStrategy(browser);
   await revokeWithoutWallet(browser);
+  await withdrawsToOwnerWallet(browser);
   await serviceAndSessionFailures(browser);
   await createBundleWithFreeChoices(browser);
   await lowerWalletLimitsWhenCreating(browser);

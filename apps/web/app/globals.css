@@ -6156,6 +6156,18 @@ mysten-dapp-kit-connect-modal,
   background: var(--ink);
 }
 
+.strategy-builder button span svg {
+  width: 14px;
+  height: 14px;
+}
+
+.strategy-ready-state {
+  display: block;
+  margin-top: 7px;
+  color: var(--tide-text);
+  font-size: 13px;
+}
+
 .strategy-builder button strong,
 .strategy-builder button small {
   display: block;
@@ -6224,6 +6236,19 @@ mysten-dapp-kit-connect-modal,
   border-color: var(--ink);
 }
 
+.strategy-quick-picks button.is-selected {
+  color: var(--ink);
+  background: var(--tide-soft);
+  border-color: var(--tide);
+}
+
+.strategy-quick-preview {
+  margin: -6px 0 12px;
+  color: var(--ink-2);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
 .strategy-rotation-stage {
   padding: 12px;
   background: var(--fill);
@@ -6247,6 +6272,45 @@ mysten-dapp-kit-connect-modal,
 .market-table th {
   color: var(--ink-2);
   background: transparent;
+}
+
+.market-table thead th button {
+  padding: 0;
+  color: inherit;
+  background: transparent;
+  border: 0;
+  font: inherit;
+  cursor: pointer;
+}
+
+.market-table thead th button:hover,
+.market-table thead th button:focus-visible {
+  color: var(--ink);
+  outline: none;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.market-table .market-group-heading th {
+  height: 32px;
+  padding: 0 14px;
+  color: var(--ink-2);
+  background: var(--fill);
+  border-bottom: 1px solid var(--hair);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-align: left;
+  text-transform: uppercase;
+}
+
+.market-table .market-row-available td {
+  color: var(--ink-3);
+  background: color-mix(in srgb, var(--fill) 52%, transparent);
+}
+
+.market-table .market-row-available .market-bundle-state {
+  color: var(--ink-3);
 }
 
 .reward-metrics,
@@ -6347,7 +6411,12 @@ mysten-dapp-kit-connect-modal,
 }
 
 .performance-volume-by-market {
+  --surface-padding: 16px;
   margin: 24px 0;
+  padding: var(--surface-padding);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 16px;
 }
 
 .performance-volume-by-market header h3 {
@@ -7773,6 +7842,35 @@ mysten-dapp-kit-connect-modal,
   border-color: var(--ink-2);
 }
 
+.workspace-strategy .strategy-market-table {
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+}
+
+.workspace-strategy .strategy-market-row {
+  min-height: 88px;
+  align-items: start;
+}
+
+.workspace-strategy .strategy-market-row > span {
+  padding-top: 1px;
+}
+
+.workspace-strategy .strategy-market-evidence {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 4px;
+}
+
+.workspace-strategy .strategy-market-evidence span {
+  overflow: hidden;
+  padding: 2px 5px;
+  color: var(--ink-2);
+  background: var(--canvas);
+  border-radius: 5px;
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .strategy-market-overrides summary,
 .strategy-advanced > summary {
   cursor: pointer;
@@ -8870,6 +8968,86 @@ mysten-dapp-kit-connect-modal,
   font-weight: 560;
 }
 
+.account-security {
+  width: min(1200px, calc(100% - 48px));
+  margin: 0 auto 24px;
+  padding: 24px;
+  border: 1px solid var(--line);
+  border-radius: 20px;
+  background: var(--surface);
+}
+
+.account-security h2 {
+  margin: 4px 0 8px;
+  font-size: 22px;
+}
+
+.account-security > header > p {
+  max-width: 720px;
+  margin: 0;
+  color: var(--ink-2);
+  line-height: 1.5;
+}
+
+.account-security-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+  gap: 10px;
+  margin-top: 18px;
+}
+
+.account-security-grid article {
+  display: grid;
+  gap: 8px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+}
+
+.account-security-grid span,
+.account-security footer {
+  color: var(--ink-2);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.account-security :is(a, footer a) {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  width: fit-content;
+  color: var(--teal-text);
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.account-security-grid .button {
+  margin-top: 4px;
+  justify-self: start;
+}
+
+.account-security footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-top: 18px;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+}
+
+@media (max-width: 720px) {
+  .account-security {
+    width: calc(100% - 28px);
+    padding: 18px;
+  }
+
+  .account-security footer {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+}
+
 .account-save-bar {
   min-height: 64px;
   margin-top: 14px;
@@ -9334,6 +9512,36 @@ mysten-dapp-kit-connect-modal,
   display: none;
 }
 
+.strategy-bundle-modes {
+  margin-top: 16px;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 8px;
+}
+
+.strategy-bundle-modes > div,
+.strategy-bundle-modes > p {
+  min-height: 44px;
+  margin: 0;
+  padding: 10px 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  background: var(--fill);
+  border-radius: 10px;
+  font-size: 13px;
+}
+
+.strategy-bundle-modes > div > span {
+  color: var(--tide-text);
+  font-weight: 700;
+}
+
+.strategy-bundle-modes .button {
+  justify-self: start;
+}
+
 .strategy-review-summary {
   margin: 18px 0 0;
   display: grid;
@@ -9594,6 +9802,39 @@ mysten-dapp-kit-connect-modal,
   gap: 8px;
 }
 
+.strategy-control-family {
+  min-height: 36px;
+  display: inline-flex;
+  overflow: hidden;
+  background: var(--fill);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+}
+
+.strategy-control-family .strategy-bundle-picker {
+  border: 0;
+  border-radius: 0;
+}
+
+.strategy-new-button {
+  padding: 0 12px;
+  color: var(--ink);
+  background: transparent;
+  border: 0;
+  border-left: 1px solid var(--line);
+  font:
+    650 12px/1 var(--font-mona),
+    Arial,
+    sans-serif;
+  cursor: pointer;
+}
+
+.strategy-new-button:hover,
+.strategy-new-button:focus-visible {
+  background: var(--surface);
+  outline: none;
+}
+
 .strategy-library {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
@@ -9639,8 +9880,7 @@ mysten-dapp-kit-connect-modal,
 }
 
 .strategy-market-rule {
-  display: grid;
-  gap: 12px;
+  display: none !important;
 }
 
 .strategy-market-rule legend {

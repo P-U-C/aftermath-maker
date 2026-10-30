@@ -117,8 +117,22 @@
       },
       "sui:signAndExecuteTransaction": {
         version: "2.0.0",
-        signAndExecuteTransaction: async () => {
-          throw new Error("Mock wallet cannot execute transactions");
+        signAndExecuteTransaction: async ({ transaction, account }) => {
+          window.__makerMockWallet.lastExecution = {
+            address: account?.address ?? null,
+            transaction:
+              typeof transaction?.getData === "function"
+                ? transaction.getData()
+                : null,
+          };
+          return {
+            digest: "11111111111111111111111111111111",
+            signature: "mock-signature",
+            bytes:
+              "AAAAABERERERERERERERERERERERERERERERERERERERERERAaqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqAQAAAAAAAAAgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAREREREREREREREREREREREREREREREREREREREREREQEAAAAAAAAA6AMAAAAAAAAA",
+            effects:
+              "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+          };
         },
       },
     },

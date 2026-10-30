@@ -27,7 +27,7 @@ export const metadata: Metadata = {
     "A wallet-gated market-making desk for controlled quoting across venues.",
   applicationName: "Maker",
   icons: {
-    icon: "/icon-stopped.svg",
+    icon: [{ url: "/icon-live.svg", type: "image/svg+xml" }],
     apple: "/apple-touch-icon.png",
   },
   robots: { index: true, follow: true },

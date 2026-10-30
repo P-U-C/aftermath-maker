@@ -16,6 +16,7 @@ import {
 import {
   ArrowDownRight,
   ArrowUpRight,
+  CircleCheck,
   ExternalLink,
   Coins,
   Fuel,
@@ -306,6 +307,21 @@ type MarketOverrides = {
   inventorySkewBps?: number;
   maxLeverage?: number;
 };
+
+type MarketTableSortKey =
+  | "symbol"
+  | "bundleName"
+  | "venue"
+  | "status"
+  | "effectiveQuoteSizeUsd"
+  | "indexPrice"
+  | "openInterestUsd"
+  | "openInterestUtilizationPct"
+  | "volume24hUsd"
+  | "fundingRate"
+  | "inventoryUsd"
+  | "unrealizedPnlUsd"
+  | "updatedAt";
 
 type MakerConfig = {
   markets: Array<{
@@ -963,6 +979,10 @@ function DashboardBody() {
   const [marketSort, setMarketSort] = useState<
     "rank" | "score" | "volume" | "depth"
   >("rank");
+  const [marketTableSort, setMarketTableSort] = useState<{
+    key: MarketTableSortKey;
+    direction: "asc" | "desc";
+  }>({ key: "symbol", direction: "asc" });
   const [selectedAccount, setSelectedAccount] = useState("");
   const [editingAccountId, setEditingAccountId] = useState<string | null>(null);
   const [accountMetadataDraft, setAccountMetadataDraft] =
@@ -1259,19 +1279,28 @@ function DashboardBody() {
     });
   }
 
-  async function duplicateStrategy() {
+  async function deleteStrategy() {
     if (!selectedStrategy) return;
-    await mutate("duplicate-strategy", async () => {
-      const result = await request<{ strategy: MakerStrategy }>(
-        `api/strategies/${encodeURIComponent(selectedStrategy.id)}/duplicate`,
+    if (selectedStrategy.usedBy.length) {
+      setNotice(
+        `Can't delete ${selectedStrategy.name}: it is used by ${selectedStrategy.usedBy.map((bundle) => bundle.name).join(", ")}. Remove it from that bundle first.`,
+        "warning",
+      );
+      return;
+    }
+    await mutate("delete-strategy", async () => {
+      await request(
+        `api/strategies/${encodeURIComponent(selectedStrategy.id)}/archive`,
         { method: "POST", body: "{}" },
       );
-      setStrategies((current) => [result.strategy, ...current]);
-      await selectStrategy(result.strategy.id);
-      setNotice(
-        "Strategy duplicated. It can now be edited independently.",
-        "success",
+      const remaining = strategies.filter(
+        (strategy) => strategy.id !== selectedStrategy.id,
       );
+      setStrategies(remaining);
+      const next = remaining[0] ?? null;
+      setSelectedStrategyId(next?.id ?? null);
+      if (next) await selectStrategy(next.id);
+      setNotice("Strategy deleted.", "success");
     });
   }
 
@@ -2106,22 +2135,17 @@ function DashboardBody() {
   }
 
   function toggleMarket(market: Market) {
+    const selected = config.markets.some((item) => item.marketId === market.id);
+    const nextMarkets = selected
+      ? config.markets.filter((item) => item.marketId !== market.id)
+      : config.markets.length >= MAX_SELECTED_MARKETS
+        ? config.markets
+        : [...config.markets, { marketId: market.id, symbol: market.symbol }];
+    setStrategyMarketRule({
+      kind: "preferred-list",
+      marketIds: nextMarkets.map((item) => item.marketId),
+    });
     setConfig((current) => {
-      const selected = current.markets.some(
-        (item) => item.marketId === market.id,
-      );
-      let nextMarkets = current.markets;
-      if (selected) {
-        nextMarkets = current.markets.filter(
-          (item) => item.marketId !== market.id,
-        );
-      } else {
-        if (current.markets.length >= MAX_SELECTED_MARKETS) return current;
-        nextMarkets = [
-          ...current.markets,
-          { marketId: market.id, symbol: market.symbol },
-        ];
-      }
       const minimumQuoteAge = minimumObservationWindowMs(
         current.refreshMs,
         nextMarkets.length,
@@ -2225,6 +2249,7 @@ function DashboardBody() {
         MAX_SELECTED_MARKETS,
       ),
     );
+    setStrategyMarketRule({ kind: "quick-pick", pick });
     setConfig((current) => ({
       ...current,
       markets: markets
@@ -2826,6 +2851,47 @@ function DashboardBody() {
               step: 2,
             }
           : null;
+  const strategySteps = [
+    {
+      label: "Goal",
+      answer:
+        strategyObjectives.find(
+          (objective) => objective.value === config.strategyObjective,
+        )?.label ?? config.strategyObjective,
+      complete: Boolean(config.strategyObjective && config.strategyProfile),
+    },
+    {
+      label: "Markets",
+      answer: `${strategyMarketCount} selected`,
+      complete: strategyMarketCount > 0,
+    },
+    {
+      label: "Size and limits",
+      answer: `${money(config.quoteSizeUsd)} / ${money(config.maxInventoryUsd)}`,
+      complete: !quoteSizeError && !grossExposureError,
+    },
+    {
+      label: "Hedging",
+      answer: config.hedge.enabled ? "Hedge on" : "No hedge",
+      complete: true,
+    },
+    {
+      label: "Review",
+      answer: selectedStrategy?.usedBy.length
+        ? `${selectedStrategy.usedBy.length} bundle${selectedStrategy.usedBy.length === 1 ? "" : "s"}`
+        : "Not attached",
+      complete: true,
+    },
+  ];
+  const strategyReady = strategySteps.every((step) => step.complete);
+  const strategyReadyLabel = !strategyReady
+    ? "Finish the highlighted steps"
+    : configDirty
+      ? "Ready"
+      : selectedStrategy?.usedBy.length
+        ? `Saved · used by ${selectedStrategy.usedBy.map((bundle) => bundle.name).join(", ")}`
+        : "Saved · not used by a bundle";
+
   const focusedRewardOpportunities = rewardOpportunities.filter(
     (opportunity) =>
       opportunity.objectiveEligible &&
@@ -3029,10 +3095,8 @@ function DashboardBody() {
       return {
         id: listed.id,
         symbol: listed.symbol,
-        bundleName: assignedBundle?.name ?? "Not used",
+        bundleName: assignedBundle?.name ?? "Available",
         activeBundleNames,
-        bundleRank:
-          assignedBundle?.name === "Core" ? 0 : assignedBundle ? 1 : 2,
         status: runtimeMarket?.status ?? "queued",
         indexPrice: runtimeMarket?.indexPrice ?? listed.indexPrice,
         openInterestBase:
@@ -3053,12 +3117,145 @@ function DashboardBody() {
         error: runtimeMarket?.error ?? null,
       };
     })
-    .sort(
-      (left, right) =>
-        left.bundleRank - right.bundleRank ||
-        left.bundleName.localeCompare(right.bundleName) ||
-        left.symbol.localeCompare(right.symbol),
-    );
+    .sort((left, right) => {
+      const leftInUse = left.bundleName !== "Available";
+      const rightInUse = right.bundleName !== "Available";
+      if (leftInUse !== rightInUse) return leftInUse ? -1 : 1;
+
+      const valueFor = (row: typeof left): string | number => {
+        switch (marketTableSort.key) {
+          case "venue":
+            return primaryVenue.name;
+          case "updatedAt":
+            return row.updatedAt ? Date.parse(row.updatedAt) : 0;
+          default:
+            return row[marketTableSort.key] ?? 0;
+        }
+      };
+      const leftValue = valueFor(left);
+      const rightValue = valueFor(right);
+      const compared =
+        typeof leftValue === "string" && typeof rightValue === "string"
+          ? leftValue.localeCompare(rightValue)
+          : Number(leftValue) - Number(rightValue);
+      if (compared !== 0) {
+        return marketTableSort.direction === "asc" ? compared : -compared;
+      }
+      return left.symbol.localeCompare(right.symbol);
+    });
+  const marketTableGroups = {
+    inUse: marketTableRows.filter((row) => row.bundleName !== "Available"),
+    available: marketTableRows.filter((row) => row.bundleName === "Available"),
+  };
+  const sortMarketTable = (key: MarketTableSortKey) =>
+    setMarketTableSort((current) => ({
+      key,
+      direction:
+        current.key === key && current.direction === "asc" ? "desc" : "asc",
+    }));
+  const marketSortLabel = (key: MarketTableSortKey) =>
+    marketTableSort.key === key
+      ? marketTableSort.direction === "asc"
+        ? "ascending"
+        : "descending"
+      : "none";
+  const marketHeaders: Array<{ key: MarketTableSortKey; label: string }> = [
+    { key: "symbol", label: "Pair" },
+    { key: "bundleName", label: "Bundle" },
+    { key: "venue", label: "Venue" },
+    { key: "status", label: "State" },
+    { key: "effectiveQuoteSizeUsd", label: "Policy" },
+    { key: "indexPrice", label: "Index" },
+    { key: "openInterestUsd", label: "Open interest" },
+    { key: "openInterestUtilizationPct", label: "OI capacity" },
+    { key: "volume24hUsd", label: "24h volume" },
+    { key: "fundingRate", label: "Funding" },
+    { key: "inventoryUsd", label: "Inventory" },
+    { key: "unrealizedPnlUsd", label: "Unrealized PnL" },
+    { key: "updatedAt", label: "Freshness" },
+  ];
+
+  const renderMarketRow = (row: (typeof marketTableRows)[number]) => (
+    <tr
+      key={row.id}
+      className={
+        row.bundleName === "Available" ? "market-row-available" : undefined
+      }
+    >
+      <td>
+        <span className="market-pair-cell">
+          <strong>{row.symbol}</strong>
+          {row.activeBundleNames.map((bundleName) => (
+            <i className="market-active-bundle" key={bundleName}>
+              {bundleName}
+            </i>
+          ))}
+        </span>
+        <span>{compact(row.id)}</span>
+      </td>
+      <td>
+        <span
+          className={
+            row.bundleName === "Available"
+              ? "market-bundle-state"
+              : "market-bundle-state is-assigned"
+          }
+        >
+          {row.bundleName}
+        </span>
+      </td>
+      <td>
+        <VenueChip venue={primaryVenue} />
+      </td>
+      <td className="market-state-cell">
+        <span className={`desk-state state-${row.status}`}>
+          {plainMarketState(row.status)}
+        </span>
+        {row.lastTransactionDigest && (
+          <a
+            className="tx-link"
+            href={primaryVenue.explorerTxUrl(row.lastTransactionDigest)}
+            target="_blank"
+            rel="noreferrer"
+            title="Open last transaction"
+          >
+            {compact(row.lastTransactionDigest)}
+            <ExternalLink size={10} />
+          </a>
+        )}
+      </td>
+      <td className="dual-value">
+        <strong>{money(row.effectiveQuoteSizeUsd, 0)}</strong>
+        <span>
+          {row.effectiveSpreadBps === null
+            ? "—"
+            : `${row.effectiveSpreadBps} bps`}
+        </span>
+      </td>
+      <td>{money(row.indexPrice, 4)}</td>
+      <td className="dual-value">
+        <strong>{compactNumber(row.openInterestBase)}</strong>
+        <span>{compactUsd(row.openInterestUsd)}</span>
+      </td>
+      <td>{percent(row.openInterestUtilizationPct, 1)}</td>
+      <td>{compactUsd(row.volume24hUsd)}</td>
+      <td>
+        {percent(row.fundingRate === null ? null : row.fundingRate * 100, 4)}
+      </td>
+      <td>{money(row.inventoryUsd)}</td>
+      <td className={row.unrealizedPnlUsd < 0 ? "negative-number" : ""}>
+        {money(row.unrealizedPnlUsd)}
+      </td>
+      <td title={row.error ?? undefined}>
+        {row.updatedAt
+          ? `${Math.max(
+              0,
+              Math.round((Date.now() - Date.parse(row.updatedAt)) / 1_000),
+            )}s`
+          : "waiting"}
+      </td>
+    </tr>
+  );
 
   const deskLatestMarketUpdate = deskRotationRows.reduce<string | null>(
     (latest, row) => {
@@ -3199,6 +3396,9 @@ function DashboardBody() {
     )?.snapshot;
     return {
       ...bundle,
+      strategyName:
+        strategies.find((strategy) => strategy.id === bundle.strategyId)
+          ?.name ?? bundle.strategyName,
       resultUsd: runtime?.portfolio.unrealizedPnlUsd ?? null,
     };
   });
@@ -3726,6 +3926,60 @@ function DashboardBody() {
             )}
           </section>
         )}
+        <section
+          className="account-security"
+          aria-labelledby="account-security-title"
+        >
+          <header>
+            <span className="eyebrow">Security</span>
+            <h2 id="account-security-title">What Maker can do</h2>
+            <p>
+              Maker can trade for the accounts you authorize. It cannot withdraw
+              collateral, move funds to another wallet, or grant another trading
+              key. Only your connected owner wallet can move money in or out.
+            </p>
+          </header>
+          <div className="account-security-grid">
+            {setup.accounts
+              .filter((managed) => managed.agentCapId)
+              .map((managed) => (
+                <article key={managed.accountId}>
+                  <strong>Account {managed.accountId}</strong>
+                  <span>Trading key: trade only · no withdrawals</span>
+                  <a
+                    href={primaryVenue.explorerObjectUrl(managed.agentCapId!)}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    View trading-key permission <ExternalLink size={13} />
+                  </a>
+                  <button
+                    className="button secondary"
+                    type="button"
+                    onClick={() => void revokeAgent(managed.accountId)}
+                    disabled={Boolean(busy)}
+                  >
+                    Revoke this key
+                  </button>
+                </article>
+              ))}
+          </div>
+          <footer>
+            <span>
+              Builder fee approved:{" "}
+              {builderCode
+                ? `${(builderCode.integratorFee * 10_000).toFixed(1)} bps on filled orders.`
+                : "No builder fee is approved."}
+            </span>
+            <a
+              href="https://github.com/P-U-C/aftermath-maker"
+              target="_blank"
+              rel="noreferrer"
+            >
+              Read the code <ExternalLink size={13} />
+            </a>
+          </footer>
+        </section>
       </AccountsView>
 
       <DeskView
@@ -3861,36 +4115,38 @@ function DashboardBody() {
                 </p>
               </div>
               <div className="strategy-heading-actions">
-                <label className="strategy-bundle-picker">
-                  <span>Strategy</span>
-                  <select
-                    value={selectedStrategyId ?? ""}
-                    onChange={(event) =>
-                      void selectStrategy(event.target.value)
-                    }
+                <div className="strategy-control-family">
+                  <label className="strategy-bundle-picker">
+                    <span>Strategy</span>
+                    <select
+                      value={selectedStrategyId ?? ""}
+                      onChange={(event) =>
+                        void selectStrategy(event.target.value)
+                      }
+                    >
+                      {strategies.map((strategy) => (
+                        <option key={strategy.id} value={strategy.id}>
+                          {strategy.name}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <button
+                    className="strategy-new-button"
+                    type="button"
+                    onClick={() => void createStrategy()}
+                    disabled={Boolean(busy)}
                   >
-                    {strategies.map((strategy) => (
-                      <option key={strategy.id} value={strategy.id}>
-                        {strategy.name}
-                      </option>
-                    ))}
-                  </select>
-                </label>
+                    New strategy
+                  </button>
+                </div>
                 <button
                   className="button secondary"
                   type="button"
-                  onClick={() => void createStrategy()}
-                  disabled={Boolean(busy)}
-                >
-                  New strategy
-                </button>
-                <button
-                  className="button secondary"
-                  type="button"
-                  onClick={() => void duplicateStrategy()}
+                  onClick={() => void deleteStrategy()}
                   disabled={!selectedStrategy || Boolean(busy)}
                 >
-                  Duplicate
+                  Delete
                 </button>
               </div>
             </header>
@@ -4058,16 +4314,7 @@ function DashboardBody() {
 
             <section className="strategy-builder" aria-label="Strategy builder">
               <ol>
-                {[
-                  ["Goal", config.strategyObjective],
-                  ["Markets", `${strategyMarketCount} selected`],
-                  [
-                    "Size and limits",
-                    `${money(config.quoteSizeUsd)} / ${money(config.maxInventoryUsd)}`,
-                  ],
-                  ["Hedging", config.hedge.enabled ? "Taker on" : "Taker off"],
-                  ["Review", config.mode],
-                ].map(([label, answer], index) => (
+                {strategySteps.map(({ label, answer, complete }, index) => (
                   <li key={label}>
                     <button
                       type="button"
@@ -4077,7 +4324,13 @@ function DashboardBody() {
                       aria-current={strategyStep === index ? "step" : undefined}
                       onClick={() => setStrategyStep(index)}
                     >
-                      <span>{index + 1}</span>
+                      <span>
+                        {complete ? (
+                          <CircleCheck size={14} aria-hidden="true" />
+                        ) : (
+                          index + 1
+                        )}
+                      </span>
                       <strong>{label}</strong>
                       <small>{answer}</small>
                     </button>
@@ -4086,6 +4339,9 @@ function DashboardBody() {
               </ol>
               <aside>
                 <span>What Maker will do</span>
+                <strong className="strategy-ready-state">
+                  {strategyReadyLabel}
+                </strong>
                 <p>
                   {strategyMarketCount
                     ? `Quote ${strategyMarketCount} selected market${strategyMarketCount === 1 ? "" : "s"} with ${money(config.quoteSizeUsd)} on each side, and stop before ${money(config.maxRunDrawdownUsd)} of run drawdown.`
@@ -4143,9 +4399,37 @@ function DashboardBody() {
             <section className="strategy-review-step strategy-step strategy-step-review">
               <h2>Review</h2>
               <p className="strategy-section-copy">
-                Choose how this saved strategy runs. Live remains unavailable
-                until the server gates are enabled and you confirm the review.
+                A strategy is reusable policy. Each bundle that uses it chooses
+                its own Paper or Live mode in Bundles.
               </p>
+              {selectedStrategy && (
+                <div className="strategy-bundle-modes">
+                  {selectedStrategy.usedBy.length ? (
+                    selectedStrategy.usedBy.map((usage) => {
+                      const bundle = bundles.find(
+                        (item) => item.id === usage.id,
+                      );
+                      return (
+                        <div key={usage.id}>
+                          <strong>{usage.name}</strong>
+                          <span>
+                            {bundle?.mode === "live" ? "Live" : "Paper"}
+                          </span>
+                        </div>
+                      );
+                    })
+                  ) : (
+                    <p>Not used by a bundle yet.</p>
+                  )}
+                  <button
+                    className="button secondary"
+                    type="button"
+                    onClick={() => selectView("bundles")}
+                  >
+                    Change bundle mode
+                  </button>
+                </div>
+              )}
               <fieldset
                 className={
                   selectedStrategy
@@ -4656,13 +4940,7 @@ function DashboardBody() {
               </div>
             </fieldset>
 
-            <fieldset
-              className={
-                selectedStrategy
-                  ? "pair-picker strategy-section strategy-markets-section strategy-step strategy-step-markets strategy-allocation-owned"
-                  : "pair-picker strategy-section strategy-markets-section strategy-step strategy-step-markets"
-              }
-            >
+            <fieldset className="pair-picker strategy-section strategy-markets-section strategy-step strategy-step-markets">
               <legend>Markets</legend>
               <p className="strategy-section-copy">
                 Choose the venue markets this strategy may quote.
@@ -4685,12 +4963,27 @@ function DashboardBody() {
                   <button
                     key={pick}
                     type="button"
+                    className={
+                      strategyMarketRule.kind === "quick-pick" &&
+                      strategyMarketRule.pick === pick
+                        ? "is-selected"
+                        : undefined
+                    }
+                    aria-pressed={
+                      strategyMarketRule.kind === "quick-pick" &&
+                      strategyMarketRule.pick === pick
+                    }
                     onClick={() => applyQuickPick(pick)}
                   >
                     {label}
                   </button>
                 ))}
               </div>
+              <p className="strategy-quick-preview" aria-live="polite">
+                {strategyMarketRule.kind === "quick-pick"
+                  ? `Quick pick includes ${strategyRulePreviewMarkets.length} market${strategyRulePreviewMarkets.length === 1 ? "" : "s"}: ${strategyRulePreviewMarkets.map((market) => market.symbol).join(", ") || "none yet"}.`
+                  : `${config.markets.length} market${config.markets.length === 1 ? "" : "s"} included: ${config.markets.map((market) => market.symbol).join(", ") || "none yet"}.`}
+              </p>
               <div className="strategy-rotation-stage">
                 <div
                   className="reward-focus"
@@ -4787,7 +5080,7 @@ function DashboardBody() {
                 <VenueChip venue={primaryVenue} />
                 <span>{primaryVenue.network}</span>
               </div>
-              <div className="pair-options">
+              <div className="pair-options strategy-market-table" role="list">
                 {!visibleMarkets.length && (
                   <p className="pair-empty">No matching markets</p>
                 )}
@@ -4799,9 +5092,12 @@ function DashboardBody() {
                   return (
                     <label
                       className={
-                        selected ? "pair-option selected" : "pair-option"
+                        selected
+                          ? "pair-option strategy-market-row selected"
+                          : "pair-option strategy-market-row"
                       }
                       key={item.id}
+                      role="listitem"
                     >
                       <input
                         type="checkbox"
@@ -4830,7 +5126,7 @@ function DashboardBody() {
                               {compactUsd(opportunity.volume24hUsd)} 24h
                             </span>
                             <span>
-                              {opportunity.reasons[0] ?? "No reason reported"}
+                              {opportunity.reasons[0] ?? "thin + active"}
                             </span>
                           </small>
                         )}
@@ -4841,13 +5137,7 @@ function DashboardBody() {
               </div>
             </fieldset>
 
-            <section
-              className={
-                selectedStrategy
-                  ? "strategy-market-ranks strategy-step strategy-step-markets strategy-allocation-owned"
-                  : "strategy-market-ranks strategy-step strategy-step-markets"
-              }
-            >
+            <section className="strategy-market-ranks strategy-step strategy-step-markets">
               <header>
                 <div>
                   <span className="eyebrow">Market rank</span>
@@ -5129,12 +5419,12 @@ function DashboardBody() {
             <section className="strategy-section strategy-capital-section strategy-step strategy-step-size">
               <h2>Capital</h2>
               <p className="strategy-section-copy">
-                Set order size and the minimum edge quoted on each side. Choose
-                Paper or Live in Review.
+                Set order size and the minimum edge quoted on each side. Each
+                bundle chooses whether it runs in Paper or Live.
               </p>
               <div className="field-pair">
                 <label>
-                  <span>Quote $ on each side</span>
+                  <span>Quote {money(config.quoteSizeUsd)} on each side</span>
                   <div className="input-unit">
                     <b>$</b>
                     <input
@@ -5157,15 +5447,16 @@ function DashboardBody() {
                         <>Enter a quote size above $0.00.</>
                       ) : (
                         <>
-                          Quote size {money(config.quoteSizeUsd)} is above the
-                          per-market inventory limit.{" "}
+                          Quote size {money(config.quoteSizeUsd)} is above the{" "}
+                          {money(config.maxInventoryUsd)} you allow per market.
+                          Lower the quote size, or{" "}
                           <button
                             type="button"
                             onClick={() =>
                               focusStrategyField("strategy-max-inventory", 2)
                             }
                           >
-                            Raise “hold at most” above.
+                            raise “hold at most” above it.
                           </button>
                         </>
                       )}
@@ -5682,113 +5973,32 @@ function DashboardBody() {
             <table className="market-table">
               <thead>
                 <tr>
-                  <th>Pair</th>
-                  <th>Bundle</th>
-                  <th>Venue</th>
-                  <th>State</th>
-                  <th>Policy</th>
-                  <th>Index</th>
-                  <th>Open interest</th>
-                  <th>
-                    <GlossaryTerm definition="Open-interest capacity is current one-sided open interest as a share of the venue limit.">
-                      OI capacity
-                    </GlossaryTerm>
-                  </th>
-                  <th>24h volume</th>
-                  <th>Funding</th>
-                  <th>Inventory</th>
-                  <th>Unrealized PnL</th>
-                  <th>Freshness</th>
+                  {marketHeaders.map(({ key, label }) => (
+                    <th key={key} aria-sort={marketSortLabel(key)}>
+                      <button
+                        type="button"
+                        onClick={() => sortMarketTable(key)}
+                        aria-label={`Sort ${label}: ${marketSortLabel(key)}`}
+                      >
+                        {label}
+                      </button>
+                    </th>
+                  ))}
                 </tr>
               </thead>
               <tbody>
-                {marketTableRows.map((row) => (
-                  <tr key={row.id}>
-                    <td>
-                      <span className="market-pair-cell">
-                        <strong>{row.symbol}</strong>
-                        {row.activeBundleNames.map((bundleName) => (
-                          <i className="market-active-bundle" key={bundleName}>
-                            {bundleName}
-                          </i>
-                        ))}
-                      </span>
-                      <span>{compact(row.id)}</span>
-                    </td>
-                    <td>
-                      <span
-                        className={
-                          row.bundleName === "Not used"
-                            ? "market-bundle-state"
-                            : "market-bundle-state is-assigned"
-                        }
-                      >
-                        {row.bundleName}
-                      </span>
-                    </td>
-                    <td>
-                      <VenueChip venue={primaryVenue} />
-                    </td>
-                    <td className="market-state-cell">
-                      <span className={`desk-state state-${row.status}`}>
-                        {plainMarketState(row.status)}
-                      </span>
-                      {row.lastTransactionDigest && (
-                        <a
-                          className="tx-link"
-                          href={primaryVenue.explorerTxUrl(
-                            row.lastTransactionDigest,
-                          )}
-                          target="_blank"
-                          rel="noreferrer"
-                          title="Open last transaction"
-                        >
-                          {compact(row.lastTransactionDigest)}
-                          <ExternalLink size={10} />
-                        </a>
-                      )}
-                    </td>
-                    <td className="dual-value">
-                      <strong>{money(row.effectiveQuoteSizeUsd, 0)}</strong>
-                      <span>
-                        {row.effectiveSpreadBps === null
-                          ? "—"
-                          : `${row.effectiveSpreadBps} bps`}
-                      </span>
-                    </td>
-                    <td>{money(row.indexPrice, 4)}</td>
-                    <td className="dual-value">
-                      <strong>{compactNumber(row.openInterestBase)}</strong>
-                      <span>{compactUsd(row.openInterestUsd)}</span>
-                    </td>
-                    <td>{percent(row.openInterestUtilizationPct, 1)}</td>
-                    <td>{compactUsd(row.volume24hUsd)}</td>
-                    <td>
-                      {percent(
-                        row.fundingRate === null ? null : row.fundingRate * 100,
-                        4,
-                      )}
-                    </td>
-                    <td>{money(row.inventoryUsd)}</td>
-                    <td
-                      className={
-                        row.unrealizedPnlUsd < 0 ? "negative-number" : ""
-                      }
-                    >
-                      {money(row.unrealizedPnlUsd)}
-                    </td>
-                    <td title={row.error ?? undefined}>
-                      {row.updatedAt
-                        ? `${Math.max(
-                            0,
-                            Math.round(
-                              (Date.now() - Date.parse(row.updatedAt)) / 1_000,
-                            ),
-                          )}s`
-                        : "waiting"}
-                    </td>
+                {marketTableGroups.inUse.length > 0 && (
+                  <tr className="market-group-heading">
+                    <th colSpan={marketHeaders.length}>In use</th>
                   </tr>
-                ))}
+                )}
+                {marketTableGroups.inUse.map(renderMarketRow)}
+                {marketTableGroups.available.length > 0 && (
+                  <tr className="market-group-heading">
+                    <th colSpan={marketHeaders.length}>Available</th>
+                  </tr>
+                )}
+                {marketTableGroups.available.map(renderMarketRow)}
               </tbody>
             </table>
           </div>
@@ -6332,7 +6542,10 @@ function DashboardBody() {
               </strong>
             </div>
           </div>
-          <section className="performance-volume-by-market">
+          <section
+            className="performance-volume-by-market"
+            data-padding-check="performance-volume"
+          >
             <header>
               <h3>Volume by market</h3>
               <p>Maker and Taker activity reconciled from account history.</p>
@@ -6812,8 +7025,7 @@ function DashboardBody() {
 
       <footer>
         <span>
-          Maker uses trade-only keys. Withdrawals remain unavailable to trading
-          keys.
+          Maker can trade for you. Only your wallet can move money in or out.
         </span>
         <a href={primaryVenue.homeUrl} target="_blank" rel="noreferrer">
           {primaryVenue.name} <ExternalLink size={13} />
