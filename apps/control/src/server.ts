@@ -16,6 +16,7 @@ import {
 } from "@puc/core";
 import { OnchainAllowlist } from "./allowlist.js";
 import { AuthError, WalletAuth } from "./auth.js";
+import { bundleCreateHttpError } from "./bundle-create-error.js";
 import { classifyHttpError } from "./http-error.js";
 import { activeBuilderCode } from "./integrator.js";
 import { RuntimeManager } from "./runtime-manager.js";
@@ -263,14 +264,20 @@ app.addHook("onRequest", async (request, reply) => {
 app.setErrorHandler((error, request, reply) => {
   const response = classifyHttpError(error);
   if (response.status >= 500) {
-    request.log.error({ err: error }, "request failed");
+    request.log.error(
+      { err: error, correlationId: request.id },
+      "request failed",
+    );
   } else {
     request.log.info(
       { status: response.status, error: response.internalMessage },
       "request rejected",
     );
   }
-  reply.code(response.status).send({ error: response.publicMessage });
+  reply.code(response.status).send({
+    error: response.publicMessage,
+    ...(response.status >= 500 ? { requestId: String(request.id) } : {}),
+  });
 });
 
 function requestAuth(request: FastifyRequest): RequestAuth {
@@ -645,38 +652,73 @@ app.post("/api/bundles", async (request) => {
         .strict(),
     ])
     .parse(request.body);
-  const bundle =
-    "config" in body
-      ? (() => {
-          const config = makerConfigSchema.parse(body.config);
-          assertLiveModeEnabled(config);
-          assertConfiguredAccounts(scoped, config);
-          return scoped.createBundle({
-            name: body.name,
-            config,
-            ...(body.confirmWalletLimits !== undefined
-              ? { confirmWalletLimits: body.confirmWalletLimits }
-              : {}),
-          });
-        })()
-      : (() => {
-          for (const accountId of [body.makerAccountId, body.takerAccountId]) {
-            if (accountId && !scoped.getAccountSetup(accountId)?.agentCapId) {
-              throw new Error("The selected account is not authorized");
+  let bundle: ReturnType<typeof scoped.createAllocatedBundle>;
+  try {
+    bundle =
+      "config" in body
+        ? (() => {
+            const config = makerConfigSchema.parse(body.config);
+            assertLiveModeEnabled(config);
+            assertConfiguredAccounts(scoped, config);
+            return scoped.createBundle({
+              name: body.name,
+              config,
+              ...(body.confirmWalletLimits !== undefined
+                ? { confirmWalletLimits: body.confirmWalletLimits }
+                : {}),
+            });
+          })()
+        : (() => {
+            if (body.strategyId && !body.makerAccountId) {
+              throw new AuthError(
+                400,
+                "Select an authorized Maker account before creating this bundle",
+              );
             }
-          }
-          return scoped.createAllocatedBundle({
-            name: body.name,
-            makerAccountId: body.makerAccountId,
-            takerAccountId: body.takerAccountId,
-            mode: body.mode,
-            ...(body.markets ? { markets: body.markets } : {}),
-            strategyId: body.strategyId,
-            ...(body.confirmWalletLimits !== undefined
-              ? { confirmWalletLimits: body.confirmWalletLimits }
-              : {}),
-          });
-        })();
+            const selectedStrategy = body.strategyId
+              ? scoped.getStrategy(body.strategyId)
+              : null;
+            if (
+              selectedStrategy &&
+              !selectedStrategy.archivedAt &&
+              selectedStrategy.config.hedge.enabled &&
+              !body.takerAccountId
+            ) {
+              throw new AuthError(
+                400,
+                "This strategy requires a distinct authorized hedge account before bundle creation",
+              );
+            }
+            for (const accountId of [
+              body.makerAccountId,
+              body.takerAccountId,
+            ]) {
+              if (accountId && !scoped.getAccountSetup(accountId)?.agentCapId) {
+                throw new Error("The selected account is not authorized");
+              }
+            }
+            return scoped.createAllocatedBundle({
+              name: body.name,
+              makerAccountId: body.makerAccountId,
+              takerAccountId: body.takerAccountId,
+              mode: body.mode,
+              ...(body.markets ? { markets: body.markets } : {}),
+              strategyId: body.strategyId,
+              ...(body.confirmWalletLimits !== undefined
+                ? { confirmWalletLimits: body.confirmWalletLimits }
+                : {}),
+            });
+          })();
+  } catch (error) {
+    if (
+      error instanceof AuthError ||
+      (error instanceof Error && error.name === "ZodError")
+    )
+      throw error;
+    const expected = bundleCreateHttpError(error);
+    if (expected) throw new AuthError(expected.status, expected.message);
+    throw error;
+  }
   store.forBundle(requestAuth(request).ownerAddress, bundle.id).logEvent({
     category: "bundles",
     action: "create",
