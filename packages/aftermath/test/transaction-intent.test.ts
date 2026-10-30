@@ -16,6 +16,7 @@ const collateralCoinType = `0x${"66".repeat(32)}::usdc::USDC`;
 const sessionAuthorityType =
   "0x4e2df80a5e2fd0392878298c51ce15164222111ccea05504b9291b158f552677::authority::ASSISTANT";
 const oracleId = `0x${"77".repeat(32)}`;
+const clearingHouseId = `0x${"88".repeat(32)}`;
 const size = 48_200_000_000n;
 const bidPrice = 21_511_000n;
 const askPrice = 21_597_000n;
@@ -212,12 +213,13 @@ function mutate(
 
 function quoteWithDeallocationFixture() {
   return mutate(quoteFixture(), (snapshot) => {
+    snapshot.inputs.push(shared(clearingHouseId, true));
     snapshot.commands.unshift(
       moveCall(
         packageId,
         "clearing_house",
         "deallocate_free_collateral",
-        [input(2), input(0), input(1), input(3), input(3), input(4)],
+        [input(16), input(0), input(1), input(3), input(3), input(4)],
         [collateralCoinType, sessionAuthorityType],
       ) as never,
     );
@@ -226,6 +228,39 @@ function quoteWithDeallocationFixture() {
     snapshot.commands[6]!.MoveCall!.arguments[0] = result(4);
     snapshot.commands[7]!.MoveCall!.arguments[0] = result(4);
     snapshot.commands[8]!.MoveCall!.arguments[0] = nestedResult(7, 0);
+  });
+}
+
+function currentSdkQuoteFixture() {
+  return mutate(quoteFixture(), (snapshot) => {
+    snapshot.inputs.push(shared(clearingHouseId, true));
+    const deallocate = moveCall(
+      packageId,
+      "clearing_house",
+      "deallocate_free_collateral",
+      [input(16), input(0), input(1), input(3), input(3), input(4)],
+      [collateralCoinType, sessionAuthorityType],
+    );
+    const builder = structuredClone(snapshot.commands[2]!);
+    const start = structuredClone(snapshot.commands[3]!);
+    start.MoveCall!.arguments[5] = result(1);
+    const bid = structuredClone(snapshot.commands[4]!);
+    bid.MoveCall!.arguments[0] = result(2);
+    const ask = structuredClone(snapshot.commands[5]!);
+    ask.MoveCall!.arguments[0] = result(2);
+    const end = structuredClone(snapshot.commands[6]!);
+    end.MoveCall!.arguments[0] = result(2);
+    const share = structuredClone(snapshot.commands[7]!);
+    share.MoveCall!.arguments[0] = nestedResult(5, 0);
+    snapshot.commands = [
+      deallocate,
+      builder,
+      start,
+      bid,
+      ask,
+      end,
+      share,
+    ] as never;
   });
 }
 
@@ -277,6 +312,12 @@ describe("agent transaction intent", () => {
     ).not.toThrow();
   });
 
+  it("accepts the current SDK quote graph with its clearing house", () => {
+    expect(() =>
+      assertAgentTransactionIntent(currentSdkQuoteFixture(), quoteIntent),
+    ).not.toThrow();
+  });
+
   it("accepts the current live cancellation and position graph", () => {
     expect(() =>
       assertAgentTransactionIntent(
@@ -284,6 +325,15 @@ describe("agent transaction intent", () => {
         currentLiveQuoteIntent,
       ),
     ).not.toThrow();
+  });
+
+  it("rejects a deallocation clearing house reused by another command", () => {
+    const changed = mutate(quoteWithDeallocationFixture(), (snapshot) => {
+      snapshot.commands[5]!.MoveCall!.arguments[1] = input(16);
+    });
+    expect(() => assertAgentTransactionIntent(changed, quoteIntent)).toThrow(
+      "deallocate clearing house is used outside",
+    );
   });
 
   it("rejects a cancellation vector detached from its cancellation", () => {
