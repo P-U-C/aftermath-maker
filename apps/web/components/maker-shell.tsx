@@ -617,7 +617,12 @@ type MakerShellProps = {
   lastGoodDataAt: string | null;
   walletAddress: string;
   walletLabel: string;
-  accountLabel: string;
+  walletSummary: {
+    enabledVenues: number;
+    runningBundles: number;
+    totalBundles: number;
+    authorizedAccounts: number;
+  };
   operator: boolean;
   notice: string | null;
   noticeTone: MakerNoticeTone;
@@ -642,7 +647,7 @@ export function MakerShell({
   lastGoodDataAt,
   walletAddress,
   walletLabel,
-  accountLabel,
+  walletSummary,
   operator,
   notice,
   noticeTone,
@@ -656,6 +661,7 @@ export function MakerShell({
   const [tourPrompt, setTourPrompt] = useState(false);
   const toggleExplain = useCallback(() => setExplainOpen((open) => !open), []);
   const activeTab = useRef<HTMLAnchorElement>(null);
+  const walletMenu = useRef<HTMLDetailsElement>(null);
   const explainSwitch = useRef<HTMLButtonElement>(null);
   const phoneExplainSwitch = useRef<HTMLButtonElement>(null);
   const closeCoach = useCallback(() => {
@@ -699,6 +705,7 @@ export function MakerShell({
         ? "auto"
         : "smooth",
     });
+    walletMenu.current?.removeAttribute("open");
   }, [activeView]);
 
   useEffect(() => {
@@ -844,7 +851,7 @@ export function MakerShell({
               {displayedMode[0]?.toUpperCase()}
               {displayedMode.slice(1)}
             </Pill>
-            <details className="maker-wallet-menu">
+            <details className="maker-wallet-menu" ref={walletMenu}>
               <summary aria-label={`Wallet ${walletLabel}`}>
                 <WalletCards size={15} aria-hidden="true" />
                 <span>{walletLabel}</span>
@@ -854,7 +861,7 @@ export function MakerShell({
                 <div className="maker-wallet-heading">
                   <span>Connected wallet</span>
                   <strong>{walletLabel}</strong>
-                  <small>{walletAddress}</small>
+                  <small title={walletAddress}>{walletLabel}</small>
                 </div>
                 <dl className="maker-wallet-facts">
                   <div>
@@ -862,8 +869,38 @@ export function MakerShell({
                     <dd>{operator ? "Operator" : "Whitelisted"}</dd>
                   </div>
                   <div>
-                    <dt>Trading account</dt>
-                    <dd>{accountLabel}</dd>
+                    <dt>Venues enabled</dt>
+                    <dd>
+                      <button
+                        type="button"
+                        onClick={() => selectView("venues")}
+                      >
+                        Aftermath {walletSummary.enabledVenues ? "✓" : "—"}
+                      </button>
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>Bundles</dt>
+                    <dd>
+                      <button
+                        type="button"
+                        onClick={() => selectView("bundles")}
+                      >
+                        {walletSummary.runningBundles} running of{" "}
+                        {walletSummary.totalBundles}
+                      </button>
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>Accounts</dt>
+                    <dd>
+                      <button
+                        type="button"
+                        onClick={() => selectView("accounts")}
+                      >
+                        {walletSummary.authorizedAccounts} authorized
+                      </button>
+                    </dd>
                   </div>
                 </dl>
                 <div className="maker-wallet-actions">
@@ -883,10 +920,6 @@ export function MakerShell({
                   >
                     <Copy size={15} aria-hidden="true" />
                     {addressCopied ? "Copied" : "Copy address"}
-                  </button>
-                  <button type="button" onClick={() => selectView("accounts")}>
-                    <WalletCards size={15} aria-hidden="true" />
-                    Manage accounts
                   </button>
                   <button type="button" onClick={onLogout}>
                     <LogOut size={15} aria-hidden="true" />

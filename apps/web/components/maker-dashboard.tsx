@@ -625,6 +625,7 @@ type StrategyTrialResult = {
 
 type AuditEvent = {
   id: number;
+  bundleId?: string | null;
   occurredAt: string;
   category: string;
   action: string;
@@ -899,6 +900,7 @@ function DashboardBody() {
   );
   const [strategyMarketRule, setStrategyMarketRule] =
     useState<StrategyMarketRule>({ kind: "quick-pick", pick: "balanced" });
+  const [strategyNameDraft, setStrategyNameDraft] = useState("");
   const [walletLimits, setWalletLimits] = useState<BundleWalletLimits | null>(
     null,
   );
@@ -932,6 +934,7 @@ function DashboardBody() {
     mainnetAllowed: false,
   });
   const [strategyStep, setStrategyStep] = useState(0);
+  const [advancedOpen, setAdvancedOpen] = useState(false);
   const [trialMode, setTrialMode] = useState<"paper" | "live">("paper");
   const [trialArmed, setTrialArmed] = useState(false);
   const [trialResult, setTrialResult] = useState<StrategyTrialResult | null>(
@@ -1190,11 +1193,16 @@ function DashboardBody() {
     (strategy) => strategy.id === selectedStrategyId,
   );
 
+  useEffect(() => {
+    setStrategyNameDraft(selectedStrategy?.name ?? "");
+  }, [selectedStrategy?.id]);
+
   async function selectStrategy(strategyId: string) {
     const result = await request<{ strategy: MakerStrategy }>(
       `api/strategies/${encodeURIComponent(strategyId)}`,
     );
     setSelectedStrategyId(result.strategy.id);
+    setStrategyNameDraft(result.strategy.name);
     setStrategyMarketRule(result.strategy.marketRule);
     setConfig((current) =>
       configWithStrategySettings(current, result.strategy.config),
@@ -2148,6 +2156,16 @@ function DashboardBody() {
     }));
   }
 
+  function focusStrategyField(fieldId: string, step: number) {
+    setStrategyStep(step);
+    setAdvancedOpen(true);
+    window.requestAnimationFrame(() => {
+      const field = document.getElementById(fieldId) as HTMLInputElement | null;
+      field?.scrollIntoView({ block: "center", behavior: "smooth" });
+      field?.focus({ preventScroll: true });
+    });
+  }
+
   function toggleMarketOverrides(marketId: string) {
     setConfig((current) => ({
       ...current,
@@ -2335,6 +2353,7 @@ function DashboardBody() {
         }>(`api/strategies/${encodeURIComponent(selectedStrategy.id)}`, {
           method: "PATCH",
           body: JSON.stringify({
+            name: strategyNameDraft.trim(),
             config: strategySettingsFromConfig(config),
             marketRule: strategyMarketRule,
             expectedVersion: selectedStrategy.version,
@@ -2346,6 +2365,7 @@ function DashboardBody() {
           ),
         );
         setSavedConfig(config);
+        setStrategyNameDraft(result.strategy.name);
         setNotice(
           result.affectedBundles.length > 1
             ? `Strategy saved for ${result.affectedBundles.map((bundle) => bundle.name).join(", ")}.`
@@ -2576,8 +2596,13 @@ function DashboardBody() {
     });
   }
 
+  const strategyNameDirty =
+    Boolean(selectedStrategy) &&
+    strategyNameDraft.trim() !== selectedStrategy?.name;
   const configDirty =
-    savedConfig === undefined || !configsEqual(config, savedConfig);
+    savedConfig === undefined ||
+    !configsEqual(config, savedConfig) ||
+    strategyNameDirty;
 
   const requestStrategyExit = useCallback(
     (view: MakerView) => {
@@ -2782,6 +2807,34 @@ function DashboardBody() {
       return left.rank - right.rank;
     },
   );
+  const strategyRulePreviewIds =
+    strategyMarketRule.kind === "preferred-list"
+      ? strategyMarketRule.marketIds
+      : quickPickMarketIds(
+          rewards?.marketModel.opportunities ?? [],
+          strategyMarketRule.pick,
+          MAX_SELECTED_MARKETS,
+        );
+  const strategyRulePreviewMarkets = markets.filter((market) =>
+    strategyRulePreviewIds.includes(market.id),
+  );
+  const strategyMarketCount = selectedStrategy
+    ? strategyRulePreviewMarkets.length
+    : config.markets.length;
+  const strategySaveBlocker =
+    strategyMarketCount === 0
+      ? { message: "Choose at least one market before saving.", step: 1 }
+      : quoteSizeError
+        ? {
+            message: "Fix quote size in Size and limits before saving.",
+            step: 2,
+          }
+        : grossExposureError
+          ? {
+              message: "Fix gross exposure in Size and limits before saving.",
+              step: 2,
+            }
+          : null;
   const focusedRewardOpportunities = rewardOpportunities.filter(
     (opportunity) =>
       opportunity.objectiveEligible &&
@@ -2915,20 +2968,78 @@ function DashboardBody() {
         error: runtimeMarket?.error ?? null,
       };
     });
-  const rotationRows = rotationRowsFor(config);
-  const deskRotationRows = rotationRowsFor(deskConfig);
+  const bundleRotationRows = bundles
+    .filter((bundle) => !bundle.archivedAt)
+    .flatMap((bundle) => {
+      const bundleSnapshot = bundleSnapshots.find(
+        (entry) => entry.bundle.id === bundle.id,
+      )?.snapshot;
+      return bundle.marketIds.map((marketId) => {
+        const runtimeMarket = bundleSnapshot?.markets.find(
+          (market) => market.id === marketId,
+        );
+        const listed = markets.find((market) => market.id === marketId);
+        return {
+          id: marketId,
+          symbol: runtimeMarket?.symbol ?? listed?.symbol ?? marketId,
+          bundleName: bundle.name,
+          status:
+            runtimeMarket?.status ??
+            (bundle.status === "paused" ? "error" : "queued"),
+          indexPrice: runtimeMarket?.indexPrice ?? listed?.indexPrice ?? null,
+          openInterestBase:
+            runtimeMarket?.openInterestBase ?? listed?.openInterestBase ?? null,
+          openInterestUsd:
+            runtimeMarket?.openInterestUsd ?? listed?.openInterestUsd ?? null,
+          openInterestUtilizationPct:
+            runtimeMarket?.openInterestUtilizationPct ??
+            listed?.openInterestUtilizationPct ??
+            null,
+          volume24hUsd:
+            runtimeMarket?.volume24hUsd ?? listed?.volume24hUsd ?? null,
+          fundingRate:
+            runtimeMarket?.fundingRate ?? listed?.fundingRate ?? null,
+          inventoryUsd: runtimeMarket?.inventoryUsd ?? 0,
+          unrealizedPnlUsd: runtimeMarket?.unrealizedPnlUsd ?? 0,
+          effectiveSpreadBps:
+            runtimeMarket?.effectiveSpreadBps ?? deskConfig.spreadBps,
+          effectiveQuoteSizeUsd:
+            runtimeMarket?.effectiveQuoteSizeUsd ?? deskConfig.quoteSizeUsd,
+          lastTransactionDigest: runtimeMarket?.lastTransactionDigest ?? null,
+          updatedAt: runtimeMarket?.updatedAt ?? null,
+          error: runtimeMarket?.error ?? null,
+        };
+      });
+    });
+  const deskRotationRows = bundleRotationRows.length
+    ? bundleRotationRows
+    : rotationRowsFor(deskConfig).map((row) => ({ ...row, bundleName: null }));
   const marketTableRows = visibleMarkets
     .map((listed) => {
-      const runtimeMarket = snapshot?.markets.find(
-        (market) => market.id === listed.id,
-      );
       const assignedBundle = bundles.find(
         (bundle) => !bundle.archivedAt && bundle.marketIds.includes(listed.id),
       );
+      const matchingBundleSnapshots = bundleSnapshots.filter(
+        (entry) => entry.snapshot?.market.id === listed.id,
+      );
+      const runtimeMarket =
+        matchingBundleSnapshots
+          .map(
+            (entry) =>
+              entry.snapshot?.markets.find(
+                (market) => market.id === listed.id,
+              ) ?? null,
+          )
+          .find(Boolean) ??
+        snapshot?.markets.find((market) => market.id === listed.id);
+      const activeBundleNames = matchingBundleSnapshots
+        .filter((entry) => entry.bundle.status === "running")
+        .map((entry) => entry.bundle.name);
       return {
         id: listed.id,
         symbol: listed.symbol,
         bundleName: assignedBundle?.name ?? "Not used",
+        activeBundleNames,
         bundleRank:
           assignedBundle?.name === "Core" ? 0 : assignedBundle ? 1 : 2,
         status: runtimeMarket?.status ?? "queued",
@@ -3040,6 +3151,44 @@ function DashboardBody() {
     (total, owned) => total + owned.equityUsd,
     0,
   );
+  const venueSnapshots = bundleSnapshots
+    .map((entry) => entry.snapshot)
+    .filter((entry): entry is Snapshot => Boolean(entry));
+  const venueGrossExposureUsd = venueSnapshots.reduce(
+    (total, entry) => total + Math.abs(entry.portfolio.grossExposureUsd),
+    0,
+  );
+  const venueUnrealizedPnlUsd = venueSnapshots.reduce(
+    (total, entry) => total + entry.portfolio.unrealizedPnlUsd,
+    0,
+  );
+  const venueSelectedMarkets = bundles
+    .filter((bundle) => !bundle.archivedAt)
+    .reduce((total, bundle) => total + bundle.marketIds.length, 0);
+  const deskEvents = events.map((event) => {
+    const accountId =
+      typeof event.detail.accountId === "string"
+        ? event.detail.accountId
+        : null;
+    const namedBundle =
+      typeof event.detail.name === "string" ? event.detail.name : null;
+    const bundleForEvent = event.bundleId
+      ? bundles.find((bundle) => bundle.id === event.bundleId)
+      : null;
+    const bundleForAccount = accountId
+      ? bundles.find(
+          (bundle) =>
+            !bundle.archivedAt &&
+            (bundle.makerAccountId === accountId ||
+              bundle.takerAccountId === accountId),
+        )
+      : null;
+    return deskEvent(event, {
+      bundleName:
+        namedBundle ?? bundleForEvent?.name ?? bundleForAccount?.name ?? null,
+      accountId,
+    });
+  });
   const venueGasText =
     agentGasSui === null
       ? "Not reported"
@@ -3064,6 +3213,38 @@ function DashboardBody() {
   const anyBundleRunning = bundles.some(
     (bundle) => bundle.status === "running",
   );
+  const activeBundleLanes = bundleSnapshots.flatMap((entry) => {
+    const bundle =
+      bundles.find((candidate) => candidate.id === entry.bundle.id) ??
+      entry.bundle;
+    if (bundle.status !== "running" && bundle.status !== "paused") return [];
+    const listed = markets.find((market) => market.id === bundle.marketIds[0]);
+    const laneSnapshot =
+      entry.snapshot ??
+      ({
+        mode: bundle.mode,
+        market: {
+          symbol: listed?.symbol ?? "Waiting for market data",
+          indexPrice: listed?.indexPrice ?? null,
+          bestBid: null,
+          bestAsk: null,
+          book: null,
+        },
+        quote: null,
+        balances: { inventoryUsd: 0 },
+        portfolio: { unrealizedPnlUsd: 0 },
+      } satisfies Parameters<
+        typeof BundleDeskLanes
+      >[0]["lanes"][number]["snapshot"]);
+    return [
+      {
+        id: bundle.id,
+        name: bundle.name,
+        status: bundle.status,
+        snapshot: laneSnapshot,
+      },
+    ];
+  });
   const selectedBundle = bundles.find(
     (bundle) => bundle.id === selectedBundleId,
   );
@@ -3100,11 +3281,13 @@ function DashboardBody() {
       lastGoodDataAt={lastGoodDataAt}
       walletAddress={identity.ownerAddress}
       walletLabel={compact(identity.ownerAddress)}
-      accountLabel={
-        activeMakerAccountId
-          ? accountReference(activeMakerAccountId)
-          : "Not assigned"
-      }
+      walletSummary={{
+        enabledVenues: 1,
+        runningBundles: bundles.filter((bundle) => bundle.status === "running")
+          .length,
+        totalBundles: bundles.filter((bundle) => !bundle.archivedAt).length,
+        authorizedAccounts: authorizedAccounts.length,
+      }}
       operator={identity.operator}
       notice={notice}
       noticeTone={noticeTone}
@@ -3560,6 +3743,7 @@ function DashboardBody() {
         configDirty={configDirty}
         refreshBusy={busy === "refresh"}
         startBusy={busy === "start"}
+        stopState={stopState}
         flattenBusy={busy === "flatten"}
         startDisabled={!config.markets.length || Boolean(busy) || configDirty}
         flattenDisabled={
@@ -3573,7 +3757,7 @@ function DashboardBody() {
         pnlUsd={performance?.combinedNetAfterKnownCostsUsd ?? null}
         equityUsd={makerEquityUsd}
         grossExposureUsd={snapshot?.portfolio.grossExposureUsd ?? null}
-        marketCount={deskConfig.markets.length}
+        marketCount={deskRotationRows.length}
         startedAt={snapshot?.startedAt ?? null}
         lastFill={deskFills[0] ?? null}
         narration={deskNarration}
@@ -3618,28 +3802,12 @@ function DashboardBody() {
         marketsUpdatedAt={deskLatestMarketUpdate}
         fills={deskFills}
         fillsUpdatedAt={performance?.asOf ?? null}
-        events={events.map(deskEvent)}
+        events={deskEvents}
         staleAfterMs={deskConfig.refreshMs * 2}
         lastHedgeDigest={snapshot?.hedge.lastDigest ?? null}
         unavailable={controlUnavailable}
-        showMarketLane={
-          bundles.filter((bundle) => !bundle.archivedAt).length === 0
-        }
-        bundleLanes={
-          <BundleDeskLanes
-            lanes={bundleSnapshots.flatMap((entry) =>
-              entry.bundle.status === "running" && entry.snapshot
-                ? [
-                    {
-                      id: entry.bundle.id,
-                      name: entry.bundle.name,
-                      snapshot: entry.snapshot,
-                    },
-                  ]
-                : [],
-            )}
-          />
-        }
+        showMarketLane={activeBundleLanes.length === 0}
+        bundleLanes={<BundleDeskLanes lanes={activeBundleLanes} />}
         onRefresh={() =>
           void mutate("refresh", async () => {
             await request("api/runtime/cycle", {
@@ -3668,10 +3836,25 @@ function DashboardBody() {
           >
             <header className="strategy-title">
               <div>
-                <h1>{selectedStrategy?.name ?? "Strategies"}</h1>
+                <label className="strategy-name-input">
+                  <span className="sr-only">Strategy name</span>
+                  <input
+                    value={strategyNameDraft}
+                    onChange={(event) =>
+                      setStrategyNameDraft(event.target.value)
+                    }
+                    maxLength={80}
+                    placeholder="Name this strategy"
+                    aria-label="Strategy name"
+                    disabled={!selectedStrategy || Boolean(busy)}
+                  />
+                </label>
                 <p>
                   Reusable settings for how bundles quote, control inventory,
                   hedge, and manage risk.
+                  {selectedStrategy?.usedBy.length
+                    ? ` Used by ${selectedStrategy.usedBy.map((bundle) => bundle.name).join(", ")}.`
+                    : " Not attached to a bundle yet."}
                 </p>
               </div>
               <div className="strategy-heading-actions">
@@ -3796,95 +3979,85 @@ function DashboardBody() {
                     </select>
                   </label>
                 ) : (
-                  <div className="strategy-rule-markets">
+                  <div className="strategy-rule-market-rows" role="list">
                     {markets.map((market) => {
                       const selected = strategyMarketRule.marketIds.includes(
                         market.id,
                       );
+                      const opportunity =
+                        rewards?.marketModel.opportunities.find(
+                          (candidate) => candidate.marketId === market.id,
+                        );
                       return (
-                        <label key={market.id}>
-                          <input
-                            type="checkbox"
-                            checked={selected}
-                            onChange={() =>
-                              setStrategyMarketRule((current) =>
-                                current.kind !== "preferred-list"
-                                  ? current
-                                  : {
-                                      ...current,
-                                      marketIds: selected
-                                        ? current.marketIds.filter(
-                                            (id) => id !== market.id,
-                                          )
-                                        : [...current.marketIds, market.id],
-                                    },
-                              )
-                            }
-                          />
-                          {market.symbol}
-                        </label>
+                        <button
+                          className={selected ? "is-selected" : undefined}
+                          key={market.id}
+                          type="button"
+                          role="listitem"
+                          aria-pressed={selected}
+                          onClick={() =>
+                            setStrategyMarketRule((current) =>
+                              current.kind !== "preferred-list"
+                                ? current
+                                : {
+                                    ...current,
+                                    marketIds: selected
+                                      ? current.marketIds.filter(
+                                          (id) => id !== market.id,
+                                        )
+                                      : [...current.marketIds, market.id],
+                                  },
+                            )
+                          }
+                        >
+                          <strong>{market.symbol}</strong>
+                          <span
+                            className="strategy-reward-bar"
+                            aria-label={`Reward potential ${Math.round(opportunity?.score ?? 0)} out of 100`}
+                          >
+                            <i
+                              style={{
+                                width: `${Math.min(100, Math.max(0, opportunity?.score ?? 0))}%`,
+                              }}
+                            />
+                          </span>
+                          <span>
+                            {opportunity?.preRiskEdgeBps?.toFixed(1) ?? "—"} bps
+                            after fees
+                          </span>
+                          <span>
+                            {compactUsd(
+                              opportunity?.volume24hUsd ?? market.volume24hUsd,
+                            )}{" "}
+                            24h
+                          </span>
+                        </button>
                       );
                     })}
                   </div>
                 )}
+                <div className="strategy-rule-preview" aria-live="polite">
+                  <strong>
+                    {strategyRulePreviewMarkets.length} market
+                    {strategyRulePreviewMarkets.length === 1 ? "" : "s"}{" "}
+                    included
+                  </strong>
+                  <span>
+                    {strategyRulePreviewMarkets.length
+                      ? strategyRulePreviewMarkets
+                          .map((market) => market.symbol)
+                          .join(", ")
+                      : "No available markets match this rule yet."}
+                  </span>
+                </div>
               </fieldset>
             ) : null}
-
-            <header className="strategy-allocation-summary">
-              <span>Bundle allocation</span>
-              <p>
-                Accounts, actual markets, per-market overrides, and mode belong
-                to a bundle. Edit them from Bundles.
-              </p>
-            </header>
-
-            <div className="strategy-allocation-owned">
-              <label className="strategy-bundle-picker">
-                <span>Bundle</span>
-                <select
-                  value={selectedBundleId ?? ""}
-                  onChange={(event) => void selectBundle(event.target.value)}
-                >
-                  {bundles
-                    .filter((bundle) => !bundle.archivedAt)
-                    .map((bundle) => (
-                      <option key={bundle.id} value={bundle.id}>
-                        {bundle.name}
-                      </option>
-                    ))}
-                </select>
-              </label>
-            </div>
-
-            <div
-              className="execution-model"
-              aria-label="Current execution model"
-            >
-              <div>
-                <span>Maker path</span>
-                <strong>
-                  {activeMakerAccountId
-                    ? accountReference(activeMakerAccountId)
-                    : "Select account"}
-                </strong>
-              </div>
-              <div>
-                <span>Taker path</span>
-                <strong
-                  className={config.hedge.enabled ? "available" : "unavailable"}
-                >
-                  {config.hedge.enabled && activeHedgeAccount
-                    ? `${accountReference(activeHedgeAccount.accountId)} / ${snapshot?.hedge.state ?? "waiting"}`
-                    : "Off"}
-                </strong>
-              </div>
-            </div>
 
             <section className="strategy-builder" aria-label="Strategy builder">
               <ol>
                 {[
                   ["Goal", config.strategyObjective],
-                  ["Markets", `${config.markets.length} selected`],
+                  ["Markets", `${strategyMarketCount} selected`],
                   [
                     "Size and limits",
                     `${money(config.quoteSizeUsd)} / ${money(config.maxInventoryUsd)}`,
@@ -3911,8 +4084,8 @@ function DashboardBody() {
               <aside>
                 <span>What Maker will do</span>
                 <p>
-                  {config.markets.length
-                    ? `Quote ${config.markets.length} selected market${config.markets.length === 1 ? "" : "s"} with ${money(config.quoteSizeUsd)} on each side, and stop before ${money(config.maxRunDrawdownUsd)} of run drawdown.`
+                  {strategyMarketCount
+                    ? `Quote ${strategyMarketCount} selected market${strategyMarketCount === 1 ? "" : "s"} with ${money(config.quoteSizeUsd)} on each side, and stop before ${money(config.maxRunDrawdownUsd)} of run drawdown.`
                     : "Choose one or more markets before saving this strategy."}
                 </p>
                 <div className="strategy-step-nav">
@@ -3937,9 +4110,7 @@ function DashboardBody() {
                       setStrategyStep((step) => Math.min(4, step + 1));
                     }}
                     disabled={
-                      (strategyStep === 4 &&
-                        ((!selectedStrategy && !config.markets.length) ||
-                          !strategyValid)) ||
+                      (strategyStep === 4 && Boolean(strategySaveBlocker)) ||
                       busy === "save"
                     }
                   >
@@ -3952,6 +4123,17 @@ function DashboardBody() {
                         : "Next"}
                   </button>
                 </div>
+                {strategyStep === 4 && strategySaveBlocker && (
+                  <p className="strategy-save-reason" role="status">
+                    {strategySaveBlocker.message}{" "}
+                    <button
+                      type="button"
+                      onClick={() => setStrategyStep(strategySaveBlocker.step)}
+                    >
+                      Go to that step
+                    </button>
+                  </p>
+                )}
               </aside>
             </section>
 
@@ -4094,7 +4276,7 @@ function DashboardBody() {
                     }))
                   }
                 >
-                  All pairs live
+                  All selected markets at once
                 </button>
                 <button
                   type="button"
@@ -4126,7 +4308,7 @@ function DashboardBody() {
                     }))
                   }
                 >
-                  One live pair
+                  {`One market at a time, moving to the next every ${config.marketDwellMs / 1_000} s`}
                 </button>
               </div>
             </fieldset>
@@ -4473,7 +4655,10 @@ function DashboardBody() {
             <fieldset className="strategy-section strategy-profile-section strategy-step strategy-step-goal">
               <legend>Risk profile</legend>
               <p className="strategy-section-copy">
-                Pick a starting policy, then tune individual controls.
+                A profile only sets starting values for quote size, spread,
+                check speed, and inventory. Change quote size and spread in Size
+                and limits; check speed in Advanced; and inventory in Advanced
+                limits.
               </p>
               <div className="strategy-profile-cards">
                 {strategyProfiles.map((profile) => (
@@ -4983,12 +5168,6 @@ function DashboardBody() {
                 </label>
                 .
               </p>
-              {quoteSizeError && (
-                <p className="field-error">{quoteSizeError}</p>
-              )}
-              {grossExposureError && (
-                <p className="field-error">{grossExposureError}</p>
-              )}
             </section>
 
             <section className="strategy-section strategy-capital-section strategy-step strategy-step-size">
@@ -5038,7 +5217,7 @@ function DashboardBody() {
 
               <div className="field-pair">
                 <label>
-                  <span>Quote / side</span>
+                  <span>Quote $ on each side</span>
                   <div className="input-unit">
                     <b>$</b>
                     <input
@@ -5056,7 +5235,24 @@ function DashboardBody() {
                     />
                   </div>
                   {quoteSizeError ? (
-                    <small className="field-error">{quoteSizeError}</small>
+                    <small className="field-error">
+                      {config.quoteSizeUsd <= 0 ? (
+                        <>Enter a quote size above $0.00.</>
+                      ) : (
+                        <>
+                          Quote size {money(config.quoteSizeUsd)} is above the
+                          per-market inventory limit.{" "}
+                          <button
+                            type="button"
+                            onClick={() =>
+                              focusStrategyField("strategy-max-inventory", 2)
+                            }
+                          >
+                            Raise “hold at most” above.
+                          </button>
+                        </>
+                      )}
+                    </small>
                   ) : (
                     <small>{percent(quoteEquityPct, 1)} of Maker equity</small>
                   )}
@@ -5088,7 +5284,11 @@ function DashboardBody() {
               </div>
             </section>
 
-            <details className="strategy-section strategy-advanced strategy-step strategy-step-size">
+            <details
+              className="strategy-section strategy-advanced strategy-step strategy-step-size"
+              open={advancedOpen}
+              onToggle={(event) => setAdvancedOpen(event.currentTarget.open)}
+            >
               <summary>Advanced</summary>
               <p className="strategy-section-copy">
                 Portfolio limits, quote guards, and timing controls.
@@ -5101,6 +5301,7 @@ function DashboardBody() {
                   <div className="input-unit">
                     <b>$</b>
                     <input
+                      id="strategy-max-inventory"
                       type="number"
                       min="0.01"
                       step="0.01"
@@ -5139,6 +5340,7 @@ function DashboardBody() {
                   <div className="input-unit">
                     <b>$</b>
                     <input
+                      id="strategy-max-gross-exposure"
                       type="number"
                       min={config.maxInventoryUsd}
                       step="0.01"
@@ -5157,7 +5359,18 @@ function DashboardBody() {
                     />
                   </div>
                   {grossExposureError ? (
-                    <small className="field-error">{grossExposureError}</small>
+                    <small className="field-error">
+                      Gross exposure must cover at least one market&apos;s
+                      inventory limit.{" "}
+                      <button
+                        type="button"
+                        onClick={() =>
+                          focusStrategyField("strategy-max-gross-exposure", 2)
+                        }
+                      >
+                        Raise gross exposure above.
+                      </button>
+                    </small>
                   ) : (
                     <small>
                       {percent(grossCapEquityPct, 1)} of Maker equity
@@ -5452,14 +5665,28 @@ function DashboardBody() {
                   <button
                     type="submit"
                     className="button primary"
-                    disabled={
-                      !config.markets.length || !strategyValid || Boolean(busy)
-                    }
+                    disabled={Boolean(strategySaveBlocker) || Boolean(busy)}
                   >
                     {busy === "save" ? "Saving..." : "Save strategy"}
                   </button>
                 </div>
-                <small>Saved changes apply on the next market cycle.</small>
+                <small>
+                  {strategySaveBlocker ? (
+                    <>
+                      {strategySaveBlocker.message}{" "}
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setStrategyStep(strategySaveBlocker.step)
+                        }
+                      >
+                        Go to that step
+                      </button>
+                    </>
+                  ) : (
+                    "Saved changes apply on the next market cycle."
+                  )}
+                </small>
               </div>
             )}
           </form>
@@ -5559,14 +5786,16 @@ function DashboardBody() {
               </thead>
               <tbody>
                 {marketTableRows.map((row) => (
-                  <tr
-                    key={row.id}
-                    className={
-                      snapshot?.market.id === row.id ? "active-market-row" : ""
-                    }
-                  >
+                  <tr key={row.id}>
                     <td>
-                      <strong>{row.symbol}</strong>
+                      <span className="market-pair-cell">
+                        <strong>{row.symbol}</strong>
+                        {row.activeBundleNames.map((bundleName) => (
+                          <i className="market-active-bundle" key={bundleName}>
+                            {bundleName}
+                          </i>
+                        ))}
+                      </span>
                       <span>{compact(row.id)}</span>
                     </td>
                     <td>
@@ -6358,21 +6587,21 @@ function DashboardBody() {
         <VenueBoard
           venue={primaryVenue}
           connected
-          quoting={Boolean(snapshot?.running)}
-          tradingKeyReady={Boolean(activeMakerAccount?.agentCapId)}
+          quoting={anyBundleRunning}
+          tradingKeyReady={authorizedAccounts.length > 0}
           feeText={
             builderCode
               ? `${(builderCode.integratorFee * 10_000).toFixed(0)} bps on filled orders`
               : "Not approved"
           }
           gasText={venueGasText}
-          selectedMarkets={config.markets.length}
+          selectedMarkets={venueSelectedMarkets}
           eligibleMarkets={markets.length}
           accounts={venueAccountRows}
           totalEquityUsd={venueEquityUsd}
-          grossExposureUsd={snapshot?.portfolio.grossExposureUsd ?? 0}
-          grossExposureLimitUsd={config.maxGrossExposureUsd}
-          unrealizedPnlUsd={snapshot?.portfolio.unrealizedPnlUsd ?? 0}
+          grossExposureUsd={venueGrossExposureUsd}
+          grossExposureLimitUsd={walletLimits?.maxGrossExposureUsd ?? 0}
+          unrealizedPnlUsd={venueUnrealizedPnlUsd}
           onManage={() => selectView("accounts")}
           onNewAccount={() => void createVenueAccount()}
           {...(activeMakerAccountId

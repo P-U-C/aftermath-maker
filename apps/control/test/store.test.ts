@@ -768,6 +768,7 @@ describe("persistent control store", () => {
     });
     const updated = tenant.updateStrategy({
       strategyId: shared.id,
+      name: "Steady renamed",
       config: { ...shared.config, quoteSizeUsd: 17 },
       marketRule: shared.marketRule,
       expectedVersion: shared.version,
@@ -775,6 +776,7 @@ describe("persistent control store", () => {
     expect(updated.affectedBundles.map((bundle) => bundle.name).sort()).toEqual(
       ["Core", "Rewards"],
     );
+    expect(updated.strategy.name).toBe("Steady renamed");
     expect(tenant.getBundleConfig(core.id)).toMatchObject({
       quoteSizeUsd: 17,
       markets: [{ marketId: "0xd001", symbol: "CORE" }],

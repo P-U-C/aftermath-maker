@@ -86,6 +86,24 @@ describe("desk audit events", () => {
     });
   });
 
+  it("adds the bundle and account when the desk can resolve them", () => {
+    expect(
+      deskEvent(
+        {
+          id: 3,
+          occurredAt: "2026-10-29T00:00:00.000Z",
+          category: "onboarding",
+          action: "agent.grant",
+          outcome: "confirmed",
+          detail: { accountId: "1745" },
+        },
+        { bundleName: "Core", accountId: "1745" },
+      ),
+    ).toMatchObject({
+      sentence: "Core · account 1745: trading key approved.",
+    });
+  });
+
   it("keeps unknown events informational", () => {
     expect(
       deskEvent({

@@ -9729,3 +9729,248 @@ mysten-dapp-kit-connect-modal,
     display: none;
   }
 }
+
+/* v7: compact wallet facts and a builder-led strategy workspace. */
+.maker-nav-brand .maker-wordmark {
+  font-size: 21px;
+}
+
+.maker-wallet-facts {
+  grid-template-columns: 1fr 1fr;
+}
+
+.maker-wallet-facts > div:nth-child(3) {
+  border-top: 1px solid var(--hair);
+}
+
+.maker-wallet-facts > div:nth-child(4) {
+  padding-left: 12px;
+  border-top: 1px solid var(--hair);
+  border-left: 1px solid var(--hair);
+}
+
+.maker-wallet-facts dd button {
+  padding: 0;
+  color: inherit;
+  background: transparent;
+  border: 0;
+  font: inherit;
+  font-weight: inherit;
+  text-align: left;
+  text-decoration: underline;
+  text-decoration-color: transparent;
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+
+.maker-wallet-facts dd button:hover {
+  text-decoration-color: currentColor;
+}
+
+.workspace-strategy .settings-panel > * {
+  order: 3;
+}
+
+.workspace-strategy .settings-panel > .strategy-title {
+  order: 1;
+}
+
+.workspace-strategy .settings-panel > .strategy-builder {
+  order: 2;
+}
+
+.strategy-name-input {
+  display: block;
+}
+
+.strategy-name-input input {
+  width: min(100%, 510px);
+  margin: -4px -8px;
+  padding: 4px 8px;
+  color: var(--ink);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  font:
+    640 34px/1.1 var(--font-mona),
+    Arial,
+    sans-serif;
+  font-stretch: 122%;
+}
+
+.strategy-name-input input:hover,
+.strategy-name-input input:focus-visible {
+  background: var(--fill);
+  border-color: var(--line);
+  outline: none;
+}
+
+.strategy-rule-market-rows {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+  gap: 8px;
+}
+
+.strategy-rule-market-rows button {
+  min-height: 72px;
+  padding: 10px;
+  display: grid;
+  grid-template-columns: auto minmax(44px, 1fr);
+  align-items: center;
+  gap: 6px 10px;
+  color: var(--ink-2);
+  background: var(--fill);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  font:
+    560 12px/1.25 var(--font-mona),
+    Arial,
+    sans-serif;
+  text-align: left;
+  cursor: pointer;
+}
+
+.strategy-rule-market-rows button:hover,
+.strategy-rule-market-rows button.is-selected {
+  color: var(--ink);
+  border-color: var(--tide);
+}
+
+.strategy-rule-market-rows button > strong {
+  color: var(--ink);
+  font-size: 14px;
+}
+
+.strategy-rule-market-rows button > span:not(.strategy-reward-bar) {
+  grid-column: span 1;
+  white-space: nowrap;
+}
+
+.strategy-reward-bar {
+  height: 5px;
+  overflow: hidden;
+  background: var(--line);
+  border-radius: 999px;
+}
+
+.strategy-reward-bar i {
+  height: 100%;
+  display: block;
+  background: var(--tide);
+  border-radius: inherit;
+}
+
+.strategy-rule-preview {
+  padding-top: 10px;
+  display: grid;
+  gap: 3px;
+  color: var(--ink-2);
+  border-top: 1px solid var(--hair);
+  font-size: 13px;
+}
+
+.strategy-rule-preview strong {
+  color: var(--ink);
+}
+
+.field-error button,
+.strategy-save-reason button,
+.strategy-save-bar small button {
+  padding: 0;
+  color: inherit;
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid currentColor;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.strategy-save-reason {
+  margin: 10px 0 0;
+  color: var(--amber-text);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.market-pair-cell {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.market-active-bundle {
+  padding: 3px 6px;
+  color: var(--tide-text);
+  background: var(--tide-soft);
+  border-radius: 999px;
+  font-size: 12px;
+  font-style: normal;
+  font-weight: 700;
+}
+
+.market-table tr.active-market-row td {
+  background: transparent;
+}
+
+.market-table tr.active-market-row td:first-child {
+  box-shadow: none;
+}
+
+.venue-account-bundle.is-even,
+.venue-account-row.is-even {
+  background: color-mix(in srgb, var(--fill) 62%, transparent);
+}
+
+.venue-exposure-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-feature-settings: "tnum" 1;
+}
+
+.venue-exposure-table th,
+.venue-exposure-table td {
+  padding: 13px 10px;
+  border-bottom: 1px solid var(--hair);
+  text-align: right;
+}
+
+.venue-exposure-table th {
+  color: var(--ink-3);
+  font-size: 12px;
+  font-weight: 560;
+}
+
+.venue-exposure-table :is(th, td):first-child {
+  padding-left: 0;
+  text-align: left;
+}
+
+.venue-exposure-table :is(th, td):last-child {
+  padding-right: 0;
+}
+
+.venue-exposure-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+@media (max-width: 700px) {
+  .maker-nav-brand .maker-wordmark {
+    font-size: inherit;
+  }
+
+  .strategy-name-input input {
+    font-size: 28px;
+  }
+
+  .strategy-rule-market-rows {
+    grid-template-columns: 1fr;
+  }
+
+  .venue-exposure-table th,
+  .venue-exposure-table td {
+    padding: 10px 6px;
+    font-size: 12px;
+  }
+}
