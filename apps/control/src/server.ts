@@ -464,6 +464,7 @@ app.post("/api/strategies", async (request) => {
       name: z.string().trim().min(1).max(80),
       config: z.unknown(),
       marketRule: strategyMarketRuleSchema,
+      markets: z.array(bundleMarketSchema).max(64),
     })
     .strict()
     .parse(request.body);
@@ -490,6 +491,7 @@ app.patch("/api/strategies/:strategyId", async (request) => {
       name: z.string().trim().min(1).max(80),
       config: z.unknown(),
       marketRule: strategyMarketRuleSchema,
+      markets: z.array(bundleMarketSchema).max(64),
       expectedVersion: z.number().int().positive(),
     })
     .strict()
@@ -623,7 +625,8 @@ app.post("/api/bundles", async (request) => {
           makerAccountId: z.string().regex(/^\d+$/).nullable(),
           takerAccountId: z.string().regex(/^\d+$/).nullable(),
           mode: z.enum(["observe", "paper"]),
-          markets: z.array(bundleMarketSchema).min(1).max(64),
+          /** Compatibility-only: canonical markets come from strategyId. */
+          markets: z.array(bundleMarketSchema).min(1).max(64).optional(),
           strategyId: z.string().min(1).max(200).nullable(),
           confirmWalletLimits: z.boolean().optional(),
         })
@@ -655,7 +658,7 @@ app.post("/api/bundles", async (request) => {
             makerAccountId: body.makerAccountId,
             takerAccountId: body.takerAccountId,
             mode: body.mode,
-            markets: body.markets,
+            ...(body.markets ? { markets: body.markets } : {}),
             strategyId: body.strategyId,
             ...(body.confirmWalletLimits !== undefined
               ? { confirmWalletLimits: body.confirmWalletLimits }
@@ -725,7 +728,6 @@ app.patch("/api/bundles/:bundleId", async (request) => {
       makerAccountId: z.string().regex(/^\d+$/).nullable().optional(),
       takerAccountId: z.string().regex(/^\d+$/).nullable().optional(),
       mode: z.enum(["observe", "paper"]).optional(),
-      markets: z.array(bundleMarketSchema).min(1).max(64).optional(),
       strategyId: z.string().min(1).max(200).nullable().optional(),
       expectedUpdatedAt: z.string().datetime().optional(),
     })
@@ -735,7 +737,6 @@ app.patch("/api/bundles/:bundleId", async (request) => {
         value.makerAccountId !== undefined ||
         value.takerAccountId !== undefined ||
         value.mode !== undefined ||
-        value.markets !== undefined ||
         value.strategyId !== undefined,
       "Choose at least one bundle field to update",
     )
@@ -755,7 +756,6 @@ app.patch("/api/bundles/:bundleId", async (request) => {
       ? { takerAccountId: body.takerAccountId }
       : {}),
     ...(body.mode ? { mode: body.mode } : {}),
-    ...(body.markets ? { markets: body.markets } : {}),
     ...(body.strategyId !== undefined ? { strategyId: body.strategyId } : {}),
     ...(body.expectedUpdatedAt
       ? { expectedUpdatedAt: body.expectedUpdatedAt }
