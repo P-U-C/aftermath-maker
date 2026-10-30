@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 
+import { clientIpFromReverseProxy } from "../../../../lib/client-ip";
+
 const CONTROL_URL = process.env.CONTROL_URL ?? "http://127.0.0.1:8787";
 const PUBLIC_ORIGIN = new URL(
   process.env.PUBLIC_ORIGIN ?? "http://localhost:8788",
@@ -59,12 +61,8 @@ async function proxy(
   if (controlToken) headers.set("x-control-token", controlToken);
   const session = request.cookies.get(SESSION_COOKIE)?.value;
   if (session) headers.set("x-maker-session", session);
-  const clientIp =
-    request.headers.get("x-real-ip") ??
-    request.headers.get("x-forwarded-for")?.split(",")[0]?.trim();
-  if (clientIp && clientIp.length <= 64 && /^[0-9a-fA-F:.]+$/.test(clientIp)) {
-    headers.set("x-maker-client-ip", clientIp);
-  }
+  const clientIp = clientIpFromReverseProxy(request.headers);
+  if (clientIp) headers.set("x-maker-client-ip", clientIp);
 
   if (hasBody) headers.set("content-type", "application/json");
 
