@@ -189,6 +189,13 @@ const copies: Record<string, AuditCopy> = {
     sentence: (detail) =>
       `Estimated Paper fill${market(detail)}. No order was sent.`,
   },
+  "paper:simulation:blocked": {
+    severity: "warning",
+    sentence: (detail) =>
+      typeof detail.message === "string"
+        ? detail.message
+        : "Paper could not simulate this quote. Maker will keep reading the market.",
+  },
   "paper:trial.start:success": {
     severity: "info",
     sentence: () => "Paper test run started.",
@@ -299,7 +306,7 @@ function withContext(
       : null);
   if (!bundleName && !accountId) return sentence;
 
-  const withoutAccountSuffix = sentence.replace(/ for account [^.]+(?=\.)/, "");
+  const withoutAccountSuffix = sentence.replace(/ for account \d+(?=\.)/, "");
   const subject = [bundleName, accountId ? `account ${accountId}` : null]
     .filter((value): value is string => Boolean(value))
     .join(" · ");

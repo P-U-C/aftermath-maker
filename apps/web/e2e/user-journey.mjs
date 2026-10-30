@@ -926,6 +926,42 @@ async function paperTrialRunsBesideBundles(browser) {
   }
 }
 
+async function paperSimulationBlockerStaysVisible(browser) {
+  const { context, page, state } = await newPage(browser, {
+    width: 1440,
+    height: 900,
+  });
+  try {
+    const message =
+      "Paper can't simulate: the trading key for account 1745 has no SUI for gas. Send 0.1 SUI to 0xagent; Maker will keep reading the market.";
+    const core = state.fixture.status.bundles.find(
+      (entry) => entry.bundle.id === "core-fixture",
+    );
+    core.snapshot = structuredClone(core.snapshot);
+    core.snapshot.lastError = message;
+    state.fixture.events.events.unshift({
+      id: 884,
+      occurredAt: "2026-10-30T02:00:00.000Z",
+      category: "paper",
+      action: "simulation",
+      outcome: "blocked",
+      detail: { message, accountId: "1745" },
+    });
+
+    await goToDesk(page);
+    const lane = page.locator(".bundle-desk-lane").filter({ hasText: "Core" });
+    await lane.getByText(message, { exact: true }).waitFor();
+    await lane.getByText("Watching · Paper", { exact: true }).waitFor();
+    await page
+      .locator(".desk-log-card")
+      .getByText(/paper can't simulate/i)
+      .waitFor();
+    await capture(page, "paper-cycle-blocker-desktop.png");
+  } finally {
+    await context.close();
+  }
+}
+
 async function v7BundleDeskAndStrategy(browser) {
   const { context, page, state } = await newPage(browser, {
     width: 1440,
@@ -1080,6 +1116,7 @@ try {
   await plainControlLog(browser);
   await strategyLibraryAndBundleAttachment(browser);
   await paperTrialRunsBesideBundles(browser);
+  await paperSimulationBlockerStaysVisible(browser);
   await v7BundleDeskAndStrategy(browser);
   await revokeWithoutWallet(browser);
   await serviceAndSessionFailures(browser);

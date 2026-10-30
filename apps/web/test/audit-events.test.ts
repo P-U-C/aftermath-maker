@@ -86,6 +86,26 @@ describe("desk audit events", () => {
     });
   });
 
+  it("makes a blocked Paper simulation actionable", () => {
+    expect(
+      deskEvent({
+        id: 3,
+        occurredAt: "2026-10-30T00:00:00.000Z",
+        category: "paper",
+        action: "simulation",
+        outcome: "blocked",
+        detail: {
+          message:
+            "Paper can't simulate: the trading key for account 1757 has no SUI for gas. Send 0.1 SUI to 0xagent; Maker will keep reading the market.",
+        },
+      }),
+    ).toMatchObject({
+      severity: "warning",
+      sentence:
+        "Paper can't simulate: the trading key for account 1757 has no SUI for gas. Send 0.1 SUI to 0xagent; Maker will keep reading the market.",
+    });
+  });
+
   it("adds the bundle and account when the desk can resolve them", () => {
     expect(
       deskEvent(

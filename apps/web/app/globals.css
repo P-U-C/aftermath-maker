@@ -5447,6 +5447,18 @@ mysten-dapp-kit-connect-modal,
   font-weight: 650;
 }
 
+.bundle-lane-notice {
+  margin: 12px 18px 0;
+  padding: 9px 10px;
+  border: 1px solid var(--amber);
+  border-radius: 8px;
+  background: var(--amber-soft);
+  color: var(--ink);
+  font-size: 12px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
 .bundle-lane-motion {
   margin: 0;
 }
