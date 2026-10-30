@@ -13,6 +13,8 @@ const accountId = `0x${"33".repeat(32)}`;
 const marketId = `0x${"44".repeat(32)}`;
 const packageId = `0x${"55".repeat(32)}`;
 const collateralCoinType = `0x${"66".repeat(32)}::usdc::USDC`;
+const sessionAuthorityType =
+  "0x4e2df80a5e2fd0392878298c51ce15164222111ccea05504b9291b158f552677::authority::ASSISTANT";
 const oracleId = `0x${"77".repeat(32)}`;
 const size = 48_200_000_000n;
 const bidPrice = 21_511_000n;
@@ -46,18 +48,30 @@ function result(index: number) {
   return { Result: index, $kind: "Result" };
 }
 
+function nestedResult(command: number, resultIndex: number) {
+  return {
+    NestedResult: [command, resultIndex] as [number, number],
+    $kind: "NestedResult",
+  };
+}
+
 function moveCall(
   packageAddress: string,
   module: string,
   fn: string,
-  args: ReturnType<typeof input | typeof result>[],
+  args: Array<
+    | ReturnType<typeof input>
+    | ReturnType<typeof result>
+    | ReturnType<typeof nestedResult>
+  >,
+  typeArguments = [collateralCoinType],
 ) {
   return {
     MoveCall: {
       package: packageAddress,
       module,
       function: fn,
-      typeArguments: [collateralCoinType],
+      typeArguments,
       arguments: args,
     },
     $kind: "MoveCall",
@@ -104,15 +118,21 @@ function quoteFixture() {
           },
           $kind: "MoveCall",
         },
-        moveCall(packageId, "clearing_house", "start_session", [
-          input(2),
-          input(0),
-          input(1),
-          input(3),
-          input(3),
-          result(1),
-          input(4),
-        ]),
+        moveCall(
+          packageId,
+          "clearing_house",
+          "start_session",
+          [
+            input(2),
+            input(0),
+            input(1),
+            input(3),
+            input(3),
+            result(1),
+            input(4),
+          ],
+          [collateralCoinType, sessionAuthorityType],
+        ),
         moveCall(packageId, "clearing_house", "place_limit_order", [
           result(2),
           input(6),
@@ -133,14 +153,14 @@ function quoteFixture() {
           input(6),
           input(6),
         ]),
-        moveCall(packageId, "clearing_house", "end_session", [
-          result(2),
-          input(0),
-          input(1),
-          input(7),
-          input(6),
-        ]),
-        moveCall(packageId, "clearing_house", "share", []),
+        moveCall(
+          packageId,
+          "clearing_house",
+          "end_session",
+          [result(2), input(0), input(1), input(7), input(6)],
+          [collateralCoinType, sessionAuthorityType],
+        ),
+        moveCall(packageId, "clearing_house", "share", [nestedResult(5, 0)]),
       ],
     }),
   };
@@ -171,11 +191,54 @@ function mutate(
   return { getData: () => snapshot };
 }
 
+function quoteWithDeallocationFixture() {
+  return mutate(quoteFixture(), (snapshot) => {
+    snapshot.commands.unshift(
+      moveCall(
+        packageId,
+        "clearing_house",
+        "deallocate_free_collateral",
+        [input(2), input(0), input(1), input(3), input(3), input(4)],
+        [collateralCoinType, sessionAuthorityType],
+      ) as never,
+    );
+    snapshot.commands[3]!.MoveCall!.arguments[5] = result(2);
+    snapshot.commands[4]!.MoveCall!.arguments[0] = result(3);
+    snapshot.commands[5]!.MoveCall!.arguments[0] = result(3);
+    snapshot.commands[6]!.MoveCall!.arguments[0] = result(3);
+    snapshot.commands[7]!.MoveCall!.arguments[0] = nestedResult(6, 0);
+  });
+}
+
 describe("agent transaction intent", () => {
   it("accepts a quote whose command graph matches the exact intent", () => {
     expect(() =>
       assertAgentTransactionIntent(quoteFixture(), quoteIntent),
     ).not.toThrow();
+  });
+
+  it("accepts the current deallocation and session graph", () => {
+    expect(() =>
+      assertAgentTransactionIntent(quoteWithDeallocationFixture(), quoteIntent),
+    ).not.toThrow();
+  });
+
+  it("rejects an untrusted deallocation authority type", () => {
+    const changed = mutate(quoteWithDeallocationFixture(), (snapshot) => {
+      snapshot.commands[0]!.MoveCall!.typeArguments[1] = `0x${"99".repeat(32)}::authority::ASSISTANT`;
+    });
+    expect(() => assertAgentTransactionIntent(changed, quoteIntent)).toThrow(
+      "deallocate_free_collateral changed arguments or collateral type",
+    );
+  });
+
+  it("rejects a share detached from its ended session", () => {
+    const changed = mutate(quoteFixture(), (snapshot) => {
+      snapshot.commands[6]!.MoveCall!.arguments[0] = nestedResult(4, 0);
+    });
+    expect(() => assertAgentTransactionIntent(changed, quoteIntent)).toThrow(
+      "clearing-house share is not attached",
+    );
   });
 
   it("rejects a returned transaction with a moved quote price", () => {
@@ -242,6 +305,24 @@ describe("agent transaction intent", () => {
     );
   });
 
+  it("rejects an untrusted session authority type", () => {
+    const changed = mutate(quoteFixture(), (snapshot) => {
+      snapshot.commands[2]!.MoveCall!.typeArguments[1] = `0x${"99".repeat(32)}::authority::ASSISTANT`;
+    });
+    expect(() => assertAgentTransactionIntent(changed, quoteIntent)).toThrow(
+      "start_session changed arguments or collateral type",
+    );
+  });
+
+  it("rejects an untrusted end-session authority type", () => {
+    const changed = mutate(quoteFixture(), (snapshot) => {
+      snapshot.commands[5]!.MoveCall!.typeArguments[1] = `0x${"99".repeat(32)}::authority::ASSISTANT`;
+    });
+    expect(() => assertAgentTransactionIntent(changed, quoteIntent)).toThrow(
+      "end_session changed arguments or collateral type",
+    );
+  });
+
   it("rejects a builder fee changed by the API", () => {
     const changed = mutate(quoteFixture(), (snapshot) => {
       snapshot.inputs[14] = pure(bcs.u32().serialize(100_001).toBytes());
@@ -257,6 +338,7 @@ describe("agent transaction intent", () => {
       snapshot.commands[3]!.MoveCall!.arguments[1] = input(7);
       snapshot.commands[3]!.MoveCall!.arguments[3] = input(11);
       snapshot.commands[3]!.MoveCall!.arguments[4] = input(15);
+      snapshot.commands[5]!.MoveCall!.arguments[0] = nestedResult(4, 0);
       snapshot.inputs.push(pure(bcs.u64().serialize(1).toBytes()));
     });
     const intent: AgentTransactionIntent = {

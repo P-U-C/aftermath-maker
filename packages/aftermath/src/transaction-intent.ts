@@ -91,6 +91,7 @@ type Snapshot = {
 const SYSTEM_PACKAGE = normalizeSuiAddress("0x1");
 const ALLOWED_CLEARING_HOUSE_CALLS = new Set([
   "create_market_position",
+  "deallocate_free_collateral",
   "start_session",
   "try_cancel_orders",
   "place_limit_order",
@@ -99,12 +100,20 @@ const ALLOWED_CLEARING_HOUSE_CALLS = new Set([
 ]);
 const CLEARING_HOUSE_ARGUMENT_COUNTS: Record<string, number> = {
   create_market_position: 3,
+  deallocate_free_collateral: 6,
   start_session: 7,
   try_cancel_orders: 4,
   place_limit_order: 8,
   end_session: 5,
-  share: 0,
+  share: 1,
 };
+const SESSION_AUTHORITY_TYPE =
+  "0x4e2df80a5e2fd0392878298c51ce15164222111ccea05504b9291b158f552677::authority::ASSISTANT";
+const SESSION_AUTHORITY_CALLS = new Set([
+  "deallocate_free_collateral",
+  "start_session",
+  "end_session",
+]);
 const BCS_FEE_SCALE = 1_000_000_000;
 
 function fail(detail: string): never {
@@ -141,6 +150,22 @@ function resultIndex(argument: Argument | undefined, label: string): number {
     fail(`${label} must reference a command result`);
   }
   return argument.Result;
+}
+
+function nestedResultIndex(
+  argument: Argument | undefined,
+  label: string,
+): [number, number] {
+  const nested = argument?.NestedResult;
+  if (
+    !Array.isArray(nested) ||
+    nested.length !== 2 ||
+    !Number.isInteger(nested[0]) ||
+    !Number.isInteger(nested[1])
+  ) {
+    fail(`${label} must reference a nested command result`);
+  }
+  return nested;
 }
 
 function pureBytes(
@@ -347,10 +372,15 @@ function assertCommonStructure(
     ) {
       fail(`${call.module}::${call.function} is forbidden`);
     }
+    const expectedTypeArguments = SESSION_AUTHORITY_CALLS.has(call.function)
+      ? call.typeArguments.length === 2 &&
+        call.typeArguments[0] === intent.collateralCoinType &&
+        call.typeArguments[1] === SESSION_AUTHORITY_TYPE
+      : call.typeArguments.length === 1 &&
+        call.typeArguments[0] === intent.collateralCoinType;
     if (
       call.arguments.length !== CLEARING_HOUSE_ARGUMENT_COUNTS[call.function] ||
-      call.typeArguments.length !== 1 ||
-      call.typeArguments[0] !== intent.collateralCoinType
+      !expectedTypeArguments
     ) {
       fail(
         `clearing_house::${call.function} changed arguments or collateral type`,
@@ -358,9 +388,12 @@ function assertCommonStructure(
     }
 
     if (
-      ["create_market_position", "start_session", "try_cancel_orders"].includes(
-        call.function,
-      )
+      [
+        "create_market_position",
+        "deallocate_free_collateral",
+        "start_session",
+        "try_cancel_orders",
+      ].includes(call.function)
     ) {
       const marketId = objectForArgument(
         snapshot,
@@ -498,10 +531,35 @@ function assertSessionGraph(
         !marketId ||
         !expected.includes(marketId) ||
         createdMarkets.indexOf(marketId) !== index,
-    ) ||
-    shares.length !== positions.length
+    )
   ) {
     fail("market-position creation graph does not match placement intent");
+  }
+
+  if (shares.length !== endings.length) {
+    fail("clearing-house shares do not match ended sessions");
+  }
+  const sharedMarkets = new Set<string>();
+  for (const share of shares) {
+    const [endIndex, result] = nestedResultIndex(
+      share.arguments[0],
+      "clearing-house share",
+    );
+    if (result !== 0) {
+      fail("clearing-house share must use the primary ended session result");
+    }
+    const marketId = commandMarket.get(endIndex);
+    const ending = endings.find((call) => call.index === endIndex);
+    if (!ending || !marketId || sharedMarkets.has(marketId)) {
+      fail("clearing-house share is not attached to a verified ended session");
+    }
+    sharedMarkets.add(marketId);
+  }
+  if (
+    sharedMarkets.size !== expected.length ||
+    expected.some((marketId) => !sharedMarkets.has(marketId))
+  ) {
+    fail("clearing-house shares do not match placement intent");
   }
 }
 
