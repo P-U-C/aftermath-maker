@@ -709,14 +709,17 @@ export function MakerShell({
   }, [activeView]);
 
   useEffect(() => {
-    let icon = document.querySelector<HTMLLinkElement>('link[rel="icon"]');
-    if (!icon) {
-      icon = document.createElement("link");
+    const icons = Array.from(
+      document.querySelectorAll<HTMLLinkElement>('link[rel~="icon"]'),
+    );
+    const targets = icons.length
+      ? icons
+      : [document.head.appendChild(document.createElement("link"))];
+    for (const icon of targets) {
       icon.rel = "icon";
-      document.head.append(icon);
+      icon.type = "image/svg+xml";
+      icon.href = `/icon-${markState}.svg`;
     }
-    icon.type = "image/svg+xml";
-    icon.href = `/icon-${markState}.svg`;
   }, [markState]);
 
   const displayedMode = running ? mode : "stopped";

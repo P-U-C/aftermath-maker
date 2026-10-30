@@ -11,6 +11,7 @@ export type VenueDescriptor = {
     hedge: string;
   };
   explorerTxUrl: (digest: string) => string;
+  explorerObjectUrl: (objectId: string) => string;
   homeUrl: string;
   rewardsUrl: string;
 };
@@ -29,6 +30,8 @@ export const aftermathVenue: VenueDescriptor = {
   },
   explorerTxUrl: (digest) =>
     `https://suiscan.xyz/mainnet/tx/${encodeURIComponent(digest)}`,
+  explorerObjectUrl: (objectId) =>
+    `https://suiscan.xyz/mainnet/object/${encodeURIComponent(objectId)}`,
   homeUrl: "https://aftermath.finance/",
   rewardsUrl: "https://aftermath.finance/rewards",
 };

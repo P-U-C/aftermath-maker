@@ -224,7 +224,7 @@ export function AccessScreen({
                   : "Connect another wallet, or request access below if this is the address you want to use."
                 : requestOpen
                   ? "Send the wallet you will use and your X account. Requests are reviewed before a wallet is added to the on-chain access list."
-                  : "Maker runs a desk from your own accounts. It keeps a bid and ask resting on the markets you choose, hedges what fills, and stops itself at your limits. You set the strategy; it tells you what it is doing in plain words."}
+                  : "Name a strategy once, then reuse it in the bundles you run. A bundle pairs your accounts with that strategy and its markets. Paper follows the same checks and builds the same transaction as Live, but never signs it."}
             </p>
 
             {requestOpen ? (
@@ -375,57 +375,61 @@ export function AccessScreen({
             <header>
               <h2>Set up your desk in three moves.</h2>
               <p>
-                Each desk runs one or more bundles. A bundle is a pair of
-                accounts with one strategy, so you can run a few strategies side
-                by side.
+                Name a strategy once, then reuse it wherever it fits. A bundle
+                pairs that strategy with the accounts that run it, so one wallet
+                can keep a few independent desks side by side.
               </p>
             </header>
             <ol>
               <li>
                 <span>1</span>
-                <strong>Pair two accounts</strong>
-                <p>One rests your quotes. The other can reduce inventory.</p>
+                <strong>Name a strategy</strong>
+                <p>Set a goal, markets, size, limits, and hedging once.</p>
                 <div
                   className="access-mini access-mini-pair"
                   aria-hidden="true"
                 >
                   <div>
-                    <b>Maker</b>
-                    <small>Rests your bid and ask</small>
+                    <b>Strategy</b>
+                    <small>Goal, markets, limits</small>
                   </div>
-                  <i>+</i>
+                  <i>→</i>
                   <div>
-                    <b>Taker</b>
-                    <small>Hedges at market</small>
+                    <b>Core</b>
+                    <small>Reuse it in a bundle</small>
                   </div>
                 </div>
               </li>
               <li>
                 <span>2</span>
-                <strong>Pick a goal and markets</strong>
+                <strong>Make a bundle</strong>
                 <p>
-                  Choose rewards, profit, or both from the markets you trust.
+                  Pair accounts with a strategy. Bundles keep their own mode and
+                  run state.
                 </p>
                 <div
                   className="access-mini access-mini-picks"
                   aria-hidden="true"
                 >
-                  <b>Best for rewards</b>
-                  <span>Balanced</span>
-                  <span>Quiet books</span>
+                  <b>Core</b>
+                  <span>Maker #1745</span>
+                  <span>Taker #1746</span>
                 </div>
               </li>
               <li>
                 <span>3</span>
-                <strong>Paper first, then live</strong>
-                <p>See the same decision-making against the real book first.</p>
+                <strong>Paper first, then Live</strong>
+                <p>
+                  Paper runs every Live check and dry-runs the real transaction,
+                  but never signs it.
+                </p>
                 <div
                   className="access-mini access-mini-modes"
                   aria-hidden="true"
                 >
-                  <span>Observe</span>
+                  <span>Checks</span>
                   <b>Paper</b>
-                  <span>Live</span>
+                  <span>No signing</span>
                 </div>
               </li>
             </ol>
@@ -504,8 +508,7 @@ export function AccessScreen({
       )}
 
       <p className="access-risk-line">
-        Invite only. Perpetuals trading can lose money; Maker's limits reduce
-        that risk but do not remove it.
+        Maker can trade for you. Only your wallet can move money in or out.
       </p>
     </main>
   );
