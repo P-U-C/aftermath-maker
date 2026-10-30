@@ -330,6 +330,24 @@ export type HedgeExecution = {
   gasUsedMist: number;
 };
 
+export type PaperFill = {
+  orderKey: string;
+  role: "maker" | "hedge";
+  marketId: string;
+  symbol: string;
+  side: "bid" | "ask";
+  price: number;
+  sizeUsd: number;
+  occurredAt: string;
+};
+
+export type PaperPosition = {
+  role: "maker" | "hedge";
+  marketId: string;
+  symbol: string;
+  inventoryUsd: number;
+};
+
 export type BundleStatus = "stopped" | "running" | "paused" | "error";
 
 export type BundleWalletLimits = {
@@ -407,6 +425,8 @@ type BundleRow = {
 export const RETENTION_LIMITS = {
   auditEvents: 10_000,
   executions: 50_000,
+  paperOrders: 10_000,
+  paperFills: 50_000,
   makerOrders: 2_000,
   hedgeExecutions: 10_000,
   hedgedFills: 20_000,
@@ -416,6 +436,8 @@ export const RETENTION_LIMITS = {
 type RetentionTable =
   | "tenant_audit_events"
   | "tenant_executions"
+  | "tenant_paper_orders"
+  | "tenant_paper_fills"
   | "tenant_maker_orders"
   | "tenant_hedge_executions"
   | "tenant_hedged_fills";
@@ -432,6 +454,7 @@ export class Store {
     this.migrate();
     this.migrateLegacyTenant();
     this.migrateBundles();
+    this.migrateObserveModeToPaper();
   }
 
   private migrate() {
@@ -523,6 +546,41 @@ export class Store {
         gas_used_mist INTEGER
       );
 
+      -- Paper activity is deliberately separate from exchange-backed orders and
+      -- fills. It must never become input to cancellation or recovery logic.
+      CREATE TABLE IF NOT EXISTS tenant_paper_orders (
+        owner_address TEXT NOT NULL,
+        bundle_id TEXT NOT NULL DEFAULT '',
+        trial_id TEXT NOT NULL,
+        order_key TEXT NOT NULL,
+        market_id TEXT NOT NULL,
+        symbol TEXT NOT NULL,
+        side TEXT NOT NULL CHECK (side IN ('bid', 'ask')),
+        price REAL NOT NULL,
+        size_usd REAL NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('open', 'filled', 'replaced', 'cancelled')),
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (owner_address, bundle_id, trial_id, order_key)
+      );
+
+      CREATE TABLE IF NOT EXISTS tenant_paper_fills (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        owner_address TEXT NOT NULL,
+        bundle_id TEXT NOT NULL DEFAULT '',
+        trial_id TEXT NOT NULL,
+        order_key TEXT NOT NULL,
+        role TEXT NOT NULL CHECK (role IN ('maker', 'hedge')),
+        market_id TEXT NOT NULL,
+        symbol TEXT NOT NULL,
+        side TEXT NOT NULL CHECK (side IN ('bid', 'ask')),
+        price REAL NOT NULL,
+        size_usd REAL NOT NULL,
+        estimated INTEGER NOT NULL DEFAULT 1 CHECK (estimated = 1),
+        occurred_at TEXT NOT NULL,
+        UNIQUE (owner_address, bundle_id, trial_id, order_key)
+      );
+
       CREATE TABLE IF NOT EXISTS tenant_maker_orders (
         owner_address TEXT NOT NULL,
         order_id TEXT NOT NULL,
@@ -589,6 +647,10 @@ export class Store {
         ON tenant_audit_events(owner_address, occurred_at DESC);
       CREATE INDEX IF NOT EXISTS tenant_executions_owner_time
         ON tenant_executions(owner_address, occurred_at DESC);
+      CREATE INDEX IF NOT EXISTS tenant_paper_orders_scope_status
+        ON tenant_paper_orders(owner_address, bundle_id, trial_id, status, updated_at DESC);
+      CREATE INDEX IF NOT EXISTS tenant_paper_fills_scope_time
+        ON tenant_paper_fills(owner_address, bundle_id, trial_id, occurred_at DESC);
       CREATE INDEX IF NOT EXISTS tenant_maker_orders_owner_time
         ON tenant_maker_orders(owner_address, posted_at DESC);
       CREATE INDEX IF NOT EXISTS tenant_hedge_executions_owner_time
@@ -1756,6 +1818,85 @@ export class Store {
     migrate();
   }
 
+  /**
+   * Observe was a public mode before RFC 0003. Keep its historical execution
+   * rows intact, but make every editable bundle a deliberately stopped Paper
+   * bundle. This is a one-way, per-row migration so a malformed saved config
+   * cannot prevent the control service from starting for other wallets.
+   */
+  private migrateObserveModeToPaper(): void {
+    const rows = this.db
+      .prepare(
+        `SELECT id, owner_address, name, config, mode, updated_at
+         FROM bundles
+         WHERE archived_at IS NULL`,
+      )
+      .all() as Array<{
+      id: string;
+      owner_address: string;
+      name: string;
+      config: string;
+      mode: MakerConfig["mode"];
+      updated_at: string;
+    }>;
+    if (!rows.length) return;
+
+    const updateBundle = this.db.prepare(
+      `UPDATE bundles
+       SET config = ?, mode = 'paper', status = 'stopped',
+           last_error = NULL, updated_at = ?
+       WHERE id = ? AND owner_address = ?`,
+    );
+    const updateCoreMirror = this.db.prepare(
+      `INSERT INTO tenant_settings (owner_address, key, value, updated_at)
+       VALUES (?, 'maker_config', ?, ?)
+       ON CONFLICT(owner_address, key) DO UPDATE SET
+         value = excluded.value, updated_at = excluded.updated_at`,
+    );
+    const record = this.db.prepare(
+      `INSERT INTO tenant_audit_events
+        (owner_address, occurred_at, category, action, outcome, detail)
+       VALUES (?, ?, 'runtime', 'mode.observe-migrated', ?, ?)`,
+    );
+
+    for (const row of rows) {
+      const now = new Date().toISOString();
+      try {
+        const config = makerConfigSchema.parse(parse<unknown>(row.config));
+        if (row.mode !== "observe" && config.mode !== "observe") continue;
+        const paperConfig = makerConfigSchema.parse({
+          ...config,
+          mode: "paper",
+        });
+        this.db.transaction(() => {
+          updateBundle.run(
+            stringify(paperConfig),
+            now,
+            row.id,
+            row.owner_address,
+          );
+          if (row.name === "Core") {
+            updateCoreMirror.run(
+              row.owner_address,
+              stringify(paperConfig),
+              now,
+            );
+          }
+          record.run(
+            row.owner_address,
+            now,
+            "success",
+            stringify({ bundleId: row.id, from: "observe", to: "paper" }),
+          );
+        })();
+      } catch {
+        // Leave an unreadable bundle alone rather than guessing a trading
+        // configuration. The existing bundle-migration audit remains the
+        // source of truth for malformed historical rows.
+      }
+    }
+  }
+
   forTenant(ownerAddress: string): TenantStore {
     return new TenantStore(this.db, normalizeAddress(ownerAddress));
   }
@@ -2210,6 +2351,8 @@ export class TenantStore {
     this.db.transaction(() => {
       this.pruneTable("tenant_audit_events", applied.auditEvents);
       this.pruneTable("tenant_executions", applied.executions);
+      this.pruneTable("tenant_paper_orders", applied.paperOrders);
+      this.pruneTable("tenant_paper_fills", applied.paperFills);
       this.pruneTable("tenant_maker_orders", applied.makerOrders);
       this.pruneTable("tenant_hedge_executions", applied.hedgeExecutions);
       this.pruneTable("tenant_hedged_fills", applied.hedgedFills);
@@ -2800,9 +2943,7 @@ export class TenantStore {
         throw new Error("Bundle was not found");
       }
       if (bundle.name !== "Core" && config.mode === "live") {
-        throw new Error(
-          "Additional bundles can only use Observe or Paper mode",
-        );
+        throw new Error("Additional bundles can only use Paper mode");
       }
       const walletLimits = this.getWalletLimits();
       if (!walletLimits) {
@@ -3461,9 +3602,7 @@ export class TenantStore {
         throw new Error("Bundle name must be between 1 and 80 characters");
       }
       if (inputs.config.mode === "live") {
-        throw new Error(
-          "Additional bundles can only use Observe or Paper mode",
-        );
+        throw new Error("Additional bundles can only use Paper mode");
       }
       const active = this.db
         .prepare(
@@ -3542,9 +3681,7 @@ export class TenantStore {
         throw new Error("Bundle name must be between 1 and 80 characters");
       }
       if (inputs.mode === "live") {
-        throw new Error(
-          "Additional bundles can only use Observe or Paper mode",
-        );
+        throw new Error("Additional bundles can only use Paper mode");
       }
       const active = this.db
         .prepare(
@@ -3665,9 +3802,7 @@ export class TenantStore {
           : inputs.takerAccountId;
       const mode = inputs.mode ?? current.mode;
       if (mode === "live" && current.name !== "Core") {
-        throw new Error(
-          "Additional bundles can only use Observe or Paper mode",
-        );
+        throw new Error("Additional bundles can only use Paper mode");
       }
       const strategyId =
         inputs.strategyId === undefined
@@ -4178,6 +4313,303 @@ export class TenantStore {
         inputs.gasUsedMist ?? null,
       );
     this.pruneTable("tenant_executions", RETENTION_LIMITS.executions);
+  }
+
+  private paperBundleId(): string {
+    return this.attributedBundleId() ?? "";
+  }
+
+  /** Replace only the simulated resting orders for this market and scope. */
+  recordPaperQuote(inputs: {
+    trialId: string;
+    marketId: string;
+    symbol: string;
+    bidPrice: number;
+    askPrice: number;
+    sizeUsd: number;
+  }): void {
+    const bundleId = this.paperBundleId();
+    const now = new Date().toISOString();
+    const quoteKey = `${now}:${Math.random().toString(36).slice(2, 10)}`;
+    const write = this.db.transaction(() => {
+      this.db
+        .prepare(
+          `UPDATE tenant_paper_orders
+           SET status = 'replaced', updated_at = ?
+           WHERE owner_address = ? AND bundle_id = ? AND trial_id = ?
+             AND market_id = ? AND status = 'open'`,
+        )
+        .run(now, this.ownerAddress, bundleId, inputs.trialId, inputs.marketId);
+      const insert = this.db.prepare(
+        `INSERT INTO tenant_paper_orders
+          (owner_address, bundle_id, trial_id, order_key, market_id, symbol,
+           side, price, size_usd, status, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?)`,
+      );
+      insert.run(
+        this.ownerAddress,
+        bundleId,
+        inputs.trialId,
+        `${quoteKey}:bid`,
+        inputs.marketId,
+        inputs.symbol,
+        "bid",
+        inputs.bidPrice,
+        inputs.sizeUsd,
+        now,
+        now,
+      );
+      insert.run(
+        this.ownerAddress,
+        bundleId,
+        inputs.trialId,
+        `${quoteKey}:ask`,
+        inputs.marketId,
+        inputs.symbol,
+        "ask",
+        inputs.askPrice,
+        inputs.sizeUsd,
+        now,
+        now,
+      );
+    });
+    write();
+    this.pruneTable("tenant_paper_orders", RETENTION_LIMITS.paperOrders);
+  }
+
+  /**
+   * A Paper fill is an estimate only: it occurs when a later observed book
+   * crosses a simulated resting order. No chain state or real order history is
+   * ever read back as a Paper fill.
+   */
+  matchPaperOrders(inputs: {
+    trialId: string;
+    marketId: string;
+    bestBid: number;
+    bestAsk: number;
+  }): PaperFill[] {
+    const bundleId = this.paperBundleId();
+    const rows = this.db
+      .prepare(
+        `SELECT order_key, market_id, symbol, side, price, size_usd
+         FROM tenant_paper_orders
+         WHERE owner_address = ? AND bundle_id = ? AND trial_id = ?
+           AND market_id = ? AND status = 'open'
+         ORDER BY created_at ASC, order_key ASC`,
+      )
+      .all(
+        this.ownerAddress,
+        bundleId,
+        inputs.trialId,
+        inputs.marketId,
+      ) as Array<{
+      order_key: string;
+      market_id: string;
+      symbol: string;
+      side: "bid" | "ask";
+      price: number;
+      size_usd: number;
+    }>;
+    const fills = rows.filter(
+      (order) =>
+        (order.side === "bid" && inputs.bestAsk <= order.price) ||
+        (order.side === "ask" && inputs.bestBid >= order.price),
+    );
+    if (!fills.length) return [];
+    const now = new Date().toISOString();
+    const write = this.db.transaction(() => {
+      const close = this.db.prepare(
+        `UPDATE tenant_paper_orders
+         SET status = 'filled', updated_at = ?
+         WHERE owner_address = ? AND bundle_id = ? AND trial_id = ?
+           AND order_key = ? AND status = 'open'`,
+      );
+      const insert = this.db.prepare(
+        `INSERT OR IGNORE INTO tenant_paper_fills
+          (owner_address, bundle_id, trial_id, order_key, role, market_id,
+           symbol, side, price, size_usd, occurred_at)
+         VALUES (?, ?, ?, ?, 'maker', ?, ?, ?, ?, ?, ?)`,
+      );
+      for (const fill of fills) {
+        close.run(
+          now,
+          this.ownerAddress,
+          bundleId,
+          inputs.trialId,
+          fill.order_key,
+        );
+        insert.run(
+          this.ownerAddress,
+          bundleId,
+          inputs.trialId,
+          fill.order_key,
+          fill.market_id,
+          fill.symbol,
+          fill.side,
+          fill.price,
+          fill.size_usd,
+          now,
+        );
+      }
+    });
+    write();
+    this.pruneTable("tenant_paper_fills", RETENTION_LIMITS.paperFills);
+    return fills.map((fill) => ({
+      orderKey: fill.order_key,
+      role: "maker",
+      marketId: fill.market_id,
+      symbol: fill.symbol,
+      side: fill.side,
+      price: fill.price,
+      sizeUsd: fill.size_usd,
+      occurredAt: now,
+    }));
+  }
+
+  /** Record the estimated opposite-side hedge without sending a transaction. */
+  recordPaperHedge(inputs: { trialId: string; makerFill: PaperFill }): void {
+    const bundleId = this.paperBundleId();
+    this.db
+      .prepare(
+        `INSERT OR IGNORE INTO tenant_paper_fills
+          (owner_address, bundle_id, trial_id, order_key, role, market_id,
+           symbol, side, price, size_usd, occurred_at)
+         VALUES (?, ?, ?, ?, 'hedge', ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        this.ownerAddress,
+        bundleId,
+        inputs.trialId,
+        `hedge:${inputs.makerFill.orderKey}`,
+        inputs.makerFill.marketId,
+        inputs.makerFill.symbol,
+        inputs.makerFill.side === "bid" ? "ask" : "bid",
+        inputs.makerFill.price,
+        inputs.makerFill.sizeUsd,
+        new Date().toISOString(),
+      );
+    this.pruneTable("tenant_paper_fills", RETENTION_LIMITS.paperFills);
+  }
+
+  getPaperState(trialId: string): {
+    openOrders: number;
+    fills: number;
+    hedges: number;
+    positions: PaperPosition[];
+  } {
+    const bundleId = this.paperBundleId();
+    const open = this.db
+      .prepare(
+        `SELECT COUNT(*) AS count FROM tenant_paper_orders
+         WHERE owner_address = ? AND bundle_id = ? AND trial_id = ?
+           AND status = 'open'`,
+      )
+      .get(this.ownerAddress, bundleId, trialId) as { count: number };
+    const fills = this.db
+      .prepare(
+        `SELECT COUNT(*) AS count FROM tenant_paper_fills
+         WHERE owner_address = ? AND bundle_id = ? AND trial_id = ?`,
+      )
+      .get(this.ownerAddress, bundleId, trialId) as { count: number };
+    const hedges = this.db
+      .prepare(
+        `SELECT COUNT(*) AS count FROM tenant_paper_fills
+         WHERE owner_address = ? AND bundle_id = ? AND trial_id = ?
+           AND role = 'hedge'`,
+      )
+      .get(this.ownerAddress, bundleId, trialId) as { count: number };
+    const positions = this.db
+      .prepare(
+        `SELECT role, market_id, symbol,
+                SUM(CASE WHEN side = 'bid' THEN size_usd ELSE -size_usd END)
+                  AS inventory_usd
+         FROM tenant_paper_fills
+         WHERE owner_address = ? AND bundle_id = ? AND trial_id = ?
+         GROUP BY role, market_id, symbol
+         HAVING ABS(inventory_usd) > 0.000001
+         ORDER BY market_id ASC, role ASC`,
+      )
+      .all(this.ownerAddress, bundleId, trialId) as Array<{
+      role: "maker" | "hedge";
+      market_id: string;
+      symbol: string;
+      inventory_usd: number;
+    }>;
+    return {
+      openOrders: open.count,
+      fills: fills.count,
+      hedges: hedges.count,
+      positions: positions.map((position) => ({
+        role: position.role,
+        marketId: position.market_id,
+        symbol: position.symbol,
+        inventoryUsd: position.inventory_usd,
+      })),
+    };
+  }
+
+  listPaperFills(
+    inputs: { trialId?: string; limit?: number } = {},
+  ): PaperFill[] {
+    const bundleId = this.paperBundleId();
+    const limit = inputs.limit ?? 200;
+    if (!Number.isInteger(limit) || limit < 1 || limit > 10_000) {
+      throw new Error("Paper fill limit must be between 1 and 10000");
+    }
+    const rows = this.db
+      .prepare(
+        `SELECT order_key, role, market_id, symbol, side, price, size_usd,
+                occurred_at
+         FROM tenant_paper_fills
+         WHERE owner_address = ? AND bundle_id = ?
+           AND (? IS NULL OR trial_id = ?)
+         ORDER BY occurred_at DESC, id DESC
+         LIMIT ?`,
+      )
+      .all(
+        this.ownerAddress,
+        bundleId,
+        inputs.trialId ?? null,
+        inputs.trialId ?? null,
+        limit,
+      ) as Array<{
+      order_key: string;
+      role: "maker" | "hedge";
+      market_id: string;
+      symbol: string;
+      side: "bid" | "ask";
+      price: number;
+      size_usd: number;
+      occurred_at: string;
+    }>;
+    return rows.map((row) => ({
+      orderKey: row.order_key,
+      role: row.role,
+      marketId: row.market_id,
+      symbol: row.symbol,
+      side: row.side,
+      price: row.price,
+      sizeUsd: row.size_usd,
+      occurredAt: row.occurred_at,
+    }));
+  }
+
+  cancelPaperOrders(trialId?: string): void {
+    const bundleId = this.paperBundleId();
+    this.db
+      .prepare(
+        `UPDATE tenant_paper_orders
+         SET status = 'cancelled', updated_at = ?
+         WHERE owner_address = ? AND bundle_id = ? AND status = 'open'
+           AND (? IS NULL OR trial_id = ?)`,
+      )
+      .run(
+        new Date().toISOString(),
+        this.ownerAddress,
+        bundleId,
+        trialId ?? null,
+        trialId ?? null,
+      );
   }
 
   trackMakerOrders(inputs: {

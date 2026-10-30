@@ -122,7 +122,7 @@ describe("strategy trial planning", () => {
       originalConfig,
       dashboards,
       availableCollateralUsd: 7.48,
-      mode: "live",
+      mode: "paper",
       cadenceMs: 2_000,
     });
 
@@ -144,7 +144,7 @@ describe("strategy trial planning", () => {
     expect(plan.rounds.map((round) => round.spreadBps)).toEqual([10, 16, 12]);
     for (const round of plan.rounds) {
       expect(round.quoteSizeUsd).toBe(1.04);
-      expect(round.config.mode).toBe("live");
+      expect(round.config.mode).toBe("paper");
       expect(round.config.refreshMs).toBe(2_000);
       expect(round.config.maxQuoteAgeMs).toBe(35_000);
       expect(round.config.staleBookMs).toBe(3_000);
@@ -180,7 +180,7 @@ describe("strategy trial planning", () => {
           both: dashboard("both"),
         },
         availableCollateralUsd: 7.48,
-        mode: "live",
+        mode: "paper",
         cadenceMs: 2_000,
       }),
     ).toThrow("needs at least $1.10 per quote");

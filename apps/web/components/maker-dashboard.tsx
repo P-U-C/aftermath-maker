@@ -254,6 +254,15 @@ type Snapshot = {
     lastDecision: "quoted" | "switched" | "held" | "rebalanced" | null;
     lastExecutionAt: string | null;
   };
+  paper: {
+    estimated: boolean;
+    openOrders: number;
+    fills: number;
+    hedges: number;
+    makerInventoryUsd: number;
+    hedgeInventoryUsd: number;
+    grossExposureUsd: number;
+  };
   hedge: {
     enabled: boolean;
     state: "off" | "waiting" | "ready" | "hedging" | "error";
@@ -482,6 +491,7 @@ type MakerFill = {
   protocolFeesUsd: number;
   estimatedBuilderFeeUsd: number;
   orderId: string;
+  estimated: boolean;
 };
 
 type PerformancePeriod = "1D" | "EPOCH" | "ALL";
@@ -520,6 +530,12 @@ type Performance = {
     netAfterKnownCostsUsd: number;
   };
   combinedNetAfterKnownCostsUsd: number;
+  paper: {
+    estimated: boolean;
+    makerFills: number;
+    hedgeFills: number;
+    notionalUsd: number;
+  };
   volumeByMarket: Array<{
     marketId: string;
     symbol: string;
@@ -599,7 +615,7 @@ type LiveGates = {
 };
 
 type StrategyTrialResult = {
-  mode: "paper" | "live";
+  mode: "paper";
   marketId: string;
   symbol: string;
   cadenceMs: number;
@@ -745,7 +761,7 @@ const strategyProfiles = [
 const defaultConfig: MakerConfig = {
   markets: [],
   collateralCoinType: USDC,
-  mode: "observe",
+  mode: "paper",
   rotationMode: "portfolio",
   strategyObjective: "both",
   strategyProfile: "balanced",
@@ -936,8 +952,6 @@ function DashboardBody() {
   });
   const [strategyStep, setStrategyStep] = useState(0);
   const [advancedOpen, setAdvancedOpen] = useState(false);
-  const [trialMode, setTrialMode] = useState<"paper" | "live">("paper");
-  const [trialArmed, setTrialArmed] = useState(false);
   const [trialResult, setTrialResult] = useState<StrategyTrialResult | null>(
     null,
   );
@@ -1354,7 +1368,7 @@ function DashboardBody() {
     draft: {
       makerAccountId: string;
       takerAccountId: string;
-      mode: "observe" | "paper";
+      mode: "paper";
       strategyId: string | null;
       updatedAt: string;
     },
@@ -2321,7 +2335,7 @@ function DashboardBody() {
       );
       return {
         ...current,
-        mode: "observe",
+        mode: "paper",
         strategyObjective: config.strategyObjective,
         markets: plannedMarkets,
         maxInventoryUsd: stagedMaxInventory,
@@ -2330,7 +2344,7 @@ function DashboardBody() {
       };
     });
     setNotice(
-      `${config.strategyObjective[0]?.toUpperCase()}${config.strategyObjective.slice(1)} rotation staged across ${candidates.length} market${candidates.length === 1 ? "" : "s"} in Observe mode using ${config.rotationMode === "single-slot" ? "one live pair" : "portfolio quotes"}. Review, then save.`,
+      `${config.strategyObjective[0]?.toUpperCase()}${config.strategyObjective.slice(1)} rotation staged across ${candidates.length} market${candidates.length === 1 ? "" : "s"} in Paper mode using ${config.rotationMode === "single-slot" ? "one market at a time" : "all selected markets"}. Review, then save.`,
       "success",
     );
   }
@@ -2474,56 +2488,25 @@ function DashboardBody() {
     }
   }
 
-  async function runStrategyTrial() {
+  async function runPaperTrial() {
     if (configDirty) {
       setNotice(
-        "Save strategy changes before starting the three-cycle trial.",
-        "warning",
-      );
-      return;
-    }
-    if (snapshot?.running) {
-      setNotice(
-        "Stop the engine before starting the three-cycle trial.",
-        "warning",
-      );
-      return;
-    }
-    if (
-      trialMode === "live" &&
-      (!liveGates.liveTradingEnabled || !liveGates.mainnetAllowed)
-    ) {
-      setNotice(
-        "Both deployment gates must be enabled for a live trial.",
-        "warning",
-      );
-      return;
-    }
-    if (trialMode === "live" && !trialArmed) {
-      setTrialArmed(true);
-      setNotice(
-        "Live trial will place three short quote rounds, cancel between policies, then stop and flatten both accounts. Confirm to proceed.",
+        "Save strategy changes before starting the Paper test run.",
         "warning",
       );
       return;
     }
 
-    await mutate("strategy-trial", async () => {
+    await mutate("paper-trial", async () => {
       const response = await request<{
         result: StrategyTrialResult;
         snapshot: Snapshot;
-      }>("api/runtime/strategy-trial", {
+      }>("api/runtime/paper-trial", {
         method: "POST",
         body: JSON.stringify({
-          mode: trialMode,
           cadenceMs: 2_000,
-          maxSlippageBps: 500,
-          ...(trialMode === "live"
-            ? { confirmation: "RUN 3 LIVE CYCLES AND FLATTEN" }
-            : {}),
         }),
       });
-      setTrialArmed(false);
       setTrialResult(response.result);
       setConfig(response.result.restoredConfig);
       setSavedConfig(response.result.restoredConfig);
@@ -2534,7 +2517,7 @@ function DashboardBody() {
         ),
       ]);
       setNotice(
-        `${trialMode === "live" ? "Live" : "Paper"} trial completed: ${response.result.rounds.length} rounds on ${response.result.symbol}${trialMode === "live" ? ", followed by cancellation and reduce-only recovery" : ""}.`,
+        `Paper test run completed: ${response.result.rounds.length} dry-run cycles on ${response.result.symbol}.`,
         "success",
       );
     });
@@ -2776,13 +2759,11 @@ function DashboardBody() {
   );
   const trialBlocker = Boolean(busy)
     ? "Maker is finishing another action."
-    : snapshot?.running
-      ? "Stop all before running the test."
-      : configDirty
-        ? "Save strategy changes before running the test."
-        : !onboardingComplete
-          ? "Finish account setup before running the test."
-          : null;
+    : configDirty
+      ? "Save strategy changes before running the test."
+      : !onboardingComplete
+        ? "Finish account setup before running the test."
+        : null;
   const activeHedgeAccount = setup.accounts.find(
     (managed) => managed.accountId === config.hedge.accountId,
   );
@@ -3112,6 +3093,7 @@ function DashboardBody() {
       notionalUsd: fill.notionalUsd,
       realizedPnlUsd: fill.realizedPnlUsd,
       txDigest: fill.txDigest,
+      estimated: fill.estimated,
     })) ?? [];
   const deskNarration = narrate({
     name: "Maker",
@@ -3280,7 +3262,7 @@ function DashboardBody() {
       activeView={displayedView}
       selectView={selectView}
       markState={markState}
-      mode={snapshot?.mode ?? "observe"}
+      mode={snapshot?.mode ?? "paper"}
       running={Boolean(snapshot?.running || anyBundleRunning)}
       canStopAll={canStopAll}
       stopState={stopState}
@@ -3772,6 +3754,17 @@ function DashboardBody() {
         lastFill={deskFills[0] ?? null}
         narration={deskNarration}
         mode={snapshot?.mode ?? deskConfig.mode}
+        paper={
+          snapshot?.paper ?? {
+            estimated: false,
+            openOrders: 0,
+            fills: 0,
+            hedges: 0,
+            makerInventoryUsd: 0,
+            hedgeInventoryUsd: 0,
+            grossExposureUsd: 0,
+          }
+        }
         market={{
           symbol:
             snapshot?.market.symbol ?? activeMarket?.symbol ?? "Pick a market",
@@ -4162,7 +4155,7 @@ function DashboardBody() {
               >
                 <legend>Mode</legend>
                 <div className="segments">
-                  {(["observe", "paper", "live"] as const).map((mode) => (
+                  {(["paper", "live"] as const).map((mode) => (
                     <button
                       key={mode}
                       type="button"
@@ -4328,73 +4321,26 @@ function DashboardBody() {
               aria-label="Three-cycle strategy trial"
             >
               <div className="strategy-trial-heading">
-                <span>Test run: 3 cycles</span>
-                <strong>Farming / profit / both</strong>
+                <span>Paper test run: 3 cycles</span>
+                <strong>Farming / profit / both · estimated</strong>
               </div>
               <div className="strategy-trial-actions">
-                <div
-                  className="trial-mode-segments"
-                  role="group"
-                  aria-label="Trial mode"
-                >
-                  <button
-                    type="button"
-                    className={trialMode === "paper" ? "selected" : ""}
-                    aria-pressed={trialMode === "paper"}
-                    onClick={() => {
-                      setTrialMode("paper");
-                      setTrialArmed(false);
-                    }}
-                  >
-                    Paper
-                  </button>
-                  <button
-                    type="button"
-                    className={trialMode === "live" ? "selected" : ""}
-                    aria-pressed={trialMode === "live"}
-                    onClick={() => {
-                      setTrialMode("live");
-                      setTrialArmed(false);
-                    }}
-                    disabled={
-                      !liveGates.liveTradingEnabled || !liveGates.mainnetAllowed
-                    }
-                  >
-                    Live
-                  </button>
-                </div>
                 <button
                   type="button"
-                  className={trialArmed ? "button danger" : "button secondary"}
-                  onClick={() => void runStrategyTrial()}
+                  className="button secondary"
+                  onClick={() => void runPaperTrial()}
                   disabled={Boolean(trialBlocker)}
                 >
                   <TimerReset size={16} aria-hidden="true" />
-                  {busy === "strategy-trial"
+                  {busy === "paper-trial"
                     ? "Running..."
-                    : trialArmed
-                      ? "Confirm live"
-                      : "Test run: 3 cycles"}
+                    : "Paper test run: 3 cycles"}
                 </button>
-                {trialArmed && (
-                  <button
-                    type="button"
-                    className="button secondary"
-                    onClick={() => setTrialArmed(false)}
-                    disabled={Boolean(busy)}
-                  >
-                    Cancel
-                  </button>
-                )}
               </div>
               {trialBlocker && (
                 <p className="trial-blocker" role="status">
                   {trialBlocker}{" "}
-                  {snapshot?.running ? (
-                    <button type="button" onClick={() => void stopRuntime()}>
-                      Stop all
-                    </button>
-                  ) : configDirty ? (
+                  {configDirty ? (
                     <button
                       type="button"
                       onClick={() => void saveConfig()}
@@ -5183,48 +5129,9 @@ function DashboardBody() {
             <section className="strategy-section strategy-capital-section strategy-step strategy-step-size">
               <h2>Capital</h2>
               <p className="strategy-section-copy">
-                Set execution mode, order size, and the minimum edge quoted on
-                each side.
+                Set order size and the minimum edge quoted on each side. Choose
+                Paper or Live in Review.
               </p>
-              <fieldset className="strategy-mode-fieldset">
-                <legend>Mode</legend>
-                <div className="segments">
-                  {(["observe", "paper", "live"] as const).map((mode) => (
-                    <button
-                      key={mode}
-                      type="button"
-                      className={config.mode === mode ? "selected" : ""}
-                      aria-pressed={config.mode === mode}
-                      disabled={mode === "live" && !liveAvailable}
-                      title={
-                        mode === "live" && !liveAvailable
-                          ? "Live trading is off on this server"
-                          : undefined
-                      }
-                      onClick={() => {
-                        if (mode === "live") {
-                          setLiveSheetOpen(true);
-                        } else {
-                          setConfig((current) => ({ ...current, mode }));
-                        }
-                      }}
-                    >
-                      {mode}
-                    </button>
-                  ))}
-                </div>
-                {!liveAvailable && (
-                  <small>Live trading is off on this server</small>
-                )}
-                <button
-                  className="strategy-live-review"
-                  type="button"
-                  onClick={() => setLiveSheetOpen(true)}
-                >
-                  Review live setup
-                </button>
-              </fieldset>
-
               <div className="field-pair">
                 <label>
                   <span>Quote $ on each side</span>
@@ -6292,6 +6199,14 @@ function DashboardBody() {
               never in an individual bundle.
             </p>
           )}
+          {performance?.paper.estimated && (
+            <p className="performance-before-bundles" role="status">
+              Paper estimates: {performance.paper.makerFills} Maker fills and{" "}
+              {performance.paper.hedgeFills} hedges across{" "}
+              {money(performance.paper.notionalUsd)}. They are sampled
+              book-crossing estimates, not exchange executions.
+            </p>
+          )}
           <div className="performance-v3-stats">
             <div>
               <span>Net result</span>
@@ -6488,7 +6403,10 @@ function DashboardBody() {
                                       key={`${fill.txDigest}:${fill.orderId}`}
                                     >
                                       {formatEventTimestamp(fill.occurredAt)} ·{" "}
-                                      {fill.side === "bid" ? "Bought" : "Sold"}{" "}
+                                      {fill.estimated ? "Estimated " : ""}
+                                      {fill.side === "bid"
+                                        ? "Bought"
+                                        : "Sold"}{" "}
                                       {money(fill.notionalUsd)}
                                     </span>
                                   ))}

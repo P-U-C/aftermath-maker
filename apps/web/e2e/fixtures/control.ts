@@ -90,6 +90,15 @@ export type Snapshot = {
     lastDecision: "quoted" | "switched" | "held" | "rebalanced" | null;
     lastExecutionAt: string | null;
   };
+  paper: {
+    estimated: boolean;
+    openOrders: number;
+    fills: number;
+    hedges: number;
+    makerInventoryUsd: number;
+    hedgeInventoryUsd: number;
+    grossExposureUsd: number;
+  };
   hedge: {
     enabled: boolean;
     state: "off" | "waiting" | "ready" | "hedging" | "error";
@@ -212,6 +221,12 @@ export type Performance = {
     netAfterKnownCostsUsd: number;
   };
   combinedNetAfterKnownCostsUsd: number;
+  paper: {
+    estimated: boolean;
+    makerFills: number;
+    hedgeFills: number;
+    notionalUsd: number;
+  };
   volumeByMarket: Array<{
     marketId: string;
     symbol: string;
@@ -235,6 +250,7 @@ export type Performance = {
     protocolFeesUsd: number;
     estimatedBuilderFeeUsd: number;
     orderId: string;
+    estimated: boolean;
   }>;
   note: string;
 };
@@ -747,6 +763,15 @@ function snapshot(
       lastDecision: running ? "quoted" : null,
       lastExecutionAt: running ? "2026-10-27T17:08:30.000Z" : null,
     },
+    paper: {
+      estimated: mode === "paper",
+      openOrders: mode === "paper" && running ? 2 : 0,
+      fills: 0,
+      hedges: 0,
+      makerInventoryUsd: mode === "paper" ? 1.04 : 0,
+      hedgeInventoryUsd: 0,
+      grossExposureUsd: mode === "paper" ? 1.04 : 0,
+    },
     hedge: {
       enabled: setupComplete,
       state: setupComplete ? "ready" : "off",
@@ -817,6 +842,12 @@ const performance: Performance = {
     netAfterKnownCostsUsd: -0.008479,
   },
   combinedNetAfterKnownCostsUsd: -0.01541,
+  paper: {
+    estimated: false,
+    makerFills: 0,
+    hedgeFills: 0,
+    notionalUsd: 0,
+  },
   volumeByMarket: [
     {
       marketId: marketIds.MON,
@@ -843,6 +874,7 @@ const performance: Performance = {
       protocolFeesUsd: -0.000052,
       estimatedBuilderFeeUsd: 0.000104,
       orderId: "9001",
+      estimated: false,
     },
     {
       occurredAt: "2026-10-27T16:59:00.000Z",
@@ -857,6 +889,7 @@ const performance: Performance = {
       protocolFeesUsd: -0.000052,
       estimatedBuilderFeeUsd: 0.000104,
       orderId: "9002",
+      estimated: false,
     },
   ],
   note: "Net known result includes attributed fills and known fees, not total profit.",
@@ -1061,7 +1094,7 @@ function fixture(
 
 const signedOut = fixture(
   { status: 401, body: { error: "Authentication required" } },
-  snapshot("observe", false, false),
+  snapshot("paper", false, false),
   null,
   { setup: null, accounts: [], agent: null },
 );
@@ -1071,14 +1104,14 @@ const notOnList = fixture(
     status: 403,
     body: { error: "This wallet is not on the public access list" },
   },
-  snapshot("observe", false, false),
+  snapshot("paper", false, false),
   null,
   { setup: null, accounts: [], agent: null },
 );
 
 const onboarding = fixture(
   { status: 200, body: identity },
-  snapshot("observe", false, false),
+  snapshot("paper", false, false),
   {
     ...config,
     markets: [],

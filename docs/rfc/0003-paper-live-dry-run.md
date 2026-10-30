@@ -1,6 +1,6 @@
 # RFC 0003: Paper that mimics Live
 
-- **Status:** Proposed — approval required before implementation
+- **Status:** Approved — implementation in progress
 - **Date:** 2026-10-29
 - **Scope:** Replace the user-facing Observe mode with Paper and make Paper a live-like, non-signing dry run.
 
