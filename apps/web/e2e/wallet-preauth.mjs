@@ -49,6 +49,9 @@ const scenarios = {
     signPersonalMessage: "resolve",
     accessRequestToken: "fixture-access-request-token",
   },
+  // No injected extension: the Slush browser bridge must still be offered on
+  // a phone, where a native wallet app is not a browser extension.
+  slush: { mobileBridge: true },
 };
 
 const viewports = [
@@ -94,6 +97,22 @@ async function routeControlApi(page, scenario) {
 
   await page.route("**/*", async (route) => {
     const url = new URL(route.request().url());
+    if (
+      url.origin === "https://api.slush.app" &&
+      url.pathname === "/api/wallet/metadata"
+    ) {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          id: "com.mystenlabs.suiwallet.web",
+          walletName: "Slush",
+          icon: "data:image/svg+xml;base64,PHN2Zy8+",
+          enabled: true,
+        }),
+      });
+      return;
+    }
     if (url.hostname === "127.0.0.1" || url.hostname === "localhost") {
       await route.fallback();
       return;
@@ -119,8 +138,62 @@ async function connectMockWallet(page) {
   );
 }
 
+async function runSlushMobile(viewport, browser) {
+  const context = await browser.newContext({
+    viewport: { width: viewport.width, height: viewport.height },
+    deviceScaleFactor: 2,
+    isMobile: true,
+    hasTouch: true,
+    colorScheme: "light",
+    locale: "en-US",
+    timezoneId: "UTC",
+  });
+  const page = await context.newPage();
+  const failures = [];
+  page.on("pageerror", (error) => failures.push(`pageerror: ${error.message}`));
+  await routeControlApi(page, scenarios.slush);
+
+  try {
+    await page.goto(baseUrl, { waitUntil: "networkidle" });
+    await page.getByRole("heading").first().waitFor();
+    await page
+      .getByRole("button", { name: "Continue with wallet", exact: false })
+      .first()
+      .click();
+
+    const slush = page
+      .locator("mysten-dapp-kit-connect-modal")
+      .getByText("Slush", { exact: true })
+      .filter({ visible: true })
+      .first();
+    await slush.waitFor({ timeout: 10_000 }).catch(() => {
+      failures.push("Slush is not offered in the phone wallet picker");
+    });
+
+    await fs.mkdir(outputDirectory, { recursive: true });
+    await page.screenshot({
+      path: path.join(outputDirectory, "slush-phone-picker.png"),
+      fullPage: false,
+    });
+  } catch (error) {
+    failures.push(error instanceof Error ? error.message : String(error));
+    await fs.mkdir(outputDirectory, { recursive: true });
+    await page
+      .screenshot({
+        path: path.join(outputDirectory, "slush-phone-failure.png"),
+      })
+      .catch(() => undefined);
+  } finally {
+    await context.close();
+  }
+
+  return failures;
+}
+
 async function run(scenarioName, viewport, browser) {
   const scenario = scenarios[scenarioName];
+  if (scenario.mobileBridge) return runSlushMobile(viewport, browser);
+
   const context = await browser.newContext({
     viewport: { width: viewport.width, height: viewport.height },
     deviceScaleFactor: 2,
@@ -232,7 +305,10 @@ try {
     if (!(scenarioName in scenarios)) {
       throw new Error(`Unknown scenario "${scenarioName}"`);
     }
-    for (const viewport of viewports) {
+    const scenarioViewports = scenarios[scenarioName].mobileBridge
+      ? viewports.filter((viewport) => viewport.name === "phone")
+      : viewports;
+    for (const viewport of scenarioViewports) {
       const failures = await run(scenarioName, viewport, browser);
       results.push({ scenarioName, viewport: viewport.name, failures });
       console.log(
