@@ -441,15 +441,30 @@ function assertCommonStructure(
   const capId = address(intent.accountCapId);
   const accountId = address(intent.accountObjectId);
   const trustedMutable = new Set([accountId, ...markets.keys()]);
+  const deallocations = calls.filter(
+    (call) => call.function === "deallocate_free_collateral",
+  );
+  if (deallocations.length > 1) {
+    fail("quote transaction has more than one collateral deallocation");
+  }
+  const deallocationInputIndexes = new Set(
+    deallocations.map((call) =>
+      inputIndex(call.arguments[0], "deallocate clearing house"),
+    ),
+  );
   const seenObjects = new Set<string>();
 
   snapshot.inputs.forEach((input, index) => {
     const id = objectId(input);
     if (!id) return;
     seenObjects.add(id);
-    if (isMutableObject(input) && !trustedMutable.has(id)) {
+    if (
+      isMutableObject(input) &&
+      !trustedMutable.has(id) &&
+      !deallocationInputIndexes.has(index)
+    ) {
       fail(
-        `mutable object input ${index} is not the account or an expected market`,
+        `mutable object input ${index} is not the account, an expected market, or the dedicated deallocation clearing house`,
       );
     }
   });
@@ -504,10 +519,51 @@ function assertCommonStructure(
       );
     }
 
+    if (call.function === "deallocate_free_collateral") {
+      const clearingHouseInput = inputIndex(
+        call.arguments[0],
+        "deallocate clearing house",
+      );
+      const clearingHouse = snapshot.inputs[clearingHouseInput];
+      if (
+        !clearingHouse ||
+        !objectId(clearingHouse) ||
+        !isMutableObject(clearingHouse)
+      ) {
+        fail("deallocate clearing house must be a mutable object");
+      }
+      const consumers = calls.flatMap((candidate) =>
+        candidate.arguments.flatMap((argument, argumentIndex) =>
+          argument.Input === clearingHouseInput
+            ? [{ call: candidate, argumentIndex }]
+            : [],
+        ),
+      );
+      if (
+        consumers.length !== 1 ||
+        consumers[0]!.call.index !== call.index ||
+        consumers[0]!.argumentIndex !== 0
+      ) {
+        fail(
+          "deallocate clearing house is used outside collateral deallocation",
+        );
+      }
+      if (
+        objectForArgument(snapshot, call.arguments[1], "agent cap") !== capId
+      ) {
+        fail("deallocate_free_collateral uses an unexpected agent capability");
+      }
+      if (
+        objectForArgument(snapshot, call.arguments[2], "account") !== accountId
+      ) {
+        fail("deallocate_free_collateral uses an unexpected account");
+      }
+      continue;
+    }
+
     if (
       [
         "create_market_position",
-        "deallocate_free_collateral",
         "set_position_initial_margin_ratio",
         "start_session",
         "try_cancel_orders",
