@@ -304,8 +304,18 @@ export class RuntimeManager {
     const conservativeGasMist = Math.max(
       ...configs.map((config) => config.maxGasMist),
     );
-    const restingOrderCount = active.reduce(
-      (total, bundle) => total + tenant.countTrackedMakerOrders(bundle.id),
+    // `tenant_maker_orders` is an attribution ledger: it deliberately retains
+    // historical order IDs so fills can be reconciled after cancellation. It
+    // is not a picture of orders that could still need cancellation. Reserving
+    // against that history eventually makes a safely stopped bundle
+    // unstartable. Reserve instead for the configured maximum number of
+    // Maker-owned resting orders each active bundle can create.
+    const restingOrderCount = configs.reduce(
+      (total, config) =>
+        total +
+        (config.rotationMode === "portfolio"
+          ? config.markets.length * 2
+          : Math.min(config.markets.length, 1) * 2),
       0,
     );
     const requiredGasMist = calculateBundleGasReserveMist({
