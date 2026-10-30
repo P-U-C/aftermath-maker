@@ -695,6 +695,13 @@ app.post("/api/bundles/:bundleId/config", async (request) => {
     .strict()
     .parse(request.body);
   const config = makerConfigSchema.parse(body.config);
+  const current = scoped.getStoredBundle(params.bundleId);
+  if (!current || current.archivedAt) {
+    throw new AuthError(404, "Bundle was not found");
+  }
+  if (current.name !== "Core" && config.mode === "live") {
+    throw new AuthError(409, "Additional bundles can only use Paper mode");
+  }
   assertLiveModeEnabled(config);
   assertConfiguredAccounts(scoped, config);
   const bundle = await runtimeManager.reconfigureBundle({
@@ -783,6 +790,13 @@ app.post("/api/bundles/:bundleId/start", async (request) => {
   const params = z
     .object({ bundleId: z.string().min(1).max(200) })
     .parse(request.params);
+  const bundle = scoped.getStoredBundle(params.bundleId);
+  if (!bundle || bundle.archivedAt) {
+    throw new AuthError(404, "Bundle was not found");
+  }
+  if (bundle.needsStrategy) {
+    throw new AuthError(409, "Attach a strategy before starting this bundle");
+  }
   const config = scoped.getBundleConfig(params.bundleId);
   if (!config) throw new AuthError(404, "Bundle was not found");
   assertLiveModeEnabled(config);
@@ -801,6 +815,13 @@ app.post("/api/bundles/:bundleId/resume", async (request) => {
   const params = z
     .object({ bundleId: z.string().min(1).max(200) })
     .parse(request.params);
+  const bundle = scoped.getStoredBundle(params.bundleId);
+  if (!bundle || bundle.archivedAt) {
+    throw new AuthError(404, "Bundle was not found");
+  }
+  if (bundle.needsStrategy) {
+    throw new AuthError(409, "Attach a strategy before starting this bundle");
+  }
   const config = scoped.getBundleConfig(params.bundleId);
   if (!config) throw new AuthError(404, "Bundle was not found");
   assertLiveModeEnabled(config);
