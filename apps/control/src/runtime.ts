@@ -20,6 +20,7 @@ import {
   type QuoteIntent,
   type RuntimeMarketSnapshot,
   type RuntimeSnapshot,
+  type SafetyCheck,
   type Setup,
 } from "@puc/core";
 import type { TenantStore } from "./store.js";
@@ -325,6 +326,60 @@ const paperSnapshot = (paper: {
 const message = (error: unknown) =>
   error instanceof Error ? error.message : String(error);
 
+const formatSui = (value: number) =>
+  value.toFixed(4).replace(/0+$/, "").replace(/\.$/, "");
+
+function paperSimulationBlocker(inputs: {
+  setup: Setup | null;
+  account: { agentCapId: string | null } | null;
+  agent: { address: string } | null;
+  safety: SafetyCheck[];
+  symbol: string;
+  requiredGasSui: number;
+}): { code: string; message: string } | null {
+  const accountLabel = inputs.setup
+    ? `account ${inputs.setup.accountId}`
+    : "this account";
+  if (!inputs.setup || !inputs.account?.agentCapId || !inputs.agent) {
+    return {
+      code: "trading-key",
+      message: `Paper needs a trading key for ${accountLabel}. Set it up in Accounts; Maker will keep reading the market.`,
+    };
+  }
+
+  const failed = inputs.safety.filter((check) => !check.ok);
+  if (!failed.length) return null;
+  const first = failed[0]!;
+  if (first.code === "gas") {
+    return {
+      code: "gas",
+      message: `Paper can't simulate: the trading key for ${accountLabel} has no SUI for gas. Send ${formatSui(inputs.requiredGasSui)} SUI to ${inputs.agent.address}; Maker will keep reading the market.`,
+    };
+  }
+  if (first.code === "collateral") {
+    return {
+      code: "collateral",
+      message: `Paper can't simulate: ${accountLabel} has ${first.detail}. Add collateral or lower the quote size; Maker will keep reading the market.`,
+    };
+  }
+  if (first.code === "fair-value") {
+    return {
+      code: "fair-value",
+      message: `Paper skipped ${inputs.symbol}: ${first.detail}. The book is outside the strategy's fair-value limit, so Maker will keep reading the market.`,
+    };
+  }
+  if (first.code === "freshness") {
+    return {
+      code: "freshness",
+      message: `Paper skipped ${inputs.symbol}: ${first.detail}. Maker is waiting for a fresh book.`,
+    };
+  }
+  return {
+    code: first.code,
+    message: `Paper skipped ${inputs.symbol}: ${first.label} needs attention (${first.detail}). Fix it in Strategy or Accounts; Maker will keep reading the market.`,
+  };
+}
+
 async function withTimeout<T>(
   task: Promise<T>,
   milliseconds: number,
@@ -438,6 +493,7 @@ export class MakerRuntime {
   private singleSlotSwept = false;
   private strategyTrialActive = false;
   private paperTrialId: string | null = null;
+  private paperSimulationBlockerKey: string | null = null;
 
   constructor(
     private readonly store: TenantStore,
@@ -625,6 +681,7 @@ export class MakerRuntime {
     this.snapshotValue.mode = config.mode;
     this.snapshotValue.startedAt = startedAt;
     this.snapshotValue.lastError = null;
+    this.paperSimulationBlockerKey = null;
     this.runPeakEquityUsd = null;
     this.clearActiveQuoteState();
     this.marketSelectedAt = null;
@@ -1976,6 +2033,39 @@ export class MakerRuntime {
     }
   }
 
+  private recordPaperSimulationBlocker(inputs: {
+    blocker: { code: string; message: string };
+    selected: MakerMarket;
+    updatedAt: string;
+    trialId: string;
+  }): void {
+    const { blocker, selected, updatedAt, trialId } = inputs;
+    this.snapshotValue.lastError = blocker.message;
+    this.snapshotValue.execution.lastDecision = "held";
+    this.snapshotValue.lastSuccessfulCycleAt = updatedAt;
+    this.snapshotValue.markets = this.snapshotValue.markets.map((row) =>
+      row.id === selected.marketId
+        ? { ...row, status: "healthy", error: blocker.message, updatedAt }
+        : row,
+    );
+    const key = `${trialId}:${selected.marketId}:${blocker.code}:${blocker.message}`;
+    if (this.paperSimulationBlockerKey !== key) {
+      this.store.logEvent({
+        category: "paper",
+        action: "simulation",
+        outcome: "blocked",
+        detail: {
+          code: blocker.code,
+          message: blocker.message,
+          marketId: selected.marketId,
+          accountId: this.snapshotValue.accountId,
+          agentAddress: this.snapshotValue.agentAddress,
+        },
+      });
+      this.paperSimulationBlockerKey = key;
+    }
+  }
+
   private async runCycle(inputs: {
     executeLive: boolean;
     generation: number;
@@ -2501,20 +2591,56 @@ export class MakerRuntime {
           return;
         }
         if (!executionIsCurrent()) return;
-        assertSafe(safety);
-        if (!setup || !account?.agentCapId || !agent) {
-          throw new Error(
-            "Paper mode requires a confirmed Maker account and agent",
-          );
-        }
-        const receipt = await this.gateway.simulateQuote({
+
+        // Paper continues to read the market when it cannot dry-run a quote.
+        // A missing key, gas, or safety condition is useful setup feedback, not
+        // an execution failure that should pause a bundle and hide the next book.
+        const blocker = paperSimulationBlocker({
           setup,
-          config: marketConfig,
-          quote,
-          agentAddress: agent.address,
-          builderCode: this.options.builderCode(),
-          shouldContinue: executionIsCurrent,
+          account,
+          agent,
+          safety,
+          symbol: market.metadata?.symbol ?? selected.symbol,
+          requiredGasSui: (config.maxGasMist * 3) / 1_000_000_000,
         });
+        if (blocker) {
+          this.recordPaperSimulationBlocker({
+            blocker,
+            selected,
+            updatedAt,
+            trialId: paperTrialId,
+          });
+          return;
+        }
+
+        let receipt: { endpoint: string; gasUsedMist: number };
+        try {
+          receipt = await this.gateway.simulateQuote({
+            setup: setup!,
+            config: marketConfig,
+            quote,
+            agentAddress: agent!.address,
+            builderCode: this.options.builderCode(),
+            shouldContinue: executionIsCurrent,
+          });
+        } catch (error) {
+          const errorText = message(error);
+          const gasRelated = /(?:gas|sui balance|insufficient funds)/i.test(
+            errorText,
+          );
+          this.recordPaperSimulationBlocker({
+            blocker: {
+              code: gasRelated ? "gas" : "dry-run",
+              message: gasRelated
+                ? `Paper can't simulate: the trading key for account ${setup!.accountId} has no SUI for gas. Send ${formatSui((config.maxGasMist * 3) / 1_000_000_000)} SUI to ${agent!.address}; Maker will keep reading the market.`
+                : `Paper couldn't dry-run ${market.metadata?.symbol ?? selected.symbol}. Check the trading key and market conditions, then try again; Maker will keep reading the market.`,
+            },
+            selected,
+            updatedAt,
+            trialId: paperTrialId,
+          });
+          return;
+        }
         if (!executionIsCurrent()) return;
         this.store.recordPaperQuote({
           trialId: paperTrialId,
@@ -2534,6 +2660,7 @@ export class MakerRuntime {
           outcome: "dry-run",
           gasUsedMist: receipt.gasUsedMist,
         });
+        this.paperSimulationBlockerKey = null;
         this.snapshotValue.execution.lastDecision = "quoted";
         this.snapshotValue.lastSuccessfulCycleAt = updatedAt;
         return;

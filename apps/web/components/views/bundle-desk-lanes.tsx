@@ -7,6 +7,7 @@ import { MarketMotion, type MarketMotionHandle } from "../market-motion";
 
 type LaneSnapshot = {
   mode: "observe" | "paper" | "live";
+  lastError?: string | null;
   market: {
     symbol: string;
     indexPrice: number | null;
@@ -52,7 +53,9 @@ function BundleLane({ lane }: { lane: RunningBundleLane }) {
         <div>
           <span>
             {lane.status === "running"
-              ? `Quoting now · ${snapshot.mode === "live" ? "Live" : snapshot.mode === "paper" ? "Paper" : "Observe"}`
+              ? snapshot.lastError
+                ? `Watching · ${snapshot.mode === "live" ? "Live" : snapshot.mode === "paper" ? "Paper" : "Observe"}`
+                : `Quoting now · ${snapshot.mode === "live" ? "Live" : snapshot.mode === "paper" ? "Paper" : "Observe"}`
               : "Paused"}
           </span>
           <h2>{lane.name}</h2>
@@ -68,6 +71,11 @@ function BundleLane({ lane }: { lane: RunningBundleLane }) {
           </div>
         </dl>
       </header>
+      {snapshot.lastError && (
+        <p className="bundle-lane-notice" role="status">
+          {snapshot.lastError}
+        </p>
+      )}
       <MarketMotion
         ref={motion}
         compact

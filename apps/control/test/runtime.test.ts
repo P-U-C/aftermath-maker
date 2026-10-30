@@ -292,6 +292,7 @@ function createHarness(options: { configured?: boolean } = {}) {
   const runtime = new MakerRuntime(store, gateway as never, runtimeOptions);
 
   return {
+    directory,
     runtime,
     runtimeOptions,
     store: databaseStore,
@@ -415,6 +416,195 @@ describe("runtime execution boundaries", () => {
     expect(harness.executionSequence).toEqual(["paper-dry-run"]);
     await harness.runtime.stop();
     harness.store.close();
+  });
+
+  it("keeps Paper reading when an account has no confirmed trading key", async () => {
+    const harness = createHarness();
+    harness.tenant.setConfig(
+      makerConfigSchema.parse({
+        ...harness.tenant.getConfig()!,
+        mode: "paper",
+      }),
+    );
+    harness.tenant.clearAgentGrant("42");
+    const onBundleError = vi.fn();
+    const runtime = new MakerRuntime(harness.tenant, harness.gateway as never, {
+      ...harness.runtimeOptions,
+      pauseOnError: true,
+      onBundleError,
+    });
+
+    runtime.start();
+    await runtime.cycle();
+
+    expect(runtime.snapshot.running).toBe(true);
+    expect(runtime.snapshot.lastError).toBe(
+      "Paper needs a trading key for account 42. Set it up in Accounts; Maker will keep reading the market.",
+    );
+    expect(runtime.snapshot.lastSuccessfulCycleAt).not.toBeNull();
+    expect(onBundleError).not.toHaveBeenCalled();
+    expect(harness.executionSequence).toEqual([]);
+    expect(
+      harness.tenant
+        .listEvents()
+        .find(
+          (event) =>
+            event.category === "paper" &&
+            event.action === "simulation" &&
+            event.outcome === "blocked",
+        )?.detail,
+    ).toMatchObject({ code: "trading-key" });
+    await runtime.stop();
+    harness.store.close();
+  });
+
+  it("keeps Paper reading when its trading key has no SUI", async () => {
+    const harness = createHarness();
+    harness.tenant.setConfig(
+      makerConfigSchema.parse({
+        ...harness.tenant.getConfig()!,
+        mode: "paper",
+        maxGasMist: 50_000_000,
+      }),
+    );
+    harness.setPortfolioResolver((inputs) => ({
+      equityUsd: 100,
+      availableCollateralUsd: 80,
+      allocatedCollateralUsd: 20,
+      freeMarginUsd: 70,
+      withdrawableCollateralUsd: 75,
+      grossExposureUsd: 0,
+      unrealizedPnlUsd: 0,
+      gasSui: 0,
+      positions: inputs.marketIds.map((marketId) => ({
+        marketId,
+        baseAssetAmount: 0,
+        pendingOrderCount: 0,
+        inventoryUsd: 0,
+        unrealizedPnlUsd: 0,
+        collateralUsd: 0,
+        freeMarginUsd: 0,
+        makerOrderIds: [],
+        hasPosition: false,
+      })),
+    }));
+
+    const onBundleError = vi.fn();
+    const runtime = new MakerRuntime(harness.tenant, harness.gateway as never, {
+      ...harness.runtimeOptions,
+      pauseOnError: true,
+      onBundleError,
+    });
+    runtime.start();
+    await runtime.cycle();
+
+    expect(runtime.snapshot.running).toBe(true);
+    expect(runtime.snapshot.lastError).toContain(
+      "trading key for account 42 has no SUI for gas",
+    );
+    expect(runtime.snapshot.lastError).toContain("Send 0.15 SUI");
+    expect(runtime.snapshot.lastSuccessfulCycleAt).not.toBeNull();
+    expect(onBundleError).not.toHaveBeenCalled();
+    expect(harness.executionSequence).toEqual([]);
+    await runtime.stop();
+    harness.store.close();
+  });
+
+  it("keeps Paper reading when a safety check blocks a dry run", async () => {
+    const harness = createHarness();
+    harness.tenant.setConfig(
+      makerConfigSchema.parse({
+        ...harness.tenant.getConfig()!,
+        mode: "paper",
+      }),
+    );
+    harness.setPortfolioResolver((inputs) => ({
+      equityUsd: 0,
+      availableCollateralUsd: 0,
+      allocatedCollateralUsd: 0,
+      freeMarginUsd: 0,
+      withdrawableCollateralUsd: 0,
+      grossExposureUsd: 0,
+      unrealizedPnlUsd: 0,
+      gasSui: 1,
+      positions: inputs.marketIds.map((marketId) => ({
+        marketId,
+        baseAssetAmount: 0,
+        pendingOrderCount: 0,
+        inventoryUsd: 0,
+        unrealizedPnlUsd: 0,
+        collateralUsd: 0,
+        freeMarginUsd: 0,
+        makerOrderIds: [],
+        hasPosition: false,
+      })),
+    }));
+
+    const onBundleError = vi.fn();
+    const runtime = new MakerRuntime(harness.tenant, harness.gateway as never, {
+      ...harness.runtimeOptions,
+      pauseOnError: true,
+      onBundleError,
+    });
+    runtime.start();
+    await runtime.cycle();
+
+    expect(runtime.snapshot.running).toBe(true);
+    expect(runtime.snapshot.lastError).toContain(
+      "account 42 has $0.00 available",
+    );
+    expect(runtime.snapshot.markets[0]).toMatchObject({
+      status: "healthy",
+      error: runtime.snapshot.lastError,
+    });
+    expect(onBundleError).not.toHaveBeenCalled();
+    expect(harness.executionSequence).toEqual([]);
+    await runtime.stop();
+    harness.store.close();
+  });
+
+  it("keeps a migrated Observe bundle reading after it becomes Paper", async () => {
+    const harness = createHarness();
+    const legacy = makerConfigSchema.parse({
+      ...harness.tenant.getConfig()!,
+      mode: "observe",
+    });
+    harness.tenant.setConfig(legacy);
+    harness.tenant.clearAgentGrant("42");
+    const core = harness.tenant
+      .listBundles()
+      .find((bundle) => bundle.name === "Core")!;
+    harness.store.close();
+
+    const migratedStore = new Store(join(harness.directory, "maker.db"));
+    const migrated = migratedStore.forTenant(harness.tenant.ownerAddress);
+    expect(migrated.getStoredBundle(core.id)).toMatchObject({
+      mode: "paper",
+      status: "stopped",
+    });
+    const runtime = new MakerRuntime(
+      migratedStore.forBundle(harness.tenant.ownerAddress, core.id),
+      harness.gateway as never,
+      { ...harness.runtimeOptions, pauseOnError: true },
+    );
+
+    runtime.start();
+    await runtime.cycle();
+
+    expect(runtime.snapshot.running).toBe(true);
+    expect(runtime.snapshot.lastError).toContain("Paper needs a trading key");
+    expect(
+      migrated
+        .listEvents()
+        .some(
+          (event) =>
+            event.category === "paper" &&
+            event.action === "simulation" &&
+            event.outcome === "blocked",
+        ),
+    ).toBe(true);
+    await runtime.stop();
+    migratedStore.close();
   });
 
   it("submits byte-identical Core quote intents and gateway payloads", async () => {
