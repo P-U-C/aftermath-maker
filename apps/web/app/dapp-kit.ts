@@ -8,7 +8,10 @@ export const dAppKit = createDAppKit({
   networks: ["mainnet"],
   defaultNetwork: "mainnet",
   autoConnect: true,
-  slushWalletConfig: null,
+  // Registers Slush's Wallet Standard bridge for browsers where the native
+  // mobile app cannot inject a wallet provider (for example, a phone browser).
+  // An injected Slush wallet still takes precedence when it is available.
+  slushWalletConfig: { appName: "Maker" },
   createClient: () =>
     new SuiGrpcClient({
       network: "mainnet",
