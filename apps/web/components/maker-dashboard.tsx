@@ -25,6 +25,7 @@ import {
   KeyRound,
   LockKeyhole,
   Search,
+  Pencil,
   Tag,
   Target,
   TimerReset,
@@ -53,6 +54,13 @@ import {
 import { deskEvent } from "../lib/audit-events";
 import { selectedActiveBundleId } from "../lib/bundle-options";
 import { configsEqual } from "../lib/config-equality";
+import {
+  readStrategyAcknowledgement,
+  strategyAcknowledgementKey,
+  strategyIsComplete,
+  type StrategyAcknowledgement,
+  type StrategyFields,
+} from "../lib/strategy-acknowledgement";
 import {
   formatCompactMoney,
   formatEventTimestamp,
@@ -956,6 +964,20 @@ function DashboardBody() {
   const [strategyMarketRule, setStrategyMarketRule] =
     useState<StrategyMarketRule>({ kind: "quick-pick", pick: "balanced" });
   const [strategyNameDraft, setStrategyNameDraft] = useState("");
+  const [acknowledgedStrategies, setAcknowledgedStrategies] = useState<
+    Record<string, StrategyAcknowledgement | null>
+  >({});
+  const [pendingStrategyDelete, setPendingStrategyDelete] = useState<{
+    id: string;
+    name: string;
+  } | null>(null);
+  const [strategyDeleteError, setStrategyDeleteError] = useState<string | null>(
+    null,
+  );
+  const deleteInFlight = useRef(false);
+  const applyInFlight = useRef(false);
+  const selectedStrategyIdRef = useRef<string | null>(null);
+  const strategyDraftRef = useRef<StrategyFields | null>(null);
   const [pendingMarketSuggestion, setPendingMarketSuggestion] = useState<{
     ids: string[];
     preset: MarketSuggestionPreset;
@@ -1293,6 +1315,32 @@ function DashboardBody() {
   const selectedStrategy = strategies.find(
     (strategy) => strategy.id === selectedStrategyId,
   );
+  selectedStrategyIdRef.current = selectedStrategyId;
+  strategyDraftRef.current = {
+    name: strategyNameDraft.trim(),
+    config: strategySettingsFromConfig(config),
+    marketRule: strategyMarketRule,
+    markets: draftMarketsForSave(config.markets),
+  };
+
+  useEffect(() => {
+    if (!identity?.ownerAddress || !selectedStrategyId) return;
+    const key = strategyAcknowledgementKey(
+      identity.ownerAddress,
+      selectedStrategyId,
+    );
+    setAcknowledgedStrategies((current) => {
+      if (Object.hasOwn(current, key)) return current;
+      return {
+        ...current,
+        [key]: readStrategyAcknowledgement(
+          window.localStorage,
+          identity.ownerAddress,
+          selectedStrategyId,
+        ),
+      };
+    });
+  }, [identity?.ownerAddress, selectedStrategyId]);
 
   useEffect(() => {
     if (!selectedStrategy || !identity?.ownerAddress || !configLoaded.current)
@@ -1401,7 +1449,7 @@ function DashboardBody() {
     });
   }
 
-  async function deleteStrategy() {
+  function openStrategyDelete() {
     if (!selectedStrategy) return;
     if (selectedStrategy.usedBy.length) {
       setNotice(
@@ -1410,20 +1458,58 @@ function DashboardBody() {
       );
       return;
     }
-    await mutate("delete-strategy", async () => {
-      await request(
-        `api/strategies/${encodeURIComponent(selectedStrategy.id)}/archive`,
-        { method: "POST", body: "{}" },
-      );
-      const remaining = strategies.filter(
-        (strategy) => strategy.id !== selectedStrategy.id,
-      );
-      setStrategies(remaining);
-      const next = remaining[0] ?? null;
-      setSelectedStrategyId(next?.id ?? null);
-      if (next) await selectStrategy(next.id);
-      setNotice("Strategy deleted.", "success");
+    setStrategyDeleteError(null);
+    setPendingStrategyDelete({
+      id: selectedStrategy.id,
+      name: selectedStrategy.name,
     });
+  }
+
+  async function deleteStrategy() {
+    const target = pendingStrategyDelete;
+    if (!target || deleteInFlight.current) return;
+    deleteInFlight.current = true;
+    setBusy("delete-strategy");
+    setStrategyDeleteError(null);
+    try {
+      // The attachment may have changed since the confirmation was opened.
+      const latest = await request<{ strategy: MakerStrategy }>(
+        `api/strategies/${encodeURIComponent(target.id)}`,
+      );
+      if (latest.strategy.usedBy.length) {
+        throw new Error(
+          `Can't delete ${target.name}: it is used by ${latest.strategy.usedBy.map((bundle) => bundle.name).join(", ")}. Remove it from that bundle first.`,
+        );
+      }
+      await request(`api/strategies/${encodeURIComponent(target.id)}/archive`, {
+        method: "POST",
+        body: "{}",
+      });
+      setStrategies((current) =>
+        current.filter((strategy) => strategy.id !== target.id),
+      );
+      if (selectedStrategyIdRef.current === target.id) {
+        setSelectedStrategyId((current) =>
+          current === target.id ? null : current,
+        );
+        loadedStrategyDraft.current = null;
+      }
+      setPendingStrategyDelete(null);
+      setNotice("Strategy deleted.", "success");
+      void refresh().catch((error) =>
+        setNotice(
+          `Strategy deleted, but refresh failed: ${error instanceof Error ? error.message : String(error)}`,
+          "warning",
+        ),
+      );
+    } catch (error) {
+      setStrategyDeleteError(
+        error instanceof Error ? error.message : String(error),
+      );
+    } finally {
+      deleteInFlight.current = false;
+      setBusy("");
+    }
   }
 
   async function bundleAction(
@@ -2027,12 +2113,25 @@ function DashboardBody() {
     });
   }
 
-  async function mutate(label: string, action: () => Promise<void>) {
+  async function mutate(
+    label: string,
+    action: () => Promise<void>,
+    acknowledgeBeforeRefresh = false,
+  ) {
     setBusy(label);
     setNotice(null);
     try {
       await action();
-      await refresh();
+      if (acknowledgeBeforeRefresh) {
+        try {
+          await refresh();
+        } catch (error) {
+          setNotice(
+            `Strategy applied, but refresh failed: ${error instanceof Error ? error.message : String(error)}`,
+            "warning",
+          );
+        }
+      } else await refresh();
       return true;
     } catch (error) {
       if (!(error instanceof FieldValidationFailure))
@@ -2560,121 +2659,197 @@ function DashboardBody() {
       }
       return false;
     }
-    return mutate("save", async () => {
-      if (selectedStrategy) {
-        let result: { strategy: MakerStrategy; affectedBundles: MakerBundle[] };
-        try {
-          result = await request<{
-            strategy: MakerStrategy;
-            affectedBundles: MakerBundle[];
-          }>(`api/strategies/${encodeURIComponent(selectedStrategy.id)}`, {
-            method: "PATCH",
-            body: JSON.stringify({
-              name: strategyNameDraft.trim(),
-              config: strategySettingsFromConfig(config),
-              marketRule: strategyMarketRule,
-              markets: draftMarketsForSave(config.markets),
-              expectedVersion: draftBaseVersion ?? selectedStrategy.version,
-            }),
-          });
-        } catch (error) {
-          const issue =
-            error instanceof RequestError && error.status === 400
-              ? strategyIssueFromServer(error.message, config.markets)
-              : null;
-          if (issue) {
-            if (issue.fieldId?.startsWith("market-"))
-              setMarketOverridesOpen(true);
-            setServerFieldIssue(issue);
-            if (issue.fieldId) focusStrategyField(issue.fieldId, issue.step);
-            else setStrategyStep(issue.step);
-            throw new FieldValidationFailure(issue.message);
-          }
-          if (
-            error instanceof RequestError &&
-            error.status === 409 &&
-            error.message.includes("Strategy changed elsewhere")
-          ) {
-            const latest = await request<{ strategy: MakerStrategy }>(
-              `api/strategies/${encodeURIComponent(selectedStrategy.id)}`,
-            ).catch(() => null);
-            if (latest)
-              setStrategies((current) =>
-                current.map((item) =>
-                  item.id === latest.strategy.id ? latest.strategy : item,
-                ),
+    if (selectedStrategy && applyInFlight.current) return false;
+    const applyingId = selectedStrategy?.id ?? null;
+    const submittedFields = strategyDraftRef.current;
+    if (applyingId) applyInFlight.current = true;
+    try {
+      return await mutate(
+        "save",
+        async () => {
+          if (selectedStrategy) {
+            let result: {
+              strategy: MakerStrategy;
+              affectedBundles: MakerBundle[];
+            };
+            try {
+              result = await request<{
+                strategy: MakerStrategy;
+                affectedBundles: MakerBundle[];
+              }>(`api/strategies/${encodeURIComponent(selectedStrategy.id)}`, {
+                method: "PATCH",
+                body: JSON.stringify({
+                  name: strategyNameDraft.trim(),
+                  config: strategySettingsFromConfig(config),
+                  marketRule: strategyMarketRule,
+                  markets: draftMarketsForSave(config.markets),
+                  expectedVersion: draftBaseVersion ?? selectedStrategy.version,
+                }),
+              });
+            } catch (error) {
+              const issue =
+                error instanceof RequestError && error.status === 400
+                  ? strategyIssueFromServer(error.message, config.markets)
+                  : null;
+              if (issue) {
+                if (issue.fieldId?.startsWith("market-"))
+                  setMarketOverridesOpen(true);
+                setServerFieldIssue(issue);
+                if (issue.fieldId)
+                  focusStrategyField(issue.fieldId, issue.step);
+                else setStrategyStep(issue.step);
+                throw new FieldValidationFailure(issue.message);
+              }
+              if (
+                error instanceof RequestError &&
+                error.status === 409 &&
+                error.message.includes("Strategy changed elsewhere")
+              ) {
+                const latest = await request<{ strategy: MakerStrategy }>(
+                  `api/strategies/${encodeURIComponent(selectedStrategy.id)}`,
+                ).catch(() => null);
+                if (latest)
+                  setStrategies((current) =>
+                    current.map((item) =>
+                      item.id === latest.strategy.id ? latest.strategy : item,
+                    ),
+                  );
+                throw new Error(
+                  "Strategy changed elsewhere. Your draft is preserved; compare the new saved version before explicitly rebasing.",
+                );
+              }
+              throw error;
+            }
+            const appliedFields: StrategyFields = {
+              name: result.strategy.name,
+              config: result.strategy.config,
+              marketRule: result.strategy.marketRule,
+              markets: result.strategy.markets,
+            };
+            const acknowledgement: StrategyAcknowledgement = {
+              version: result.strategy.version,
+              fields: appliedFields,
+            };
+            if (identity) {
+              const key = strategyAcknowledgementKey(
+                identity.ownerAddress,
+                result.strategy.id,
               );
-            throw new Error(
-              "Strategy changed elsewhere. Your draft is preserved; compare the new saved version before explicitly rebasing.",
-            );
-          }
-          throw error;
-        }
-        if (identity) {
-          try {
-            window.localStorage.removeItem(
-              strategyDraftKey(identity.ownerAddress, selectedStrategy.id),
-            );
-          } catch {
-            /* Applied configuration is authoritative. */
-          }
-        }
-        setDraftBaseVersion(result.strategy.version);
-        setStrategies((current) =>
-          current.map((strategy) =>
-            strategy.id === result.strategy.id ? result.strategy : strategy,
-          ),
-        );
-        const savedStrategyConfig = {
-          ...configWithStrategySettings(config, result.strategy.config),
-          markets: result.strategy.markets,
-        };
-        setConfig(savedStrategyConfig);
-        if (
-          bundles.find((bundle) => bundle.id === selectedBundleId)
-            ?.strategyId === result.strategy.id
-        ) {
-          setSavedConfig((current) =>
-            current
-              ? {
-                  ...configWithStrategySettings(
-                    current,
-                    result.strategy.config,
-                  ),
-                  markets: result.strategy.markets,
+              setAcknowledgedStrategies((current) => ({
+                ...current,
+                [key]: acknowledgement,
+              }));
+              try {
+                window.localStorage.setItem(
+                  key,
+                  JSON.stringify(acknowledgement),
+                );
+              } catch {
+                /* Keep completion in this tab when storage is unavailable. */
+              }
+            }
+            const draftStillSubmitted =
+              selectedStrategyIdRef.current === applyingId &&
+              submittedFields !== null &&
+              configsEqual(strategyDraftRef.current, submittedFields);
+            if (identity) {
+              try {
+                const stored = readStrategyDraft<StoredStrategyDraft>(
+                  window.localStorage,
+                  identity.ownerAddress,
+                  result.strategy.id,
+                );
+                // A switch during PATCH can leave behind the now-applied draft.
+                // Never clear a later edit saved to local storage instead.
+                if (
+                  draftStillSubmitted ||
+                  (stored &&
+                    submittedFields &&
+                    configsEqual(submittedFields, {
+                      name: stored.name.trim(),
+                      config: stored.settings,
+                      marketRule: stored.marketRule,
+                      markets: draftMarketsForSave(stored.markets),
+                    }))
+                ) {
+                  window.localStorage.removeItem(
+                    strategyDraftKey(identity.ownerAddress, result.strategy.id),
+                  );
                 }
-              : current,
+              } catch {
+                /* Applied configuration is authoritative. */
+              }
+            }
+            if (selectedStrategyIdRef.current === applyingId)
+              setDraftBaseVersion(result.strategy.version);
+            setStrategies((current) =>
+              current.map((strategy) =>
+                strategy.id === result.strategy.id ? result.strategy : strategy,
+              ),
+            );
+            const savedStrategyConfig = {
+              ...configWithStrategySettings(config, result.strategy.config),
+              markets: result.strategy.markets,
+            };
+            if (draftStillSubmitted) setConfig(savedStrategyConfig);
+            if (
+              bundles.find((bundle) => bundle.id === selectedBundleId)
+                ?.strategyId === result.strategy.id
+            ) {
+              setSavedConfig((current) =>
+                current
+                  ? {
+                      ...configWithStrategySettings(
+                        current,
+                        result.strategy.config,
+                      ),
+                      markets: result.strategy.markets,
+                    }
+                  : current,
+              );
+            }
+            if (draftStillSubmitted) {
+              setStrategyNameDraft(result.strategy.name);
+              setStrategyMarketRule(result.strategy.marketRule);
+            }
+            setNotice(
+              result.affectedBundles.length > 1
+                ? `Strategy saved for ${result.affectedBundles.map((bundle) => bundle.name).join(", ")}.`
+                : "Strategy saved.",
+              "success",
+            );
+            return;
+          }
+          const selected = bundles.find(
+            (bundle) => bundle.id === selectedBundleId,
           );
-        }
-        setStrategyNameDraft(result.strategy.name);
-        setNotice(
-          result.affectedBundles.length > 1
-            ? `Strategy saved for ${result.affectedBundles.map((bundle) => bundle.name).join(", ")}.`
-            : "Strategy saved.",
-          "success",
-        );
-        return;
-      }
-      const selected = bundles.find((bundle) => bundle.id === selectedBundleId);
-      if (selected && selected.name !== "Core") {
-        await request(`api/bundles/${encodeURIComponent(selected.id)}/config`, {
-          method: "POST",
-          body: JSON.stringify({ config, updatedAt: selected.updatedAt }),
-        });
-      } else {
-        await request("api/config", {
-          method: "POST",
-          body: JSON.stringify(config),
-        });
-      }
-      setSavedConfig(config);
-      setNotice(
-        snapshot?.running
-          ? "Strategy saved. The next market cycle will use it."
-          : "Strategy saved. It will apply when the engine starts.",
-        "success",
+          if (selected && selected.name !== "Core") {
+            await request(
+              `api/bundles/${encodeURIComponent(selected.id)}/config`,
+              {
+                method: "POST",
+                body: JSON.stringify({ config, updatedAt: selected.updatedAt }),
+              },
+            );
+          } else {
+            await request("api/config", {
+              method: "POST",
+              body: JSON.stringify(config),
+            });
+          }
+          setSavedConfig(config);
+          setNotice(
+            snapshot?.running
+              ? "Strategy saved. The next market cycle will use it."
+              : "Strategy saved. It will apply when the engine starts.",
+            "success",
+          );
+        },
+        Boolean(applyingId),
       );
-    });
+    } finally {
+      if (applyingId) applyInFlight.current = false;
+    }
   }
 
   async function saveAccountAssignments() {
@@ -2868,6 +3043,25 @@ function DashboardBody() {
     strategyNameDirty ||
     strategyRuleDirty ||
     Object.keys(invalidNumeric).length > 0;
+
+  const strategyComplete = Boolean(
+    selectedStrategy &&
+    identity &&
+    strategyIsComplete(
+      acknowledgedStrategies[
+        strategyAcknowledgementKey(identity.ownerAddress, selectedStrategy.id)
+      ] ?? null,
+      selectedStrategy,
+      {
+        name: strategyNameDraft.trim(),
+        config: strategySettingsFromConfig(config),
+        marketRule: strategyMarketRule,
+        markets: draftMarketsForSave(config.markets),
+      },
+      Object.keys(invalidNumeric).length > 0 ||
+        draftBaseVersion !== selectedStrategy.version,
+    ),
+  );
 
   const requestStrategyExit = (view: MakerView) => {
     if (configDirty && selectedStrategy && !persistStrategyDraft()) return;
@@ -4814,69 +5008,6 @@ function DashboardBody() {
             data-strategy-step={strategyStep}
             onSubmit={saveConfig}
           >
-            <header className="strategy-title">
-              <div>
-                <label className="strategy-name-input">
-                  <span className="sr-only">Strategy name</span>
-                  <input
-                    id="strategy-name"
-                    value={strategyNameDraft}
-                    onChange={(event) =>
-                      setStrategyNameDraft(event.target.value)
-                    }
-                    maxLength={80}
-                    placeholder="Name this strategy"
-                    aria-label="Strategy name"
-                    aria-invalid={Boolean(
-                      selectedStrategy &&
-                      (!strategyNameDraft.trim() || duplicateStrategyName),
-                    )}
-                    aria-describedby={
-                      selectedStrategy &&
-                      (!strategyNameDraft.trim() || duplicateStrategyName)
-                        ? "strategy-name-error"
-                        : undefined
-                    }
-                    disabled={!selectedStrategy || Boolean(busy)}
-                  />
-                </label>
-                {selectedStrategy &&
-                  (!strategyNameDraft.trim() || duplicateStrategyName) && (
-                    <small
-                      id="strategy-name-error"
-                      className="field-error"
-                      role="alert"
-                    >
-                      {duplicateStrategyName
-                        ? "Another strategy already uses that name."
-                        : "Name this strategy before continuing."}
-                    </small>
-                  )}
-                {selectedStrategy && (
-                  <small className="strategy-name-status" role="status">
-                    {strategyNameDirty
-                      ? `Draft name. Applied elsewhere as ${selectedStrategy.name} until Apply strategy.`
-                      : "Applied strategy name."}
-                  </small>
-                )}
-                <p>
-                  Reusable settings for how bundles quote, control inventory,
-                  hedge, and manage risk.
-                  {selectedStrategy?.usedBy.length
-                    ? ` Used by ${selectedStrategy.usedBy.map((bundle) => bundle.name).join(", ")}.`
-                    : " Not attached to a bundle yet."}
-                </p>
-              </div>
-              <button
-                className="button secondary strategy-delete-button"
-                type="button"
-                onClick={() => void deleteStrategy()}
-                disabled={!selectedStrategy || Boolean(busy)}
-              >
-                Delete
-              </button>
-            </header>
-
             <div className="strategy-select-row">
               <StrategyPicker
                 strategies={strategies
@@ -4908,6 +5039,90 @@ function DashboardBody() {
                 New strategy
               </button>
             </div>
+
+            <p className="strategy-intro">
+              Reusable settings for how bundles quote, control inventory, hedge,
+              and manage risk.
+              {selectedStrategy?.usedBy.length
+                ? ` Used by ${selectedStrategy.usedBy.map((bundle) => bundle.name).join(", ")}.`
+                : " Not attached to a bundle yet."}
+            </p>
+            <header className="strategy-title">
+              <div className="strategy-name-column">
+                <div className="strategy-name-edit">
+                  <label className="strategy-name-input">
+                    <span className="sr-only">Strategy name</span>
+                    <input
+                      id="strategy-name"
+                      value={strategyNameDraft}
+                      onChange={(event) =>
+                        setStrategyNameDraft(event.target.value)
+                      }
+                      maxLength={80}
+                      placeholder="Name this strategy"
+                      aria-label="Strategy name"
+                      aria-invalid={Boolean(
+                        selectedStrategy &&
+                        (!strategyNameDraft.trim() || duplicateStrategyName),
+                      )}
+                      aria-describedby={
+                        selectedStrategy &&
+                        (!strategyNameDraft.trim() || duplicateStrategyName)
+                          ? "strategy-name-error"
+                          : undefined
+                      }
+                      disabled={!selectedStrategy || Boolean(busy)}
+                    />
+                  </label>
+                  <button
+                    className="strategy-name-pencil"
+                    type="button"
+                    aria-label="Edit strategy name"
+                    disabled={!selectedStrategy || Boolean(busy)}
+                    onClick={() =>
+                      document.getElementById("strategy-name")?.focus()
+                    }
+                  >
+                    <Pencil size={17} aria-hidden="true" />
+                  </button>
+                </div>
+                {selectedStrategy &&
+                  (!strategyNameDraft.trim() || duplicateStrategyName) && (
+                    <small
+                      id="strategy-name-error"
+                      className="field-error"
+                      role="alert"
+                    >
+                      {duplicateStrategyName
+                        ? "Another strategy already uses that name."
+                        : "Name this strategy before continuing."}
+                    </small>
+                  )}
+                {selectedStrategy && (
+                  <small className="strategy-name-status" role="status">
+                    <strong>
+                      {strategyComplete ? "Applied Strategy" : "Draft Strategy"}
+                    </strong>
+                    {!strategyComplete && (
+                      <span>
+                        {selectedStrategy.version > 1 ||
+                        selectedStrategy.usedBy.length
+                          ? `Applied elsewhere as ${selectedStrategy.name} until strategy finalized.`
+                          : "Not yet applied."}
+                      </span>
+                    )}
+                  </small>
+                )}
+              </div>
+              <button
+                className="button secondary strategy-delete-button"
+                type="button"
+                onClick={openStrategyDelete}
+                disabled={!selectedStrategy || Boolean(busy)}
+              >
+                Delete
+              </button>
+            </header>
 
             {selectedStrategy && (
               <p className="strategy-section-copy strategy-step strategy-step-markets">
@@ -4955,7 +5170,8 @@ function DashboardBody() {
                 {strategyStep === 4 && selectedStrategy && (
                   <div className="strategy-review-changes" role="status">
                     <p>
-                      Apply once to {selectedStrategy.name} (version{" "}
+                      {strategyComplete ? "Applied as" : "Apply once to"}{" "}
+                      {selectedStrategy.name} (version{" "}
                       {draftBaseVersion ?? selectedStrategy.version}); affects{" "}
                       {selectedStrategy.usedBy.length
                         ? selectedStrategy.usedBy
@@ -5045,13 +5261,34 @@ function DashboardBody() {
                       if (strategyStep === 4) void saveConfig();
                       else saveAndNextStrategyStep();
                     }}
-                    disabled={busy === "save"}
+                    disabled={
+                      busy === "save" ||
+                      (strategyStep === 4 && strategyComplete)
+                    }
+                    aria-label={
+                      strategyStep === 4 && strategyComplete
+                        ? "Complete — strategy applied"
+                        : undefined
+                    }
+                    data-complete={
+                      strategyStep === 4 && strategyComplete
+                        ? "true"
+                        : undefined
+                    }
                   >
-                    {strategyStep === 4
-                      ? busy === "save"
-                        ? "Saving..."
-                        : "Apply strategy"
-                      : "Save and next"}
+                    {strategyStep === 4 ? (
+                      busy === "save" ? (
+                        "Applying…"
+                      ) : strategyComplete ? (
+                        <>
+                          <CircleCheck size={17} aria-hidden="true" /> Complete
+                        </>
+                      ) : (
+                        "Apply Strategy"
+                      )
+                    ) : (
+                      "Save and next"
+                    )}
                   </button>
                 </div>
                 {strategySaveBlocker &&
@@ -5783,84 +6020,89 @@ function DashboardBody() {
                   ))}
                 </div>
                 <div className="strategy-rotation-stage">
-                  <div
-                    className="reward-focus"
-                    aria-label="Market suggestion focus"
-                  >
-                    <span>Focus</span>
-                    <div role="group" aria-label="Market suggestion focus">
-                      <button
-                        type="button"
-                        className={rewardFocus === "all" ? "selected" : ""}
-                        aria-pressed={rewardFocus === "all"}
-                        onClick={() => {
-                          setRewardFocus("all");
-                          setPendingMarketSuggestion(null);
-                        }}
-                      >
-                        All eligible
-                      </button>
-                      <button
-                        type="button"
-                        className={rewardFocus === "thin" ? "selected" : ""}
-                        aria-pressed={rewardFocus === "thin"}
-                        onClick={() => {
-                          setRewardFocus("thin");
-                          setPendingMarketSuggestion(null);
-                        }}
-                      >
-                        Thin books
-                      </button>
+                  <div className="strategy-suggestion-fields">
+                    <div
+                      className="reward-focus"
+                      aria-label="Market suggestion focus"
+                    >
+                      <span>Focus</span>
+                      <div role="group" aria-label="Market suggestion focus">
+                        <button
+                          type="button"
+                          className={rewardFocus === "all" ? "selected" : ""}
+                          aria-pressed={rewardFocus === "all"}
+                          onClick={() => {
+                            setRewardFocus("all");
+                            setPendingMarketSuggestion(null);
+                          }}
+                        >
+                          All eligible
+                        </button>
+                        <button
+                          type="button"
+                          className={rewardFocus === "thin" ? "selected" : ""}
+                          aria-pressed={rewardFocus === "thin"}
+                          onClick={() => {
+                            setRewardFocus("thin");
+                            setPendingMarketSuggestion(null);
+                          }}
+                        >
+                          Thin books
+                        </button>
+                      </div>
                     </div>
+                    <label className="reward-count">
+                      <span>Markets</span>
+                      <NumericDraftInput
+                        key={`${selectedStrategyId ?? "core"}:${suggestionInputEpoch}`}
+                        id="strategy-top-count"
+                        label="Markets"
+                        accessibleLabel="Markets"
+                        unit="markets"
+                        value={rewardMarketCount}
+                        min={1}
+                        max={64}
+                        integer
+                        onValidity={(_, error) => {
+                          setSuggestionCountError(error);
+                          setPendingMarketSuggestion(null);
+                        }}
+                        onValue={(value) => {
+                          setRewardMarketCount(value);
+                          setPendingMarketSuggestion(null);
+                        }}
+                      />
+                    </label>
                   </div>
-                  <label className="reward-count">
-                    <span>Up to N markets</span>
-                    <NumericDraftInput
-                      key={`${selectedStrategyId ?? "core"}:${suggestionInputEpoch}`}
-                      id="strategy-top-count"
-                      label="Up to N markets"
-                      unit="markets"
-                      value={rewardMarketCount}
-                      min={1}
-                      max={64}
-                      integer
-                      onValidity={(_, error) => {
-                        setSuggestionCountError(error);
-                        setPendingMarketSuggestion(null);
-                      }}
-                      onValue={(value) => {
-                        setRewardMarketCount(value);
-                        setPendingMarketSuggestion(null);
-                      }}
-                    />
-                  </label>
-                  <button
-                    className="button reward-stage"
-                    type="button"
-                    onClick={stageRewardRotation}
-                    disabled={
-                      Boolean(suggestionCountError) ||
-                      suggestionCandidateIds.length === 0
-                    }
-                  >
-                    Preview selection
-                  </button>
-                  <button
-                    className="button secondary"
-                    type="button"
-                    onClick={() =>
-                      void loadRewards(config.strategyObjective).catch(
-                        (error) =>
-                          setNotice(
-                            error instanceof Error
-                              ? error.message
-                              : String(error),
-                          ),
-                      )
-                    }
-                  >
-                    Refresh suggestions
-                  </button>
+                  <div className="strategy-suggestion-actions">
+                    <button
+                      className="button reward-stage"
+                      type="button"
+                      onClick={stageRewardRotation}
+                      disabled={
+                        Boolean(suggestionCountError) ||
+                        suggestionCandidateIds.length === 0
+                      }
+                    >
+                      Preview selection
+                    </button>
+                    <button
+                      className="button secondary"
+                      type="button"
+                      onClick={() =>
+                        void loadRewards(config.strategyObjective).catch(
+                          (error) =>
+                            setNotice(
+                              error instanceof Error
+                                ? error.message
+                                : String(error),
+                            ),
+                        )
+                      }
+                    >
+                      Refresh suggestions
+                    </button>
+                  </div>
                 </div>
                 <p className="strategy-suggestion-hint" role="status">
                   {suggestionCandidateIds.length === 0
@@ -5871,7 +6113,8 @@ function DashboardBody() {
                   Rewards ranking favors measured farming score; Balanced ranks
                   both-score; smallest move uses absolute 24h change, not
                   volatility. Thin focus is $100–$1,000 balanced depth within 50
-                  bps. Presets seed 3 or 5 markets; N is adjustable up to 64.
+                  bps. Markets previews up to the chosen count (1–64); fewer
+                  eligible markets means fewer proposed.
                 </p>
               </section>
               <p className="strategy-quick-preview" aria-live="polite">
@@ -6015,6 +6258,18 @@ function DashboardBody() {
                 <VenueChip venue={primaryVenue} />
                 <span>{primaryVenue.network}</span>
               </div>
+              <div className="strategy-market-key" aria-label="Market card key">
+                <div className="strategy-market-key-title">
+                  <strong>Market name</strong>
+                  <small>Open interest (OI)</small>
+                </div>
+                <div className="strategy-market-evidence">
+                  <span>Score</span>
+                  <span>Edge</span>
+                  <span>24h volume</span>
+                  <span>Depth within 50 bps</span>
+                </div>
+              </div>
               <div className="pair-options strategy-market-table" role="list">
                 {!strategyVisibleMarkets.length && (
                   <p className="pair-empty">
@@ -6053,32 +6308,38 @@ function DashboardBody() {
                         <span>
                           <strong>{item.symbol}</strong>
                           <small>{money(item.openInterestUsd, 0)} OI</small>
-                          {opportunity ? (
-                            <small className="strategy-market-evidence">
-                              <span>
-                                Score {Math.round(opportunity.score)} / 100
-                              </span>
-                              <span>
-                                Edge{" "}
-                                {opportunity.preRiskEdgeBps?.toFixed(1) ?? "—"}{" "}
-                                bps
-                              </span>
-                              <span>
-                                {compactUsd(opportunity.volume24hUsd)} 24h
-                              </span>
-                              <span>
-                                Depth{" "}
-                                {compactUsd(opportunity.balancedDepth50BpsUsd)}
-                              </span>
-                            </small>
-                          ) : (
-                            <small className="strategy-market-evidence">
-                              <span>Score —</span>
-                              <span>Edge —</span>
-                              <span>24h —</span>
-                              <span>Depth —</span>
-                            </small>
-                          )}
+                          <small className="strategy-market-evidence">
+                            <span
+                              role="group"
+                              aria-label={`Score: ${opportunity ? `${Math.round(opportunity.score)} out of 100` : "unavailable"}`}
+                            >
+                              {opportunity
+                                ? `${Math.round(opportunity.score)} / 100`
+                                : "—"}
+                            </span>
+                            <span
+                              role="group"
+                              aria-label={`Edge: ${opportunity?.preRiskEdgeBps != null ? `${opportunity.preRiskEdgeBps.toFixed(1)} basis points` : "unavailable"}`}
+                            >
+                              {opportunity?.preRiskEdgeBps != null
+                                ? `${opportunity.preRiskEdgeBps.toFixed(1)} bps`
+                                : "—"}
+                            </span>
+                            <span
+                              role="group"
+                              aria-label={`24h volume: ${opportunity?.volume24hUsd != null ? compactUsd(opportunity.volume24hUsd) : "unavailable"}`}
+                            >
+                              {compactUsd(opportunity?.volume24hUsd ?? null)}
+                            </span>
+                            <span
+                              role="group"
+                              aria-label={`Depth within 50 bps: ${opportunity?.balancedDepth50BpsUsd != null ? compactUsd(opportunity.balancedDepth50BpsUsd) : "unavailable"}`}
+                            >
+                              {compactUsd(
+                                opportunity?.balancedDepth50BpsUsd ?? null,
+                              )}
+                            </span>
+                          </small>
                         </span>
                       </label>
                       {selected &&
@@ -6302,7 +6563,7 @@ function DashboardBody() {
                     }
                   />
                 </label>
-                from its highest point this run.{" "}
+                from its highest point this run{" "}
                 <AdvancedTip id="run-drawdown" />
               </p>
               <p>
@@ -6326,7 +6587,7 @@ function DashboardBody() {
                     }
                   />
                 </label>
-                of position, long or short.{" "}
+                of position, long or short{" "}
                 <AdvancedTip id="per-pair-inventory" />
               </p>
               <p>
@@ -6350,7 +6611,7 @@ function DashboardBody() {
                     }
                   />
                 </label>
-                . <AdvancedTip id="gross-exposure" />
+                <AdvancedTip id="gross-exposure" />
               </p>
               {grossExposureError && (
                 <p className="field-error" role="alert">
@@ -6381,7 +6642,7 @@ function DashboardBody() {
                     }
                   />
                 </label>
-                . <AdvancedTip id="unrealized-loss" />
+                <AdvancedTip id="unrealized-loss" />
               </p>
             </section>
 
@@ -8185,6 +8446,46 @@ function DashboardBody() {
           </section>
         )}
       </VenuesView>
+
+      <Sheet
+        open={pendingStrategyDelete !== null}
+        title={`Delete “${pendingStrategyDelete?.name ?? "strategy"}”?`}
+        description="This archives the strategy and removes it from the strategy picker."
+        onClose={() => {
+          if (deleteInFlight.current) return;
+          setPendingStrategyDelete(null);
+          setStrategyDeleteError(null);
+        }}
+        initialFocusSelector="[data-delete-cancel]"
+        footer={
+          <>
+            <Button
+              variant="quiet"
+              data-delete-cancel
+              disabled={busy === "delete-strategy"}
+              onClick={() => {
+                setPendingStrategyDelete(null);
+                setStrategyDeleteError(null);
+              }}
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="stop"
+              disabled={busy === "delete-strategy"}
+              onClick={() => void deleteStrategy()}
+            >
+              {busy === "delete-strategy" ? "Deleting…" : "Delete strategy"}
+            </Button>
+          </>
+        }
+      >
+        {strategyDeleteError && (
+          <p className="field-error" role="alert">
+            {strategyDeleteError}
+          </p>
+        )}
+      </Sheet>
 
       <Sheet
         open={pendingStrategyExit !== null}

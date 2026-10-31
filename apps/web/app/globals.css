@@ -10755,3 +10755,250 @@ mysten-dapp-kit-connect-modal,
     justify-content: space-between;
   }
 }
+
+/* Above the mobile Strategy view (z-index: 300), including its fixed trial panel. */
+.ui-sheet-scrim {
+  z-index: 400;
+}
+
+/* Strategy: picker → context → editable policy → wizard, in DOM and visual order. */
+.workspace-strategy .settings-panel > * {
+  order: 5;
+}
+.workspace-strategy .settings-panel > .strategy-select-row {
+  order: 1;
+  margin: 0;
+}
+.workspace-strategy .settings-panel > .strategy-intro {
+  order: 2;
+  margin: 0;
+  color: var(--ink-2);
+  line-height: 1.5;
+}
+.workspace-strategy .settings-panel > .strategy-title {
+  order: 3;
+}
+.workspace-strategy .settings-panel > .strategy-builder {
+  order: 4;
+}
+.strategy-name-column {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.strategy-name-edit {
+  display: flex;
+  align-items: center;
+  max-width: 600px;
+  gap: 10px;
+}
+.strategy-name-input {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+.strategy-name-input input {
+  width: 100%;
+  margin: 0;
+}
+.strategy-name-pencil {
+  flex: 0 0 42px;
+  width: 42px;
+  height: 42px;
+  display: grid;
+  place-items: center;
+  color: var(--ink-2);
+  background: var(--fill);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  cursor: pointer;
+}
+.strategy-name-pencil:hover,
+.strategy-name-pencil:focus-visible {
+  color: var(--ink);
+  border-color: var(--tide);
+  outline-offset: 2px;
+}
+.strategy-name-status {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 9px;
+}
+.strategy-name-status strong {
+  color: var(--tide-text);
+}
+.strategy-name-status span {
+  color: var(--ink-2);
+}
+.strategy-select-row .strategy-new-button {
+  align-self: center;
+  min-height: 44px;
+  cursor: pointer;
+}
+.strategy-step-nav .button[data-complete="true"],
+.strategy-step-nav .button[data-complete="true"]:disabled {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  color: var(--on-primary);
+  background: var(--tide-text);
+  border-color: var(--tide-text);
+  opacity: 1;
+  cursor: default;
+}
+.strategy-suggestion-panel .strategy-rotation-stage {
+  display: grid;
+  justify-items: end;
+}
+.strategy-suggestion-fields {
+  display: flex;
+  justify-content: flex-end;
+  align-items: stretch;
+  flex-wrap: wrap;
+  gap: 10px;
+  width: 100%;
+}
+.strategy-suggestion-fields .reward-focus,
+.strategy-suggestion-fields .reward-count {
+  flex: 0 1 168px;
+  min-width: 0;
+  display: grid;
+  grid-template-rows: auto minmax(44px, 1fr);
+  align-content: stretch;
+  gap: 5px;
+}
+.strategy-suggestion-fields .reward-focus > div {
+  height: 44px;
+}
+.strategy-suggestion-fields .reward-count input {
+  width: 100%;
+  height: 44px;
+}
+.strategy-suggestion-actions {
+  display: flex;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.strategy-market-key {
+  width: min(100%, 280px);
+  margin: 9px 0 12px;
+  padding: 10px 12px;
+  display: grid;
+  gap: 6px;
+  color: var(--ink-2);
+  background: var(--fill);
+  border: 1px dashed var(--line);
+  border-radius: 10px;
+  font-size: 12px;
+}
+.strategy-market-key-title {
+  display: grid;
+  gap: 2px;
+}
+.strategy-market-key-title strong {
+  color: var(--ink);
+  font-size: 13px;
+}
+.strategy-market-key .strategy-market-evidence {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 4px;
+}
+.strategy-market-key .strategy-market-evidence span {
+  padding: 2px 5px;
+  color: var(--ink-2);
+  background: var(--canvas);
+  border-radius: 5px;
+  overflow-wrap: anywhere;
+}
+@media (max-width: 700px) {
+  .maker-view[data-view="strategy"] .strategy-title {
+    flex-direction: row;
+    align-items: center;
+  }
+  .strategy-name-edit {
+    gap: 4px;
+  }
+  .strategy-suggestion-fields .reward-focus,
+  .strategy-suggestion-fields .reward-count {
+    flex: 1 1 140px;
+  }
+}
+@media (max-width: 390px) {
+  .strategy-select-row .strategy-new-button {
+    padding-inline: 8px;
+    font-size: 12px;
+  }
+  .maker-view[data-view="strategy"] .strategy-title {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .strategy-name-edit {
+    max-width: 100%;
+  }
+  .strategy-name-input input {
+    font-size: clamp(14px, 6vw, 20px);
+  }
+  .strategy-market-key {
+    width: 100%;
+    padding: 8px 6px;
+  }
+  .strategy-suggestion-panel,
+  .strategy-suggestion-panel .strategy-rotation-stage,
+  .strategy-suggestion-fields,
+  .strategy-suggestion-actions {
+    min-width: 0;
+    width: 100%;
+  }
+  .strategy-suggestion-panel .strategy-quick-picks button,
+  .strategy-suggestion-actions .button {
+    min-width: 0;
+    white-space: normal;
+  }
+  .strategy-suggestion-actions .button {
+    width: 100%;
+  }
+  .strategy-suggestion-fields .reward-focus > div {
+    min-width: 0;
+    height: 88px;
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: repeat(2, minmax(0, 1fr));
+  }
+  .strategy-suggestion-fields .reward-focus button {
+    min-width: 0;
+    padding-inline: 0;
+    white-space: nowrap;
+    font-size: 11px;
+  }
+  .strategy-suggestion-fields .reward-count input {
+    height: 88px;
+  }
+  .workspace-strategy .pair-options.strategy-market-table,
+  .workspace-strategy .market-select-item {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .workspace-strategy .strategy-market-reasons summary {
+    overflow-wrap: anywhere;
+  }
+  .workspace-strategy .strategy-market-row > span {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .workspace-strategy .strategy-market-evidence {
+    min-width: 0;
+    width: 100%;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .workspace-strategy .strategy-market-evidence span {
+    min-width: 0;
+    padding-inline: 1px;
+    font-size: 10px;
+  }
+  .strategy-market-key .strategy-market-evidence span {
+    padding-inline: 2px;
+    font-size: 11px;
+    overflow-wrap: normal;
+  }
+  .strategy-suggestion-fields .reward-focus,
+  .strategy-suggestion-fields .reward-count {
+    flex-basis: 100%;
+  }
+}

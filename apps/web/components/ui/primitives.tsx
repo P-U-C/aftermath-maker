@@ -273,6 +273,7 @@ type SheetProps = {
   onClose: () => void;
   children: ReactNode;
   footer?: ReactNode;
+  initialFocusSelector?: string;
 };
 
 export function Sheet({
@@ -282,6 +283,7 @@ export function Sheet({
   onClose,
   children,
   footer,
+  initialFocusSelector,
 }: SheetProps) {
   const titleId = useId();
   const descriptionId = useId();
@@ -314,7 +316,13 @@ export function Sheet({
       );
 
     const focusFrame = window.requestAnimationFrame(() => {
-      (focusableElements()[0] ?? sheet).focus();
+      (
+        (initialFocusSelector
+          ? sheet.querySelector<HTMLElement>(initialFocusSelector)
+          : null) ??
+        focusableElements()[0] ??
+        sheet
+      ).focus();
     });
 
     const handleKeyDown = (event: KeyboardEvent) => {
