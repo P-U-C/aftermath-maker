@@ -274,6 +274,7 @@ type SheetProps = {
   children: ReactNode;
   footer?: ReactNode;
   initialFocusSelector?: string;
+  className?: string;
 };
 
 export function Sheet({
@@ -284,6 +285,7 @@ export function Sheet({
   children,
   footer,
   initialFocusSelector,
+  className,
 }: SheetProps) {
   const titleId = useId();
   const descriptionId = useId();
@@ -368,14 +370,16 @@ export function Sheet({
 
   return (
     <div
-      className="ui-sheet-scrim"
+      className={
+        className ? `ui-sheet-scrim ${className}-scrim` : "ui-sheet-scrim"
+      }
       onMouseDown={(event) => {
         if (event.target === event.currentTarget) onClose();
       }}
     >
       <section
         ref={sheetRef}
-        className="ui-sheet"
+        className={className ? `ui-sheet ${className}-sheet` : "ui-sheet"}
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}

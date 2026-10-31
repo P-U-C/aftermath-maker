@@ -318,6 +318,29 @@ export function deskEvent(
   context: AuditEventContext = {},
 ): DeskEvent {
   const key = `${event.category}:${event.action}:${event.outcome}`;
+  if (
+    event.category === "request" &&
+    (event.outcome === "rejected" || event.outcome === "error")
+  ) {
+    const message =
+      typeof event.detail.message === "string"
+        ? event.detail.message
+        : "Maker could not complete the request.";
+    const reference =
+      typeof event.detail.reference === "string"
+        ? event.detail.reference
+        : "unavailable";
+    return {
+      id: event.id,
+      occurredAt: event.occurredAt,
+      severity: event.outcome === "error" ? "error" : "warning",
+      sentence: withContext(
+        `${message} Reference ${reference} is in your control log.`,
+        event,
+        context,
+      ),
+    };
+  }
   const copy = copies[key];
   if (copy) {
     return {

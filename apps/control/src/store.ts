@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import Database from "better-sqlite3";
+import { UserFacingError } from "./http-error.js";
 import { z } from "zod";
 import type { EncryptedSecret } from "@puc/aftermath";
 import {
@@ -366,8 +367,12 @@ export type BundleWalletUsage = {
   unrealizedLossUsd: number;
 };
 
-export class WalletLimitError extends Error {
-  readonly statusCode = 409;
+export class WalletLimitError extends UserFacingError {
+  constructor(message: string) {
+    super("wallet-limit", `${message}. Review wallet limits in Bundles.`, {
+      kind: "bundles",
+    });
+  }
 }
 
 export type StoredBundle = {
@@ -1909,7 +1914,13 @@ export class Store {
          WHERE owner_address = ? AND id = ? AND archived_at IS NULL`,
       )
       .get(normalizedOwner, bundleId) as { id: string } | undefined;
-    if (!bundle) throw new Error("Bundle was not found for this wallet");
+    if (!bundle)
+      throw new UserFacingError(
+        "bundle-not-found",
+        "This bundle is no longer available. Refresh Bundles and select an active bundle.",
+        { kind: "bundles" },
+        404,
+      );
     return new TenantStore(this.db, normalizedOwner, bundle.id);
   }
 
@@ -2565,7 +2576,12 @@ export class TenantStore {
     }
     const strategy = this.strategyRow(row.strategy_id);
     if (!strategy || strategy.archived_at) {
-      throw new Error("Bundle strategy was not found");
+      throw new UserFacingError(
+        "strategy-not-found",
+        "The attached strategy is no longer available. Choose a strategy in Bundles.",
+        { kind: "bundles" },
+        404,
+      );
     }
     return composeMakerConfig({
       strategy: strategyConfigSchema.parse(parse<unknown>(strategy.config)),
@@ -2645,8 +2661,10 @@ export class TenantStore {
     const uses = current ? this.strategyUsedBy(current.id) : [];
     const mustFork = Boolean(current && uses.length > 1);
     if (mustFork && !inputs.forkShared) {
-      throw new Error(
-        "This bundle uses a shared strategy. Edit it from Strategy instead.",
+      throw new UserFacingError(
+        "shared-strategy",
+        "This bundle uses a shared strategy. Edit it in Strategy instead.",
+        { kind: "strategy" },
       );
     }
     const now = this.nextBundleUpdatedAt(inputs.bundleId);
@@ -2811,8 +2829,10 @@ export class TenantStore {
     ];
     const overLimit = limits.find(([, value, envelope]) => value > envelope);
     if (overLimit) {
-      throw new Error(
-        `${overLimit[0]} limit exceeds this wallet's confirmed envelope`,
+      throw new UserFacingError(
+        "wallet-limit",
+        `${overLimit[0]} limit exceeds this wallet's confirmed envelope. Raise the wallet limit in Bundles or lower the strategy limit.`,
+        { kind: "bundles" },
       );
     }
   }
@@ -2867,7 +2887,12 @@ export class TenantStore {
       config.makerAccountId &&
       config.makerAccountId === config.hedge.accountId
     ) {
-      throw new Error("Maker and Taker accounts must be different");
+      throw new UserFacingError(
+        "accounts-not-distinct",
+        "Choose separate Maker and hedge accounts in Venues.",
+        { kind: "venues" },
+        409,
+      );
     }
     const accountIds = [config.makerAccountId, config.hedge.accountId].filter(
       (accountId): accountId is string => Boolean(accountId),
@@ -2883,7 +2908,12 @@ export class TenantStore {
     );
     for (const accountId of accountIds) {
       if (assignedAccount.get(this.ownerAddress, accountId, bundleId)) {
-        throw new Error("Each account can hold one bundle role per wallet");
+        throw new UserFacingError(
+          "account-role-taken",
+          "This account is already assigned to a bundle. Select an unused account in Bundles.",
+          { kind: "bundles" },
+          409,
+        );
       }
     }
   }
@@ -2894,9 +2924,20 @@ export class TenantStore {
    */
   assertBundleMarketsAvailableToStart(bundleId: string): void {
     const bundle = this.getStoredBundle(bundleId);
-    if (!bundle || bundle.archivedAt) throw new Error("Bundle was not found");
+    if (!bundle || bundle.archivedAt)
+      throw new UserFacingError(
+        "bundle-not-found",
+        "This bundle is no longer available. Refresh Bundles and select an active bundle.",
+        { kind: "bundles" },
+        404,
+      );
     if (!bundle.strategyId) {
-      throw new Error("Attach a strategy before starting this bundle");
+      throw new UserFacingError(
+        "needs-strategy",
+        "Attach a strategy in Bundles before starting this bundle.",
+        { kind: "bundles" },
+        409,
+      );
     }
     const assigned = this.db.prepare(
       `SELECT bundles.name
@@ -2917,8 +2958,10 @@ export class TenantStore {
         market.marketId,
       ) as { name: string } | undefined;
       if (existing) {
-        throw new Error(
+        throw new UserFacingError(
+          "market-taken",
           `${market.symbol} is already quoted by ${existing.name}. Duplicate the strategy and change its markets.`,
+          { kind: "strategy" },
         );
       }
     }
@@ -2940,14 +2983,29 @@ export class TenantStore {
           }
         | undefined;
       if (!bundle || bundle.archived_at) {
-        throw new Error("Bundle was not found");
+        throw new UserFacingError(
+          "bundle-not-found",
+          "This bundle is no longer available. Refresh Bundles and select an active bundle.",
+          { kind: "bundles" },
+          404,
+        );
       }
       if (bundle.name !== "Core" && config.mode === "live") {
-        throw new Error("Additional bundles can only use Paper mode");
+        throw new UserFacingError(
+          "live-core-only",
+          "Only Core can use Live mode. Switch this bundle to Paper.",
+          { kind: "bundles" },
+          409,
+        );
       }
       const walletLimits = this.getWalletLimits();
       if (!walletLimits) {
-        throw new Error("Configure Core before creating another bundle");
+        throw new UserFacingError(
+          "core-required",
+          "Configure Core in Bundles before creating another bundle.",
+          { kind: "bundles" },
+          409,
+        );
       }
       this.assertConfigFitsWallet(config, walletLimits);
       this.assertBundleAssignmentsAvailable(bundleId, config);
@@ -3131,12 +3189,23 @@ export class TenantStore {
     expectedUpdatedAt?: string;
   }): StoredBundle {
     const current = this.getStoredBundle(inputs.bundleId);
-    if (!current || current.archivedAt) throw new Error("Bundle was not found");
+    if (!current || current.archivedAt)
+      throw new UserFacingError(
+        "bundle-not-found",
+        "This bundle is no longer available. Refresh Bundles and select an active bundle.",
+        { kind: "bundles" },
+        404,
+      );
     if (
       inputs.expectedUpdatedAt !== undefined &&
       inputs.expectedUpdatedAt !== current.updatedAt
     ) {
-      throw new Error("Bundle changed elsewhere; refresh before saving");
+      throw new UserFacingError(
+        "bundle-version-conflict",
+        "Bundle changed elsewhere; refresh before saving. Compare your changes with the current bundle.",
+        { kind: "bundles" },
+        409,
+      );
     }
     if (current.name === "Core") this.writeCoreConfig(inputs.config);
     else this.writeBundleConfig(inputs.bundleId, inputs.config);
@@ -3232,8 +3301,24 @@ export class TenantStore {
         : strategyMarketsSchema.parse(inputs.markets);
     const name = inputs.name.trim();
     if (!name || name.length > 80) {
-      throw new Error("Strategy name must be between 1 and 80 characters");
+      throw new UserFacingError(
+        "strategy-name-invalid",
+        "Use a strategy name between 1 and 80 characters.",
+        { kind: "strategy" },
+        400,
+      );
     }
+    const nameTaken = this.db
+      .prepare(
+        "SELECT 1 FROM strategies WHERE owner_address = ? AND name = ? COLLATE NOCASE",
+      )
+      .get(this.ownerAddress, name);
+    if (nameTaken)
+      throw new UserFacingError(
+        "strategy-name-taken",
+        "Another strategy already uses this name. Choose a different name.",
+        { kind: "strategy" },
+      );
     const id = `strategy-${randomUUID()}`;
     const now = new Date().toISOString();
     this.db
@@ -3266,16 +3351,31 @@ export class TenantStore {
   }): { strategy: StoredStrategy; affectedBundles: StoredBundle[] } {
     const name = inputs.name.trim();
     if (!name || name.length > 80) {
-      throw new Error("Strategy name must be between 1 and 80 characters");
+      throw new UserFacingError(
+        "strategy-name-invalid",
+        "Use a strategy name between 1 and 80 characters.",
+        { kind: "strategy" },
+        400,
+      );
     }
     const config = strategyConfigSchema.parse(inputs.config);
     const marketRule = strategyMarketRuleSchema.parse(inputs.marketRule);
     const update = this.db.transaction(() => {
       const current = this.strategyRow(inputs.strategyId);
       if (!current || current.archived_at)
-        throw new Error("Strategy was not found");
+        throw new UserFacingError(
+          "strategy-not-found",
+          "This strategy is no longer available. Choose a strategy in Strategy.",
+          { kind: "strategy" },
+          404,
+        );
       if (current.version !== inputs.expectedVersion) {
-        throw new Error("Strategy changed elsewhere; refresh before saving");
+        throw new UserFacingError(
+          "strategy-version-conflict",
+          "Strategy changed elsewhere; refresh before saving. Compare your draft with the latest version.",
+          { kind: "strategy" },
+          409,
+        );
       }
       const markets =
         inputs.markets === undefined
@@ -3287,7 +3387,13 @@ export class TenantStore {
            WHERE owner_address = ? AND name = ? COLLATE NOCASE AND id <> ?`,
         )
         .get(this.ownerAddress, name, current.id);
-      if (nameTaken) throw new Error("A strategy already uses that name");
+      if (nameTaken)
+        throw new UserFacingError(
+          "strategy-name-taken",
+          "Another strategy already uses this name. Choose a different name.",
+          { kind: "strategy" },
+          409,
+        );
       const bundles = this.strategyUsedBy(current.id);
       const projections = bundles.map((bundle) => {
         const row = this.getBundleRow(bundle.id)!;
@@ -3307,8 +3413,10 @@ export class TenantStore {
         (projection) => projection.status === "running",
       );
       if (running.length > 1 && markets.length) {
-        throw new Error(
+        throw new UserFacingError(
+          "market-taken",
           `${markets[0]!.symbol} is already quoted by ${running[0]!.bundle.name}. Duplicate the strategy and change its markets.`,
+          { kind: "strategy" },
         );
       }
       if (running.length && markets.length) {
@@ -3332,8 +3440,10 @@ export class TenantStore {
             market.marketId,
           ) as { name: string } | undefined;
           if (existing) {
-            throw new Error(
+            throw new UserFacingError(
+              "market-taken",
               `${market.symbol} is already quoted by ${existing.name}. Duplicate the strategy and change its markets.`,
+              { kind: "strategy" },
             );
           }
         }
@@ -3423,7 +3533,12 @@ export class TenantStore {
   }): StoredStrategy {
     const current = this.strategyRow(inputs.strategyId);
     if (!current || current.archived_at)
-      throw new Error("Strategy was not found");
+      throw new UserFacingError(
+        "strategy-not-found",
+        "This strategy is no longer available. Choose a strategy in Strategy.",
+        { kind: "strategy" },
+        404,
+      );
     const requested = inputs.name?.trim();
     const name = requested || this.nextStrategyName(`${current.name} copy`);
     return this.createStrategy({
@@ -3437,10 +3552,20 @@ export class TenantStore {
   archiveStrategy(strategyId: string): StoredStrategy {
     const current = this.strategyRow(strategyId);
     if (!current || current.archived_at)
-      throw new Error("Strategy was not found");
+      throw new UserFacingError(
+        "strategy-not-found",
+        "This strategy is no longer available. Choose a strategy in Strategy.",
+        { kind: "strategy" },
+        404,
+      );
     const usedBy = this.strategyUsedBy(strategyId);
     if (usedBy.length) {
-      throw new Error("A strategy in use by a bundle cannot be archived");
+      throw new UserFacingError(
+        "strategy-in-use",
+        "This strategy is used by a bundle. Detach it in Bundles before deleting it.",
+        { kind: "bundles" },
+        409,
+      );
     }
     this.db
       .prepare(
@@ -3489,7 +3614,12 @@ export class TenantStore {
   confirmWalletLimits(): BundleWalletLimits {
     const current = this.getWalletLimits();
     if (!current) {
-      throw new Error("Configure Core before confirming wallet limits");
+      throw new UserFacingError(
+        "core-required",
+        "Configure Core in Bundles before confirming wallet limits.",
+        { kind: "bundles" },
+        409,
+      );
     }
     if (!current.confirmedAt) {
       const confirmedAt = new Date().toISOString();
@@ -3599,10 +3729,20 @@ export class TenantStore {
     const create = this.db.transaction(() => {
       const name = inputs.name.trim();
       if (!name || name.length > 80 || name.toLowerCase() === "core") {
-        throw new Error("Bundle name must be between 1 and 80 characters");
+        throw new UserFacingError(
+          "bundle-name-invalid",
+          "Use a bundle name between 1 and 80 characters.",
+          { kind: "bundles" },
+          400,
+        );
       }
       if (inputs.config.mode === "live") {
-        throw new Error("Additional bundles can only use Paper mode");
+        throw new UserFacingError(
+          "live-core-only",
+          "Only Core can use Live mode. Switch this bundle to Paper.",
+          { kind: "bundles" },
+          409,
+        );
       }
       const active = this.db
         .prepare(
@@ -3611,16 +3751,28 @@ export class TenantStore {
         )
         .get(this.ownerAddress) as { count: number };
       if (active.count >= 4) {
-        throw new Error("A wallet can have at most four active bundles");
+        throw new UserFacingError(
+          "bundle-limit",
+          "A wallet can have at most four active bundles. Archive an unused bundle before creating another.",
+          { kind: "bundles" },
+          409,
+        );
       }
       const walletLimits = this.getWalletLimits();
       if (!walletLimits) {
-        throw new Error("Configure Core before creating another bundle");
+        throw new UserFacingError(
+          "core-required",
+          "Configure Core in Bundles before creating another bundle.",
+          { kind: "bundles" },
+          409,
+        );
       }
       if (active.count >= 1 && !walletLimits.confirmedAt) {
         if (!inputs.confirmWalletLimits) {
-          throw new Error(
-            "Confirm the wallet limits before creating a second bundle",
+          throw new UserFacingError(
+            "wallet-limits-unconfirmed",
+            "Confirm wallet limits in Bundles before creating a second bundle.",
+            { kind: "bundles" },
           );
         }
         this.confirmWalletLimits();
@@ -3678,7 +3830,12 @@ export class TenantStore {
     const create = this.db.transaction(() => {
       const name = inputs.name.trim();
       if (!name || name.length > 80 || name.toLowerCase() === "core") {
-        throw new Error("Bundle name must be between 1 and 80 characters");
+        throw new UserFacingError(
+          "bundle-name-invalid",
+          "Use a bundle name between 1 and 80 characters.",
+          { kind: "bundles" },
+          400,
+        );
       }
       if (
         this.db
@@ -3687,10 +3844,20 @@ export class TenantStore {
           )
           .get(this.ownerAddress, name)
       ) {
-        throw new Error("A bundle already uses that name");
+        throw new UserFacingError(
+          "bundle-name-taken",
+          "A bundle already uses that name. Choose a different bundle name.",
+          { kind: "bundles" },
+          409,
+        );
       }
       if (inputs.mode === "live") {
-        throw new Error("Additional bundles can only use Paper mode");
+        throw new UserFacingError(
+          "live-core-only",
+          "Only Core can use Live mode. Switch this bundle to Paper.",
+          { kind: "bundles" },
+          409,
+        );
       }
       const active = this.db
         .prepare(
@@ -3699,13 +3866,23 @@ export class TenantStore {
         )
         .get(this.ownerAddress) as { count: number };
       if (active.count >= 4) {
-        throw new Error("A wallet can have at most four active bundles");
+        throw new UserFacingError(
+          "bundle-limit",
+          "A wallet can have at most four active bundles. Archive an unused bundle before creating another.",
+          { kind: "bundles" },
+          409,
+        );
       }
       const strategy = inputs.strategyId
         ? this.strategyRow(inputs.strategyId)
         : undefined;
       if (inputs.strategyId && (!strategy || strategy.archived_at)) {
-        throw new Error("Strategy was not found for this wallet");
+        throw new UserFacingError(
+          "strategy-not-found",
+          "This strategy is no longer available. Choose an active strategy in Strategy.",
+          { kind: "strategy" },
+          404,
+        );
       }
       const strategyConfig = strategy
         ? strategyConfigSchema.parse(parse<unknown>(strategy.config))
@@ -3714,8 +3891,11 @@ export class TenantStore {
         ? this.getStrategyMarkets(strategy.id)
         : (inputs.markets ?? this.getConfig()?.markets ?? []);
       if (!strategyMarkets.length) {
-        throw new Error(
-          "Choose a strategy with one or more markets before creating this bundle",
+        throw new UserFacingError(
+          "needs-markets",
+          "Choose a strategy with at least one market before creating this bundle.",
+          { kind: "strategy" },
+          400,
         );
       }
       const config = strategyConfig
@@ -3740,15 +3920,20 @@ export class TenantStore {
           });
       const walletLimits = this.getWalletLimits();
       if (strategy && !walletLimits) {
-        throw new Error(
-          "Configure Core wallet limits before creating this bundle",
+        throw new UserFacingError(
+          "wallet-limits-required",
+          "Set Core wallet limits in Bundles before creating this bundle.",
+          { kind: "bundles" },
+          409,
         );
       }
       if (strategy && walletLimits) {
         if (active.count >= 1 && !walletLimits.confirmedAt) {
           if (!inputs.confirmWalletLimits) {
-            throw new Error(
-              "Confirm the wallet limits before creating a second bundle",
+            throw new UserFacingError(
+              "wallet-limits-unconfirmed",
+              "Confirm wallet limits in Bundles before creating a second bundle.",
+              { kind: "bundles" },
             );
           }
           this.confirmWalletLimits();
@@ -3799,12 +3984,22 @@ export class TenantStore {
     const update = this.db.transaction(() => {
       const current = this.getBundleRow(inputs.bundleId);
       if (!current || current.archived_at)
-        throw new Error("Bundle was not found");
+        throw new UserFacingError(
+          "bundle-not-found",
+          "This bundle is no longer available. Refresh Bundles and select an active bundle.",
+          { kind: "bundles" },
+          404,
+        );
       if (
         inputs.expectedUpdatedAt !== undefined &&
         inputs.expectedUpdatedAt !== current.updated_at
       ) {
-        throw new Error("Bundle changed elsewhere; refresh before saving");
+        throw new UserFacingError(
+          "bundle-version-conflict",
+          "Bundle changed elsewhere; refresh before saving. Compare your changes with the current bundle.",
+          { kind: "bundles" },
+          409,
+        );
       }
       const makerAccountId =
         inputs.makerAccountId === undefined
@@ -3816,25 +4011,43 @@ export class TenantStore {
           : inputs.takerAccountId;
       const mode = inputs.mode ?? current.mode;
       if (mode === "live" && current.name !== "Core") {
-        throw new Error("Additional bundles can only use Paper mode");
+        throw new UserFacingError(
+          "live-core-only",
+          "Only Core can use Live mode. Switch this bundle to Paper.",
+          { kind: "bundles" },
+          409,
+        );
       }
       const strategyId =
         inputs.strategyId === undefined
           ? current.strategy_id
           : inputs.strategyId;
       if (inputs.markets !== undefined) {
-        throw new Error("Markets are set on the strategy, not the bundle");
+        throw new UserFacingError(
+          "markets-on-strategy",
+          "Edit markets in Strategy, then return to Bundles.",
+          { kind: "strategy" },
+          409,
+        );
       }
       const strategy = strategyId ? this.strategyRow(strategyId) : undefined;
       const markets = strategy
         ? this.getStrategyMarkets(strategy.id)
         : this.getBundleMarkets(current.id);
       if (strategyId && (!strategy || strategy.archived_at)) {
-        throw new Error("Strategy was not found for this wallet");
+        throw new UserFacingError(
+          "strategy-not-found",
+          "This strategy is no longer available. Choose an active strategy in Strategy.",
+          { kind: "strategy" },
+          404,
+        );
       }
       if (strategy && !markets.length) {
-        throw new Error(
-          "Add one or more markets to the strategy before attaching it",
+        throw new UserFacingError(
+          "needs-markets",
+          "Select at least one market in Strategy before attaching it to a bundle.",
+          { kind: "strategy" },
+          409,
         );
       }
       const fallback = this.composeBundleConfig(current);
@@ -3927,7 +4140,13 @@ export class TenantStore {
         this.ownerAddress,
         bundleId,
       );
-    if (result.changes !== 1) throw new Error("Bundle was not found");
+    if (result.changes !== 1)
+      throw new UserFacingError(
+        "bundle-not-found",
+        "This bundle is no longer available. Refresh Bundles and select an active bundle.",
+        { kind: "bundles" },
+        404,
+      );
     return this.getStoredBundle(bundleId)!;
   }
 
@@ -3939,9 +4158,20 @@ export class TenantStore {
            WHERE owner_address = ? AND id = ? AND archived_at IS NULL`,
         )
         .get(this.ownerAddress, bundleId) as { name: string } | undefined;
-      if (!current) throw new Error("Bundle was not found");
+      if (!current)
+        throw new UserFacingError(
+          "bundle-not-found",
+          "This bundle is no longer available. Refresh Bundles and select an active bundle.",
+          { kind: "bundles" },
+          404,
+        );
       if (current.name === "Core") {
-        throw new Error("Core cannot be archived");
+        throw new UserFacingError(
+          "core-required",
+          "Core cannot be archived. Keep it as the wallet control bundle.",
+          { kind: "bundles" },
+          409,
+        );
       }
       const now = this.nextBundleUpdatedAt(bundleId);
       this.db
@@ -4079,7 +4309,12 @@ export class TenantStore {
 
   setSetup(setup: Setup): StoredAccountSetup {
     if (normalizeAddress(setup.ownerAddress) !== this.ownerAddress) {
-      throw new Error("Setup owner does not match authenticated wallet");
+      throw new UserFacingError(
+        "account-owner-mismatch",
+        "Connect the wallet that owns this account before setting it up.",
+        { kind: "accounts" },
+        403,
+      );
     }
     const accounts = this.listAccountSetups();
     const existing = accounts.find(
@@ -4190,7 +4425,12 @@ export class TenantStore {
   clearAgentGrant(accountId: string): void {
     const accounts = this.listAccountSetups();
     if (!accounts.some((account) => account.accountId === accountId)) {
-      throw new Error("Account setup was not found");
+      throw new UserFacingError(
+        "account-not-found",
+        "This account setup is no longer available. Select an account in Venues.",
+        { kind: "venues" },
+        404,
+      );
     }
     this.setSetting(
       "account_setups",
@@ -4209,7 +4449,12 @@ export class TenantStore {
   }): void {
     const accounts = this.listAccountSetups();
     if (!accounts.some((account) => account.accountId === inputs.accountId)) {
-      throw new Error("Account setup was not found");
+      throw new UserFacingError(
+        "account-not-found",
+        "This account setup is no longer available. Select an account in Venues.",
+        { kind: "venues" },
+        404,
+      );
     }
     this.setSetting(
       "account_setups",

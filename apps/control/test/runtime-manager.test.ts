@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { AftermathGateway } from "@puc/aftermath";
 import { makerConfigSchema } from "@puc/core";
 import { RuntimeManager } from "../src/runtime-manager.js";
+import { MakerRuntime } from "../src/runtime.js";
 import { Store } from "../src/store.js";
 
 function gateway(endpoint: string): AftermathGateway {
@@ -311,7 +312,7 @@ describe("runtime endpoint management", () => {
     store.close();
   });
 
-  it("rejects a second bundle start below the shared cancellation reserve", async () => {
+  it("starts Paper below the Live cancellation reserve with one simulation budget", async () => {
     const store = storeHarness();
     const ownerAddress = `0x${"4".repeat(64)}`;
     const tenant = store.forTenant(ownerAddress);
@@ -350,11 +351,126 @@ describe("runtime endpoint management", () => {
       }
     ).snapshotValue.balances.gasSui = 0.1;
     tenant.setBundleStatus(coreBundle.id, "running");
+    // Isolate admission from the mock gateway's intentionally absent quote RPC.
+    const paperRuntime = manager.getBundle(ownerAddress, paper.id);
+    vi.spyOn(paperRuntime, "start").mockImplementation(() => {});
 
-    expect(() => manager.startBundle(ownerAddress, paper.id)).toThrow(
-      "gas reserve",
+    expect(manager.startBundle(ownerAddress, paper.id).bundle.status).toBe(
+      "running",
     );
-    expect(tenant.getStoredBundle(paper.id)?.status).toBe("paused");
+    const trial = vi
+      .spyOn(MakerRuntime.prototype, "runPaperTrial")
+      .mockResolvedValue({} as never);
+    try {
+      await expect(
+        manager.runPaperTrial({ ownerAddress, cadenceMs: 2000 }),
+      ).resolves.toBeDefined();
+      expect(trial).toHaveBeenCalledTimes(1);
+    } finally {
+      trial.mockRestore();
+      manager.close();
+      store.close();
+    }
+  });
+
+  it("requires the unchanged cancellation reserve for Live and names the trading key", async () => {
+    const store = storeHarness();
+    const owner = `0x${"8".repeat(64)}`;
+    const agent = `0x${"9".repeat(64)}`;
+    const tenant = store.forTenant(owner);
+    tenant.setConfig(
+      makerConfigSchema.parse({
+        mode: "live",
+        maxGasMist: 50_000_000,
+        markets: [{ marketId: "0x8001", symbol: "CORE" }],
+      }),
+    );
+    const core = tenant.listBundles()[0]!;
+    const manager = new RuntimeManager(
+      store,
+      {} as never,
+      {},
+      vi.fn().mockResolvedValue(gateway("https://test.example")),
+    );
+    await manager.initialize();
+    const runtime = manager.getBundle(owner, core.id) as unknown as {
+      snapshotValue: {
+        agentAddress: string | null;
+        balances: { gasSui: number | null };
+      };
+    };
+    runtime.snapshotValue.agentAddress = agent;
+    runtime.snapshotValue.balances.gasSui = 0.08;
+    expect(() =>
+      (
+        manager as unknown as {
+          assertStartGasReserve: (
+            owner: string,
+            bundle: typeof core,
+            runtime: unknown,
+          ) => void;
+        }
+      ).assertStartGasReserve(owner, core, runtime),
+    ).toThrowError(
+      expect.objectContaining({
+        code: "gas-reserve-low",
+        fix: { kind: "copy", value: agent },
+        message: expect.stringContaining(
+          "0.08 SUI for gas and needs at least 0.25 SUI",
+        ),
+      }),
+    );
+    manager.close();
+    store.close();
+  });
+
+  it("reserves for the running Live bundle, not the new Paper bundle", async () => {
+    const store = storeHarness();
+    const owner = `0x${"a".repeat(64)}`;
+    const tenant = store.forTenant(owner);
+    const coreConfig = makerConfigSchema.parse({
+      mode: "live",
+      maxGasMist: 50_000_000,
+      markets: [{ marketId: "0xa001", symbol: "CORE" }],
+    });
+    tenant.setConfig(coreConfig);
+    tenant.confirmWalletLimits();
+    const core = tenant.listBundles()[0]!;
+    const paper = tenant.createBundle({
+      name: "Paper",
+      config: makerConfigSchema.parse({
+        ...coreConfig,
+        mode: "paper",
+        markets: [{ marketId: "0xa002", symbol: "PAPER" }],
+      }),
+    });
+    tenant.setBundleStatus(core.id, "running");
+    const manager = new RuntimeManager(
+      store,
+      {} as never,
+      {},
+      vi.fn().mockResolvedValue(gateway("https://test.example")),
+    );
+    await manager.initialize();
+    const coreRuntime = manager.getBundle(owner, core.id) as unknown as {
+      snapshotValue: { balances: { gasSui: number | null } };
+    };
+    const paperRuntime = manager.getBundle(owner, paper.id) as unknown as {
+      snapshotValue: { balances: { gasSui: number | null } };
+    };
+    coreRuntime.snapshotValue.balances.gasSui = 0.3;
+    paperRuntime.snapshotValue.balances.gasSui = 0.3;
+    expect(() =>
+      (
+        manager as unknown as {
+          assertStartGasReserve: (
+            owner: string,
+            bundle: typeof paper,
+            runtime: unknown,
+          ) => void;
+        }
+      ).assertStartGasReserve(owner, paper, paperRuntime),
+    ).not.toThrow();
     manager.close();
     store.close();
   });

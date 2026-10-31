@@ -6,6 +6,7 @@ import {
   CheckCircle2,
   CircleMinus,
   LockKeyhole,
+  LoaderCircle,
   ShieldCheck,
 } from "lucide-react";
 import { useEffect, useState, type FormEvent } from "react";
@@ -275,7 +276,7 @@ export function AccessScreen({
                       disabled={requestBusy}
                     >
                       <ArrowRight size={18} aria-hidden="true" />
-                      {requestBusy ? "Sending request..." : "Send request"}
+                      {requestBusy ? "Sending request…" : "Send request"}
                     </Button>
                     {!denied && (
                       <Button
@@ -292,17 +293,31 @@ export function AccessScreen({
             ) : (
               <div className="access-actions">
                 {connected ? (
-                  <Button
-                    variant="primary"
-                    size="large"
-                    onClick={onVerify}
-                    disabled={busy}
-                  >
-                    <ShieldCheck size={18} aria-hidden="true" />
-                    {busy
-                      ? "Sign the message in your wallet..."
-                      : "Retry sign in"}
-                  </Button>
+                  <div className="access-signin">
+                    <Button
+                      variant="primary"
+                      size="large"
+                      onClick={onVerify}
+                      disabled={busy}
+                    >
+                      {busy ? (
+                        <LoaderCircle
+                          size={14}
+                          className="spin"
+                          aria-hidden="true"
+                        />
+                      ) : (
+                        <ShieldCheck size={18} aria-hidden="true" />
+                      )}
+                      {busy ? "Check your wallet" : "Retry sign in"}
+                    </Button>
+                    {busy && (
+                      <p role="status">
+                        Approve the sign-in message in your wallet. Signing is
+                        free and moves no funds.
+                      </p>
+                    )}
+                  </div>
                 ) : (
                   <div className="access-connect">
                     <ConnectButton>Continue with wallet</ConnectButton>

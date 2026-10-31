@@ -108,8 +108,23 @@ function rowDetail(
   text: string;
   tone?: "amber" | undefined;
   destination?: "strategy" | "venues" | "bundles" | undefined;
+  copyAddress?: string | undefined;
 } {
-  if (bundle.startError) return { text: bundle.startError, tone: "amber" };
+  if (bundle.startError) {
+    const fix = bundle.startError.fix;
+    return {
+      text: bundle.startError.message,
+      tone: "amber",
+      ...(fix?.kind === "copy" && fix.value ? { copyAddress: fix.value } : {}),
+      ...(fix?.kind === "accounts"
+        ? { destination: "venues" as const }
+        : fix?.kind === "strategy" ||
+            fix?.kind === "venues" ||
+            fix?.kind === "bundles"
+          ? { destination: fix.kind }
+          : {}),
+    };
+  }
   if (bundle.needsStrategy) {
     return {
       text: "Needs a strategy.",
@@ -250,6 +265,7 @@ function RunStatusContent({
   headingRef: MutableRefObject<HTMLHeadingElement | null>;
   rowsRef: MutableRefObject<Record<string, HTMLDivElement | null>>;
 }) {
+  const [copiedAddress, setCopiedAddress] = useState<string | null>(null);
   const starting = run.bundles.find((bundle) => bundle.phase === "starting");
   const stopping = run.stop.phase === "stopping";
   const unconfirmed = run.stop.phase === "unconfirmed";
@@ -360,7 +376,28 @@ function RunStatusContent({
                         onClose();
                       }}
                     >
-                      Open Venues
+                      {bundle.startError?.fix?.kind === "venues" ||
+                      bundle.startError?.fix?.kind === "accounts"
+                        ? "Authorize it in Venues"
+                        : "Open Venues"}
+                    </button>
+                  )}
+                  {detail.copyAddress && (
+                    <button
+                      type="button"
+                      aria-live="polite"
+                      onClick={() =>
+                        void navigator.clipboard
+                          .writeText(detail.copyAddress!)
+                          .then(
+                            () => setCopiedAddress(bundle.id),
+                            () => setCopiedAddress(null),
+                          )
+                      }
+                    >
+                      {copiedAddress === bundle.id
+                        ? "Copied"
+                        : "Copy trading key address"}
                     </button>
                   )}
                   {detail.destination === "strategy" && (

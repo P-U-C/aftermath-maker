@@ -8,7 +8,11 @@ import {
 import { ConnectModal } from "@mysten/dapp-kit-react/ui";
 import type { DAppKitConnectModal } from "@mysten/dapp-kit-core/web";
 import { Transaction } from "@mysten/sui/transactions";
-import { aggregatePortfolioQuoteRisk, makerConfigSchema } from "@puc/core";
+import {
+  aggregatePortfolioQuoteRisk,
+  makerConfigSchema,
+  type MakerMarketOverrides,
+} from "@puc/core";
 import {
   assertOwnerTransactionIntent,
   deserializeOwnerTransactionIntent,
@@ -25,14 +29,12 @@ import {
   KeyRound,
   LockKeyhole,
   Search,
-  Pencil,
   Tag,
   Target,
   TimerReset,
   Trophy,
   ShieldCheck,
   ShieldOff,
-  SlidersHorizontal,
   UserPlus,
   WalletCards,
 } from "lucide-react";
@@ -54,6 +56,7 @@ import {
 import { deskEvent } from "../lib/audit-events";
 import { selectedActiveBundleId } from "../lib/bundle-options";
 import { configsEqual } from "../lib/config-equality";
+import { withMarketPolicyOverride } from "../lib/strategy-market-policy";
 import {
   readStrategyAcknowledgement,
   strategyAcknowledgementKey,
@@ -70,7 +73,11 @@ import {
 } from "../lib/format";
 import { narrate } from "../lib/narrate";
 import { marketActivity } from "../lib/market-activity";
-import { deriveRunState, type RunStopState } from "../lib/run-state";
+import {
+  deriveRunState,
+  type RunStartIssue,
+  type RunStopState,
+} from "../lib/run-state";
 import { hedgeSizingSuggestion } from "../lib/hedge-suggestion";
 import { strategyIssueFromServer } from "../lib/strategy-validation";
 import { mergeStrategyReads } from "../lib/strategy-snapshots";
@@ -105,6 +112,7 @@ import { Button, Sheet } from "./ui/primitives";
 import { NumericDraftInput } from "./ui/numeric-draft-input";
 import { SpreadMark } from "./spread-mark";
 import { StrategyPicker } from "./strategy-picker";
+import { MarketPolicySheet } from "./market-policy-sheet";
 import { VenueChip } from "./venue-chip";
 import { AccountsView } from "./views/accounts";
 import { BundleDeskLanes } from "./views/bundle-desk-lanes";
@@ -418,6 +426,7 @@ type MakerStrategy = {
   marketRule: StrategyMarketRule;
   markets: MakerConfig["markets"];
   version: number;
+  updatedAt?: string;
   usedBy: Array<{ id: string; name: string }>;
   archivedAt: string | null;
 };
@@ -872,6 +881,9 @@ class RequestError extends Error {
   constructor(
     message: string,
     public readonly status: number,
+    public readonly code?: string,
+    public readonly fix?: RunStartIssue["fix"],
+    public readonly requestId?: string,
   ) {
     super(message);
   }
@@ -887,21 +899,41 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
     cache: "no-store",
   });
   const payload = await response.text();
-  let data: T & { error?: string; requestId?: string } = {} as T & {
+  let data: T & {
     error?: string;
     requestId?: string;
+    code?: string;
+    fix?: RunStartIssue["fix"];
+  } = {} as T & {
+    error?: string;
+    requestId?: string;
+    code?: string;
+    fix?: RunStartIssue["fix"];
   };
   if (payload) {
     try {
-      data = JSON.parse(payload) as T & { error?: string; requestId?: string };
+      data = JSON.parse(payload) as T & {
+        error?: string;
+        requestId?: string;
+        code?: string;
+        fix?: RunStartIssue["fix"];
+      };
     } catch {
-      data = { error: payload } as T & { error?: string; requestId?: string };
+      data = { error: payload } as T & {
+        error?: string;
+        requestId?: string;
+        code?: string;
+        fix?: RunStartIssue["fix"];
+      };
     }
   }
   if (!response.ok) {
     throw new RequestError(
       `${data.error ?? `Request failed: ${response.status}`}${response.status >= 500 && data.requestId ? ` (reference ${data.requestId})` : ""}`,
       response.status,
+      data.code,
+      data.fix,
+      data.requestId,
     );
   }
   return data;
@@ -917,6 +949,50 @@ const money = (value: number | null, digits = 2) =>
     maximumFractionDigits: digits,
   });
 
+const reviewFieldName = (field: string) =>
+  (
+    ({
+      quoteSizeUsd: "Quote size",
+      spreadBps: "Spread",
+      maxInventoryUsd: "Largest position",
+      inventoryTargetUsd: "Target position",
+      inventorySkewBps: "Inventory skew",
+      maxLeverage: "Leverage",
+      maxGrossExposureUsd: "Total position",
+      maxRunDrawdownUsd: "Stop after drawdown",
+    }) as Record<string, string>
+  )[field] ??
+  field
+    .replace(/([a-z])([A-Z])/g, "$1 $2")
+    .replace(/^./, (letter) => letter.toUpperCase());
+
+const reviewValue = (field: string, value: unknown): string => {
+  if (value === null || value === undefined) return "strategy";
+  if (typeof value === "boolean") return value ? "on" : "off";
+  if (typeof value === "number") {
+    if (field.endsWith("Usd")) return money(value);
+    if (field.endsWith("Bps")) return `${value} bps`;
+    if (field.endsWith("Ms")) return `${value / 1_000} s`;
+    if (field === "maxLeverage") return `${value}×`;
+    return String(value);
+  }
+  return String(value);
+};
+
+const marketPrice = (value: number | null, tickSize: number): string => {
+  if (value === null || !Number.isFinite(value)) return "—";
+  const digits =
+    Number.isFinite(tickSize) && tickSize > 0
+      ? Math.max(0, Math.min(8, Math.ceil(-Math.log10(tickSize))))
+      : 2;
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: "USD",
+    minimumFractionDigits: digits,
+    maximumFractionDigits: digits,
+  }).format(value);
+};
+
 const compactUsd = (value: number | null) => formatCompactMoney(value);
 
 const compactNumber = (value: number | null) =>
@@ -929,6 +1005,19 @@ const compactNumber = (value: number | null) =>
 
 const percent = (value: number | null, digits = 2) =>
   value === null ? "-" : `${value.toFixed(digits)}%`;
+
+const updatedAgo = (timestamp: string | null): string => {
+  if (!timestamp || !Number.isFinite(Date.parse(timestamp)))
+    return "Waiting for first update";
+  const seconds = Math.max(
+    0,
+    Math.floor((Date.now() - Date.parse(timestamp)) / 1_000),
+  );
+  if (seconds < 60) return `Updated ${seconds} s ago`;
+  if (seconds < 3_600) return `Updated ${Math.floor(seconds / 60)} m ago`;
+  if (seconds < 86_400) return `Updated ${Math.floor(seconds / 3_600)} h ago`;
+  return `Updated ${Math.floor(seconds / 86_400)} d ago`;
+};
 
 const timeUntil = (timestamp: string | null) => {
   if (!timestamp) return "Schedule unavailable";
@@ -965,6 +1054,11 @@ function DashboardBody() {
   const [strategyMarketRule, setStrategyMarketRule] =
     useState<StrategyMarketRule>({ kind: "quick-pick", pick: "balanced" });
   const [strategyNameDraft, setStrategyNameDraft] = useState("");
+  const createStrategyInFlight = useRef(false);
+  const [newStrategySource, setNewStrategySource] = useState<{
+    id: string;
+    name: string;
+  } | null>(null);
   const [acknowledgedStrategies, setAcknowledgedStrategies] = useState<
     Record<string, StrategyAcknowledgement | null>
   >({});
@@ -1001,6 +1095,11 @@ function DashboardBody() {
   const selectedBundleIdRef = useRef<string | null>(null);
   const [markets, setMarkets] = useState<Market[]>([]);
   const [marketQuery, setMarketQuery] = useState("");
+  const [policyEditorTarget, setPolicyEditorTarget] = useState<{
+    marketId: string;
+    symbol: string;
+    strategyId: string;
+  } | null>(null);
   const [config, setConfig] = useState<MakerConfig>(defaultConfig);
   const [savedConfig, setSavedConfig] = useState<
     MakerConfig | null | undefined
@@ -1036,6 +1135,7 @@ function DashboardBody() {
     mainnetAllowed: false,
   });
   const [strategyStep, setStrategyStep] = useState(0);
+  const [strategyEditing, setStrategyEditing] = useState(false);
   const [draftBaseVersion, setDraftBaseVersion] = useState<number | null>(null);
   const loadedStrategyDraft = useRef<string | null>(null);
   const [invalidNumeric, setInvalidNumeric] = useState<Record<string, string>>(
@@ -1046,11 +1146,7 @@ function DashboardBody() {
     step: number;
     fieldId: string | null;
   } | null>(null);
-  const [marketOverridesOpen, setMarketOverridesOpen] = useState(false);
   const [hedgeSuggestionOpen, setHedgeSuggestionOpen] = useState(false);
-  const [overrideResetEpochs, setOverrideResetEpochs] = useState<
-    Record<string, number>
-  >({});
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [trialResult, setTrialResult] = useState<StrategyTrialResult | null>(
     null,
@@ -1103,7 +1199,7 @@ function DashboardBody() {
     Record<string, "start" | "resume" | "pause" | undefined>
   >({});
   const [startErrors, setStartErrors] = useState<
-    Record<string, string | undefined>
+    Record<string, RunStartIssue | undefined>
   >({});
   const [stoppedAt, setStoppedAt] = useState<
     Record<string, string | undefined>
@@ -1419,6 +1515,8 @@ function DashboardBody() {
     setInvalidNumeric({});
     setServerFieldIssue(null);
     setSelectedStrategyId(result.strategy.id);
+    setStrategyStep(0);
+    setStrategyEditing(result.strategy.markets.length === 0);
     setDraftBaseVersion(result.strategy.version);
     setStrategyNameDraft(result.strategy.name);
     setStrategyMarketRule(result.strategy.marketRule);
@@ -1436,29 +1534,54 @@ function DashboardBody() {
   }
 
   async function createStrategy() {
-    await mutate("create-strategy", async () => {
-      const result = await request<{ strategy: MakerStrategy }>(
-        "api/strategies",
-        {
-          method: "POST",
-          body: JSON.stringify({
-            name: `Strategy ${strategies.length + 1}`,
-            config: strategySettingsFromConfig(config),
-            marketRule: {
-              kind: "preferred-list",
-              marketIds: config.markets.map((market) => market.marketId),
-            },
-            markets: config.markets,
-          }),
-        },
-      );
-      setStrategies((current) => [result.strategy, ...current]);
-      await selectStrategy(result.strategy.id);
-      setNotice(
-        "Strategy created. Attach it to a bundle when ready.",
-        "success",
-      );
-    });
+    if (createStrategyInFlight.current) return;
+    createStrategyInFlight.current = true;
+    const names = new Set(
+      strategies.map((strategy) => strategy.name.toLowerCase()),
+    );
+    let sequence = 1;
+    while (names.has(`strategy ${sequence}`)) sequence += 1;
+    const sourceName = selectedStrategy?.name ?? "your current strategy";
+    let createdId: string | null = null;
+    try {
+      await mutate("create-strategy", async () => {
+        const result = await request<{ strategy: MakerStrategy }>(
+          "api/strategies",
+          {
+            method: "POST",
+            body: JSON.stringify({
+              name: `Strategy ${sequence}`,
+              config: strategySettingsFromConfig(config),
+              marketRule: {
+                kind: "preferred-list",
+                marketIds: config.markets.map((market) => market.marketId),
+              },
+              markets: config.markets,
+            }),
+          },
+        );
+        setStrategies((current) => [result.strategy, ...current]);
+        if (!(await selectStrategy(result.strategy.id))) return;
+        createdId = result.strategy.id;
+        setNewStrategySource({ id: result.strategy.id, name: sourceName });
+        setStrategyEditing(true);
+        setStrategyStep(0);
+        setNotice(
+          "Strategy created. Nothing changes for your bundles until you attach it.",
+          "success",
+        );
+      });
+      if (createdId)
+        window.requestAnimationFrame(() => {
+          const name = document.getElementById(
+            "strategy-name",
+          ) as HTMLInputElement | null;
+          name?.focus();
+          name?.select();
+        });
+    } finally {
+      createStrategyInFlight.current = false;
+    }
   }
 
   function openStrategyDelete() {
@@ -1532,7 +1655,7 @@ function DashboardBody() {
       setBundlePending((current) => ({ ...current, [bundleId]: action }));
       setStartErrors((current) => ({ ...current, [bundleId]: undefined }));
     }
-    let requestError: string | null = null;
+    let requestError: RunStartIssue | null = null;
     try {
       const completed = await mutate(
         `bundle-${action}-${bundleId}`,
@@ -1546,8 +1669,23 @@ function DashboardBody() {
               },
             );
           } catch (error) {
+            const bundleName =
+              bundles.find((bundle) => bundle.id === bundleId)?.name ??
+              "bundle";
             requestError =
-              error instanceof Error ? error.message : String(error);
+              error instanceof RequestError
+                ? {
+                    message:
+                      error.status >= 500
+                        ? `Maker couldn't ${action} ${bundleName}. Reference ${error.requestId ?? "unavailable"} is in your control log.`
+                        : error.message,
+                    ...(error.code ? { code: error.code } : {}),
+                    ...(error.fix ? { fix: error.fix } : {}),
+                  }
+                : {
+                    message:
+                      error instanceof Error ? error.message : String(error),
+                  };
             throw error;
           }
           setNotice(
@@ -1563,8 +1701,11 @@ function DashboardBody() {
         },
       );
       if (!completed && (action === "start" || action === "resume")) {
-        const message = requestError ?? "Maker could not start this bundle.";
-        setStartErrors((current) => ({ ...current, [bundleId]: message }));
+        const issue = requestError ?? {
+          message: "Maker could not start this bundle.",
+        };
+        setStartErrors((current) => ({ ...current, [bundleId]: issue }));
+        setNotice(issue.message, "warning");
         window.setTimeout(() => {
           setStartErrors((current) => ({ ...current, [bundleId]: undefined }));
         }, 60_000);
@@ -2497,73 +2638,6 @@ function DashboardBody() {
     });
   }
 
-  function toggleMarketOverrides(marketId: string) {
-    setInvalidNumeric((current) =>
-      Object.fromEntries(
-        Object.entries(current).filter(
-          ([id]) => !id.startsWith(`market-${marketId}-`),
-        ),
-      ),
-    );
-    setConfig((current) => ({
-      ...current,
-      markets: current.markets.map((market) => {
-        if (market.marketId !== marketId) return market;
-        if (market.overrides) {
-          const { overrides: _overrides, ...withoutOverrides } = market;
-          return withoutOverrides;
-        }
-        return { ...market, overrides: {} };
-      }),
-    }));
-  }
-
-  function resetMarketOverride(marketId: string, key: keyof MarketOverrides) {
-    const fieldId = `market-${marketId}-${key}`;
-    setServerFieldIssue((current) =>
-      current?.fieldId === fieldId ? null : current,
-    );
-    setInvalidNumeric((current) => {
-      const next = { ...current };
-      delete next[fieldId];
-      return next;
-    });
-    setOverrideResetEpochs((current) => ({
-      ...current,
-      [fieldId]: (current[fieldId] ?? 0) + 1,
-    }));
-    setConfig((current) => ({
-      ...current,
-      markets: current.markets.map((market) => {
-        if (market.marketId !== marketId || !market.overrides) return market;
-        const next = { ...market.overrides };
-        delete next[key];
-        return { ...market, overrides: next };
-      }),
-    }));
-  }
-
-  function updateMarketOverride(
-    marketId: string,
-    key: keyof MarketOverrides,
-    value: number,
-  ) {
-    setConfig((current) => ({
-      ...current,
-      markets: current.markets.map((market) =>
-        market.marketId === marketId
-          ? {
-              ...market,
-              overrides: {
-                ...market.overrides,
-                [key]: value,
-              },
-            }
-          : market,
-      ),
-    }));
-  }
-
   function chooseSuggestionPreset(preset: MarketSuggestionPreset) {
     setSuggestionPreset(preset);
     setRewardMarketCount(preset === "rewards" ? 3 : 5);
@@ -2729,13 +2803,25 @@ function DashboardBody() {
                 }),
               });
             } catch (error) {
+              if (
+                error instanceof RequestError &&
+                error.code === "strategy-name-taken"
+              ) {
+                setServerFieldIssue({
+                  message: "Another strategy already uses this name.",
+                  step: 0,
+                  fieldId: "strategy-name",
+                });
+                focusStrategyField("strategy-name", 0);
+                throw new FieldValidationFailure(
+                  "Another strategy already uses this name.",
+                );
+              }
               const issue =
                 error instanceof RequestError && error.status === 400
                   ? strategyIssueFromServer(error.message, config.markets)
                   : null;
               if (issue) {
-                if (issue.fieldId?.startsWith("market-"))
-                  setMarketOverridesOpen(true);
                 setServerFieldIssue(issue);
                 if (issue.fieldId)
                   focusStrategyField(issue.fieldId, issue.step);
@@ -2762,6 +2848,9 @@ function DashboardBody() {
               }
               throw error;
             }
+            setNewStrategySource((current) =>
+              current?.id === result.strategy.id ? null : current,
+            );
             const appliedFields: StrategyFields = {
               name: result.strategy.name,
               config: result.strategy.config,
@@ -2853,6 +2942,7 @@ function DashboardBody() {
             if (draftStillSubmitted) {
               setStrategyNameDraft(result.strategy.name);
               setStrategyMarketRule(result.strategy.marketRule);
+              setStrategyEditing(false);
             }
             setNotice(
               result.affectedBundles.length > 1
@@ -2892,6 +2982,65 @@ function DashboardBody() {
     } finally {
       if (applyingId) applyInFlight.current = false;
     }
+  }
+
+  async function saveMarketPolicy(
+    overrides: MakerMarketOverrides,
+  ): Promise<void> {
+    const target = policyEditorTarget;
+    const original =
+      target &&
+      strategies.find((strategy) => strategy.id === target.strategyId);
+    if (!target || !original)
+      throw new Error("This strategy is no longer available.");
+    const latest = await request<{ strategy: MakerStrategy }>(
+      `api/strategies/${encodeURIComponent(original.id)}`,
+    );
+    if (latest.strategy.version !== original.version)
+      throw new Error(
+        "Strategy changed elsewhere. Review its saved version before editing this market.",
+      );
+    const markets = withMarketPolicyOverride(
+      latest.strategy.markets,
+      target.marketId,
+      overrides,
+    );
+    const result = await request<{
+      strategy: MakerStrategy;
+      affectedBundles: MakerBundle[];
+    }>(`api/strategies/${encodeURIComponent(original.id)}`, {
+      method: "PATCH",
+      body: JSON.stringify({
+        name: latest.strategy.name,
+        config: latest.strategy.config,
+        marketRule: latest.strategy.marketRule,
+        markets: draftMarketsForSave(markets),
+        expectedVersion: latest.strategy.version,
+      }),
+    });
+    setStrategies((current) =>
+      current.map((strategy) =>
+        strategy.id === result.strategy.id ? result.strategy : strategy,
+      ),
+    );
+    if (selectedStrategyIdRef.current === result.strategy.id) {
+      setConfig((current) => ({
+        ...configWithStrategySettings(current, result.strategy.config),
+        markets: result.strategy.markets,
+      }));
+      setDraftBaseVersion(result.strategy.version);
+    }
+    setPolicyEditorTarget(null);
+    setNotice(
+      `Saved ${target.symbol} policy to ${result.strategy.name}.`,
+      "success",
+    );
+    void refresh().catch((error) =>
+      setNotice(
+        `Policy saved, but refresh failed: ${error instanceof Error ? error.message : String(error)}`,
+        "warning",
+      ),
+    );
   }
 
   async function saveAccountAssignments() {
@@ -3158,6 +3307,36 @@ function DashboardBody() {
       Object.keys(invalidNumeric).length > 0 ||
         draftBaseVersion !== selectedStrategy.version,
     ),
+  );
+
+  const policyStrategy = policyEditorTarget
+    ? strategies.find(
+        (strategy) => strategy.id === policyEditorTarget.strategyId,
+      )
+    : null;
+  const policyMarket = policyStrategy?.markets.find(
+    (market) => market.marketId === policyEditorTarget?.marketId,
+  );
+  const storedPolicyDraft =
+    policyStrategy && identity && typeof window !== "undefined"
+      ? readStrategyDraft<StoredStrategyDraft>(
+          window.localStorage,
+          identity.ownerAddress,
+          policyStrategy.id,
+        )
+      : null;
+  const policyBlocked = Boolean(
+    policyStrategy &&
+    ((selectedStrategy?.id === policyStrategy.id && configDirty) ||
+      (storedPolicyDraft &&
+        (storedPolicyDraft.baseVersion !== policyStrategy.version ||
+          storedPolicyDraft.name.trim() !== policyStrategy.name ||
+          !configsEqual(storedPolicyDraft.settings, policyStrategy.config) ||
+          !configsEqual(storedPolicyDraft.markets, policyStrategy.markets) ||
+          !configsEqual(
+            storedPolicyDraft.marketRule,
+            policyStrategy.marketRule,
+          )))),
   );
 
   const requestStrategyExit = (view: MakerView) => {
@@ -3652,9 +3831,23 @@ function DashboardBody() {
           const saved = (selectedStrategy.config as Record<string, unknown>)[
             field
           ];
-          return configsEqual(value, saved)
-            ? []
-            : [{ field, saved, draft: value }];
+          if (configsEqual(value, saved)) return [];
+          if (
+            value &&
+            typeof value === "object" &&
+            !Array.isArray(value) &&
+            saved &&
+            typeof saved === "object" &&
+            !Array.isArray(saved)
+          ) {
+            const before = saved as Record<string, unknown>;
+            return Object.entries(value).flatMap(([part, draft]) =>
+              configsEqual(draft, before[part])
+                ? []
+                : [{ field: part, saved: before[part], draft }],
+            );
+          }
+          return [{ field, saved, draft: value }];
         },
       )
     : [];
@@ -3663,11 +3856,16 @@ function DashboardBody() {
         const saved = selectedStrategy.markets.find(
           (item) => item.marketId === market.marketId,
         );
-        return configsEqual(market.overrides ?? null, saved?.overrides ?? null)
-          ? []
-          : [
-              `${market.symbol} policy: ${JSON.stringify(saved?.overrides ?? "Inherit")} → ${JSON.stringify(market.overrides ?? "Inherit")}`,
-            ];
+        const before = (saved?.overrides ?? {}) as Record<string, unknown>;
+        const after = (market.overrides ?? {}) as Record<string, unknown>;
+        const fields = new Set([...Object.keys(before), ...Object.keys(after)]);
+        return [...fields].flatMap((field) =>
+          configsEqual(before[field], after[field])
+            ? []
+            : [
+                `${market.symbol}: ${reviewFieldName(field)} ${reviewValue(field, before[field])} → ${reviewValue(field, after[field])}.`,
+              ],
+        );
       })
     : [];
   const reviewCanAttach = Boolean(
@@ -3681,6 +3879,21 @@ function DashboardBody() {
     (bundle) => !bundle.archivedAt,
   ).length;
   const strategyReady = strategySteps.every((step) => step.complete);
+  const strategySummaryMode = Boolean(
+    selectedStrategy && strategyReady && !configDirty && !strategyEditing,
+  );
+  const strategyPickerOptions = strategies
+    .filter((strategy) => !strategy.archivedAt)
+    .map((strategy) => ({
+      id: strategy.id,
+      name: strategy.name,
+      marketCount: strategy.markets.length,
+      selection:
+        strategy.marketRule.kind === "quick-pick"
+          ? `Preset: ${strategy.marketRule.pick}`
+          : "Manual selection",
+      bundleCount: strategy.usedBy.length,
+    }));
   const strategyReadyLabel = !strategyReady
     ? "Finish the highlighted steps"
     : configDirty
@@ -3960,6 +4173,20 @@ function DashboardBody() {
       return {
         id: listed.id,
         symbol: listed.symbol,
+        displayName: listed.displayName,
+        tickSize: listed.tickSize,
+        strategyId: savedStrategy?.id ?? null,
+        bundleMode: assignedBundle?.mode ?? null,
+        customFields: Object.keys(savedMarket?.overrides ?? {}),
+        stateLabel: !assignedBundle
+          ? "Available"
+          : assignedRun?.phase === "attention" || runtimeMarket?.error
+            ? "Needs attention"
+            : assignedRun?.phase === "paused"
+              ? "Paused"
+              : assignedRun?.phase === "running" && activity.active
+                ? "Quoting"
+                : "Waiting for first quote",
         bundleName: assignedBundle?.name ?? "Available",
         bundleLabels: assigned.map((bundle) => {
           const phase = runBundleById.get(bundle.id)?.phase ?? "stopped";
@@ -4050,138 +4277,123 @@ function DashboardBody() {
         : "descending"
       : "none";
   const marketHeaders: Array<{ key: MarketTableSortKey; label: string }> = [
-    { key: "symbol", label: "Pair" },
+    { key: "symbol", label: "Market" },
     { key: "bundleName", label: "Bundle" },
-    { key: "venue", label: "Venue" },
     { key: "status", label: "State" },
     { key: "effectiveQuoteSizeUsd", label: "Policy" },
-    { key: "indexPrice", label: "Index" },
+    { key: "indexPrice", label: "Price" },
     { key: "openInterestUsd", label: "Open interest" },
-    { key: "openInterestUtilizationPct", label: "OI capacity" },
     { key: "volume24hUsd", label: "24h volume" },
     { key: "fundingRate", label: "Funding" },
-    { key: "inventoryUsd", label: "Inventory" },
-    { key: "unrealizedPnlUsd", label: "Unrealized PnL" },
-    { key: "updatedAt", label: "Freshness" },
+    { key: "inventoryUsd", label: "Position" },
   ];
 
   const renderMarketRow = (row: (typeof marketTableRows)[number]) => (
-    <tr
-      key={row.id}
-      className={
-        row.bundleName === "Available" ? "market-row-available" : undefined
-      }
-    >
+    <tr key={row.id}>
+      <td className="market-cell-name">
+        <strong>{row.symbol}</strong>
+        <small>{row.displayName}</small>
+      </td>
       <td>
-        <span className="market-pair-cell">
-          <strong>{row.symbol}</strong>
-          {row.activeBundleNames.map((bundleName) => (
-            <i className="market-active-bundle" key={bundleName}>
-              {bundleName}
-            </i>
-          ))}
-          {row.checkingNow && (
-            <small className="market-checking-now">Checking this market</small>
-          )}
-        </span>
-        <span>{compact(row.id)}</span>
+        {row.bundleName === "Available" ? (
+          <span className="market-muted">Not in a bundle</span>
+        ) : (
+          <span className="market-bundle-label">
+            <strong>{row.bundleName}</strong>
+            <small
+              className={`run-mode-tag is-${row.bundleMode === "live" ? "live" : "paper"}`}
+            >
+              {row.bundleMode === "live" ? "Live" : "Paper"}
+            </small>
+          </span>
+        )}
       </td>
       <td>
         <span
-          className={
-            row.bundleName === "Available"
-              ? "market-bundle-state"
-              : "market-bundle-state is-assigned"
-          }
+          className={`market-state-label is-${row.stateLabel.toLowerCase().replaceAll(" ", "-")}`}
         >
-          {row.bundleLabels.length
-            ? row.bundleLabels.map((label) => (
-                <small key={label}>{label}</small>
-              ))
-            : row.bundleName}
+          <i aria-hidden="true" />
+          {row.stateLabel}
         </span>
       </td>
       <td>
-        <VenueChip venue={primaryVenue} />
-      </td>
-      <td className="market-state-cell">
-        <span className={`desk-state state-${row.status}`}>
-          {row.activityLabel}
-        </span>
-        {row.error && (
-          <small className="market-activity-error">{row.error}</small>
-        )}
-        {row.lastTransactionDigest && (
-          <a
-            className="tx-link"
-            href={primaryVenue.explorerTxUrl(row.lastTransactionDigest)}
-            target="_blank"
-            rel="noreferrer"
-            title="Open last transaction"
+        {!row.strategyId ? (
+          <span className="market-muted">—</span>
+        ) : row.customFields.length ? (
+          <span
+            className="market-policy-custom"
+            title={row.customFields.map(reviewFieldName).join(", ")}
           >
-            {compact(row.lastTransactionDigest)}
-            <ExternalLink size={10} />
-          </a>
+            {row.customFields.length} custom
+          </span>
+        ) : (
+          <span className="market-muted">Strategy</span>
         )}
       </td>
-      <td className="dual-value">
-        <div className="market-policy-set">
-          {row.bundlePolicies.length ? (
-            row.bundlePolicies.map((policy) => (
-              <div key={`${policy.strategyId}:${policy.bundleName}`}>
-                <strong>
-                  {policy.bundleName}: {money(policy.sizeUsd)}
-                </strong>
-                <span>{policy.spreadBps} bps</span>
-                <button
-                  type="button"
-                  className="market-policy-link"
-                  onClick={() => {
-                    void selectStrategy(policy.strategyId).then((selected) => {
-                      if (!selected) return;
-                      setStrategyStep(2);
-                      setMarketOverridesOpen(true);
-                      selectView("strategy");
-                      window.setTimeout(() => {
-                        const target = document.getElementById(
-                          `strategy-policy-${row.id}`,
-                        );
-                        target?.scrollIntoView({ block: "center" });
-                        target?.focus({ preventScroll: true });
-                      }, 120);
-                    });
-                  }}
-                >
-                  Edit {policy.bundleName} policy
-                </button>
-              </div>
-            ))
-          ) : (
-            <span>No saved policy</span>
-          )}
-        </div>
+      <td className="market-number">
+        {marketPrice(row.indexPrice, row.tickSize)}
       </td>
-      <td>{money(row.indexPrice, 4)}</td>
-      <td className="dual-value">
-        <strong>{compactNumber(row.openInterestBase)}</strong>
+      <td className="market-number">
         <span>{compactUsd(row.openInterestUsd)}</span>
-      </td>
-      <td>{percent(row.openInterestUtilizationPct, 1)}</td>
-      <td>{compactUsd(row.volume24hUsd)}</td>
-      <td>
-        {percent(row.fundingRate === null ? null : row.fundingRate * 100, 4)}
-      </td>
-      <td>{money(row.inventoryUsd)}</td>
-      <td className={row.unrealizedPnlUsd < 0 ? "negative-number" : ""}>
-        {money(row.unrealizedPnlUsd)}
-      </td>
-      <td title={row.error ?? undefined}>
-        {row.updatedAt
-          ? `${Math.max(
+        {row.openInterestUtilizationPct !== null && (
+          <span
+            className="market-capacity-bar"
+            role="progressbar"
+            aria-label={`${row.symbol} open interest capacity`}
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-valuenow={Math.max(
               0,
-              Math.round((Date.now() - Date.parse(row.updatedAt)) / 1_000),
-            )}s`
-          : "waiting"}
+              Math.min(100, row.openInterestUtilizationPct),
+            )}
+            aria-valuetext={`${percent(row.openInterestUtilizationPct, 1)} of the venue limit`}
+            title={`${percent(row.openInterestUtilizationPct, 1)} of the venue limit`}
+          >
+            <i
+              style={{
+                width: `${Math.max(0, Math.min(100, row.openInterestUtilizationPct))}%`,
+              }}
+            />
+          </span>
+        )}
+      </td>
+      <td className="market-number">{compactUsd(row.volume24hUsd)}</td>
+      <td
+        className={`market-number ${row.fundingRate !== null && row.fundingRate < 0 ? "negative-number" : ""}`}
+      >
+        {row.fundingRate === null
+          ? "—"
+          : `${row.fundingRate >= 0 ? "+" : "−"}${Math.abs(row.fundingRate * 100).toFixed(4)}%`}
+      </td>
+      <td className="market-number">
+        {row.inventoryUsd === 0 ? "—" : money(row.inventoryUsd)}
+        {row.unrealizedPnlUsd !== 0 && (
+          <small
+            className={
+              row.unrealizedPnlUsd < 0 ? "negative-number" : "positive-number"
+            }
+          >
+            {money(row.unrealizedPnlUsd)} unrealized
+          </small>
+        )}
+      </td>
+      <td>
+        {row.strategyId && (
+          <button
+            className="market-policy-edit"
+            type="button"
+            aria-label={`Edit ${row.symbol} policy`}
+            onClick={() =>
+              setPolicyEditorTarget({
+                marketId: row.id,
+                symbol: row.symbol,
+                strategyId: row.strategyId!,
+              })
+            }
+          >
+            Edit
+          </button>
+        )}
       </td>
     </tr>
   );
@@ -4320,8 +4532,13 @@ function DashboardBody() {
         : null;
     const namedBundle =
       typeof event.detail.name === "string" ? event.detail.name : null;
-    const bundleForEvent = event.bundleId
-      ? bundles.find((bundle) => bundle.id === event.bundleId)
+    const attributedId =
+      event.bundleId ??
+      (typeof event.detail.bundleId === "string"
+        ? event.detail.bundleId
+        : null);
+    const bundleForEvent = attributedId
+      ? bundles.find((bundle) => bundle.id === attributedId)
       : null;
     const bundleForAccount = accountId
       ? bundles.find(
@@ -5066,25 +5283,271 @@ function DashboardBody() {
         onClose={() => requestStrategyExit("desk")}
       >
         <section className="workspace workspace-strategy">
+          {strategySummaryMode && selectedStrategy && (
+            <section
+              className="strategy-summary"
+              aria-label="Saved strategy summary"
+            >
+              <header className="strategy-summary-header">
+                <div>
+                  <StrategyPicker
+                    variant="menu"
+                    strategies={strategyPickerOptions}
+                    selectedId={selectedStrategyId}
+                    draftName={null}
+                    onSelect={selectStrategy}
+                  />
+                  <h1>
+                    {selectedStrategy.name}{" "}
+                    <span className="strategy-saved-tag">Saved</span>
+                  </h1>
+                  <p>
+                    Used by{" "}
+                    {selectedStrategy.usedBy.length
+                      ? selectedStrategy.usedBy
+                          .map((used) => used.name)
+                          .join(", ")
+                      : "no bundles"}
+                    . Last saved{" "}
+                    {selectedStrategy.updatedAt &&
+                    !Number.isNaN(Date.parse(selectedStrategy.updatedAt))
+                      ? new Intl.DateTimeFormat("en-US", {
+                          dateStyle: "medium",
+                          timeStyle: "short",
+                        }).format(new Date(selectedStrategy.updatedAt))
+                      : "time unavailable"}
+                    .
+                  </p>
+                </div>
+                <div className="strategy-summary-actions">
+                  <Button
+                    variant="quiet"
+                    onClick={() => void createStrategy()}
+                    disabled={Boolean(busy)}
+                  >
+                    New strategy
+                  </Button>
+                  <Button
+                    variant="primary"
+                    onClick={() => {
+                      setStrategyEditing(true);
+                      setStrategyStep(0);
+                    }}
+                  >
+                    Edit strategy
+                  </Button>
+                </div>
+              </header>
+              <section className="strategy-summary-outcome">
+                <h2>What Maker will do</h2>
+                <p>
+                  Quote {config.markets.length} selected market
+                  {config.markets.length === 1 ? "" : "s"} with{" "}
+                  {money(config.quoteSizeUsd)} on each side, and stop before{" "}
+                  {money(config.maxRunDrawdownUsd)} of run drawdown.
+                </p>
+              </section>
+              <div className="strategy-summary-grid">
+                <section>
+                  <header>
+                    <h2>Goal</h2>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setStrategyEditing(true);
+                        setStrategyStep(0);
+                      }}
+                    >
+                      Edit Goal
+                    </button>
+                  </header>
+                  <dl>
+                    <div>
+                      <dt>Aim for</dt>
+                      <dd>{strategySteps[0]?.answer}</dd>
+                    </div>
+                    <div>
+                      <dt>Risk profile</dt>
+                      <dd>{config.strategyProfile}</dd>
+                    </div>
+                  </dl>
+                </section>
+                <section>
+                  <header>
+                    <h2>Markets</h2>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setStrategyEditing(true);
+                        setStrategyStep(1);
+                      }}
+                    >
+                      Edit Markets
+                    </button>
+                  </header>
+                  <dl>
+                    <div>
+                      <dt>Chosen</dt>
+                      <dd>
+                        {config.markets.length},{" "}
+                        {strategyMarketRule.kind === "preferred-list"
+                          ? "picked by hand"
+                          : strategyMarketRule.pick}
+                      </dd>
+                    </div>
+                    <div>
+                      <dt>Custom settings</dt>
+                      <dd>
+                        {config.markets
+                          .filter(
+                            (market) =>
+                              Object.keys(market.overrides ?? {}).length,
+                          )
+                          .map((market) => market.symbol)
+                          .join(", ") || "None"}
+                      </dd>
+                    </div>
+                  </dl>
+                  <div className="strategy-summary-chips">
+                    {config.markets.map((market) => (
+                      <span
+                        key={market.marketId}
+                        className={
+                          market.overrides &&
+                          Object.keys(market.overrides).length
+                            ? "is-custom"
+                            : ""
+                        }
+                      >
+                        {market.symbol}
+                        {market.overrides &&
+                        Object.keys(market.overrides).length
+                          ? `, ${Object.keys(market.overrides).length} custom`
+                          : ""}
+                      </span>
+                    ))}
+                  </div>
+                </section>
+                <section>
+                  <header>
+                    <h2>Size and limits</h2>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setStrategyEditing(true);
+                        setStrategyStep(2);
+                      }}
+                    >
+                      Edit Size and limits
+                    </button>
+                  </header>
+                  <dl>
+                    <div>
+                      <dt>Quote size per side</dt>
+                      <dd>{money(config.quoteSizeUsd)}</dd>
+                    </div>
+                    <div>
+                      <dt>Spread</dt>
+                      <dd>{config.spreadBps} bps</dd>
+                    </div>
+                    <div>
+                      <dt>Largest position in one market</dt>
+                      <dd>{money(config.maxInventoryUsd)}</dd>
+                    </div>
+                    <div>
+                      <dt>Total position</dt>
+                      <dd>{money(config.maxGrossExposureUsd)}</dd>
+                    </div>
+                    <div>
+                      <dt>Stop after drawdown</dt>
+                      <dd>{money(config.maxRunDrawdownUsd)}</dd>
+                    </div>
+                  </dl>
+                </section>
+                <section>
+                  <header>
+                    <h2>Hedging</h2>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setStrategyEditing(true);
+                        setStrategyStep(3);
+                      }}
+                    >
+                      Edit Hedging
+                    </button>
+                  </header>
+                  <dl>
+                    <div>
+                      <dt>Status</dt>
+                      <dd>{config.hedge.enabled ? "On" : "Off"}</dd>
+                    </div>
+                    <div>
+                      <dt>Where</dt>
+                      <dd>
+                        {config.hedge.enabled
+                          ? "The hedge account chosen by each bundle"
+                          : "No hedge account"}
+                      </dd>
+                    </div>
+                  </dl>
+                </section>
+              </div>
+              <section className="strategy-summary-bundles">
+                <h2>Bundles using it</h2>
+                {selectedStrategy.usedBy.length ? (
+                  <ul>
+                    {selectedStrategy.usedBy.map((used) => {
+                      const bundle = bundles.find(
+                        (item) => item.id === used.id,
+                      );
+                      return (
+                        <li key={used.id}>
+                          <strong>{used.name}</strong>
+                          <span
+                            className={`run-mode-tag is-${bundle?.mode === "live" ? "live" : "paper"}`}
+                          >
+                            {bundle?.mode === "live" ? "Live" : "Paper"}
+                          </span>
+                          <span className="strategy-bundle-state">
+                            {bundle?.status ?? "Stopped"}
+                          </span>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                ) : (
+                  <p>No bundles use this strategy yet.</p>
+                )}
+                <p>
+                  A saved change reaches each bundle the next time it starts.
+                </p>
+              </section>
+              <footer className="strategy-summary-footer">
+                <button
+                  type="button"
+                  className="button secondary"
+                  onClick={openStrategyDelete}
+                  disabled={Boolean(busy) || selectedStrategy.usedBy.length > 0}
+                >
+                  Delete strategy
+                </button>
+                {selectedStrategy.usedBy.length > 0 && (
+                  <span>Detach it from its bundles before deleting.</span>
+                )}
+              </footer>
+            </section>
+          )}
           <form
+            hidden={strategySummaryMode}
             className="settings-panel"
             data-strategy-step={strategyStep}
             onSubmit={saveConfig}
           >
             <div className="strategy-select-row">
               <StrategyPicker
-                strategies={strategies
-                  .filter((strategy) => !strategy.archivedAt)
-                  .map((strategy) => ({
-                    id: strategy.id,
-                    name: strategy.name,
-                    marketCount: strategy.markets.length,
-                    selection:
-                      strategy.marketRule.kind === "quick-pick"
-                        ? `Preset: ${strategy.marketRule.pick}`
-                        : "Manual selection",
-                    bundleCount: strategy.usedBy.length,
-                  }))}
+                strategies={strategyPickerOptions}
+                variant="menu"
                 selectedId={selectedStrategyId}
                 draftName={
                   selectedStrategy && strategyNameDirty
@@ -5112,79 +5575,75 @@ function DashboardBody() {
             </p>
             <header className="strategy-title">
               <div className="strategy-name-column">
+                {newStrategySource?.id === selectedStrategyId && (
+                  <span className="strategy-new-label">New strategy</span>
+                )}
                 <div className="strategy-name-edit">
                   <label className="strategy-name-input">
                     <span className="sr-only">Strategy name</span>
                     <input
                       id="strategy-name"
                       value={strategyNameDraft}
-                      onChange={(event) =>
-                        setStrategyNameDraft(event.target.value)
-                      }
+                      onChange={(event) => {
+                        setStrategyNameDraft(event.target.value);
+                        setServerFieldIssue((current) =>
+                          current?.fieldId === "strategy-name" ? null : current,
+                        );
+                      }}
                       maxLength={80}
                       placeholder="Name this strategy"
                       aria-label="Strategy name"
                       aria-invalid={Boolean(
                         selectedStrategy &&
-                        (!strategyNameDraft.trim() || duplicateStrategyName),
+                        (!strategyNameDraft.trim() ||
+                          duplicateStrategyName ||
+                          serverFieldIssue?.fieldId === "strategy-name"),
                       )}
                       aria-describedby={
                         selectedStrategy &&
-                        (!strategyNameDraft.trim() || duplicateStrategyName)
+                        (!strategyNameDraft.trim() ||
+                          duplicateStrategyName ||
+                          serverFieldIssue?.fieldId === "strategy-name")
                           ? "strategy-name-error"
                           : undefined
                       }
                       disabled={!selectedStrategy || Boolean(busy)}
                     />
                   </label>
-                  <button
-                    className="strategy-name-pencil"
-                    type="button"
-                    aria-label="Edit strategy name"
-                    disabled={!selectedStrategy || Boolean(busy)}
-                    onClick={() =>
-                      document.getElementById("strategy-name")?.focus()
-                    }
-                  >
-                    <Pencil size={17} aria-hidden="true" />
-                  </button>
                 </div>
                 {selectedStrategy &&
-                  (!strategyNameDraft.trim() || duplicateStrategyName) && (
+                  (!strategyNameDraft.trim() ||
+                    duplicateStrategyName ||
+                    serverFieldIssue?.fieldId === "strategy-name") && (
                     <small
                       id="strategy-name-error"
                       className="field-error"
                       role="alert"
                     >
                       {duplicateStrategyName
-                        ? "Another strategy already uses that name."
-                        : "Name this strategy before continuing."}
+                        ? "Another strategy already uses this name."
+                        : serverFieldIssue?.fieldId === "strategy-name"
+                          ? serverFieldIssue.message
+                          : "Name this strategy before continuing."}
                     </small>
                   )}
-                {selectedStrategy && (
-                  <small className="strategy-name-status" role="status">
-                    <strong>
-                      {strategyComplete ? "Applied Strategy" : "Draft Strategy"}
-                    </strong>
-                    {!strategyComplete && (
-                      <span>
-                        {selectedStrategy.version > 1 ||
-                        selectedStrategy.usedBy.length
-                          ? `Applied elsewhere as ${selectedStrategy.name} until strategy finalized.`
-                          : "Not yet applied."}
-                      </span>
-                    )}
-                  </small>
+                {newStrategySource?.id === selectedStrategyId && (
+                  <p className="strategy-new-context">
+                    Starts from {newStrategySource.name}&apos;s settings.
+                    Nothing changes for your bundles until you attach it.
+                  </p>
                 )}
               </div>
-              <button
-                className="button secondary strategy-delete-button"
-                type="button"
-                onClick={openStrategyDelete}
-                disabled={!selectedStrategy || Boolean(busy)}
-              >
-                Delete
-              </button>
+              {newStrategySource?.id === selectedStrategyId && (
+                <button
+                  className="button secondary strategy-delete-button"
+                  type="button"
+                  onClick={openStrategyDelete}
+                  disabled={Boolean(busy)}
+                >
+                  Discard
+                </button>
+              )}
             </header>
 
             {selectedStrategy && (
@@ -5197,7 +5656,7 @@ function DashboardBody() {
 
             <section className="strategy-builder" aria-label="Strategy builder">
               <ol>
-                {strategySteps.map(({ label, answer, complete }, index) => (
+                {strategySteps.map(({ label }, index) => (
                   <li key={label}>
                     <div
                       className={
@@ -5207,15 +5666,8 @@ function DashboardBody() {
                       }
                       aria-current={strategyStep === index ? "step" : undefined}
                     >
-                      <span>
-                        {complete ? (
-                          <CircleCheck size={14} aria-hidden="true" />
-                        ) : (
-                          index + 1
-                        )}
-                      </span>
+                      <span>{index + 1}</span>
                       <strong>{label}</strong>
-                      <small>{answer}</small>
                     </div>
                   </li>
                 ))}
@@ -5295,8 +5747,8 @@ function DashboardBody() {
                       )}
                       {reviewFieldChanges.map(({ field, saved, draft }) => (
                         <li key={field}>
-                          {field}: {JSON.stringify(saved)} →{" "}
-                          {JSON.stringify(draft)}
+                          {reviewFieldName(field)}: {reviewValue(field, saved)}{" "}
+                          → {reviewValue(field, draft)}.
                         </li>
                       ))}
                       {reviewMarketChanges.map((change) => (
@@ -5321,37 +5773,18 @@ function DashboardBody() {
                     type="button"
                     className="button primary"
                     onClick={() => {
-                      if (strategyStep === 4) void saveConfig();
-                      else saveAndNextStrategyStep();
+                      if (strategyStep === 4) {
+                        if (strategyComplete) setStrategyEditing(false);
+                        else void saveConfig();
+                      } else saveAndNextStrategyStep();
                     }}
-                    disabled={
-                      busy === "save" ||
-                      (strategyStep === 4 && strategyComplete)
-                    }
-                    aria-label={
-                      strategyStep === 4 && strategyComplete
-                        ? "Complete — strategy applied"
-                        : undefined
-                    }
-                    data-complete={
-                      strategyStep === 4 && strategyComplete
-                        ? "true"
-                        : undefined
-                    }
+                    disabled={busy === "save"}
                   >
-                    {strategyStep === 4 ? (
-                      busy === "save" ? (
-                        "Applying…"
-                      ) : strategyComplete ? (
-                        <>
-                          <CircleCheck size={17} aria-hidden="true" /> Complete
-                        </>
-                      ) : (
-                        "Apply Strategy"
-                      )
-                    ) : (
-                      "Save and next"
-                    )}
+                    {strategyStep === 4
+                      ? busy === "save"
+                        ? "Saving…"
+                        : "Save and finish"
+                      : `Save and continue to ${strategySteps[strategyStep + 1]?.label ?? "Review"}`}
                   </button>
                 </div>
                 {strategySaveBlocker &&
@@ -6405,6 +6838,22 @@ function DashboardBody() {
                           </small>
                         </span>
                       </label>
+                      {selected && selectedStrategy && (
+                        <button
+                          type="button"
+                          className="market-policy-edit market-card-policy-edit"
+                          aria-label={`Edit ${item.symbol} policy`}
+                          onClick={() =>
+                            setPolicyEditorTarget({
+                              marketId: item.id,
+                              symbol: item.symbol,
+                              strategyId: selectedStrategy.id,
+                            })
+                          }
+                        >
+                          Edit policy
+                        </button>
+                      )}
                       {selected &&
                         rewardFocus === "thin" &&
                         !opportunity?.thinActive && (
@@ -6480,23 +6929,22 @@ function DashboardBody() {
                               <>
                                 {" "}
                                 ·{" "}
-                                <a
-                                  href="#strategy-market-overrides"
-                                  onClick={(event) => {
-                                    event.preventDefault();
-                                    setStrategyStep(2);
-                                    setMarketOverridesOpen(true);
-                                    window.requestAnimationFrame(() =>
-                                      document
-                                        .getElementById(
-                                          `strategy-policy-${opportunity.marketId}`,
-                                        )
-                                        ?.scrollIntoView({ block: "start" }),
-                                    );
-                                  }}
+                                <button
+                                  type="button"
+                                  className="market-policy-edit"
+                                  aria-label={`Edit ${opportunity.symbol} policy`}
+                                  disabled={!selectedStrategy}
+                                  onClick={() =>
+                                    selectedStrategy &&
+                                    setPolicyEditorTarget({
+                                      marketId: opportunity.marketId,
+                                      symbol: opportunity.symbol,
+                                      strategyId: selectedStrategy.id,
+                                    })
+                                  }
                                 >
-                                  Edit saved policy
-                                </a>
+                                  Edit policy
+                                </button>
                               </>
                             )}
                           </td>
@@ -6839,296 +7287,6 @@ function DashboardBody() {
                 </button>
               </div>
             </fieldset>
-
-            <details
-              id="strategy-market-overrides"
-              className="market-overrides strategy-market-overrides strategy-step strategy-step-size"
-              open={marketOverridesOpen}
-              onToggle={(event) =>
-                setMarketOverridesOpen(event.currentTarget.open)
-              }
-            >
-              <summary>
-                <SlidersHorizontal size={15} />
-                <span>Saved effective policy · per-market exceptions</span>
-                <strong>
-                  {config.markets.filter((market) => market.overrides).length}
-                </strong>
-              </summary>
-              <div className="override-list">
-                {config.markets.map((market) => (
-                  <div
-                    className="override-row"
-                    key={market.marketId}
-                    id={`strategy-policy-${market.marketId}`}
-                    tabIndex={-1}
-                  >
-                    <label className="override-toggle">
-                      <input
-                        type="checkbox"
-                        checked={Boolean(market.overrides)}
-                        onChange={() => toggleMarketOverrides(market.marketId)}
-                      />
-                      <strong>{market.symbol}</strong>
-                      <small>
-                        {market.overrides
-                          ? "Custom fields below"
-                          : "Inherit all strategy defaults"}
-                      </small>
-                    </label>
-                    {market.overrides ? (
-                      <div className="override-fields">
-                        <label>
-                          <span>Size $</span>
-                          <NumericDraftInput
-                            key={
-                              overrideResetEpochs[
-                                `market-${market.marketId}-quoteSizeUsd`
-                              ] ?? 0
-                            }
-                            id={`market-${market.marketId}-quoteSizeUsd`}
-                            label="Quote size"
-                            unit="USD"
-                            value={
-                              market.overrides.quoteSizeUsd ??
-                              config.quoteSizeUsd
-                            }
-                            min={0.01}
-                            max={1000}
-                            onValidity={setNumericValidity}
-                            onValue={(value) =>
-                              updateMarketOverride(
-                                market.marketId,
-                                "quoteSizeUsd",
-                                value,
-                              )
-                            }
-                          />
-                        </label>
-                        <button
-                          type="button"
-                          className="override-reset"
-                          onClick={() =>
-                            resetMarketOverride(market.marketId, "quoteSizeUsd")
-                          }
-                          disabled={market.overrides.quoteSizeUsd === undefined}
-                          aria-label={`Inherit strategy size $ for ${market.symbol}`}
-                        >
-                          Inherit
-                        </button>
-                        <label>
-                          <span>Spread bps</span>
-                          <NumericDraftInput
-                            key={
-                              overrideResetEpochs[
-                                `market-${market.marketId}-spreadBps`
-                              ] ?? 0
-                            }
-                            id={`market-${market.marketId}-spreadBps`}
-                            label="Spread"
-                            unit="bps"
-                            value={
-                              market.overrides.spreadBps ?? config.spreadBps
-                            }
-                            min={8}
-                            max={500}
-                            onValidity={setNumericValidity}
-                            onValue={(value) =>
-                              updateMarketOverride(
-                                market.marketId,
-                                "spreadBps",
-                                value,
-                              )
-                            }
-                          />
-                        </label>
-                        <button
-                          type="button"
-                          className="override-reset"
-                          onClick={() =>
-                            resetMarketOverride(market.marketId, "spreadBps")
-                          }
-                          disabled={market.overrides.spreadBps === undefined}
-                          aria-label={`Inherit strategy spread bps for ${market.symbol}`}
-                        >
-                          Inherit
-                        </button>
-                        <label>
-                          <span>Inventory cap $</span>
-                          <NumericDraftInput
-                            key={
-                              overrideResetEpochs[
-                                `market-${market.marketId}-maxInventoryUsd`
-                              ] ?? 0
-                            }
-                            id={`market-${market.marketId}-maxInventoryUsd`}
-                            label="Inventory cap"
-                            unit="USD"
-                            value={
-                              market.overrides.maxInventoryUsd ??
-                              config.maxInventoryUsd
-                            }
-                            min={0.01}
-                            max={Math.min(10000, config.maxGrossExposureUsd)}
-                            onValidity={setNumericValidity}
-                            onValue={(value) =>
-                              updateMarketOverride(
-                                market.marketId,
-                                "maxInventoryUsd",
-                                value,
-                              )
-                            }
-                          />
-                        </label>
-                        <button
-                          type="button"
-                          className="override-reset"
-                          onClick={() =>
-                            resetMarketOverride(
-                              market.marketId,
-                              "maxInventoryUsd",
-                            )
-                          }
-                          disabled={
-                            market.overrides.maxInventoryUsd === undefined
-                          }
-                          aria-label={`Inherit strategy inventory cap $ for ${market.symbol}`}
-                        >
-                          Inherit
-                        </button>
-                        <label>
-                          <span>Target $</span>
-                          <NumericDraftInput
-                            key={
-                              overrideResetEpochs[
-                                `market-${market.marketId}-inventoryTargetUsd`
-                              ] ?? 0
-                            }
-                            id={`market-${market.marketId}-inventoryTargetUsd`}
-                            label="Inventory target"
-                            unit="USD"
-                            value={
-                              market.overrides.inventoryTargetUsd ??
-                              config.inventoryTargetUsd
-                            }
-                            min={-10000}
-                            max={10000}
-                            onValidity={setNumericValidity}
-                            onValue={(value) =>
-                              updateMarketOverride(
-                                market.marketId,
-                                "inventoryTargetUsd",
-                                value,
-                              )
-                            }
-                          />
-                        </label>
-                        <button
-                          type="button"
-                          className="override-reset"
-                          onClick={() =>
-                            resetMarketOverride(
-                              market.marketId,
-                              "inventoryTargetUsd",
-                            )
-                          }
-                          disabled={
-                            market.overrides.inventoryTargetUsd === undefined
-                          }
-                          aria-label={`Inherit strategy target $ for ${market.symbol}`}
-                        >
-                          Inherit
-                        </button>
-                        <label>
-                          <span>Skew bps</span>
-                          <NumericDraftInput
-                            key={
-                              overrideResetEpochs[
-                                `market-${market.marketId}-inventorySkewBps`
-                              ] ?? 0
-                            }
-                            id={`market-${market.marketId}-inventorySkewBps`}
-                            label="Inventory skew"
-                            unit="bps"
-                            value={
-                              market.overrides.inventorySkewBps ??
-                              config.inventorySkewBps
-                            }
-                            min={0}
-                            max={250}
-                            onValidity={setNumericValidity}
-                            onValue={(value) =>
-                              updateMarketOverride(
-                                market.marketId,
-                                "inventorySkewBps",
-                                value,
-                              )
-                            }
-                          />
-                        </label>
-                        <button
-                          type="button"
-                          className="override-reset"
-                          onClick={() =>
-                            resetMarketOverride(
-                              market.marketId,
-                              "inventorySkewBps",
-                            )
-                          }
-                          disabled={
-                            market.overrides.inventorySkewBps === undefined
-                          }
-                          aria-label={`Inherit strategy skew bps for ${market.symbol}`}
-                        >
-                          Inherit
-                        </button>
-                        <label>
-                          <span>Leverage</span>
-                          <NumericDraftInput
-                            key={
-                              overrideResetEpochs[
-                                `market-${market.marketId}-maxLeverage`
-                              ] ?? 0
-                            }
-                            id={`market-${market.marketId}-maxLeverage`}
-                            label="Leverage"
-                            unit="x"
-                            value={
-                              market.overrides.maxLeverage ?? config.maxLeverage
-                            }
-                            min={1}
-                            max={3}
-                            onValidity={setNumericValidity}
-                            onValue={(value) =>
-                              updateMarketOverride(
-                                market.marketId,
-                                "maxLeverage",
-                                value,
-                              )
-                            }
-                          />
-                        </label>
-                        <button
-                          type="button"
-                          className="override-reset"
-                          onClick={() =>
-                            resetMarketOverride(market.marketId, "maxLeverage")
-                          }
-                          disabled={market.overrides.maxLeverage === undefined}
-                          aria-label={`Inherit strategy leverage for ${market.symbol}`}
-                        >
-                          Inherit
-                        </button>
-                      </div>
-                    ) : (
-                      <span className="override-inherited">
-                        Global defaults
-                      </span>
-                    )}
-                  </div>
-                ))}
-              </div>
-            </details>
 
             <details
               className="strategy-section strategy-advanced strategy-step strategy-step-size"
@@ -7475,45 +7633,33 @@ function DashboardBody() {
 
       <MarketsView active={displayedView === "markets"}>
         <header className="markets-title">
-          <div>
-            <h1>Markets</h1>
-            <p>
-              Compare rotation state, capacity, and live exposure across
-              markets.
-            </p>
-          </div>
-          <div className="market-venue-filters" aria-label="Venue filter">
-            <button
-              type="button"
-              className={marketVenueFilter === "all" ? "is-selected" : ""}
-              aria-pressed={marketVenueFilter === "all"}
-              onClick={() => setMarketVenueFilter("all")}
-            >
-              All venues
-            </button>
-            <button
-              type="button"
-              className={
-                marketVenueFilter === primaryVenue.id ? "is-selected" : ""
-              }
-              aria-pressed={marketVenueFilter === primaryVenue.id}
-              onClick={() => setMarketVenueFilter("aftermath")}
-            >
-              <VenueChip venue={primaryVenue} />
-            </button>
-          </div>
+          <h1>Markets</h1>
+          <p>
+            See which markets your bundles use, and edit each market&apos;s
+            strategy policy.
+          </p>
         </header>
-        <section className="rotation-board">
-          <div className="section-heading compact rotation-heading">
+        <section className="rotation-board market-clean-board">
+          <header className="market-clean-heading">
             <div>
-              <h2>Rotation and exposure</h2>
+              <h2>Aftermath markets</h2>
+              <p>
+                {marketTableGroups.inUse.length} in use by your bundles,{" "}
+                {marketTableGroups.available.length} available.
+              </p>
             </div>
-            <span className="rotation-cadence">
-              {marketTableRows.length} venue markets, grouped by bundle
+            <span className="market-last-update">
+              <i aria-hidden="true" />
+              {updatedAgo(deskLatestMarketUpdate)}
             </span>
-          </div>
-          <div className="market-table-wrap">
-            <table className="market-table">
+          </header>
+          <div
+            className="market-table-wrap"
+            tabIndex={0}
+            role="region"
+            aria-label="Aftermath market table, scroll horizontally for more columns"
+          >
+            <table className="market-table market-clean-table">
               <thead>
                 <tr>
                   {marketHeaders.map(({ key, label }) => (
@@ -7523,35 +7669,69 @@ function DashboardBody() {
                         onClick={() => sortMarketTable(key)}
                         aria-label={`Sort ${label}: ${marketSortLabel(key)}`}
                       >
-                        {label}
+                        {label}{" "}
+                        <span aria-hidden="true">
+                          {marketTableSort.key === key
+                            ? marketTableSort.direction === "asc"
+                              ? "↑"
+                              : "↓"
+                            : "↕"}
+                        </span>
                       </button>
                     </th>
                   ))}
+                  <th scope="col">
+                    <span className="sr-only">Edit policy</span>
+                  </th>
                 </tr>
               </thead>
               <tbody>
                 {marketTableGroups.inUse.length > 0 && (
                   <tr className="market-group-heading">
-                    <th colSpan={marketHeaders.length}>In use</th>
+                    <th colSpan={marketHeaders.length + 1}>
+                      In use <span>{marketTableGroups.inUse.length}</span>
+                    </th>
                   </tr>
                 )}
                 {marketTableGroups.inUse.map(renderMarketRow)}
                 {marketTableGroups.available.length > 0 && (
                   <tr className="market-group-heading">
-                    <th colSpan={marketHeaders.length}>Available</th>
+                    <th colSpan={marketHeaders.length + 1}>
+                      Available{" "}
+                      <span>{marketTableGroups.available.length}</span>
+                    </th>
                   </tr>
                 )}
                 {marketTableGroups.available.map(renderMarketRow)}
               </tbody>
             </table>
           </div>
-          <p className="board-footnote">
-            OI is one-sided and shown first in traded-asset units, then as a USD
-            estimate using the displayed index price. Capacity is measured
-            against the protocol limit at the data timestamp.
-          </p>
         </section>
       </MarketsView>
+
+      {policyEditorTarget && policyStrategy && policyMarket && (
+        <MarketPolicySheet
+          key={`${policyEditorTarget.strategyId}:${policyEditorTarget.marketId}`}
+          symbol={policyEditorTarget.symbol}
+          strategyName={policyStrategy.name}
+          bundleNames={policyStrategy.usedBy.map((used) => used.name)}
+          defaults={policyStrategy.config}
+          current={policyMarket.overrides ?? {}}
+          blocked={policyBlocked}
+          onClose={() => setPolicyEditorTarget(null)}
+          onOpenStrategy={() => {
+            const strategyId = policyStrategy.id;
+            setPolicyEditorTarget(null);
+            void selectStrategy(strategyId).then((selected) => {
+              if (!selected) return;
+              setStrategyEditing(true);
+              setStrategyStep(1);
+              selectView("strategy");
+            });
+          }}
+          onSave={saveMarketPolicy}
+        />
+      )}
 
       <PerformanceView active={displayedView === "performance"}>
         <section className="rewards-board">

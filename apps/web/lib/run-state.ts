@@ -1,3 +1,12 @@
+export type RunStartIssue = {
+  message: string;
+  code?: string;
+  fix?: {
+    kind: "venues" | "strategy" | "bundles" | "accounts" | "copy";
+    value?: string;
+  };
+};
+
 export type RunMode = "paper" | "live";
 export type RunPhase =
   | "stopping"
@@ -48,7 +57,7 @@ export type RunBundle<TSnapshot extends RunSnapshotInput = RunSnapshotInput> =
     phase: RunPhase;
     snapshot: TSnapshot | null;
     holdsOrders: boolean;
-    startError: string | null;
+    startError: RunStartIssue | null;
   };
 
 export type RunState<TSnapshot extends RunSnapshotInput = RunSnapshotInput> = {
@@ -75,7 +84,7 @@ export type DeriveRunStateInputs<
   snapshots: RunSnapshotEntry<TSnapshot>[];
   pending: Record<string, "start" | "resume" | "pause" | undefined>;
   stop: RunStopState;
-  startErrors: Record<string, string | undefined>;
+  startErrors: Record<string, RunStartIssue | string | undefined>;
   configDirty: boolean;
   stale: boolean;
   /** Retained by the caller while polling is unavailable. */
@@ -149,6 +158,7 @@ export function deriveRunState<TSnapshot extends RunSnapshotInput>({
       phase = "stopped";
     }
 
+    const startError = startErrors[input.id];
     return {
       ...input,
       mode: input.mode === "live" ? "live" : "paper",
@@ -156,7 +166,10 @@ export function deriveRunState<TSnapshot extends RunSnapshotInput>({
       snapshot,
       holdsOrders:
         rawHoldsOrders || phase === "running" || phase === "attention",
-      startError: startErrors[input.id] ?? null,
+      startError:
+        typeof startError === "string"
+          ? { message: startError }
+          : (startError ?? null),
     } satisfies RunBundle<TSnapshot>;
   });
 
