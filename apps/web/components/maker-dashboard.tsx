@@ -70,6 +70,7 @@ import {
 } from "../lib/format";
 import { narrate } from "../lib/narrate";
 import { marketActivity } from "../lib/market-activity";
+import { deriveRunState, type RunStopState } from "../lib/run-state";
 import { hedgeSizingSuggestion } from "../lib/hedge-suggestion";
 import { strategyIssueFromServer } from "../lib/strategy-validation";
 import { mergeStrategyReads } from "../lib/strategy-snapshots";
@@ -1090,10 +1091,24 @@ function DashboardBody() {
   const noticeTimer = useRef<number | null>(null);
   const [controlUnavailable, setControlUnavailable] = useState(false);
   const [lastGoodDataAt, setLastGoodDataAt] = useState<string | null>(null);
-  const [stopError, setStopError] = useState<string | null>(null);
-  const [stopState, setStopState] = useState<"ready" | "stopping" | "stopped">(
-    "ready",
-  );
+  const [lastControlResponseAt, setLastControlResponseAt] = useState<
+    string | null
+  >(null);
+  const [stop, setStop] = useState<RunStopState>({
+    phase: "idle",
+    targets: [],
+    startedAt: null,
+  });
+  const [bundlePending, setBundlePending] = useState<
+    Record<string, "start" | "resume" | "pause" | undefined>
+  >({});
+  const [startErrors, setStartErrors] = useState<
+    Record<string, string | undefined>
+  >({});
+  const [stoppedAt, setStoppedAt] = useState<
+    Record<string, string | undefined>
+  >({});
+  const lastKnownStoppable = useRef(false);
   const [integratorId, setIntegratorId] = useState("");
   const [inspection, setInspection] = useState<{
     exists: boolean;
@@ -1127,10 +1142,6 @@ function DashboardBody() {
     },
     [],
   );
-
-  useEffect(() => {
-    if (snapshot?.running) setStopState("ready");
-  }, [snapshot?.running]);
 
   useEffect(
     () => () => {
@@ -1174,6 +1185,7 @@ function DashboardBody() {
     ]);
     setSnapshot(statusResult.snapshot);
     setControlUnavailable(false);
+    setLastControlResponseAt(new Date().toISOString());
     setLastGoodDataAt(
       statusResult.snapshot.lastSuccessfulCycleAt ??
         statusResult.snapshot.market.updatedAt ??
@@ -1516,22 +1528,52 @@ function DashboardBody() {
     bundleId: string,
     action: "start" | "pause" | "resume" | "archive",
   ) {
-    await mutate(`bundle-${action}-${bundleId}`, async () => {
-      await request(`api/bundles/${encodeURIComponent(bundleId)}/${action}`, {
-        method: "POST",
-        body: "{}",
-      });
-      setNotice(
-        action === "archive"
-          ? "Bundle archived. Its accounts and markets are available again."
-          : action === "pause"
-            ? "Bundle paused. Its own orders are being cancelled."
-            : action === "resume"
-              ? "Bundle resumed."
-              : "Bundle started.",
-        "success",
+    if (action !== "archive") {
+      setBundlePending((current) => ({ ...current, [bundleId]: action }));
+      setStartErrors((current) => ({ ...current, [bundleId]: undefined }));
+    }
+    let requestError: string | null = null;
+    try {
+      const completed = await mutate(
+        `bundle-${action}-${bundleId}`,
+        async () => {
+          try {
+            await request(
+              `api/bundles/${encodeURIComponent(bundleId)}/${action}`,
+              {
+                method: "POST",
+                body: "{}",
+              },
+            );
+          } catch (error) {
+            requestError =
+              error instanceof Error ? error.message : String(error);
+            throw error;
+          }
+          setNotice(
+            action === "archive"
+              ? "Bundle archived. Its accounts and markets are available again."
+              : action === "pause"
+                ? "Bundle paused. Its own orders are being cancelled."
+                : action === "resume"
+                  ? "Bundle resumed."
+                  : "Bundle started.",
+            "success",
+          );
+        },
       );
-    });
+      if (!completed && (action === "start" || action === "resume")) {
+        const message = requestError ?? "Maker could not start this bundle.";
+        setStartErrors((current) => ({ ...current, [bundleId]: message }));
+        window.setTimeout(() => {
+          setStartErrors((current) => ({ ...current, [bundleId]: undefined }));
+        }, 60_000);
+      }
+    } finally {
+      if (action !== "archive") {
+        setBundlePending((current) => ({ ...current, [bundleId]: undefined }));
+      }
+    }
   }
 
   async function createBundle(draft: {
@@ -2839,7 +2881,7 @@ function DashboardBody() {
           }
           setSavedConfig(config);
           setNotice(
-            snapshot?.running
+            runState.running.length
               ? "Strategy saved. The next market cycle will use it."
               : "Strategy saved. It will apply when the engine starts.",
             "success",
@@ -2868,7 +2910,7 @@ function DashboardBody() {
       }
       setSavedConfig(config);
       setNotice(
-        snapshot?.running
+        runState.running.length
           ? "Account assignments saved for the next market cycle."
           : "Account assignments saved.",
         "success",
@@ -2876,33 +2918,24 @@ function DashboardBody() {
     });
   }
 
-  async function startRuntime() {
-    if (configDirty) {
-      setNotice("Save strategy changes before starting the engine.", "warning");
-      return;
-    }
-    await mutate("start", async () => {
-      const selected = bundles.find((bundle) => bundle.id === selectedBundleId);
-      await request(
-        selected && selected.name !== "Core"
-          ? `api/bundles/${encodeURIComponent(selected.id)}/start`
-          : "api/runtime/start",
-        {
-          method: "POST",
-          body: "{}",
-        },
-      );
-    });
-  }
-
   async function stopRuntime() {
-    setStopError(null);
-    setStopState("stopping");
-    try {
-      await request("api/runtime/stop", {
-        method: "POST",
-        body: "{}",
-      });
+    const targets = runState.bundles
+      .filter(
+        (bundle) =>
+          bundle.holdsOrders ||
+          bundle.phase === "starting" ||
+          bundle.phase === "pausing" ||
+          bundle.phase === "stopping",
+      )
+      .map((bundle) => bundle.id);
+    const startedAt = Date.now();
+    setStop({ phase: "stopping", targets, startedAt });
+
+    let finished = false;
+    const finish = async () => {
+      if (finished) return;
+      finished = true;
+      const stoppedAtValue = new Date().toISOString();
       // A successful Stop is authoritative even if the following read poll is
       // unavailable. Keep the control honest while preserving the last data.
       setSnapshot((current) =>
@@ -2910,11 +2943,16 @@ function DashboardBody() {
       );
       setBundles((current) =>
         current.map((bundle) =>
-          bundle.status === "running"
+          targets.includes(bundle.id) &&
+          (bundle.status === "running" || bundle.status === "error")
             ? { ...bundle, status: "stopped" }
             : bundle,
         ),
       );
+      setStoppedAt((current) =>
+        Object.fromEntries(targets.map((id) => [id, stoppedAtValue])),
+      );
+      setStop({ phase: "idle", targets: [], startedAt: null });
       await refresh().catch((error) => {
         if (error instanceof RequestError && error.status === 503) {
           handlePollingFailure(error);
@@ -2922,14 +2960,47 @@ function DashboardBody() {
         }
         throw error;
       });
-      setStopState("stopped");
-    } catch (error) {
-      setStopState("ready");
-      const reason = error instanceof Error ? error.message : String(error);
-      setStopError(reason);
-      setNotice(
-        `Stop failed or cancellation is uncertain: ${reason}. Inspect the venue and retry Stop all; do not assume positions are flat.`,
-        "error",
+    };
+
+    const requestStop = request("api/runtime/stop", {
+      method: "POST",
+      body: "{}",
+    });
+    let timeoutId: number | null = null;
+    const outcome = await Promise.race([
+      requestStop.then(
+        () => ({ kind: "success" as const }),
+        (error: unknown) => ({ kind: "failure" as const, error }),
+      ),
+      new Promise<{ kind: "timeout" }>((resolve) => {
+        timeoutId = window.setTimeout(
+          () => resolve({ kind: "timeout" }),
+          20_000,
+        );
+      }),
+    ]);
+    if (timeoutId !== null) window.clearTimeout(timeoutId);
+
+    if (outcome.kind === "success") {
+      await finish();
+      return;
+    }
+
+    const reason =
+      outcome.kind === "failure"
+        ? outcome.error instanceof Error
+          ? outcome.error.message
+          : String(outcome.error)
+        : "Maker did not confirm within 20 seconds";
+    setStop({ phase: "unconfirmed", targets, startedAt, error: reason });
+    setNotice(
+      `Stop failed or cancellation is uncertain: ${reason}. Inspect the venue and retry Stop all; do not assume positions are flat.`,
+      "error",
+    );
+    if (outcome.kind === "timeout") {
+      void requestStop.then(
+        () => finish(),
+        () => undefined,
       );
     }
   }
@@ -3043,6 +3114,32 @@ function DashboardBody() {
     strategyNameDirty ||
     strategyRuleDirty ||
     Object.keys(invalidNumeric).length > 0;
+
+  const stale =
+    controlUnavailable ||
+    (lastControlResponseAt !== null &&
+      Date.now() - Date.parse(lastControlResponseAt) > 15_000);
+  const runState = deriveRunState({
+    bundles: bundles.filter((bundle) => !bundle.archivedAt),
+    snapshots: bundleSnapshots,
+    pending: bundlePending,
+    stop,
+    startErrors,
+    configDirty,
+    stale,
+    lastKnownStoppable: lastKnownStoppable.current,
+  });
+  if (!runState.stale) lastKnownStoppable.current = runState.stoppable;
+  const runBundleById = new Map(
+    runState.bundles.map((bundle) => [bundle.id, bundle]),
+  );
+  const activityStatusFor = (bundleId: string) => {
+    const phase = runBundleById.get(bundleId)?.phase;
+    if (phase === "running") return "running" as const;
+    if (phase === "attention") return "error" as const;
+    if (phase === "paused" || phase === "pausing") return "paused" as const;
+    return "stopped" as const;
+  };
 
   const strategyComplete = Boolean(
     selectedStrategy &&
@@ -3729,9 +3826,9 @@ function DashboardBody() {
   const bundleRotationRows = bundles
     .filter((bundle) => !bundle.archivedAt)
     .flatMap((bundle) => {
-      const bundleSnapshot =
-        bundleSnapshots.find((entry) => entry.bundle.id === bundle.id)
-          ?.snapshot ?? null;
+      const runBundle = runBundleById.get(bundle.id);
+      const bundleSnapshot = runBundle?.snapshot ?? null;
+      const activityStatus = activityStatusFor(bundle.id);
       const savedStrategy = strategies.find(
         (strategy) => strategy.id === bundle.strategyId,
       );
@@ -3740,12 +3837,14 @@ function DashboardBody() {
           (market) => market.marketId === marketId,
         );
         const runtimeMarket =
-          bundle.status === "running" && bundleSnapshot?.running
-            ? bundleSnapshot.markets.find((market) => market.id === marketId)
+          runBundle?.phase === "running" || runBundle?.phase === "attention"
+            ? (bundleSnapshot?.markets.find(
+                (market) => market.id === marketId,
+              ) ?? null)
             : null;
         const activity = marketActivity({
-          mode: bundle.mode,
-          status: bundle.status,
+          mode: runBundle?.mode ?? "paper",
+          status: activityStatus,
           marketId,
           marketError: runtimeMarket?.error ?? null,
           snapshot: bundleSnapshot,
@@ -3759,7 +3858,7 @@ function DashboardBody() {
           activityLabel: activity.label,
           status: (activity.active
             ? "healthy"
-            : bundle.status === "error"
+            : runBundle?.phase === "attention"
               ? "error"
               : "queued") as "healthy" | "error" | "queued",
           indexPrice: runtimeMarket?.indexPrice ?? listed?.indexPrice ?? null,
@@ -3796,7 +3895,7 @@ function DashboardBody() {
     : rotationRowsFor(deskConfig).map((row) => ({
         ...row,
         bundleName: null,
-        activityLabel: snapshot?.running ? "Reading markets" : "Stopped",
+        activityLabel: runState.running.length ? "Reading markets" : "Stopped",
       }));
   const marketTableRows = visibleMarkets
     .map((listed) => {
@@ -3805,18 +3904,19 @@ function DashboardBody() {
           (bundle) =>
             !bundle.archivedAt && bundle.marketIds.includes(listed.id),
         )
-        .sort(
-          (left, right) =>
-            Number(right.status === "running") -
-            Number(left.status === "running"),
-        );
+        .sort((left, right) => {
+          const leftActive = runBundleById.get(left.id)?.phase === "running";
+          const rightActive = runBundleById.get(right.id)?.phase === "running";
+          return Number(rightActive) - Number(leftActive);
+        });
       const assignedBundle = assigned[0] ?? null;
-      const assignedSnapshot =
-        bundleSnapshots.find((entry) => entry.bundle.id === assignedBundle?.id)
-          ?.snapshot ?? null;
+      const assignedRun = assignedBundle
+        ? (runBundleById.get(assignedBundle.id) ?? null)
+        : null;
+      const assignedSnapshot = assignedRun?.snapshot ?? null;
       const runtimeMarket =
-        assignedBundle?.status === "running" && assignedSnapshot?.running
-          ? (assignedSnapshot.markets.find(
+        assignedRun?.phase === "running" || assignedRun?.phase === "attention"
+          ? (assignedSnapshot?.markets.find(
               (market) => market.id === listed.id,
             ) ?? null)
           : null;
@@ -3849,8 +3949,8 @@ function DashboardBody() {
       });
       const activity = assignedBundle
         ? marketActivity({
-            mode: assignedBundle.mode,
-            status: assignedBundle.status,
+            mode: assignedRun?.mode ?? "paper",
+            status: activityStatusFor(assignedBundle.id),
             marketId: listed.id,
             marketError: runtimeMarket?.error ?? null,
             snapshot: assignedSnapshot,
@@ -3861,22 +3961,23 @@ function DashboardBody() {
         id: listed.id,
         symbol: listed.symbol,
         bundleName: assignedBundle?.name ?? "Available",
-        bundleLabels: assigned.map(
-          (bundle) => `${bundle.name} · ${bundle.mode} · ${bundle.status}`,
-        ),
+        bundleLabels: assigned.map((bundle) => {
+          const phase = runBundleById.get(bundle.id)?.phase ?? "stopped";
+          return `${bundle.name} · ${bundle.mode} · ${phase}`;
+        }),
         bundlePolicies,
         activeBundleNames: assigned
-          .filter((bundle) => bundle.status === "running")
+          .filter((bundle) => runBundleById.get(bundle.id)?.phase === "running")
           .map((bundle) => `${bundle.name} · ${bundle.mode}`),
         activityLabel: activity.label,
         checkingNow: Boolean(
-          assignedBundle?.status === "running" &&
-          assignedSnapshot?.running &&
-          assignedSnapshot.market.id === listed.id,
+          (assignedRun?.phase === "running" ||
+            assignedRun?.phase === "attention") &&
+          assignedSnapshot?.market.id === listed.id,
         ),
         status: (activity.active
           ? "healthy"
-          : assignedBundle?.status === "error"
+          : assignedRun?.phase === "attention"
             ? "error"
             : "queued") as "healthy" | "error" | "queued",
         indexPrice: runtimeMarket?.indexPrice ?? listed.indexPrice,
@@ -4095,13 +4196,11 @@ function DashboardBody() {
     },
     null,
   );
-  const deskRunningBundle =
-    bundles.find(
-      (bundle) => !bundle.archivedAt && bundle.status === "running",
-    ) ?? null;
-  const deskRunningSnapshot =
-    bundleSnapshots.find((entry) => entry.bundle.id === deskRunningBundle?.id)
-      ?.snapshot ?? null;
+  const deskRunningRun = runState.running[0] ?? null;
+  const deskRunningBundle = deskRunningRun
+    ? (bundles.find((bundle) => bundle.id === deskRunningRun.id) ?? null)
+    : null;
+  const deskRunningSnapshot = deskRunningRun?.snapshot ?? null;
   const deskReportSnapshot = deskRunningBundle ? deskRunningSnapshot : snapshot;
   const deskRunningStrategy = strategies.find(
     (strategy) => strategy.id === deskRunningBundle?.strategyId,
@@ -4153,7 +4252,7 @@ function DashboardBody() {
     })) ?? [];
   const deskNarration = narrate({
     name: deskRunningBundle?.name ?? "Maker",
-    running: Boolean(deskReportSnapshot?.running || deskRunningBundle),
+    running: runState.running.length > 0,
     mode:
       deskRunningBundle?.mode ??
       deskReportSnapshot?.mode ??
@@ -4262,17 +4361,17 @@ function DashboardBody() {
       resultUsd: runtime?.portfolio.unrealizedPnlUsd ?? null,
     };
   });
-  const anyBundleRunning = bundles.some(
-    (bundle) => bundle.status === "running",
-  );
-  const activeBundleLanes = bundleSnapshots.flatMap((entry) => {
-    const bundle =
-      bundles.find((candidate) => candidate.id === entry.bundle.id) ??
-      entry.bundle;
-    if (bundle.status !== "running" && bundle.status !== "paused") return [];
-    const listed = markets.find((market) => market.id === bundle.marketIds[0]);
+  const activeBundleLanes = runState.bundles.flatMap((bundle) => {
+    if (bundle.phase === "stopped") return [];
+    const source = bundles.find((candidate) => candidate.id === bundle.id);
+    const listed = markets.find((market) =>
+      source?.marketIds.includes(market.id),
+    );
+    const sourceSnapshot = bundleSnapshots.find(
+      (entry) => entry.bundle.id === bundle.id,
+    )?.snapshot;
     const laneSnapshot =
-      entry.snapshot ??
+      sourceSnapshot ??
       ({
         mode: bundle.mode,
         market: {
@@ -4288,57 +4387,21 @@ function DashboardBody() {
       } satisfies Parameters<
         typeof BundleDeskLanes
       >[0]["lanes"][number]["snapshot"]);
-    return [
-      {
-        id: bundle.id,
-        name: bundle.name,
-        status: bundle.status,
-        snapshot: laneSnapshot,
-      },
-    ];
+    return [{ bundle, snapshot: laneSnapshot }];
   });
   const selectedBundle = bundles.find(
     (bundle) => bundle.id === selectedBundleId,
   );
 
-  const runningBundles = bundles.filter(
-    (bundle) => !bundle.archivedAt && bundle.status === "running",
-  );
-  const runningMode = runningBundles.some((bundle) => bundle.mode === "live")
-    ? "live"
-    : runningBundles.some((bundle) => bundle.mode === "paper")
-      ? "paper"
-      : "observe";
-  const markState = !(snapshot?.running || anyBundleRunning)
-    ? "stopped"
-    : runningMode === "live"
-      ? "live"
-      : "paper";
   const canOperate = onboardingComplete && deskConfig.markets.length > 0;
-  // Stop is a recovery action too: do not hide it because a cached snapshot
-  // claims that the runtime is stopped or the wallet is not ready to Start.
-  const canStopAll =
-    bundles.some((bundle) => !bundle.archivedAt) ||
-    Boolean(snapshot?.running) ||
-    stopState === "stopping";
   const displayedView = activeView;
 
   return (
     <MakerShell
       activeView={displayedView}
       selectView={selectView}
-      markState={markState}
-      mode={
-        runningBundles.some((bundle) => bundle.mode === "live") &&
-        runningBundles.some((bundle) => bundle.mode === "paper")
-          ? "mixed modes"
-          : runningMode
-      }
-      running={Boolean(snapshot?.running || anyBundleRunning)}
-      canStopAll={canStopAll}
-      stopState={stopState}
-      phoneDeskStopAvailable={canStopAll}
-      runBundles={bundles.filter((bundle) => !bundle.archivedAt)}
+      run={runState}
+      stoppedAt={stoppedAt}
       onBundleAction={(bundleId, action) => {
         if (action !== "pause" && configDirty) {
           setNotice(
@@ -4349,9 +4412,6 @@ function DashboardBody() {
         }
         void bundleAction(bundleId, action);
       }}
-      runActionBusy={Boolean(busy)}
-      runStartBlocked={configDirty}
-      live={runningBundles.some((bundle) => bundle.mode === "live")}
       canOperate={canOperate}
       serviceUnavailable={controlUnavailable}
       lastGoodDataAt={lastGoodDataAt}
@@ -4359,8 +4419,7 @@ function DashboardBody() {
       walletLabel={compact(identity.ownerAddress)}
       walletSummary={{
         enabledVenues: 1,
-        runningBundles: bundles.filter((bundle) => bundle.status === "running")
-          .length,
+        runningBundles: runState.running.length,
         totalBundles: bundles.filter((bundle) => !bundle.archivedAt).length,
         authorizedAccounts: authorizedAccounts.length,
       }}
@@ -4883,13 +4942,9 @@ function DashboardBody() {
       <DeskView
         active={displayedView === "desk"}
         venue={primaryVenue}
-        running={Boolean(deskReportSnapshot?.running || anyBundleRunning)}
-        configDirty={configDirty}
+        run={runState}
         refreshBusy={busy === "refresh"}
-        startBusy={busy === "start"}
-        stopState={stopState}
         flattenBusy={busy === "flatten"}
-        startDisabled={!config.markets.length || Boolean(busy) || configDirty}
         flattenDisabled={
           deskConfig.mode !== "live" ||
           !onboardingComplete ||
@@ -4897,7 +4952,6 @@ function DashboardBody() {
           Boolean(busy)
         }
         flattenArmed={flattenArmed}
-        stopError={stopError}
         pnlUsd={performance?.combinedNetAfterKnownCostsUsd ?? null}
         equityUsd={
           deskRunningBundle
@@ -4911,16 +4965,21 @@ function DashboardBody() {
           deskReportSnapshot?.portfolio.grossExposureUsd ?? null
         }
         marketCount={deskRotationRows.length}
-        startedAt={deskReportSnapshot?.startedAt ?? null}
         lastFill={deskFills[0] ?? null}
         narration={
-          deskReportSnapshot?.running &&
-          deskReportSnapshot.mode === "paper" &&
+          runState.running.length > 0 &&
+          deskReportSnapshot?.mode === "paper" &&
           deskReportSnapshot.lastError
             ? `Paper · Reading markets · Simulation blocked: ${deskReportSnapshot.lastError}`
             : deskNarration
         }
-        mode={runningBundles.length ? runningMode : deskReportConfig.mode}
+        mode={
+          runState.running.length
+            ? runState.liveCount
+              ? "live"
+              : "paper"
+            : deskReportConfig.mode
+        }
         paper={
           deskReportSnapshot?.paper ?? {
             estimated: false,
@@ -4990,16 +5049,20 @@ function DashboardBody() {
             });
           })
         }
-        onStart={() => void startRuntime()}
-        onStop={() => void stopRuntime()}
         onFlatten={() => void flattenPositions()}
         onCancelFlatten={() => setFlattenArmed(false)}
       />
 
       <StrategyView
         active={displayedView === "strategy"}
-        phoneStopAll={canStopAll}
+        run={runState}
+        stoppedAt={stoppedAt}
+        onBundleAction={(bundleId, action) =>
+          void bundleAction(bundleId, action)
+        }
         onStopAll={() => void stopRuntime()}
+        onManageBundles={() => selectView("bundles")}
+        onOpenVenues={() => selectView("venues")}
         onClose={() => requestStrategyExit("desk")}
       >
         <section className="workspace workspace-strategy">
@@ -7382,10 +7445,8 @@ function DashboardBody() {
         onReturnToStrategy={returnToStrategy}
         onOpenAccounts={() => selectView("accounts")}
         busy={Boolean(busy)}
+        run={runState}
         onSelect={(bundleId) => void selectBundle(bundleId)}
-        onStart={(bundleId) => void bundleAction(bundleId, "start")}
-        onPause={(bundleId) => void bundleAction(bundleId, "pause")}
-        onResume={(bundleId) => void bundleAction(bundleId, "resume")}
         onArchive={(bundleId) => void bundleAction(bundleId, "archive")}
         accounts={accounts.map((account) => ({
           accountId: account.accountId,
@@ -8210,7 +8271,7 @@ function DashboardBody() {
         <VenueBoard
           venue={primaryVenue}
           connected
-          quoting={anyBundleRunning}
+          quoting={runState.running.length > 0}
           tradingKeyReady={authorizedAccounts.length > 0}
           feeText={
             builderCode

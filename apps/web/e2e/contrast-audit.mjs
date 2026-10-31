@@ -242,7 +242,11 @@ async function auditState(browser, stateName, colorScheme, viewport) {
     Date.now = () => fixed;
   }, fixedNow);
   await page.route("**/api/control/**", async (route) => {
-    const response = apiResponse(fixture, new URL(route.request().url()));
+    const response = apiResponse(
+      fixture,
+      new URL(route.request().url()),
+      route.request().method(),
+    );
     await route.fulfill({
       status: response.status,
       contentType: "application/json",
@@ -260,15 +264,19 @@ async function auditState(browser, stateName, colorScheme, viewport) {
 
   const findings = [];
   try {
-    const signedIn = fixture.auth.status === 200;
+    const signedIn =
+      fixture.auth.status === 200 && Boolean(fixture.setup?.setup);
     const targets = signedIn ? views : [null];
     for (const view of targets) {
       await page.goto(`${baseUrl}${view ? `#${view}` : ""}`, {
-        waitUntil: "networkidle",
+        waitUntil: "domcontentloaded",
       });
       if (signedIn) {
         await page.getByRole("navigation", { name: "Maker views" }).waitFor();
         await page.locator(`[data-view="${view}"]:not([hidden])`).waitFor();
+        const trigger = page.getByRole("button", { name: /Run status:/ });
+        await trigger.click();
+        await page.getByRole("region", { name: "Run status" }).waitFor();
       }
       await page.waitForTimeout(400);
       const found = await page.evaluate(auditInPage, minimumContrast);

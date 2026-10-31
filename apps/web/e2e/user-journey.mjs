@@ -685,8 +685,8 @@ async function runControlMobile(browser) {
   const { context, page } = await newPage(browser, { width: 390, height: 844 });
   try {
     await goToDesk(page);
-    await page.getByRole("button", { name: "Open run controls" }).click();
-    const panel = page.getByRole("region", { name: "Bundle run controls" });
+    await page.getByRole("button", { name: /Run status:/ }).click();
+    const panel = page.getByRole("region", { name: "Run status" });
     await panel.waitFor();
     assert(
       (await panel.getByRole("button", { name: /Pause Core/ }).count()) > 0,
@@ -694,15 +694,16 @@ async function runControlMobile(browser) {
     );
     assert(
       (await panel
-        .getByRole("button", { name: /Stop all · cancel owned orders/ })
+        .getByRole("button", { name: "Stop all", exact: true })
         .count()) > 0,
       "Emergency Stop all is missing on the phone",
     );
     const overflow = await page.evaluate(
       () => document.documentElement.scrollWidth > window.innerWidth + 2,
     );
-    assert(!overflow, "Run controls overflow the 390px viewport");
+    assert(!overflow, "Run status overflows the 390px viewport");
     await capture(page, "r5-run-controls-phone.png");
+    await page.getByRole("button", { name: "Close", exact: true }).click();
     await page.getByRole("link", { name: "Strategy", exact: true }).click();
     assert(
       !(await page.evaluate(
@@ -752,10 +753,7 @@ async function stopAllShowsProgress(browser) {
       .locator(".maker-nav-right")
       .getByRole("button", { name: "Stop all", exact: true })
       .click();
-    await page
-      .locator(".maker-nav-right")
-      .getByRole("button", { name: "Stopping…", exact: true })
-      .waitFor();
+    await page.getByText("Stopping…", { exact: true }).waitFor();
     await page
       .locator(".maker-nav-right")
       .getByRole("button", { name: "Stop all", exact: true })
@@ -998,7 +996,9 @@ async function createBundleWithFreeChoices(browser) {
       .getByRole("heading", { name: "Audit reserve", exact: true })
       .waitFor();
     const start = page
-      .getByRole("button", { name: /Run controls · Audit reserve/ })
+      .getByRole("button", {
+        name: "Audit reserve: Stopped. Open run status",
+      })
       .last();
     await start.waitFor();
     await start.scrollIntoViewIfNeeded();
@@ -1243,7 +1243,9 @@ async function strategyLibraryAndBundleAttachment(browser) {
       .waitFor();
     await card.getByText(/^From Strategy 3:/, { exact: false }).waitFor();
     await card
-      .getByRole("button", { name: /Run controls · Strategy audit/ })
+      .getByRole("button", {
+        name: "Strategy audit: Stopped. Open run status",
+      })
       .waitFor();
     await capture(page, "rfc-0002-strategy-attachment-desktop.png");
   } finally {
@@ -1356,7 +1358,11 @@ async function paperSimulationBlockerStaysVisible(browser) {
     await goToDesk(page);
     const lane = page.locator(".bundle-desk-lane").filter({ hasText: "Core" });
     await lane.getByText(message, { exact: true }).waitFor();
-    await lane.getByText("Watching · Paper", { exact: true }).waitFor();
+    await lane
+      .getByRole("button", {
+        name: "Core: Needs attention. Open run status",
+      })
+      .waitFor();
     await page
       .locator(".desk-log-card")
       .getByText(/paper can't simulate/i)
@@ -1707,8 +1713,9 @@ async function round6ContextLinksAndHelp(browser) {
     await strategy.getByRole("button", { name: "Edit Core bundle" }).click();
     const bundle = page.getByRole("dialog", { name: "Edit Core" });
     await bundle
-      .getByText(/Pause this bundle in Run controls before editing/)
+      .getByText(/Accounts change only while Core is paused\./)
       .waitFor();
+    await bundle.getByRole("button", { name: "Pause in run status" }).waitFor();
     assert(
       !(await bundle
         .getByRole("button", { name: "Save allocation" })
