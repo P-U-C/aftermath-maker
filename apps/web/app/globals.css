@@ -4857,6 +4857,11 @@ mysten-dapp-kit-connect-modal,
   .ui-toggle-track > span {
     transition-duration: 0ms;
   }
+
+  .run-status-popover,
+  .run-state-spinner {
+    animation: none;
+  }
 }
 
 /* Maker shell */
@@ -4953,107 +4958,389 @@ mysten-dapp-kit-connect-modal,
   box-shadow: none;
 }
 
-.maker-phone-run-control {
-  display: none;
-}
-.maker-run-control-trigger {
-  min-height: 34px;
-  white-space: nowrap;
+.run-control {
+  min-width: 0;
+  height: 38px;
+  position: relative;
+  display: inline-flex;
+  align-items: stretch;
   flex: none;
-  padding: 0 11px;
   color: var(--ink);
-  background: var(--surface);
-  border: 1px solid var(--hair);
-  border-radius: 9px;
+  background: var(--fill);
+  border-radius: 999px;
+}
+
+.run-control-label,
+.run-control-stop {
+  border: 0;
   font: inherit;
-  font-size: 12px;
-  font-weight: 700;
   cursor: pointer;
 }
-.maker-run-control-trigger[aria-expanded="true"] {
-  border-color: var(--tide);
+
+.run-control-label {
+  min-width: 0;
+  padding: 0 12px 0 14px;
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  color: var(--ink);
+  background: transparent;
+  border-radius: 999px 0 0 999px;
+  font-size: 13px;
+  font-weight: 620;
+  line-height: 1;
+  white-space: nowrap;
 }
-.maker-run-control-panel {
-  scroll-margin-top: 92px;
-  margin: 16px auto;
-  padding: 18px;
-  max-width: 1120px;
+
+.run-control.is-solo .run-control-label {
+  border-radius: 999px;
+}
+
+.run-control-label:hover,
+.run-control-label[aria-expanded="true"] {
+  background: var(--fill-2);
+}
+
+.run-control-label > svg:last-child {
+  color: var(--ink-2);
+  transition: transform 180ms var(--ease-out);
+}
+
+.run-control-label[aria-expanded="true"] > svg:last-child {
+  transform: rotate(180deg);
+}
+
+.run-control-label.is-amber {
+  color: var(--amber-text);
+}
+
+.run-control-stop {
+  width: 42px;
+  height: 38px;
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  color: var(--stop);
+  background: transparent;
+  border-left: 1px solid rgba(22, 24, 29, 0.12);
+  border-radius: 0 999px 999px 0;
+}
+
+.run-control-stop:hover {
+  background: var(--ember-soft);
+}
+
+.run-control
+  :is(
+    button,
+    .run-status-manage,
+    .run-status-row-copy button,
+    .run-status-recovery
+  ):focus-visible,
+.run-status-popover :is(button, a):focus-visible {
+  outline: 2px solid var(--tide-text);
+  outline-offset: 2px;
+}
+
+.run-state-indicator {
+  width: 8px;
+  height: 8px;
+  display: inline-block;
+  flex: none;
+  border-radius: 50%;
+}
+
+.run-state-indicator.is-row {
+  width: 10px;
+  height: 10px;
+}
+
+.run-state-indicator.is-tide {
+  background: var(--tide);
+  box-shadow: 0 0 0 3px rgba(15, 163, 154, 0.18);
+}
+
+.run-state-indicator.is-ember {
+  background: var(--ember);
+  box-shadow: 0 0 0 3px rgba(242, 72, 59, 0.18);
+}
+
+.run-state-indicator.is-amber {
+  background: var(--amber);
+  box-shadow: 0 0 0 3px rgba(232, 162, 0, 0.22);
+}
+
+.run-state-indicator.is-hollow {
+  background: transparent;
+  box-shadow: inset 0 0 0 1.5px var(--ink-3);
+}
+
+.run-state-indicator.is-hollow.is-amber-ring {
+  box-shadow: inset 0 0 0 1.5px var(--amber);
+}
+
+.run-state-spinner {
+  flex: none;
+  animation: run-state-spin 800ms linear infinite;
+}
+
+.run-control-live {
+  width: 1px;
+  height: 1px;
+  position: absolute;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.run-status-popover {
+  width: min(400px, calc(100vw - 32px));
+  position: absolute;
+  z-index: 240;
+  top: calc(100% + 10px);
+  right: 0;
+  overflow: hidden;
   color: var(--ink);
   background: var(--surface);
   border: 1px solid var(--hair);
-  border-radius: 14px;
-  box-shadow: 0 10px 28px color-mix(in srgb, var(--ink) 9%, transparent);
+  border-radius: 18px;
+  box-shadow: var(--float-shadow, 0 16px 42px rgba(16, 18, 22, 0.18));
+  animation: run-status-in 200ms var(--ease-out);
 }
-.maker-run-control-panel header,
-.maker-run-control-panel footer {
+
+.run-status-header {
+  padding: 18px 20px 12px;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.run-status-header h2 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 650;
+  line-height: 1.25;
+}
+
+.run-status-header h2:focus {
+  outline: 0;
+}
+
+.run-status-header p {
+  margin: 4px 0 0;
+  color: var(--ink-2);
+  font-size: 13px;
+}
+
+.run-status-manage,
+.run-status-row-copy button,
+.run-status-recovery,
+.run-status-dirty button {
+  padding: 0;
+  color: var(--tide-text);
+  background: transparent;
+  border: 0;
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 650;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+
+.run-status-dirty {
+  margin: 0 20px 10px;
+  color: var(--amber-text);
+  font-size: 12.5px;
+  line-height: 1.45;
+}
+
+.run-status-rows {
+  max-height: min(52vh, 420px);
+  padding: 0 8px 8px;
+  display: grid;
+  gap: 2px;
+  overflow-y: auto;
+}
+
+.run-status-row {
+  min-height: 58px;
+  padding: 9px 8px 9px 12px;
+  display: grid;
+  grid-template-columns: 12px minmax(0, 1fr) 40px;
+  align-items: center;
+  gap: 12px;
+  border-radius: 12px;
+}
+
+.run-status-row.is-selected {
+  background: rgba(15, 163, 154, 0.09);
+}
+
+.run-status-row-indicator {
+  width: 12px;
+  display: inline-flex;
+  justify-content: center;
+}
+
+.run-status-row-copy {
+  min-width: 0;
+}
+
+.run-status-row-copy > div {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  flex-wrap: wrap;
-  gap: 10px;
+  gap: 7px;
 }
-.maker-run-control-panel header > div,
-.maker-run-control-row > div {
-  display: grid;
-  gap: 3px;
+
+.run-status-row-copy strong {
+  overflow: hidden;
+  font-size: 14px;
+  font-weight: 620;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
-.maker-run-control-panel span {
+
+.run-status-row-copy p {
+  margin: 3px 0 0;
+  overflow-wrap: anywhere;
   color: var(--ink-2);
-  font-size: 12px;
+  font-size: 12.5px;
+  line-height: 1.3;
 }
-.maker-run-panel-close {
-  min-width: 44px;
-  min-height: 44px;
+
+.run-status-row-copy p.is-amber {
+  color: var(--amber-text);
+}
+
+.run-mode-tag {
+  min-height: 20px;
+  padding: 0 7px;
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+  border-radius: 6px;
+  color: var(--ink-2);
+  background: var(--fill);
+  font-size: 12px;
+  font-weight: 620;
+}
+
+.run-mode-tag.is-live {
+  color: var(--ember-text);
+  background: var(--ember-soft);
+}
+
+.run-status-row-action {
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   color: var(--ink);
   background: var(--fill);
   border: 0;
-  border-radius: 9px;
-  font-size: 20px;
+  border-radius: 12px;
   cursor: pointer;
 }
-.maker-run-control-list {
-  margin: 12px 0;
-  display: grid;
-  gap: 8px;
-}
-.maker-run-control-row {
-  padding: 10px 12px;
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 10px;
-  border: 1px solid var(--hair);
-  border-radius: 10px;
-}
-.maker-run-control-row.is-selected {
-  border-color: var(--tide);
-}
-.maker-run-control-row button,
-.maker-run-control-panel footer button {
-  min-height: 44px;
-  padding: 8px 12px;
-  color: var(--ink);
-  background: var(--fill);
-  border: 1px solid var(--line);
-  border-radius: 9px;
-  font: inherit;
-  font-size: 13px;
-  font-weight: 700;
-  cursor: pointer;
-}
-.maker-run-control-row button:disabled {
-  opacity: 0.55;
+
+.run-status-row-action:disabled {
+  color: var(--ink-3);
   cursor: not-allowed;
 }
-.maker-run-control-panel footer button {
-  color: var(--on-stop);
-  background: var(--stop);
-  border-color: var(--stop);
+
+.run-status-footer {
+  min-height: 70px;
+  padding: 14px 20px 16px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  border-top: 1px solid var(--hair);
 }
-.maker-run-control-warning {
-  color: var(--amber-text);
-  font-size: 13px;
+
+.run-status-footer p {
+  margin: 0;
+  color: var(--ink-2);
+  font-size: 12.5px;
+  line-height: 1.35;
+}
+
+.run-status-stop {
+  min-width: 96px;
+  height: 40px;
+  padding: 0 12px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  flex: none;
+  color: var(--ember-text);
+  background: var(--ember-soft);
+  border: 0;
+  border-radius: 12px;
+  font: inherit;
+  font-size: 13.5px;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.run-status-stopping {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--ink);
+  font-size: 13.5px;
+  font-weight: 650;
+}
+
+@keyframes run-status-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes run-state-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.run-status-chip {
+  min-height: 32px;
+  padding: 0 10px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--ink-2);
+  background: var(--fill);
+  border: 0;
+  border-radius: 999px;
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.run-status-chip:hover {
+  background: var(--fill-2);
+}
+
+.bundle-lane-title {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 7px;
 }
 
 .maker-nav-right {
@@ -5127,7 +5414,38 @@ mysten-dapp-kit-connect-modal,
   border-right: 0;
 }
 
-@media (max-width: 1280px) {
+@media (min-width: 1024px) and (max-width: 1279px) {
+  .maker-nav {
+    padding-right: 24px;
+    padding-left: 24px;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    gap: 8px;
+  }
+
+  .maker-nav-brand {
+    min-width: 170px;
+  }
+
+  .maker-view-tabs a {
+    padding-right: 12px;
+    padding-left: 12px;
+  }
+
+  .maker-wallet-menu > summary {
+    width: 38px;
+    min-height: 38px;
+    padding: 0;
+    justify-content: center;
+    border-radius: 50%;
+  }
+
+  .maker-wallet-menu > summary span,
+  .maker-wallet-menu > summary svg:last-child {
+    display: none;
+  }
+}
+
+@media (max-width: 1023px) {
   .maker-nav {
     min-height: 0;
     padding-top: 8px;
@@ -5184,24 +5502,7 @@ mysten-dapp-kit-connect-modal,
   }
 }
 
-/* B2: wallet-scoped bundle cards. */
-.maker-stop-all {
-  min-height: 34px;
-  padding: 0 11px;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  color: var(--ember-text);
-  background: var(--ember-soft);
-  border: 1px solid color-mix(in srgb, var(--ember) 32%, var(--line));
-  border-radius: 9px;
-  font:
-    620 13px/1 var(--font-mona),
-    Arial,
-    sans-serif;
-  white-space: nowrap;
-}
-
+/* Wallet-scoped bundle cards. */
 .bundles-page {
   max-width: 1180px;
   margin: 0 auto;
@@ -5525,7 +5826,6 @@ mysten-dapp-kit-connect-modal,
   font-size: 18px;
 }
 
-.bundle-desk-lane header > div > span,
 .bundle-desk-lane dt {
   color: var(--ink-2);
   font-size: 12px;
@@ -7069,14 +7369,17 @@ mysten-dapp-kit-connect-modal,
 }
 
 .maker-explain-toggle {
-  min-height: 32px;
-  padding: 0 10px;
+  width: 38px;
+  height: 38px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
   color: var(--ink-2);
-  background: transparent;
-  border: 1px solid var(--line);
-  border-radius: 999px;
-  font-size: 13px;
-  font-weight: 650;
+  background: var(--fill);
+  border: 1px solid var(--hair);
+  border-radius: 50%;
 }
 
 .maker-explain-toggle[aria-pressed="true"] {
@@ -8539,9 +8842,7 @@ mysten-dapp-kit-connect-modal,
 /* Step 8: phone desk and editing surfaces. */
 .maker-phone-heading,
 .maker-phone-explain,
-.maker-phone-stop-all,
-.strategy-mobile-sheet-header,
-.desk-phone-dock {
+.strategy-mobile-sheet-header {
   display: none;
 }
 
@@ -8600,6 +8901,10 @@ mysten-dapp-kit-connect-modal,
     gap: 10px;
   }
 
+  .shell.is-strategy-active .maker-nav {
+    display: none;
+  }
+
   .live-rail + .maker-nav {
     padding-top: 14px;
   }
@@ -8634,30 +8939,37 @@ mysten-dapp-kit-connect-modal,
     white-space: nowrap;
   }
 
-  .maker-phone-heading .ui-pill {
-    min-height: 38px;
-    padding: 0 12px;
-    font-size: 14px;
-  }
-
   .maker-phone-actions {
+    min-width: 0;
     display: flex;
     align-items: center;
     gap: 8px;
   }
 
-  .maker-phone-run-control {
+  .maker-view-tabs a {
     min-height: 44px;
-    padding: 0 10px;
-    display: inline-flex;
-    align-items: center;
-    color: var(--ink);
-    background: var(--fill);
-    border: 1px solid var(--hair);
-    border-radius: 9px;
-    font: inherit;
+  }
+
+  .run-control-compact {
+    height: 44px;
+    max-width: min(226px, calc(100vw - 200px));
+  }
+
+  .run-control-compact .run-control-label {
+    min-width: 0;
+    height: 44px;
+    padding: 0 10px 0 12px;
     font-size: 13px;
-    font-weight: 700;
+  }
+
+  .run-control-compact .run-control-label > span:nth-child(2) {
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .run-control-compact .run-control-stop {
+    width: 46px;
+    height: 44px;
   }
 
   .maker-phone-explain {
@@ -8680,22 +8992,47 @@ mysten-dapp-kit-connect-modal,
     background: var(--ink);
   }
 
-  .maker-phone-stop-all {
+  .ui-sheet .run-status-popover {
+    width: 100%;
+    position: static;
+    box-shadow: none;
+    border: 0;
+    border-radius: 0;
+    animation: none;
+  }
+
+  .run-mode-tag {
+    font-size: 12px;
+  }
+
+  .run-status-manage,
+  .run-status-recovery {
     min-height: 44px;
-    padding: 0 12px;
     display: inline-flex;
     align-items: center;
-    justify-content: center;
-    gap: 6px;
-    color: var(--on-stop);
-    background: var(--stop);
-    border: 1px solid var(--stop);
-    border-radius: 999px;
-    font:
-      700 13px/1 var(--font-mona),
-      Arial,
-      sans-serif;
-    white-space: nowrap;
+  }
+
+  .run-status-chip {
+    min-height: 44px;
+  }
+
+  .ui-sheet .run-status-row {
+    min-height: 64px;
+  }
+
+  .ui-sheet .run-status-row-action {
+    width: 44px;
+    height: 44px;
+  }
+
+  .ui-sheet .run-status-stop {
+    width: 100%;
+    min-height: 48px;
+  }
+
+  .ui-sheet .run-status-footer {
+    align-items: stretch;
+    flex-direction: column;
   }
 
   .maker-nav-brand,
@@ -8736,7 +9073,7 @@ mysten-dapp-kit-connect-modal,
   }
 
   .desk-page {
-    padding: 12px 14px calc(116px + env(safe-area-inset-bottom));
+    padding: 12px 14px calc(28px + env(safe-area-inset-bottom));
   }
 
   .desk-hero {
@@ -8773,11 +9110,12 @@ mysten-dapp-kit-connect-modal,
     font-size: 14px;
   }
 
-  .desk-page.is-running .desk-hero-actions {
-    display: none;
+  .desk-hero-actions {
+    margin-top: 14px;
   }
 
-  .desk-hero-actions .ui-button {
+  .desk-hero-actions .desk-flatten-phone {
+    width: 100%;
     min-height: 44px;
   }
 
@@ -8910,28 +9248,6 @@ mysten-dapp-kit-connect-modal,
     font-size: 12px;
   }
 
-  .desk-phone-dock {
-    min-height: 92px;
-    padding: 12px 14px calc(12px + env(safe-area-inset-bottom));
-    position: fixed;
-    z-index: 210;
-    right: 0;
-    bottom: 0;
-    left: 0;
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 10px;
-    background: var(--surface);
-    border-top: 1px solid var(--hair);
-    backdrop-filter: blur(22px);
-    -webkit-backdrop-filter: blur(22px);
-  }
-
-  .desk-phone-dock .ui-button {
-    min-height: 58px;
-    font-size: 18px;
-  }
-
   .maker-view[data-view="strategy"] {
     position: fixed;
     z-index: 300;
@@ -8958,8 +9274,11 @@ mysten-dapp-kit-connect-modal,
   }
 
   .strategy-mobile-sheet-header strong {
+    min-width: 0;
+    flex: 1 1 72px;
     font-size: 20px;
     font-stretch: 112%;
+    line-height: 1.05;
   }
 
   .strategy-mobile-sheet-actions {
@@ -8969,15 +9288,17 @@ mysten-dapp-kit-connect-modal,
   }
 
   .strategy-mobile-explain {
+    width: 44px;
     min-height: 44px;
-    padding: 0 10px;
+    padding: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: none;
     color: var(--ink);
     background: var(--fill);
     border: 1px solid var(--hair);
-    border-radius: 999px;
-    font: inherit;
-    font-size: 13px;
-    font-weight: 700;
+    border-radius: 50%;
   }
 
   .strategy-mobile-explain[aria-pressed="true"] {
@@ -10716,8 +11037,7 @@ mysten-dapp-kit-connect-modal,
 }
 
 @media (max-width: 350px) {
-  .maker-phone-title strong,
-  .maker-phone-heading .ui-pill {
+  .maker-phone-title strong {
     display: none;
   }
   .maker-phone-title .maker-mark {
@@ -10727,20 +11047,12 @@ mysten-dapp-kit-connect-modal,
   .maker-phone-actions {
     gap: 4px;
   }
-  .maker-phone-run-control {
-    min-height: 40px;
-    padding: 0 6px;
-    font-size: 11px;
+  .run-control-compact {
+    max-width: calc(100vw - 116px);
   }
   .maker-phone-explain {
-    width: 38px;
-    min-height: 40px;
-  }
-  .maker-phone-stop-all {
     width: 40px;
-    min-width: 40px;
-    padding: 0;
-    font-size: 0;
+    min-height: 44px;
   }
   .strategy-mobile-sheet-header {
     padding: 8px;
@@ -10914,6 +11226,18 @@ mysten-dapp-kit-connect-modal,
   .maker-view[data-view="strategy"] .strategy-title {
     flex-direction: row;
     align-items: center;
+  }
+  .strategy-name-input input {
+    min-height: 44px;
+  }
+  .strategy-name-pencil {
+    flex-basis: 44px;
+    width: 44px;
+    height: 44px;
+  }
+  .maker-view[data-view="strategy"] .strategy-delete-button,
+  .strategy-step-nav .button {
+    min-height: 44px;
   }
   .strategy-name-edit {
     gap: 4px;

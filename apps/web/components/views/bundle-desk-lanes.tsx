@@ -3,7 +3,10 @@
 import { useEffect, useRef } from "react";
 
 import { formatMoney } from "../../lib/format";
+import type { RunBundle } from "../../lib/run-state";
+import { useMakerRunControls } from "../maker-shell";
 import { MarketMotion, type MarketMotionHandle } from "../market-motion";
+import { RunStatusChip } from "../run-control";
 
 type LaneSnapshot = {
   mode: "observe" | "paper" | "live";
@@ -25,15 +28,14 @@ type LaneSnapshot = {
 };
 
 export type RunningBundleLane = {
-  id: string;
-  name: string;
-  status: "running" | "paused";
+  bundle: RunBundle;
   snapshot: LaneSnapshot;
 };
 
 function BundleLane({ lane }: { lane: RunningBundleLane }) {
   const motion = useRef<MarketMotionHandle>(null);
-  const { snapshot } = lane;
+  const { open: openRunStatus } = useMakerRunControls();
+  const { snapshot, bundle } = lane;
 
   useEffect(() => {
     motion.current?.update({
@@ -51,14 +53,16 @@ function BundleLane({ lane }: { lane: RunningBundleLane }) {
     <article className="bundle-desk-lane">
       <header>
         <div>
-          <span>
-            {lane.status === "running"
-              ? snapshot.lastError
-                ? `Watching · ${snapshot.mode === "live" ? "Live" : snapshot.mode === "paper" ? "Paper" : "Observe"}`
-                : `Quoting now · ${snapshot.mode === "live" ? "Live" : snapshot.mode === "paper" ? "Paper" : "Observe"}`
-              : "Paused"}
-          </span>
-          <h2>{lane.name}</h2>
+          <div className="bundle-lane-title">
+            <h2>{bundle.name}</h2>
+            <span className={`run-mode-tag is-${bundle.mode}`}>
+              {bundle.mode === "live" ? "Live" : "Paper"}
+            </span>
+            <RunStatusChip
+              bundle={bundle}
+              onClick={() => openRunStatus(bundle.id)}
+            />
+          </div>
         </div>
         <dl>
           <div>
@@ -71,9 +75,9 @@ function BundleLane({ lane }: { lane: RunningBundleLane }) {
           </div>
         </dl>
       </header>
-      {snapshot.lastError && (
+      {(bundle.lastError ?? snapshot.lastError) && (
         <p className="bundle-lane-notice" role="status">
-          {snapshot.lastError}
+          {bundle.lastError ?? snapshot.lastError}
         </p>
       )}
       <MarketMotion
@@ -104,7 +108,7 @@ export function BundleDeskLanes({ lanes }: { lanes: RunningBundleLane[] }) {
       </header>
       <div>
         {lanes.slice(0, 4).map((lane) => (
-          <BundleLane key={lane.id} lane={lane} />
+          <BundleLane key={lane.bundle.id} lane={lane} />
         ))}
       </div>
     </section>

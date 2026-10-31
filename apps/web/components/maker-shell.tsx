@@ -6,7 +6,6 @@ import {
   CircleCheck,
   CircleHelp,
   CircleX,
-  CircleStop,
   Copy,
   LogOut,
   WalletCards,
@@ -21,9 +20,10 @@ import {
   type ReactNode,
 } from "react";
 
-import { Pill } from "./ui/primitives";
+import type { RunState } from "../lib/run-state";
 import { MakerWordmark } from "./maker-mark";
-import { SpreadMark, type SpreadMarkState } from "./spread-mark";
+import { RunControl } from "./run-control";
+import { SpreadMark } from "./spread-mark";
 
 export const makerViews = [
   { id: "desk", label: "Desk" },
@@ -50,7 +50,7 @@ const RunControlsContext = createContext<{
 
 export function useMakerRunControls() {
   const context = useContext(RunControlsContext);
-  if (!context) throw new Error("Run controls must be inside MakerShell");
+  if (!context) throw new Error("Run status must be inside MakerShell");
   return context;
 }
 
@@ -615,29 +615,12 @@ function CoachLayer({
 type MakerShellProps = {
   activeView: MakerView;
   selectView: (view: MakerView) => void;
-  markState: SpreadMarkState;
-  mode: "observe" | "paper" | "live" | "mixed modes";
-  running: boolean;
-  canStopAll: boolean;
-  stopState: "ready" | "stopping" | "stopped";
-  phoneDeskStopAvailable: boolean;
-  runBundles: Array<{
-    id: string;
-    name: string;
-    mode: "observe" | "paper" | "live";
-    status: "stopped" | "running" | "paused" | "error";
-    lastError: string | null;
-    needsStrategy: boolean;
-    createdAt: string;
-    updatedAt: string;
-  }>;
+  run: RunState;
+  stoppedAt: Record<string, string | undefined>;
   onBundleAction: (
     bundleId: string,
     action: "start" | "pause" | "resume",
   ) => void;
-  runActionBusy: boolean;
-  runStartBlocked: boolean;
-  live: boolean;
   canOperate: boolean;
   serviceUnavailable: boolean;
   lastGoodDataAt: string | null;
@@ -661,17 +644,9 @@ type MakerShellProps = {
 export function MakerShell({
   activeView,
   selectView,
-  markState,
-  mode,
-  running,
-  canStopAll,
-  stopState,
-  phoneDeskStopAvailable,
-  runBundles,
+  run,
+  stoppedAt,
   onBundleAction,
-  runActionBusy,
-  runStartBlocked,
-  live,
   canOperate,
   serviceUnavailable,
   lastGoodDataAt,
@@ -690,13 +665,8 @@ export function MakerShell({
   const [runControlsOpen, setRunControlsOpen] = useState(false);
   const [controlBundleId, setControlBundleId] = useState<string | null>(null);
   const openRunControls = (bundleId?: string) => {
-    if (bundleId) setControlBundleId(bundleId);
+    setControlBundleId(bundleId ?? null);
     setRunControlsOpen(true);
-    window.requestAnimationFrame(() => {
-      document
-        .getElementById("maker-run-controls")
-        ?.scrollIntoView({ block: "nearest" });
-    });
   };
   const [explainOpen, setExplainOpen] = useState(false);
   const [tourPrompt, setTourPrompt] = useState(false);
@@ -747,6 +717,8 @@ export function MakerShell({
         : "smooth",
     });
     walletMenu.current?.removeAttribute("open");
+    setRunControlsOpen(false);
+    setControlBundleId(null);
   }, [activeView]);
 
   useEffect(() => {
@@ -759,24 +731,12 @@ export function MakerShell({
     for (const icon of targets) {
       icon.rel = "icon";
       icon.type = "image/svg+xml";
-      icon.href = `/icon-${markState}.svg`;
+      icon.href = `/icon-${run.markState}.svg`;
     }
-  }, [markState]);
+  }, [run.markState]);
 
-  const displayedMode = running ? mode : "stopped";
-  const modeTone =
-    displayedMode === "live"
-      ? "live"
-      : displayedMode === "paper"
-        ? "paper"
-        : "neutral";
   const activeLabel =
     makerViews.find((view) => view.id === activeView)?.label ?? "Desk";
-  const stopLabel = stopState === "stopping" ? "Stopping…" : "Stop all";
-  const showPhoneStopAll =
-    canStopAll &&
-    activeView !== "strategy" &&
-    !(activeView === "desk" && phoneDeskStopAvailable);
   const NoticeIcon =
     noticeTone === "success"
       ? CircleCheck
@@ -795,51 +755,42 @@ export function MakerShell({
       value={{ open: explainOpen, toggle: toggleExplain }}
     >
       <RunControlsContext.Provider value={{ open: openRunControls }}>
-        <main className="shell">
-          {live && <div className="live-rail" aria-hidden="true" />}
+        <main
+          className={
+            activeView === "strategy" ? "shell is-strategy-active" : "shell"
+          }
+        >
+          {run.liveRail && <div className="live-rail" aria-hidden="true" />}
           <header className="maker-nav">
             <div className="maker-phone-heading">
               <span className="maker-phone-title">
                 <SpreadMark
-                  state={markState}
+                  state={run.markState}
                   size={30}
-                  label={`Maker is ${displayedMode}`}
+                  label={`Maker is ${run.label}`}
                 />
                 <strong>{activeLabel}</strong>
               </span>
               <div className="maker-phone-actions">
-                <button
-                  type="button"
-                  className="maker-phone-run-control"
-                  onClick={() => openRunControls()}
-                  aria-expanded={runControlsOpen}
-                  aria-controls="maker-run-controls"
-                  aria-label="Open run controls"
-                >
-                  Run
-                </button>
-                {showPhoneStopAll ? (
-                  <button
-                    className="maker-phone-stop-all"
-                    type="button"
-                    aria-label={stopLabel}
-                    onClick={onStopAll}
-                  >
-                    <CircleStop size={17} aria-hidden="true" />
-                    {stopLabel}
-                  </button>
-                ) : (
-                  <Pill tone={modeTone} dot={running}>
-                    {displayedMode[0]?.toUpperCase()}
-                    {displayedMode.slice(1)}
-                  </Pill>
-                )}
+                <RunControl
+                  compact
+                  run={run}
+                  open={runControlsOpen}
+                  selectedBundleId={controlBundleId}
+                  stoppedAt={stoppedAt}
+                  onOpenChange={setRunControlsOpen}
+                  onBundleAction={onBundleAction}
+                  onStopAll={onStopAll}
+                  onManageBundles={() => selectView("bundles")}
+                  onOpenStrategy={() => selectView("strategy")}
+                  onOpenVenues={() => selectView("venues")}
+                />
                 <button
                   ref={phoneExplainSwitch}
                   className="maker-phone-explain"
                   type="button"
-                  aria-label="Explain"
-                  title="Explain"
+                  aria-label="Explain this page"
+                  title="Explain this page"
                   aria-pressed={explainOpen}
                   onClick={toggleExplain}
                 >
@@ -855,7 +806,7 @@ export function MakerShell({
                 selectView("desk");
               }}
             >
-              <MakerWordmark state={markState} />
+              <MakerWordmark state={run.markState} />
             </a>
 
             <nav className="maker-view-tabs" aria-label="Maker views">
@@ -879,38 +830,29 @@ export function MakerShell({
             </nav>
 
             <div className="maker-nav-right">
-              <button
-                className="maker-run-control-trigger"
-                type="button"
-                onClick={() => setRunControlsOpen((open) => !open)}
-                aria-expanded={runControlsOpen}
-                aria-controls="maker-run-controls"
-              >
-                Run controls
-              </button>
-              {canStopAll && (
-                <button
-                  className="maker-stop-all"
-                  type="button"
-                  onClick={onStopAll}
-                >
-                  <CircleStop size={15} aria-hidden="true" />
-                  {stopLabel}
-                </button>
-              )}
+              <RunControl
+                run={run}
+                open={runControlsOpen}
+                selectedBundleId={controlBundleId}
+                stoppedAt={stoppedAt}
+                onOpenChange={setRunControlsOpen}
+                onBundleAction={onBundleAction}
+                onStopAll={onStopAll}
+                onManageBundles={() => selectView("bundles")}
+                onOpenStrategy={() => selectView("strategy")}
+                onOpenVenues={() => selectView("venues")}
+              />
               <button
                 ref={explainSwitch}
                 className="maker-explain-toggle"
                 type="button"
+                aria-label="Explain this page"
+                title="Explain this page"
                 aria-pressed={explainOpen}
                 onClick={toggleExplain}
               >
-                Explain
+                <CircleHelp size={18} aria-hidden="true" />
               </button>
-              <Pill tone={modeTone} dot={running}>
-                {displayedMode[0]?.toUpperCase()}
-                {displayedMode.slice(1)}
-              </Pill>
               <details className="maker-wallet-menu" ref={walletMenu}>
                 <summary aria-label={`Wallet ${walletLabel}`}>
                   <WalletCards size={15} aria-hidden="true" />
@@ -990,106 +932,6 @@ export function MakerShell({
               </details>
             </div>
           </header>
-
-          {runControlsOpen && (
-            <section
-              className="maker-run-control-panel"
-              id="maker-run-controls"
-              aria-label="Bundle run controls"
-              tabIndex={-1}
-            >
-              <header>
-                <div>
-                  <strong>Run controls</strong>
-                  <span>
-                    {
-                      runBundles.filter((bundle) => bundle.status === "running")
-                        .length
-                    }{" "}
-                    running ·{" "}
-                    {serviceUnavailable
-                      ? "observations stale"
-                      : "check each bundle below"}
-                  </span>
-                </div>
-                <button
-                  type="button"
-                  className="maker-run-panel-close"
-                  onClick={() => setRunControlsOpen(false)}
-                  aria-label="Close run controls"
-                >
-                  ×
-                </button>
-              </header>
-              <div className="maker-run-control-list">
-                {runBundles.map((bundle) => (
-                  <div
-                    className={
-                      bundle.id === controlBundleId
-                        ? "maker-run-control-row is-selected"
-                        : "maker-run-control-row"
-                    }
-                    key={bundle.id}
-                  >
-                    <div>
-                      <strong>{bundle.name}</strong>
-                      <span>
-                        {bundle.mode.toUpperCase()} · {bundle.status}
-                        {bundle.lastError ? ` · ${bundle.lastError}` : ""}
-                      </span>
-                    </div>
-                    <button
-                      type="button"
-                      disabled={
-                        runActionBusy ||
-                        (bundle.status !== "running" &&
-                          (runStartBlocked || bundle.needsStrategy))
-                      }
-                      onClick={() =>
-                        onBundleAction(
-                          bundle.id,
-                          bundle.status === "running"
-                            ? "pause"
-                            : bundle.status === "error" ||
-                                (bundle.status === "paused" &&
-                                  bundle.updatedAt !== bundle.createdAt)
-                              ? "resume"
-                              : "start",
-                        )
-                      }
-                    >
-                      {bundle.status === "running"
-                        ? `Pause ${bundle.name}`
-                        : bundle.status === "error" ||
-                            (bundle.status === "paused" &&
-                              bundle.updatedAt !== bundle.createdAt)
-                          ? `Resume ${bundle.name} · ${bundle.mode}`
-                          : `Start ${bundle.name} · ${bundle.mode}`}
-                    </button>
-                  </div>
-                ))}
-              </div>
-              {runStartBlocked && (
-                <p className="maker-run-control-warning">
-                  Apply or discard strategy changes before starting or resuming
-                  a bundle.
-                </p>
-              )}
-              <footer>
-                <button
-                  type="button"
-                  onClick={onStopAll}
-                  disabled={stopState === "stopping"}
-                >
-                  Stop all · cancel owned orders
-                </button>
-                <span>
-                  Stop does not flatten positions. Flatten is a separate
-                  confirmed action in Desk.
-                </span>
-              </footer>
-            </section>
-          )}
 
           {tourPrompt && canOperate && (
             <div className="maker-tour-prompt" role="status">

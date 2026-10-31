@@ -62,6 +62,7 @@ export type Snapshot = {
     measuredAt: string | null;
   };
   markets: RuntimeMarket[];
+  restingQuoteMarketIds?: string[];
   portfolio: {
     selectedMarkets: number;
     grossExposureUsd: number;
@@ -341,6 +342,7 @@ export type OperatorStatus = {
 };
 
 export type FixtureState = {
+  scenario?: "stop-timeout" | "config-dirty";
   auth:
     | { status: 200; body: AccessIdentity }
     | { status: 401 | 403; body: { error: string } };
@@ -1072,8 +1074,9 @@ function fixture(
   stateConfig: MakerConfig | null,
   setup: SetupState,
 ): FixtureState {
+  const cloned = structuredClone(base);
   return {
-    ...base,
+    ...cloned,
     auth,
     status: {
       snapshot: stateSnapshot,
@@ -1082,7 +1085,7 @@ function fixture(
         liveTradingEnabled: false,
         mainnetAllowed: false,
       },
-      bundles: base.bundles.bundles.map((bundle) => ({
+      bundles: cloned.bundles.bundles.map((bundle) => ({
         bundle,
         snapshot: stateSnapshot,
       })),
@@ -1149,6 +1152,62 @@ const stopped = fixture(
   { ...config, mode: "paper" },
   setupReady,
 );
+stopped.bundles.bundles = stopped.bundles.bundles.map((bundle) => ({
+  ...bundle,
+  status: "stopped",
+}));
+stopped.status.bundles = stopped.bundles.bundles.map((bundle) => ({
+  bundle,
+  snapshot: snapshot("paper", false),
+}));
+
+const mixedRunning = structuredClone(paperRunning);
+mixedRunning.bundles.bundles = mixedRunning.bundles.bundles.map((bundle) =>
+  bundle.id === "rewards-fixture" ? { ...bundle, mode: "live" } : bundle,
+);
+mixedRunning.status.bundles = mixedRunning.bundles.bundles.map((bundle) => ({
+  bundle,
+  snapshot: snapshot(bundle.mode, true),
+}));
+mixedRunning.status.snapshot = snapshot("paper", true);
+
+const attention = structuredClone(paperRunning);
+attention.bundles.bundles = attention.bundles.bundles.map((bundle) =>
+  bundle.id === "rewards-fixture"
+    ? {
+        ...bundle,
+        status: "error",
+        lastError: "Paper can't simulate: add SUI to account 1747.",
+      }
+    : bundle,
+);
+attention.status.bundles = attention.bundles.bundles.map((bundle) => ({
+  bundle,
+  snapshot:
+    bundle.id === "rewards-fixture"
+      ? {
+          ...snapshot("paper", true),
+          lastError: "Paper can't simulate: add SUI to account 1747.",
+        }
+      : snapshot("paper", true),
+}));
+attention.status.snapshot = snapshot("paper", true);
+
+const paused = structuredClone(stopped);
+paused.bundles.bundles = paused.bundles.bundles.map((bundle) =>
+  bundle.id === "core-fixture" ? { ...bundle, status: "paused" } : bundle,
+);
+paused.status.bundles = paused.bundles.bundles.map((bundle) => ({
+  bundle,
+  snapshot: snapshot("paper", false),
+}));
+paused.status.snapshot = snapshot("paper", false);
+
+const stopTimeout = structuredClone(paperRunning);
+stopTimeout.scenario = "stop-timeout";
+
+const configDirtyFixture = structuredClone(stopped);
+configDirtyFixture.scenario = "config-dirty";
 
 export const fixtureStates = {
   "signed-out": signedOut,
@@ -1157,6 +1216,11 @@ export const fixtureStates = {
   "paper-running": paperRunning,
   "paper-running-no-book": paperRunningNoBook,
   "live-running": liveRunning,
+  "mixed-running": mixedRunning,
+  attention,
+  paused,
+  "stop-timeout": stopTimeout,
+  "config-dirty": configDirtyFixture,
   stopped,
 } satisfies Record<string, FixtureState>;
 

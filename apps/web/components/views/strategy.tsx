@@ -1,8 +1,10 @@
-import type { ReactNode } from "react";
-import { CircleStop, X } from "lucide-react";
+import { useState, type ReactNode } from "react";
+import { CircleHelp, X } from "lucide-react";
 
 import { formatMoney } from "../../lib/format";
+import type { RunState } from "../../lib/run-state";
 import type { VenueDescriptor } from "../../lib/venues";
+import { RunControl } from "../run-control";
 import { Button, Sheet } from "../ui/primitives";
 import { useMakerExplain } from "../maker-shell";
 import { ViewFrame } from "./view-frame";
@@ -10,17 +12,29 @@ import { ViewFrame } from "./view-frame";
 export function StrategyView({
   active,
   children,
-  phoneStopAll,
+  run,
+  stoppedAt,
+  onBundleAction,
   onStopAll,
+  onManageBundles,
+  onOpenVenues,
   onClose,
 }: {
   active: boolean;
   children: ReactNode;
-  phoneStopAll: boolean;
+  run: RunState;
+  stoppedAt: Record<string, string | undefined>;
+  onBundleAction: (
+    bundleId: string,
+    action: "start" | "pause" | "resume",
+  ) => void;
   onStopAll: () => void;
+  onManageBundles: () => void;
+  onOpenVenues: () => void;
   onClose: () => void;
 }) {
   const { open: explainOpen, toggle: toggleExplain } = useMakerExplain();
+  const [runOpen, setRunOpen] = useState(false);
   return (
     <ViewFrame active={active} name="strategy">
       <header className="strategy-mobile-sheet-header">
@@ -29,22 +43,26 @@ export function StrategyView({
           <button
             className="strategy-mobile-explain"
             type="button"
+            aria-label="Explain this page"
+            title="Explain this page"
             aria-pressed={explainOpen}
             onClick={toggleExplain}
           >
-            Explain
+            <CircleHelp size={19} aria-hidden="true" />
           </button>
-          {phoneStopAll && (
-            <Button
-              variant="stop"
-              size="icon"
-              onClick={onStopAll}
-              aria-label="Stop all"
-              title="Stop all"
-            >
-              <CircleStop size={18} aria-hidden="true" />
-            </Button>
-          )}
+          <RunControl
+            compact
+            run={run}
+            open={runOpen}
+            selectedBundleId={null}
+            stoppedAt={stoppedAt}
+            onOpenChange={setRunOpen}
+            onBundleAction={onBundleAction}
+            onStopAll={onStopAll}
+            onManageBundles={onManageBundles}
+            onOpenStrategy={() => undefined}
+            onOpenVenues={onOpenVenues}
+          />
           <Button
             variant="quiet"
             size="icon"

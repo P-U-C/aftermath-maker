@@ -24,12 +24,63 @@ function fallbackStrategy(fixture) {
     archivedAt: null,
   };
 }
-export function apiResponse(fixture, url) {
+function routePathFor(url) {
   const marker = "/api/control/";
-  const routePath = url.pathname.slice(
-    url.pathname.indexOf(marker) + marker.length,
-  );
+  return url.pathname.slice(url.pathname.indexOf(marker) + marker.length);
+}
 
+export function controlRequestHangs(fixture, url) {
+  return (
+    fixture.scenario === "stop-timeout" &&
+    routePathFor(url) === "api/runtime/stop"
+  );
+}
+
+export function apiResponse(fixture, url, method = "GET") {
+  const routePath = routePathFor(url);
+
+  if (routePath === "api/runtime/stop" && method === "POST") {
+    fixture.bundles.bundles = fixture.bundles.bundles.map((bundle) =>
+      bundle.status === "running" || bundle.status === "error"
+        ? { ...bundle, status: "stopped" }
+        : bundle,
+    );
+    fixture.status.bundles = (fixture.status.bundles ?? []).map((entry) => ({
+      bundle:
+        fixture.bundles.bundles.find(
+          (bundle) => bundle.id === entry.bundle.id,
+        ) ?? entry.bundle,
+      snapshot: { ...entry.snapshot, running: false, startedAt: null },
+    }));
+    fixture.status.snapshot = {
+      ...fixture.status.snapshot,
+      running: false,
+      startedAt: null,
+    };
+    return { status: 200, body: { ok: true } };
+  }
+  if (
+    /^api\/bundles\/[^/]+\/(start|pause|resume)$/.test(routePath) &&
+    method === "POST"
+  ) {
+    const [, bundleId, action] =
+      routePath.match(/^api\/bundles\/([^/]+)\/(start|pause|resume)$/) ?? [];
+    const nextStatus = action === "pause" ? "paused" : "running";
+    fixture.bundles.bundles = fixture.bundles.bundles.map((bundle) =>
+      bundle.id === bundleId ? { ...bundle, status: nextStatus } : bundle,
+    );
+    fixture.status.bundles = (fixture.status.bundles ?? []).map((entry) => ({
+      bundle:
+        fixture.bundles.bundles.find(
+          (bundle) => bundle.id === entry.bundle.id,
+        ) ?? entry.bundle,
+      snapshot:
+        entry.bundle.id === bundleId
+          ? { ...entry.snapshot, running: nextStatus === "running" }
+          : entry.snapshot,
+    }));
+    return { status: 200, body: { ok: true } };
+  }
   if (routePath === "api/auth/me") return fixture.auth;
   if (routePath === "api/access-requests") {
     return { status: 200, body: { ok: true } };

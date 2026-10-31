@@ -1,6 +1,6 @@
 "use client";
 
-import { ArrowDownRight, CircleStop, Clock3, RefreshCw } from "lucide-react";
+import { ArrowDownRight, Clock3, RefreshCw } from "lucide-react";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 
 import {
@@ -22,7 +22,7 @@ import {
   type MarketMotionHandle,
 } from "../market-motion";
 import { VenueChip } from "../venue-chip";
-import { useMakerRunControls } from "../maker-shell";
+import type { RunState } from "../../lib/run-state";
 import { ViewFrame } from "./view-frame";
 
 export type DeskMarketRow = {
@@ -59,22 +59,16 @@ export type DeskEvent = {
 type DeskViewProps = {
   active: boolean;
   venue: VenueDescriptor;
-  running: boolean;
-  configDirty: boolean;
+  run: RunState;
   refreshBusy: boolean;
-  startBusy: boolean;
-  stopState: "ready" | "stopping" | "stopped";
   flattenBusy: boolean;
-  startDisabled: boolean;
   flattenDisabled: boolean;
   flattenArmed: boolean;
-  stopError: string | null;
   pnlUsd: number | null;
   equityUsd: number | null;
   reportBundleName: string | null;
   grossExposureUsd: number | null;
   marketCount: number;
-  startedAt: string | null;
   lastFill: DeskFill | null;
   narration: string;
   mode: "observe" | "paper" | "live";
@@ -121,8 +115,6 @@ type DeskViewProps = {
   showMarketLane: boolean;
   bundleLanes?: ReactNode;
   onRefresh: () => void;
-  onStart: () => void;
-  onStop: () => void;
   onFlatten: () => void;
   onCancelFlatten: () => void;
 };
@@ -171,22 +163,16 @@ function Freshness({
 export function DeskView({
   active,
   venue,
-  running,
-  configDirty,
+  run,
   refreshBusy,
-  startBusy,
-  stopState,
   flattenBusy,
-  startDisabled,
   flattenDisabled,
   flattenArmed,
-  stopError,
   pnlUsd,
   equityUsd,
   reportBundleName,
   grossExposureUsd,
   marketCount,
-  startedAt,
   lastFill,
   narration,
   mode,
@@ -204,12 +190,11 @@ export function DeskView({
   showMarketLane,
   bundleLanes,
   onRefresh,
-  onStart,
-  onStop,
   onFlatten,
   onCancelFlatten,
 }: DeskViewProps) {
-  const { open: openRunControls } = useMakerRunControls();
+  const running = run.running.length > 0;
+  const startedAt = run.since;
   const gasShortfall =
     risk.gasRunwayTransactions === null
       ? 0
@@ -323,14 +308,14 @@ export function DeskView({
                 Markets <b>{marketCount}</b>
               </span>
               <span>
-                {running ? "Running since" : "Engine"}{" "}
+                Running since{" "}
                 <b>
-                  {running && startedAt
+                  {startedAt
                     ? new Date(startedAt).toLocaleTimeString([], {
                         hour: "numeric",
                         minute: "2-digit",
                       })
-                    : "Stopped"}
+                    : "Not running"}
                 </b>
               </span>
               <span>
@@ -355,25 +340,13 @@ export function DeskView({
 
           <div className="desk-hero-actions">
             <Button
+              className="desk-flatten-phone"
               variant="quiet"
               onClick={onFlatten}
               disabled={flattenDisabled}
             >
               Flatten positions…
             </Button>
-            <Button onClick={() => openRunControls()}>
-              Run controls · choose bundle
-            </Button>
-            {configDirty && !running && (
-              <span className="desk-action-note">
-                Save Strategy changes before starting.
-              </span>
-            )}
-            {stopError && (
-              <span className="desk-stop-error" role="alert">
-                Stop failed: {stopError}. Try Stop all again.
-              </span>
-            )}
           </div>
         </section>
 
@@ -650,23 +623,6 @@ export function DeskView({
           </div>
         </Card>
       </div>
-
-      {(running || stopState === "stopping") && (
-        <div className="desk-phone-dock" aria-label="Running controls">
-          <Button
-            variant="quiet"
-            size="large"
-            onClick={onFlatten}
-            disabled={flattenDisabled}
-          >
-            Flatten…
-          </Button>
-          <Button variant="stop" size="large" onClick={onStop}>
-            <CircleStop size={18} aria-hidden="true" />
-            {stopState === "stopping" ? "Stopping…" : "Stop all"}
-          </Button>
-        </div>
-      )}
 
       <Sheet
         open={flattenArmed}

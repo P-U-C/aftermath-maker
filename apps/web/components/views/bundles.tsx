@@ -8,9 +8,11 @@ import {
   availableBundleAccounts,
 } from "../../lib/bundle-options";
 import { formatMoney } from "../../lib/format";
+import type { RunState } from "../../lib/run-state";
 import { parseNumericDraft } from "../../lib/numeric-draft";
 import { Button, Card, Sheet } from "../ui/primitives";
 import { useMakerRunControls } from "../maker-shell";
+import { RunStatusChip } from "../run-control";
 import { ViewFrame } from "./view-frame";
 
 export type BundleEditorRequest = {
@@ -57,10 +59,8 @@ type BundlesViewProps = {
   onReturnToStrategy?: () => void;
   onOpenAccounts?: () => void;
   busy: boolean;
+  run: RunState;
   onSelect: (bundleId: string) => void;
-  onStart: (bundleId: string) => void;
-  onPause: (bundleId: string) => void;
-  onResume: (bundleId: string) => void;
   onArchive: (bundleId: string) => void;
   accounts: Array<{
     accountId: string;
@@ -106,15 +106,6 @@ type WalletLimitsDraft = {
   maxUnrealizedLossUsd: string;
 };
 
-const plainStatus = (status: BundleCard["status"]) =>
-  status === "running"
-    ? "Running · verify orders"
-    : status === "paused"
-      ? "Paused"
-      : status === "error"
-        ? "Paused — needs review"
-        : "Waiting its turn";
-
 export function BundlesView({
   active,
   bundles,
@@ -125,10 +116,8 @@ export function BundlesView({
   onReturnToStrategy,
   onOpenAccounts,
   busy,
+  run,
   onSelect,
-  onStart,
-  onPause,
-  onResume,
   onArchive,
   accounts,
   markets,
@@ -160,6 +149,15 @@ export function BundlesView({
   const [takerAccountId, setTakerAccountId] = useState("");
   const [strategyId, setStrategyId] = useState("");
   const [editingBundle, setEditingBundle] = useState<BundleCard | null>(null);
+  const editingBundleRun = editingBundle
+    ? (run.bundles.find((bundle) => bundle.id === editingBundle.id) ?? null)
+    : null;
+  const editingBundleActive =
+    editingBundleRun?.phase === "running" ||
+    editingBundleRun?.phase === "attention" ||
+    editingBundleRun?.phase === "starting" ||
+    editingBundleRun?.phase === "pausing" ||
+    editingBundleRun?.phase === "stopping";
   const [editMakerAccountId, setEditMakerAccountId] = useState("");
   const [editTakerAccountId, setEditTakerAccountId] = useState("");
   useEffect(
@@ -350,8 +348,8 @@ export function BundlesView({
             <h1>Bundles</h1>
             <p>
               Each bundle has its own accounts and pause control. Markets come
-              from its strategy. Stop all remains available from the desk
-              navigation.
+              from its strategy. Stop all is always in the run control at the
+              top.
             </p>
           </div>
           <div className="bundles-heading-actions">
@@ -421,6 +419,15 @@ export function BundlesView({
         <div className="bundle-card-grid">
           {visible.map((bundle) => {
             const selected = selectedBundleId === bundle.id;
+            const runBundle = run.bundles.find(
+              (candidate) => candidate.id === bundle.id,
+            );
+            const editing =
+              runBundle?.phase === "running" ||
+              runBundle?.phase === "attention" ||
+              runBundle?.phase === "starting" ||
+              runBundle?.phase === "pausing" ||
+              runBundle?.phase === "stopping";
             return (
               <Card
                 key={bundle.id}
@@ -433,15 +440,12 @@ export function BundlesView({
                   aria-label={`Select ${bundle.name}`}
                   aria-pressed={selected}
                 >
-                  <span className={"bundle-mode mode-" + bundle.mode}>
-                    {bundle.mode === "observe"
-                      ? "Observe"
-                      : bundle.mode === "paper"
-                        ? "Paper"
-                        : "Live"}
-                  </span>
-                  <span className={"bundle-status status-" + bundle.status}>
-                    {plainStatus(bundle.status)}
+                  <span
+                    className={
+                      "bundle-mode mode-" + (runBundle?.mode ?? "paper")
+                    }
+                  >
+                    {runBundle?.mode === "live" ? "Live" : "Paper"}
                   </span>
                 </button>
                 <div className="bundle-card-heading">
@@ -461,13 +465,13 @@ export function BundlesView({
                     ? `From ${bundle.strategyName}: ${bundle.marketIds.length ? bundle.marketIds.map((marketId) => markets.find((market) => market.id === marketId)?.symbol ?? marketId).join(", ") : "No markets selected"}`
                     : "No strategy attached"}
                 </p>
-                {bundle.lastError && (
+                {runBundle?.lastError && (
                   <p className="bundle-error" role="status">
-                    {bundle.lastError}
+                    {runBundle.lastError}
                   </p>
                 )}
                 <div className="bundle-actions">
-                  {bundle.needsStrategy ? (
+                  {runBundle?.needsStrategy ? (
                     <label className="bundle-attach-strategy">
                       <span>Attach strategy</span>
                       <select
@@ -494,19 +498,17 @@ export function BundlesView({
                         ))}
                       </select>
                     </label>
-                  ) : (
-                    <Button
-                      variant="primary"
+                  ) : runBundle ? (
+                    <RunStatusChip
+                      bundle={runBundle}
                       onClick={() => openRunControls(bundle.id)}
-                    >
-                      Run controls · {bundle.name}
-                    </Button>
-                  )}
+                    />
+                  ) : null}
                   {bundle.name !== "Core" && (
                     <Button
                       variant="quiet"
                       onClick={() => openEditBundle(bundle)}
-                      disabled={busy || bundle.status === "running"}
+                      disabled={busy || editing}
                     >
                       <Pencil size={15} aria-hidden="true" />
                       Edit
@@ -516,7 +518,7 @@ export function BundlesView({
                     <Button
                       variant="quiet"
                       onClick={() => onArchive(bundle.id)}
-                      disabled={busy || bundle.status === "running"}
+                      disabled={busy || editing}
                     >
                       <Archive size={15} aria-hidden="true" />
                       Archive
@@ -704,7 +706,7 @@ export function BundlesView({
                 variant="primary"
                 disabled={
                   busy ||
-                  editingBundle?.status === "running" ||
+                  editingBundleActive ||
                   !editMakerAccountId ||
                   editMakerAccountId === editTakerAccountId
                 }
@@ -715,10 +717,15 @@ export function BundlesView({
             </>
           }
         >
-          {editingBundle?.status === "running" && (
+          {editingBundleActive && editingBundle && (
             <p className="bundle-create-note" role="status">
-              Pause this bundle in Run controls before editing account
-              allocation. Opening this editor never stops it automatically.
+              Accounts change only while {editingBundle.name} is paused.{" "}
+              <button
+                type="button"
+                onClick={() => openRunControls(editingBundle.id)}
+              >
+                Pause in run status
+              </button>
             </p>
           )}
           <div className="bundle-create-fields">
