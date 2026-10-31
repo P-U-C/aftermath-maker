@@ -19,7 +19,10 @@ import { OnchainAllowlist } from "./allowlist.js";
 import { AuthError, WalletAuth } from "./auth.js";
 import { bundleCreateHttpError } from "./bundle-create-error.js";
 import { classifyHttpError, UserFacingError } from "./http-error.js";
-import { createRequestErrorRecorder } from "./request-error-audit.js";
+import {
+  createRequestErrorRecorder,
+  safeAuditId,
+} from "./request-error-audit.js";
 import { activeBuilderCode } from "./integrator.js";
 import { RuntimeManager } from "./runtime-manager.js";
 import { Store, type TenantStore } from "./store.js";
@@ -266,7 +269,6 @@ app.addHook("onRequest", async (request, reply) => {
 const logRequestError = createRequestErrorRecorder((owner, event) =>
   store.forTenant(owner).logEvent(event),
 );
-
 app.setErrorHandler((error, request, reply) => {
   const response = classifyHttpError(error);
   if (response.status >= 500) {
@@ -285,17 +287,15 @@ app.setErrorHandler((error, request, reply) => {
   if (owner && response.status !== 401 && response.status !== 403) {
     try {
       const params = (request.params ?? {}) as Record<string, unknown>;
+      const bundleId = safeAuditId(params.bundleId);
+      const strategyId = safeAuditId(params.strategyId);
       logRequestError({
         owner,
         path: request.routeOptions.url ?? request.url,
         reference: String(request.id),
         response,
-        ...(typeof params.bundleId === "string"
-          ? { bundleId: params.bundleId }
-          : {}),
-        ...(typeof params.strategyId === "string"
-          ? { strategyId: params.strategyId }
-          : {}),
+        ...(bundleId ? { bundleId } : {}),
+        ...(strategyId ? { strategyId } : {}),
       });
     } catch (auditError) {
       request.log.error(

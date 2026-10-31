@@ -40,6 +40,7 @@ export type DeskMarketRow = {
   inventoryUsd: number;
   unrealizedPnlUsd: number;
   effectiveSpreadBps: number | null;
+  customFieldCount?: number;
   activityLabel?: string;
   updatedAt: string | null;
 };
@@ -202,10 +203,6 @@ export function DeskView({
 }: DeskViewProps) {
   const running = run.running.length > 0;
   const startedAt = run.since;
-  const gasShortfall =
-    risk.gasRunwayTransactions === null
-      ? 0
-      : Math.max(0, 3 - risk.gasRunwayTransactions);
   const motion = useRef<MarketMotionHandle>(null);
   const motionReady = useRef(false);
   // The meter shows the selected market's signed inventory, so a short reads as short. It
@@ -269,19 +266,9 @@ export function DeskView({
 
   const marketCaption = running
     ? mode === "paper"
-      ? "Paper · reading markets; dry runs are not real orders"
-      : "Reading markets · verify resting quotes on the venue"
-    : "Waiting its turn";
-  const plainMarketState = (row: DeskMarketRow) => {
-    const state =
-      row.status === "healthy"
-        ? "Market data current · orders unverified"
-        : row.status === "queued"
-          ? "Waiting its turn"
-          : "Needs attention";
-    return row.bundleName ? `${state} · ${row.bundleName}` : state;
-  };
-
+      ? "Paper quotes are simulated; no real orders are placed."
+      : "Maker is reading markets. Verify resting quotes on the venue."
+    : "Waiting for its first market turn.";
   return (
     <ViewFrame active={active} name="desk">
       <div className={running ? "desk-page is-running" : "desk-page"}>
@@ -365,8 +352,7 @@ export function DeskView({
         {bundleLanes}
 
         <p className="desk-narration" aria-live="polite">
-          <span>Right now</span>
-          {narration}
+          Right now: {narration}
         </p>
 
         <div
@@ -472,22 +458,31 @@ export function DeskView({
                     : `${formatMoney(risk.runDrawdownUsd)} of ${formatMoney(risk.runDrawdownLimitUsd)}`
                 }
               />
+              <Meter
+                label="Gas runway"
+                value={risk.gasRunwayTransactions ?? 0}
+                max={Math.max(300, risk.gasRunwayTransactions ?? 0)}
+                tone={
+                  risk.gasRunwayTransactions === null
+                    ? "warning"
+                    : risk.gasRunwayTransactions < 3
+                      ? "limit"
+                      : risk.gasRunwayTransactions < 30
+                        ? "warning"
+                        : "normal"
+                }
+                valueText={
+                  risk.gasRunwayTransactions === null
+                    ? "Not reported"
+                    : `${risk.gasRunwayTransactions} paid actions after reserve`
+                }
+              />
               <p className="desk-drawdown-note">
                 {risk.runDrawdownUsd === null
                   ? "Run drawdown is not reported yet."
                   : `Stops if it falls ${formatMoney(risk.runDrawdownLimitUsd)} from its best point this run.`}{" "}
                 <a href="#strategy">Size and limits</a>
               </p>
-              <Meter
-                label="Gas runway"
-                value={gasShortfall}
-                max={3}
-                valueText={
-                  risk.gasRunwayTransactions === null
-                    ? "Learning"
-                    : `${risk.gasRunwayTransactions.toLocaleString()} paid actions after reserve`
-                }
-              />
             </div>
           </Card>
         </div>
@@ -509,7 +504,7 @@ export function DeskView({
               <span>Market</span>
               <span>Status</span>
               <span>Inventory</span>
-              <span>Spread</span>
+              <span>Policy</span>
               <span>
                 <GlossaryTerm term="unrealizedPnl">
                   Unrealized P&amp;L
@@ -521,7 +516,6 @@ export function DeskView({
                 markets.map((row) => (
                   <ListRow
                     key={row.id}
-                    leading={<VenueChip venue={venue} compact />}
                     trailing={
                       <span
                         className={`desk-row-pnl is-${moneyTone(row.unrealizedPnlUsd)}`}
@@ -533,15 +527,21 @@ export function DeskView({
                     <span className="desk-market-row">
                       <strong>{row.symbol}</strong>
                       <span className={`desk-market-state is-${row.status}`}>
-                        {row.activityLabel ?? plainMarketState(row)}
+                        {row.status === "healthy"
+                          ? "Quoting"
+                          : row.status === "error"
+                            ? "Needs attention"
+                            : "Waiting"}
                       </span>
                       <span>
                         {formatSignedMoney(row.inventoryUsd)} inventory
                       </span>
                       <span>
                         {row.effectiveSpreadBps === null
-                          ? "No saved policy"
-                          : `${row.effectiveSpreadBps} bps`}
+                          ? "—"
+                          : row.customFieldCount
+                            ? `${row.customFieldCount} custom`
+                            : "Strategy"}
                       </span>
                     </span>
                   </ListRow>

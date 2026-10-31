@@ -373,6 +373,44 @@ describe("runtime endpoint management", () => {
     }
   });
 
+  it("uses one simulation budget for a stopped Live-configured Core Paper trial", async () => {
+    const store = storeHarness();
+    const owner = `0x${"b".repeat(64)}`;
+    const tenant = store.forTenant(owner);
+    tenant.setConfig(
+      makerConfigSchema.parse({
+        mode: "live",
+        maxGasMist: 50_000_000,
+        markets: [{ marketId: "0xb001", symbol: "CORE" }],
+      }),
+    );
+    const core = tenant.listBundles()[0]!;
+    const manager = new RuntimeManager(
+      store,
+      {} as never,
+      {},
+      vi.fn().mockResolvedValue(gateway("https://test.example")),
+    );
+    await manager.initialize();
+    const runtime = manager.getBundle(owner, core.id) as unknown as {
+      snapshotValue: { balances: { gasSui: number | null } };
+    };
+    runtime.snapshotValue.balances.gasSui = 0.08;
+    const trial = vi
+      .spyOn(MakerRuntime.prototype, "runPaperTrial")
+      .mockResolvedValue({} as never);
+    try {
+      await expect(
+        manager.runPaperTrial({ ownerAddress: owner, cadenceMs: 2000 }),
+      ).resolves.toBeDefined();
+      expect(trial).toHaveBeenCalledTimes(1);
+    } finally {
+      trial.mockRestore();
+      manager.close();
+      store.close();
+    }
+  });
+
   it("requires the unchanged cancellation reserve for Live and names the trading key", async () => {
     const store = storeHarness();
     const owner = `0x${"8".repeat(64)}`;

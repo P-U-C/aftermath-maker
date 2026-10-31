@@ -1,9 +1,9 @@
-import { Fragment, type ReactNode } from "react";
+import { Fragment, useState, type ReactNode } from "react";
+import { ExternalLink } from "lucide-react";
 
 import { formatMoney } from "../../lib/format";
 import type { VenueDescriptor } from "../../lib/venues";
-import { VenueChip } from "../venue-chip";
-import { Button, Card } from "../ui/primitives";
+import { Button, Card, KitTable, PageHeader, Sheet } from "../ui/primitives";
 import { ViewFrame } from "./view-frame";
 
 export function VenuesView({
@@ -70,12 +70,7 @@ export function VenueBoard({
     : quoting
       ? "Connected, quoting"
       : "Connected, ready";
-  const pnlClass =
-    unrealizedPnlUsd < 0
-      ? "is-loss"
-      : unrealizedPnlUsd > 0
-        ? "is-profit"
-        : undefined;
+  const [revokeConfirm, setRevokeConfirm] = useState(false);
   const accountsByBundle = Array.from(
     accounts.reduce((groups, account) => {
       const group = groups.get(account.bundle) ?? [];
@@ -91,174 +86,183 @@ export function VenueBoard({
 
   return (
     <div className="venues-board">
-      <header className="venues-title">
-        <div>
-          <h1>Venues</h1>
-          <p>
-            Inspect execution connectivity, delegated authority, fees, and
-            portfolio exposure for every supported venue.
-          </p>
-        </div>
-      </header>
+      <PageHeader
+        className="venues-title"
+        title="Venues"
+        description="Where Maker trades, what it's allowed to do there, and what your accounts hold."
+      />
 
-      <div className="venues-grid">
-        <Card className="venue-card">
-          <div className="venue-card-heading">
-            <span className="venue-card-glyph" aria-hidden="true">
-              {venue.glyph}
+      <Card className="venue-card">
+        <header className="venue-kit-heading">
+          <div>
+            <h2>{venue.name}</h2>
+            <span
+              className={connected ? "venue-state is-ready" : "venue-state"}
+            >
+              <i aria-hidden="true" />
+              {state}
             </span>
-            <div>
-              <h2>{venue.name}</h2>
-              <span
-                className={connected ? "venue-state is-ready" : "venue-state"}
-              >
-                <i aria-hidden="true" />
-                {state}
-              </span>
-            </div>
           </div>
-
-          <dl className="venue-facts">
-            <div>
-              <dt>Network</dt>
-              <dd>{venue.network}</dd>
-            </div>
-            <div>
-              <dt>Collateral</dt>
-              <dd>{venue.collateral}</dd>
-            </div>
-            <div>
-              <dt>Trading key</dt>
-              <dd>
-                {tradingKeyReady
-                  ? "Trade only, no withdrawals"
-                  : "Not authorized"}
-              </dd>
-            </div>
-            <div>
-              <dt>Venue fee you approved</dt>
-              <dd>{feeText}</dd>
-            </div>
-            <div>
-              <dt>Gas</dt>
-              <dd>{gasText}</dd>
-            </div>
-            <div>
-              <dt>Markets selected</dt>
-              <dd>
-                {selectedMarkets} of {eligibleMarkets} eligible
-              </dd>
-            </div>
-          </dl>
-
-          <div
-            className="venue-accounts"
-            role="table"
-            aria-label={`${venue.name} accounts`}
+          <a
+            className="ui-button ui-button-secondary ui-button-medium"
+            href={venue.homeUrl}
+            target="_blank"
+            rel="noreferrer"
           >
-            <div className="venue-account-row is-header" role="row">
-              <span role="columnheader">Account</span>
-              <span role="columnheader">Equity</span>
-              <span role="columnheader">Bundle</span>
-              <span role="columnheader">Role</span>
-            </div>
-            {accountsByBundle.map(([bundle, groupedAccounts], groupIndex) => (
-              <Fragment key={bundle}>
-                <div
-                  className={
-                    groupIndex % 2 === 0
-                      ? "venue-account-bundle is-even"
-                      : "venue-account-bundle"
-                  }
-                  role="row"
-                >
-                  <strong role="cell">{bundle}</strong>
-                </div>
-                {groupedAccounts.map((account) => (
-                  <div
-                    className={
-                      groupIndex % 2 === 0
-                        ? "venue-account-row is-even"
-                        : "venue-account-row"
-                    }
-                    role="row"
-                    key={account.accountId}
-                  >
-                    <strong role="cell">
-                      {account.label ?? `Account ${account.accountId}`}
-                    </strong>
-                    <span role="cell">{formatMoney(account.equityUsd)}</span>
-                    <span role="cell">{account.bundle}</span>
-                    <span role="cell">{account.role}</span>
-                  </div>
-                ))}
-              </Fragment>
-            ))}
+            Open {venue.name} <ExternalLink size={14} aria-hidden="true" />
+          </a>
+        </header>
+        <dl className="venue-kit-facts">
+          <div>
+            <dt>Network</dt>
+            <dd>{venue.network}</dd>
           </div>
-
-          <div className="venue-card-actions">
-            <Button variant="quiet" size="small" onClick={onNewAccount}>
-              New account
-            </Button>
-            <Button variant="quiet" size="small" onClick={onManage}>
-              Manage accounts
-            </Button>
-            {onRevoke && (
-              <Button variant="quiet" size="small" onClick={onRevoke}>
-                Revoke trading key
-              </Button>
-            )}
+          <div>
+            <dt>Collateral</dt>
+            <dd>{venue.collateral}</dd>
           </div>
-        </Card>
-
-        <Card className="venue-add-card" title="Execution boundary">
-          <p>
-            Aftermath is the only active venue integration. Maker reads market
-            state, signs through a trading-only key, and keeps withdrawals with
-            the owner wallet.
-          </p>
-          <ol>
-            <li>Market data and account state come from Aftermath</li>
-            <li>The delegated key can quote, cancel, and reduce positions</li>
-            <li>Deposits, withdrawals, and permissions stay owner-signed</li>
-          </ol>
-          <span>
-            Additional venues will appear only after their controls are live.
-          </span>
-        </Card>
-      </div>
+          <div>
+            <dt>Markets selected</dt>
+            <dd>
+              {selectedMarkets} of {eligibleMarkets} eligible
+            </dd>
+          </div>
+          <div>
+            <dt>Trading key</dt>
+            <dd>
+              {tradingKeyReady ? "Trades only" : "Not authorized"}
+              <small>It can&apos;t withdraw or move funds.</small>
+            </dd>
+          </div>
+          <div>
+            <dt>Venue fee</dt>
+            <dd>{feeText}</dd>
+          </div>
+          <div>
+            <dt>Gas</dt>
+            <dd>
+              {gasText.split(",")[0]}
+              <small>
+                {gasText.match(/(\d+) transactions after reserve/)
+                  ? `About ${gasText.match(/(\d+) transactions after reserve/)?.[1]} paid actions after the reserve`
+                  : "Runway not reported"}
+              </small>
+            </dd>
+          </div>
+        </dl>
+      </Card>
 
       <Card
-        className="venue-exposure-card"
-        title="Exposure by venue"
-        subtitle={`All venues: equity ${formatMoney(totalEquityUsd)} · exposure ${formatMoney(grossExposureUsd)} of ${formatMoney(grossExposureLimitUsd)} wallet limit · unrealized ${formatMoney(unrealizedPnlUsd)} · ${accounts.length} accounts`}
+        className="venue-accounts-card"
+        title="Accounts"
+        subtitle={`Equity ${formatMoney(totalEquityUsd)}, exposure ${formatMoney(grossExposureUsd)} of your ${formatMoney(grossExposureLimitUsd)} wallet limit.`}
+        action={
+          <div className="venue-kit-actions">
+            <Button variant="secondary" size="small" onClick={onManage}>
+              Manage accounts
+            </Button>
+            <Button variant="primary" size="small" onClick={onNewAccount}>
+              New account
+            </Button>
+          </div>
+        }
       >
-        <table className="venue-exposure-table">
-          <thead>
-            <tr>
-              <th scope="col">Venue</th>
-              <th scope="col">Equity</th>
-              <th scope="col">Exposure</th>
-              <th scope="col">Unrealized</th>
-              <th scope="col">Accounts</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr>
-              <td>
-                <VenueChip venue={venue} />
-              </td>
-              <td>{formatMoney(totalEquityUsd)}</td>
-              <td>
-                {formatMoney(grossExposureUsd)} of{" "}
-                {formatMoney(grossExposureLimitUsd)}
-              </td>
-              <td className={pnlClass}>{formatMoney(unrealizedPnlUsd)}</td>
-              <td>{accounts.length}</td>
-            </tr>
-          </tbody>
-        </table>
+        <div
+          className="venue-accounts-scroll"
+          role="region"
+          aria-label="Aftermath accounts, scroll horizontally for more columns"
+          tabIndex={0}
+        >
+          <KitTable className="venue-kit-table">
+            <thead>
+              <tr>
+                <th>Account</th>
+                <th>Role</th>
+                <th>Equity</th>
+                <th>Exposure</th>
+                <th>Unrealized</th>
+              </tr>
+            </thead>
+            <tbody>
+              {accountsByBundle.map(([bundle, groupedAccounts]) => (
+                <Fragment key={bundle}>
+                  <tr className="venue-account-group">
+                    <th colSpan={5}>
+                      {bundle} <span>{groupedAccounts.length}</span>
+                    </th>
+                  </tr>
+                  {groupedAccounts.map((account) => (
+                    <tr key={account.accountId}>
+                      <td>
+                        <strong>
+                          {account.label ?? `Account ${account.accountId}`}
+                        </strong>
+                        <small>#{account.accountId}</small>
+                      </td>
+                      <td>{account.role}</td>
+                      <td>{formatMoney(account.equityUsd)}</td>
+                      <td title="Per-account exposure is not reported by this control read.">
+                        —
+                      </td>
+                      <td title="Per-account unrealized result is not reported by this control read.">
+                        —
+                      </td>
+                    </tr>
+                  ))}
+                </Fragment>
+              ))}
+            </tbody>
+          </KitTable>
+        </div>
+        <p className="venue-account-footnote">
+          Wallet-wide unrealized result is {formatMoney(unrealizedPnlUsd)}.
+          Per-account exposure and result are not reported by this account read.
+        </p>
       </Card>
+
+      <Card
+        className="venue-execution-card"
+        title="What Maker can and can't do here"
+      >
+        <ul>
+          <li>Market data and account state come from {venue.name}.</li>
+          <li>The delegated key can quote, cancel and reduce positions.</li>
+          <li>Deposits, withdrawals and permissions stay owner-signed.</li>
+        </ul>
+        {onRevoke && (
+          <Button variant="danger" onClick={() => setRevokeConfirm(true)}>
+            Revoke trading key…
+          </Button>
+        )}
+      </Card>
+
+      <Sheet
+        open={revokeConfirm}
+        title="Revoke trading key?"
+        description="This requires an owner-wallet confirmation and stops trading until you approve a new key."
+        onClose={() => setRevokeConfirm(false)}
+        footer={
+          <>
+            <Button variant="quiet" onClick={() => setRevokeConfirm(false)}>
+              Cancel
+            </Button>
+            <Button
+              variant="danger"
+              onClick={() => {
+                setRevokeConfirm(false);
+                onRevoke?.();
+              }}
+            >
+              Revoke trading key
+            </Button>
+          </>
+        }
+      >
+        <p>
+          The owner wallet will review this action before any authorization
+          changes.
+        </p>
+      </Sheet>
     </div>
   );
 }

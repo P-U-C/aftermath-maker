@@ -10,7 +10,7 @@ import {
 import { formatMoney } from "../../lib/format";
 import type { RunState } from "../../lib/run-state";
 import { parseNumericDraft } from "../../lib/numeric-draft";
-import { Button, Card, Sheet } from "../ui/primitives";
+import { Button, Card, PageHeader, Sheet } from "../ui/primitives";
 import { useMakerRunControls } from "../maker-shell";
 import { RunStatusChip } from "../run-control";
 import { ViewFrame } from "./view-frame";
@@ -342,37 +342,39 @@ export function BundlesView({
   return (
     <ViewFrame active={active} name="bundles">
       <section className="bundles-page">
-        <header className="bundles-title">
-          <div>
-            <span className="eyebrow">Wallet desk</span>
-            <h1>Bundles</h1>
-            <p>
-              Each bundle has its own accounts and pause control. Markets come
-              from its strategy. Stop all is always in the run control at the
-              top.
-            </p>
-          </div>
-          <div className="bundles-heading-actions">
-            {returnToStrategy && (
-              <Button variant="quiet" size="small" onClick={onReturnToStrategy}>
-                Back to Strategy
+        <PageHeader
+          className="bundles-title"
+          title="Bundles"
+          description="Each bundle has its own accounts and pause control. Markets come from its strategy."
+          actions={
+            <div className="bundles-heading-actions">
+              {returnToStrategy && (
+                <Button
+                  variant="quiet"
+                  size="small"
+                  onClick={onReturnToStrategy}
+                >
+                  Back to Strategy
+                </Button>
+              )}
+              <span className="bundles-count">
+                {visible.length} active bundles;{" "}
+                {Math.max(0, 4 - visible.length)} slots available.
+              </span>
+              <Button
+                variant="primary"
+                size="small"
+                onClick={() => {
+                  setCreateError(null);
+                  setCreateOpen(true);
+                }}
+                disabled={visible.length >= 4 || busy}
+              >
+                <Plus size={15} aria-hidden="true" /> New bundle
               </Button>
-            )}
-            <span className="bundles-count">{visible.length} of 4 active</span>
-            <Button
-              variant="primary"
-              size="small"
-              onClick={() => {
-                setCreateError(null);
-                setCreateOpen(true);
-              }}
-              disabled={visible.length >= 4 || busy}
-            >
-              <Plus size={15} aria-hidden="true" />
-              New bundle
-            </Button>
-          </div>
-        </header>
+            </div>
+          }
+        />
 
         {walletLimits && (
           <section className="bundle-wallet-limits" aria-label="Wallet limits">
@@ -452,8 +454,10 @@ export function BundlesView({
                   <div>
                     <h2>{bundle.name}</h2>
                     <p>
-                      Maker account {bundle.makerAccountId ?? "Not assigned"} ·
-                      Taker account {bundle.takerAccountId ?? "Off"}
+                      Maker account {bundle.makerAccountId ?? "not assigned"}.
+                      {bundle.takerAccountId
+                        ? ` Hedge account ${bundle.takerAccountId}.`
+                        : " Hedging is off."}
                     </p>
                   </div>
                   <strong title={formatMoney(bundle.resultUsd)}>
@@ -506,7 +510,8 @@ export function BundlesView({
                   ) : null}
                   {bundle.name !== "Core" && (
                     <Button
-                      variant="quiet"
+                      variant="secondary"
+                      size="small"
                       onClick={() => openEditBundle(bundle)}
                       disabled={busy || editing}
                     >
@@ -516,7 +521,8 @@ export function BundlesView({
                   )}
                   {bundle.name !== "Core" && (
                     <Button
-                      variant="quiet"
+                      variant="secondary"
+                      size="small"
                       onClick={() => onArchive(bundle.id)}
                       disabled={busy || editing}
                     >

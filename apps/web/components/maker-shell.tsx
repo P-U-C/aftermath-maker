@@ -24,6 +24,7 @@ import type { RunState } from "../lib/run-state";
 import { MakerWordmark } from "./maker-mark";
 import { RunControl } from "./run-control";
 import { SpreadMark } from "./spread-mark";
+import { Button } from "./ui/primitives";
 
 export const makerViews = [
   { id: "desk", label: "Desk" },
@@ -275,17 +276,17 @@ const coachNotes: Record<MakerView, CoachNote[]> = {
       body: "This is the execution venue and its connection state.",
     },
     {
-      selector: ".venue-accounts",
+      selector: ".venue-accounts-card",
       title: "Venue accounts",
       body: "Accounts are grouped by their current bundle or available state.",
     },
     {
-      selector: ".venue-add-card",
+      selector: ".venue-execution-card",
       title: "Execution boundary",
       body: "Maker can trade through its delegated key but cannot move withdrawals.",
     },
     {
-      selector: ".venue-exposure-card",
+      selector: ".venue-accounts-card .ui-card-header",
       title: "Exposure",
       body: "Venue and portfolio totals show the shared risk envelope.",
     },
@@ -935,14 +936,20 @@ export function MakerShell({
 
           {tourPrompt && canOperate && (
             <div className="maker-tour-prompt" role="status">
-              <span>New here? Take the 30-second tour</span>
-              <div>
-                <button type="button" onClick={() => chooseTour(true)}>
-                  Start
-                </button>
-                <button type="button" onClick={() => chooseTour(false)}>
+              <SpreadMark size={28} state="stopped" />
+              <div className="maker-tour-copy">
+                <strong>New to Maker?</strong>
+                <span>
+                  A 30-second tour of the desk, strategies and the run control.
+                </span>
+              </div>
+              <div className="maker-tour-actions">
+                <Button variant="quiet" onClick={() => chooseTour(false)}>
                   Not now
-                </button>
+                </Button>
+                <Button variant="primary" onClick={() => chooseTour(true)}>
+                  Take the tour
+                </Button>
               </div>
             </div>
           )}

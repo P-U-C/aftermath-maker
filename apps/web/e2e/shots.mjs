@@ -117,6 +117,12 @@ const captures = [
     reducedMotion: "no-preference",
   },
   {
+    name: "medium-1024-dark",
+    viewport: { width: 1024, height: 900 },
+    colorScheme: "dark",
+    reducedMotion: "no-preference",
+  },
+  {
     name: "phone-light",
     viewport: { width: 390, height: 844 },
     colorScheme: "light",
@@ -1298,8 +1304,46 @@ async function capture(browser, stateName, captureConfig, view) {
     // Chromium reserves an 8 px scrollbar gutter for the onboarding fixture.
     // Treat that browser chrome as neutral; any content overflow remains a failure.
     if (dimensions.scrollWidth > dimensions.innerWidth + 8) {
+      const offenders = await page.evaluate(() =>
+        Array.from(document.querySelectorAll("body *"))
+          .filter(
+            (element) =>
+              element.getBoundingClientRect().right > window.innerWidth + 8,
+          )
+          .slice(0, 8)
+          .map((element) => ({
+            tag: element.tagName,
+            className: element instanceof HTMLElement ? element.className : "",
+            right: Math.round(element.getBoundingClientRect().right),
+            width: Math.round(element.getBoundingClientRect().width),
+          })),
+      );
+      const containers = await page.evaluate(() => {
+        const table = document.querySelector(".market-clean-table");
+        const result = [];
+        for (
+          let node = table?.parentElement;
+          node && result.length < 5;
+          node = node.parentElement
+        ) {
+          const rect = node.getBoundingClientRect();
+          result.push({
+            className: node.className,
+            width: Math.round(rect.width),
+            right: Math.round(rect.right),
+            scrollWidth: node.scrollWidth,
+          });
+        }
+        result.push({
+          className: "document",
+          width: document.documentElement.clientWidth,
+          right: document.documentElement.scrollWidth,
+          scrollWidth: document.body.scrollWidth,
+        });
+        return result;
+      });
       throw new Error(
-        `${stateName}/${captureConfig.name} has horizontal overflow: ${dimensions.scrollWidth}px > ${dimensions.innerWidth}px`,
+        `${stateName}/${captureConfig.name} has horizontal overflow: ${dimensions.scrollWidth}px > ${dimensions.innerWidth}px ${JSON.stringify(offenders)} ${JSON.stringify(containers)}`,
       );
     }
     if (

@@ -150,6 +150,11 @@ async function installStatefulControl(page, state) {
       });
 
     if (routePath === "api/auth/logout") return json(200, { ok: true });
+    if (routePath === "api/auth/challenge" && request.method() === "POST")
+      return json(200, {
+        challengeId: "test-only",
+        message: "Sign in to Maker test fixture",
+      });
     if (state.sessionExpired && routePath !== "api/runtime/stop") {
       return json(401, { error: "Session expired" });
     }
@@ -264,6 +269,12 @@ async function installStatefulControl(page, state) {
         return json(200, { strategies: state.strategies });
       }
       if (request.method() === "POST") {
+        const failure = state.strategyCreateFailures.shift();
+        if (failure)
+          return json(failure.status, {
+            error: failure.message,
+            code: failure.code,
+          });
         const body = JSON.parse(request.postData() ?? "{}");
         const strategy = {
           id: `strategy-${state.strategies.length + 1}`,
@@ -587,6 +598,7 @@ async function newPage(
     postCreateReadFailures: 0,
     delayBundleCreate: false,
     strategyPatchFailures: [],
+    strategyCreateFailures: [],
     strategyPatchDelayMs: 0,
     strategyArchiveFailures: [],
     strategyArchivePosts: 0,
@@ -1671,6 +1683,11 @@ async function round6UniformMarketCards(browser) {
               tag: element.tagName,
               className: String(element.className).slice(0, 80),
               right: Math.round(element.getBoundingClientRect().right),
+              text: element.textContent?.trim().slice(0, 24),
+              parent: String(element.parentElement?.className ?? "").slice(
+                0,
+                40,
+              ),
             })),
         }));
         const clippedCards = await strategy
@@ -2208,13 +2225,12 @@ async function v7BundleDeskAndStrategy(browser) {
 
     await page.getByRole("link", { name: "Venues", exact: true }).click();
     await page
-      .getByText(/All venues: equity .* wallet limit .* 5 accounts/, {
-        exact: false,
-      })
+      .locator(".venue-accounts-card")
+      .getByText(/Equity .* exposure .* wallet limit/)
       .waitFor();
-    await page.locator(".venue-exposure-table").waitFor();
-    await page.locator(".venue-exposure-card").scrollIntoViewIfNeeded();
-    await capture(page, "v7-venues-wallet-total-desktop.png");
+    await page.locator(".venue-kit-table").waitFor();
+    await page.locator(".venue-accounts-card").scrollIntoViewIfNeeded();
+    await capture(page, "r8-venues-accounts-desktop.png");
 
     await page.getByRole("link", { name: "Strategy", exact: true }).click();
     const strategyView = page.locator(
@@ -2408,6 +2424,22 @@ async function strategyPolishFlow(browser) {
       (name) => document.querySelector("#strategy-name")?.value === name,
       state.strategies[0].name,
     );
+    state.strategyCreateFailures.push({
+      status: 409,
+      code: "strategy-name-taken",
+      message:
+        "Another strategy already uses this name. Choose a different name.",
+    });
+    await view
+      .getByRole("button", { name: "New strategy", exact: true })
+      .click();
+    await page.waitForFunction(
+      () => document.querySelector("#strategy-name")?.value === "Strategy 4",
+    );
+    assert(
+      state.strategies[0].name === "Strategy 4",
+      "Archived name collision was not retried",
+    );
     await goToStrategyStep(page, 4);
     state.strategyPatchFailures.push(503);
     await view.getByRole("button", { name: "Save and finish" }).click();
@@ -2445,7 +2477,9 @@ async function strategyApplyRaceAndAttach(browser) {
     const view = page.locator(
       '.maker-view[data-view="strategy"]:not([hidden])',
     );
-    await view.evaluate((element) => { element.scrollTop = 0; });
+    await view.evaluate((element) => {
+      element.scrollTop = 0;
+    });
     await capture(page, "r8-strategy-summary-header-phone-dark.png");
     await view
       .getByRole("button", { name: "New strategy", exact: true })
@@ -2453,7 +2487,7 @@ async function strategyApplyRaceAndAttach(browser) {
     const created = state.strategies[0];
     await view.locator(".strategy-new-label:visible").waitFor();
     await goToStrategyStep(page, 4);
-    state.strategyPatchDelayMs = 800;
+    state.strategyPatchDelayMs = 2000;
     await view.getByRole("button", { name: "Save and finish" }).click();
     await view.getByRole("button", { name: "Saving…" }).waitFor();
     await view.getByRole("button", { name: "Back" }).click();
@@ -2463,7 +2497,7 @@ async function strategyApplyRaceAndAttach(browser) {
     });
     const old = await drawdown.inputValue();
     await drawdown.fill("0.6");
-    await page.waitForTimeout(900);
+    await page.waitForTimeout(2200);
     assert(
       (await drawdown.inputValue()) === "0.6",
       "Slow PATCH overwrote a newer draft",
@@ -2497,7 +2531,7 @@ async function strategyApplyRaceAndAttach(browser) {
       .getByRole("option")
       .filter({ hasText: "Core strategy" })
       .click();
-    await page.waitForTimeout(900);
+    await page.waitForTimeout(2200);
     assert(
       (await view.locator(".strategy-summary h1").innerText()).includes(
         "Core strategy",
@@ -2638,6 +2672,136 @@ async function round8MarketPolicy(browser) {
   }
 }
 
+async function round8KitHeaders(browser) {
+  const views = [
+    ["desk", ".desk-hero"],
+    ["strategy", ".strategy-summary-header"],
+    ["markets", ".ui-page-header.markets-title"],
+    ["bundles", ".ui-page-header.bundles-title"],
+    ["performance", ".ui-page-header.performance-page-header"],
+    ["venues", ".ui-page-header.venues-title"],
+  ];
+  for (const width of [1440, 1180, 1024]) {
+    const { context, page, state } = await newPage(browser, {
+      width,
+      height: 900,
+    });
+    try {
+      state.fixture.config.config.maxGrossExposureUsd = 3;
+      state.strategies.forEach((strategy) => {
+        strategy.config.maxGrossExposureUsd = 3;
+      });
+      await goToDesk(page);
+      const edges = [];
+      for (const [view, selector] of views) {
+        if (view !== "desk")
+          await page
+            .getByRole("link", {
+              name:
+                view === "strategy"
+                  ? "Strategy"
+                  : view === "markets"
+                    ? "Markets"
+                    : view === "bundles"
+                      ? "Bundles"
+                      : view === "performance"
+                        ? "Performance"
+                        : "Venues",
+              exact: true,
+            })
+            .click();
+        const header = page
+          .locator(`.maker-view[data-view="${view}"]:not([hidden]) ${selector}`)
+          .first();
+        await header.waitFor();
+        const structure = await page
+          .locator(`.maker-view[data-view="${view}"]:not([hidden])`)
+          .evaluate((node) => ({
+            nestedCards: node.querySelectorAll(".ui-card .ui-card").length,
+            bareTables: node.querySelectorAll("table:not(.ui-table)").length,
+          }));
+        assert(
+          structure.nestedCards === 0 && structure.bareTables === 0,
+          `Maker Kit components drifted on ${view}: ${JSON.stringify(structure)}`,
+        );
+        edges.push({
+          view,
+          x: await header.evaluate(
+            (element) => element.getBoundingClientRect().left,
+          ),
+        });
+      }
+      const xs = edges.map((item) => item.x);
+      assert(
+        Math.max(...xs) - Math.min(...xs) < 1.5,
+        `Maker Kit header misalignment at ${width}: ${JSON.stringify(edges)}`,
+      );
+    } finally {
+      await context.close();
+    }
+  }
+}
+
+async function round8LandingPending(browser) {
+  for (const width of [390, 1440]) {
+    const { context, page, state } = await newPage(browser, {
+      width,
+      height: width === 390 ? 844 : 900,
+    });
+    try {
+      state.fixture.auth = structuredClone(fixtureStates["signed-out"].auth);
+      await page.goto(baseUrl, { waitUntil: "domcontentloaded" });
+      await page
+        .getByRole("heading", {
+          name: "Your own market-making desk. Working for you.",
+        })
+        .waitFor();
+      await page.evaluate(() => {
+        window.__makerMockWallet.signPersonalMessage = "pending";
+      });
+      await page
+        .getByRole("button", { name: "Continue with wallet", exact: false })
+        .first()
+        .click();
+      await page
+        .getByText("Mock Sui Wallet", { exact: true })
+        .filter({ visible: true })
+        .first()
+        .click();
+      const waiting = page.getByRole("button", { name: "Check your wallet" });
+      await waiting.waitFor();
+      await page
+        .getByRole("status")
+        .getByText(/Signing is free and moves no funds/)
+        .waitFor();
+      await waiting.scrollIntoViewIfNeeded();
+      await page.locator(".access-signin").screenshot({
+        path: path.join(outputDirectory, `r8-landing-pending-${width}.png`),
+        animations: "disabled",
+      });
+      const dimensions = await waiting.evaluate((button) => {
+        const rect = button.getBoundingClientRect();
+        const icon = button.querySelector("svg");
+        return {
+          width: rect.width,
+          height: rect.height,
+          iconHeight: Number(icon?.getAttribute("height") ?? 0),
+          viewport: window.innerWidth,
+          content: button.scrollHeight,
+        };
+      });
+      assert(
+        dimensions.width <= dimensions.viewport - 20 &&
+          dimensions.iconHeight === 14 &&
+          dimensions.content <= dimensions.height,
+        `Waiting sign-in button wrapped or spinner exceeded 14px: ${JSON.stringify(dimensions)}`,
+      );
+    } finally {
+      await context.close();
+    }
+  }
+}
+
 async function round8ErrorsAndLog(browser) {
   const { context, page, state } = await newPage(browser, {
     width: 390,
@@ -2706,7 +2870,11 @@ const browser = await chromium.launch({
 });
 
 try {
-  if (process.argv.includes("--visual-only")) {
+  if (process.argv.includes("--landing-only")) {
+    await round8LandingPending(browser);
+  } else if (process.argv.includes("--kit-only")) {
+    await round8KitHeaders(browser);
+  } else if (process.argv.includes("--visual-only")) {
     await round6UniformMarketCards(browser);
   } else {
     if (!process.argv.includes("--polish-only")) {
@@ -2729,6 +2897,8 @@ try {
       await round6ReviewCreatesBundle(browser);
       await round6SuggestionRefresh(browser);
     }
+    await round8KitHeaders(browser);
+    await round8LandingPending(browser);
     await round8ErrorsAndLog(browser);
     await round8MarketPolicy(browser);
     await strategyPolishFlow(browser);
