@@ -6,8 +6,11 @@ import { describe, expect, it } from "vitest";
 import { makerConfigSchema } from "@puc/core";
 import { classifyHttpError, UserFacingError } from "../src/http-error.js";
 import { Store } from "../src/store.js";
+import { RuntimeManager } from "../src/runtime-manager.js";
+import type { AftermathGateway } from "@puc/aftermath";
 
 type Harness = {
+  store: Store;
   tenant: ReturnType<Store["forTenant"]>;
   owner: string;
   core: ReturnType<ReturnType<Store["forTenant"]>["listBundles"]>[number];
@@ -29,7 +32,7 @@ function withStore(run: (h: Harness) => void) {
   tenant.setConfig(config);
   const core = tenant.listBundles()[0]!;
   try {
-    run({ tenant, owner, core, config });
+    run({ store, tenant, owner, core, config });
   } finally {
     store.close();
   }
@@ -187,6 +190,41 @@ describe("typed preconditions on user-facing routes", () => {
           expectedUpdatedAt: "2025-01-01T00:00:00Z",
           mode: "paper",
         }),
+    },
+    {
+      route: "POST /api/bundles/:id/start (Live gas)",
+      code: "gas-reserve-low",
+      status: 409,
+      message: "0.08 SUI for gas",
+      run: ({ store, tenant, owner, config }) => {
+        tenant.setConfig({ ...config, mode: "live", maxGasMist: 50_000_000 });
+        const core = tenant.listBundles()[0]!;
+        const manager = new RuntimeManager(store, {} as never, {});
+        (manager as unknown as { gateway: AftermathGateway }).gateway = {
+          endpoint: "https://test.invalid",
+        } as AftermathGateway;
+        const runtime = manager.getBundle(owner, core.id) as unknown as {
+          snapshotValue: {
+            agentAddress: string | null;
+            balances: { gasSui: number | null };
+          };
+        };
+        runtime.snapshotValue.agentAddress = `0x${"a".repeat(64)}`;
+        runtime.snapshotValue.balances.gasSui = 0.08;
+        try {
+          (
+            manager as unknown as {
+              assertStartGasReserve: (
+                owner: string,
+                bundle: typeof core,
+                runtime: unknown,
+              ) => void;
+            }
+          ).assertStartGasReserve(owner, core, runtime);
+        } finally {
+          manager.close();
+        }
+      },
     },
     {
       route: "POST /api/bundles (limit)",
