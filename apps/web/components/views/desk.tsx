@@ -14,7 +14,14 @@ import {
 import type { VenueDescriptor } from "../../lib/venues";
 import { AnimatedNumber } from "../ui/animated-number";
 import { GlossaryTerm } from "../ui/glossary-term";
-import { Button, Card, ListRow, Meter, Sheet } from "../ui/primitives";
+import {
+  Button,
+  Card,
+  ListRow,
+  Meter,
+  SegmentedTabs,
+  Sheet,
+} from "../ui/primitives";
 import { useRowEnter } from "../ui/use-row-enter";
 import {
   MarketMotion,
@@ -210,6 +217,11 @@ export function DeskView({
   const seenHedgeDigest = useRef<string | null>(null);
   const fillEnterClass = useRowEnter(fills);
   const eventEnterClass = useRowEnter(events);
+  const [eventFilter, setEventFilter] = useState<"all" | "problems">("all");
+  const visibleEvents =
+    eventFilter === "problems"
+      ? events.filter((event) => event.severity !== "info")
+      : events;
 
   useEffect(() => {
     const update = {
@@ -595,10 +607,21 @@ export function DeskView({
           className="desk-log-card"
           title="Control log"
           subtitle="Recent engine and risk events."
+          action={
+            <SegmentedTabs
+              label="Control log filter"
+              value={eventFilter}
+              options={[
+                { value: "all", label: "All" },
+                { value: "problems", label: "Problems" },
+              ]}
+              onChange={setEventFilter}
+            />
+          }
         >
           <div className="desk-event-list">
-            {events.length ? (
-              events.map((event) => (
+            {visibleEvents.length ? (
+              visibleEvents.map((event) => (
                 <ListRow
                   key={event.id}
                   className={eventEnterClass(event.id)}
@@ -618,7 +641,11 @@ export function DeskView({
                 </ListRow>
               ))
             ) : (
-              <div className="desk-empty">No control events recorded.</div>
+              <div className="desk-empty">
+                {eventFilter === "problems"
+                  ? "No problems recorded."
+                  : "No control events recorded."}
+              </div>
             )}
           </div>
         </Card>

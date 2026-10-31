@@ -36,7 +36,7 @@ function option(name, fallback) {
 }
 
 const spawnServer = process.argv.includes("--spawn-server");
-const port = Number(option("--port", "8899"));
+const port = Number(option("--port", process.env.MAKER_AUDIT_PORT ?? "8899"));
 const baseUrl = option("--base-url", `http://127.0.0.1:${port}`);
 const outputDirectory = path.resolve(
   projectRoot,
@@ -408,6 +408,31 @@ async function installStatefulControl(page, state) {
         error: "Bundle configuration is temporarily unavailable",
       });
     }
+    if (
+      /^api\/bundles\/[^/]+\/(start|resume)$/.test(routePath) &&
+      request.method() === "POST" &&
+      state.startFailures.length
+    ) {
+      const failure = state.startFailures.shift();
+      const bundleId = routePath.split("/")[2];
+      state.fixture.events.events.unshift({
+        id: 8891 + state.fixture.events.events.length,
+        occurredAt: new Date().toISOString(),
+        category: "request",
+        action: "bundle-start",
+        outcome: failure.status >= 500 ? "error" : "rejected",
+        detail: {
+          status: failure.status,
+          ...(failure.code ? { code: failure.code } : {}),
+          message:
+            failure.status >= 500 ? "Internal server error" : failure.error,
+          reference: failure.requestId ?? "req-audit",
+          bundleId,
+        },
+        bundleId: null,
+      });
+      return json(failure.status, failure);
+    }
     if (routePath === "api/bundles" && request.method() === "POST") {
       state.bundlePosts += 1;
       if (state.delayBundleCreate)
@@ -564,6 +589,7 @@ async function newPage(
     strategyArchivePosts: 0,
     strategyArchiveDelayMs: 0,
     strategyReadFailures: 0,
+    startFailures: [],
   };
   await page.addInitScript((address) => {
     window.__makerMockWallet = {
@@ -2580,6 +2606,65 @@ async function strategyApplyRaceAndAttach(browser) {
   }
 }
 
+async function round8ErrorsAndLog(browser) {
+  const { context, page, state } = await newPage(browser, {
+    width: 390,
+    height: 844,
+  });
+  try {
+    state.fixture.bundles.bundles.forEach((bundle) => {
+      bundle.status = "stopped";
+    });
+    state.fixture.status.snapshot.running = false;
+    state.fixture.status.bundles.forEach((entry) => {
+      entry.bundle.status = "stopped";
+      if (entry.snapshot) entry.snapshot.running = false;
+    });
+    state.startFailures.push({
+      status: 409,
+      error:
+        "Authorize the selected Maker account in Venues before starting this bundle.",
+      code: "account-not-authorized",
+      fix: { kind: "venues" },
+    });
+    await goToDesk(page);
+    await page.getByRole("button", { name: /Run status:/ }).click();
+    const status = page.getByRole("region", { name: "Run status" });
+    await status.getByRole("button", { name: "Start Core" }).click();
+    await status
+      .getByText(/Authorize the selected Maker account in Venues/)
+      .waitFor();
+    await status
+      .getByRole("button", { name: "Authorize it in Venues" })
+      .waitFor();
+    await capture(page, "r8-fixable-run-error-phone.png");
+    state.startFailures.push({
+      status: 500,
+      error: "Internal server error",
+      requestId: "req-9j3",
+    });
+    await status.getByRole("button", { name: "Start Core" }).click();
+    await status
+      .getByText(
+        /Maker couldn't start Core. Reference req-9j3 is in your control log/,
+      )
+      .waitFor();
+    await page.getByRole("button", { name: "Close", exact: true }).click();
+    const controlLog = page.locator(".desk-log-card");
+    await controlLog
+      .getByText(/Reference req-9j3 is in your control log/)
+      .waitFor();
+    await controlLog.getByRole("tab", { name: "Problems" }).click();
+    assert(
+      (await controlLog.getByText(/unclassified/).count()) === 0,
+      "Fixture or request errors were unclassified",
+    );
+    await capture(page, "r8-control-log-error-phone.png");
+  } finally {
+    await context.close();
+  }
+}
+
 await fs.mkdir(outputDirectory, { recursive: true });
 const server = spawnServer ? await startServer() : null;
 const browser = await chromium.launch({
@@ -2612,6 +2697,7 @@ try {
       await round6ReviewCreatesBundle(browser);
       await round6SuggestionRefresh(browser);
     }
+    await round8ErrorsAndLog(browser);
     await strategyPolishFlow(browser);
     await strategyApplyRaceAndAttach(browser);
     if (!process.argv.includes("--polish-only")) {

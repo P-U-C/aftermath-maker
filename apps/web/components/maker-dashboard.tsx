@@ -70,7 +70,11 @@ import {
 } from "../lib/format";
 import { narrate } from "../lib/narrate";
 import { marketActivity } from "../lib/market-activity";
-import { deriveRunState, type RunStopState } from "../lib/run-state";
+import {
+  deriveRunState,
+  type RunStartIssue,
+  type RunStopState,
+} from "../lib/run-state";
 import { hedgeSizingSuggestion } from "../lib/hedge-suggestion";
 import { strategyIssueFromServer } from "../lib/strategy-validation";
 import { mergeStrategyReads } from "../lib/strategy-snapshots";
@@ -872,6 +876,9 @@ class RequestError extends Error {
   constructor(
     message: string,
     public readonly status: number,
+    public readonly code?: string,
+    public readonly fix?: RunStartIssue["fix"],
+    public readonly requestId?: string,
   ) {
     super(message);
   }
@@ -887,21 +894,41 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
     cache: "no-store",
   });
   const payload = await response.text();
-  let data: T & { error?: string; requestId?: string } = {} as T & {
+  let data: T & {
     error?: string;
     requestId?: string;
+    code?: string;
+    fix?: RunStartIssue["fix"];
+  } = {} as T & {
+    error?: string;
+    requestId?: string;
+    code?: string;
+    fix?: RunStartIssue["fix"];
   };
   if (payload) {
     try {
-      data = JSON.parse(payload) as T & { error?: string; requestId?: string };
+      data = JSON.parse(payload) as T & {
+        error?: string;
+        requestId?: string;
+        code?: string;
+        fix?: RunStartIssue["fix"];
+      };
     } catch {
-      data = { error: payload } as T & { error?: string; requestId?: string };
+      data = { error: payload } as T & {
+        error?: string;
+        requestId?: string;
+        code?: string;
+        fix?: RunStartIssue["fix"];
+      };
     }
   }
   if (!response.ok) {
     throw new RequestError(
       `${data.error ?? `Request failed: ${response.status}`}${response.status >= 500 && data.requestId ? ` (reference ${data.requestId})` : ""}`,
       response.status,
+      data.code,
+      data.fix,
+      data.requestId,
     );
   }
   return data;
@@ -1103,7 +1130,7 @@ function DashboardBody() {
     Record<string, "start" | "resume" | "pause" | undefined>
   >({});
   const [startErrors, setStartErrors] = useState<
-    Record<string, string | undefined>
+    Record<string, RunStartIssue | undefined>
   >({});
   const [stoppedAt, setStoppedAt] = useState<
     Record<string, string | undefined>
@@ -1532,7 +1559,7 @@ function DashboardBody() {
       setBundlePending((current) => ({ ...current, [bundleId]: action }));
       setStartErrors((current) => ({ ...current, [bundleId]: undefined }));
     }
-    let requestError: string | null = null;
+    let requestError: RunStartIssue | null = null;
     try {
       const completed = await mutate(
         `bundle-${action}-${bundleId}`,
@@ -1546,8 +1573,23 @@ function DashboardBody() {
               },
             );
           } catch (error) {
+            const bundleName =
+              bundles.find((bundle) => bundle.id === bundleId)?.name ??
+              "bundle";
             requestError =
-              error instanceof Error ? error.message : String(error);
+              error instanceof RequestError
+                ? {
+                    message:
+                      error.status >= 500
+                        ? `Maker couldn't ${action} ${bundleName}. Reference ${error.requestId ?? "unavailable"} is in your control log.`
+                        : error.message,
+                    ...(error.code ? { code: error.code } : {}),
+                    ...(error.fix ? { fix: error.fix } : {}),
+                  }
+                : {
+                    message:
+                      error instanceof Error ? error.message : String(error),
+                  };
             throw error;
           }
           setNotice(
@@ -1563,8 +1605,11 @@ function DashboardBody() {
         },
       );
       if (!completed && (action === "start" || action === "resume")) {
-        const message = requestError ?? "Maker could not start this bundle.";
-        setStartErrors((current) => ({ ...current, [bundleId]: message }));
+        const issue = requestError ?? {
+          message: "Maker could not start this bundle.",
+        };
+        setStartErrors((current) => ({ ...current, [bundleId]: issue }));
+        setNotice(issue.message, "warning");
         window.setTimeout(() => {
           setStartErrors((current) => ({ ...current, [bundleId]: undefined }));
         }, 60_000);
@@ -2729,6 +2774,20 @@ function DashboardBody() {
                 }),
               });
             } catch (error) {
+              if (
+                error instanceof RequestError &&
+                error.code === "strategy-name-taken"
+              ) {
+                setServerFieldIssue({
+                  message: "Another strategy already uses this name.",
+                  step: 0,
+                  fieldId: "strategy-name",
+                });
+                focusStrategyField("strategy-name", 0);
+                throw new FieldValidationFailure(
+                  "Another strategy already uses this name.",
+                );
+              }
               const issue =
                 error instanceof RequestError && error.status === 400
                   ? strategyIssueFromServer(error.message, config.markets)
@@ -4320,8 +4379,13 @@ function DashboardBody() {
         : null;
     const namedBundle =
       typeof event.detail.name === "string" ? event.detail.name : null;
-    const bundleForEvent = event.bundleId
-      ? bundles.find((bundle) => bundle.id === event.bundleId)
+    const attributedId =
+      event.bundleId ??
+      (typeof event.detail.bundleId === "string"
+        ? event.detail.bundleId
+        : null);
+    const bundleForEvent = attributedId
+      ? bundles.find((bundle) => bundle.id === attributedId)
       : null;
     const bundleForAccount = accountId
       ? bundles.find(
@@ -5118,19 +5182,26 @@ function DashboardBody() {
                     <input
                       id="strategy-name"
                       value={strategyNameDraft}
-                      onChange={(event) =>
-                        setStrategyNameDraft(event.target.value)
-                      }
+                      onChange={(event) => {
+                        setStrategyNameDraft(event.target.value);
+                        setServerFieldIssue((current) =>
+                          current?.fieldId === "strategy-name" ? null : current,
+                        );
+                      }}
                       maxLength={80}
                       placeholder="Name this strategy"
                       aria-label="Strategy name"
                       aria-invalid={Boolean(
                         selectedStrategy &&
-                        (!strategyNameDraft.trim() || duplicateStrategyName),
+                        (!strategyNameDraft.trim() ||
+                          duplicateStrategyName ||
+                          serverFieldIssue?.fieldId === "strategy-name"),
                       )}
                       aria-describedby={
                         selectedStrategy &&
-                        (!strategyNameDraft.trim() || duplicateStrategyName)
+                        (!strategyNameDraft.trim() ||
+                          duplicateStrategyName ||
+                          serverFieldIssue?.fieldId === "strategy-name")
                           ? "strategy-name-error"
                           : undefined
                       }
@@ -5150,15 +5221,19 @@ function DashboardBody() {
                   </button>
                 </div>
                 {selectedStrategy &&
-                  (!strategyNameDraft.trim() || duplicateStrategyName) && (
+                  (!strategyNameDraft.trim() ||
+                    duplicateStrategyName ||
+                    serverFieldIssue?.fieldId === "strategy-name") && (
                     <small
                       id="strategy-name-error"
                       className="field-error"
                       role="alert"
                     >
                       {duplicateStrategyName
-                        ? "Another strategy already uses that name."
-                        : "Name this strategy before continuing."}
+                        ? "Another strategy already uses this name."
+                        : serverFieldIssue?.fieldId === "strategy-name"
+                          ? serverFieldIssue.message
+                          : "Name this strategy before continuing."}
                     </small>
                   )}
                 {selectedStrategy && (

@@ -3559,6 +3559,25 @@ mysten-dapp-kit-connect-modal,
   align-items: center;
   gap: 22px;
 }
+.access-signin {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+.access-signin .ui-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  white-space: nowrap;
+}
+.access-signin p {
+  margin: 0;
+  max-width: 360px;
+  color: var(--ink-2);
+  font-size: 12px;
+  line-height: 1.45;
+}
 
 /* The connect button lives in dapp-kit's shadow root. Style it through the part it exports;
    a plain "button" selector never reaches it. */

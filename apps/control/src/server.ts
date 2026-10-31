@@ -14,10 +14,12 @@ import {
   USDC_COIN_TYPE,
   type BuilderFeePolicy,
 } from "@puc/core";
+export { AUDIT_EVENT_KINDS } from "./audit-event-kinds.js";
 import { OnchainAllowlist } from "./allowlist.js";
 import { AuthError, WalletAuth } from "./auth.js";
 import { bundleCreateHttpError } from "./bundle-create-error.js";
-import { classifyHttpError } from "./http-error.js";
+import { classifyHttpError, UserFacingError } from "./http-error.js";
+import { createRequestErrorRecorder } from "./request-error-audit.js";
 import { activeBuilderCode } from "./integrator.js";
 import { RuntimeManager } from "./runtime-manager.js";
 import { Store, type TenantStore } from "./store.js";
@@ -261,6 +263,10 @@ app.addHook("onRequest", async (request, reply) => {
   }
 });
 
+const logRequestError = createRequestErrorRecorder((owner, event) =>
+  store.forTenant(owner).logEvent(event),
+);
+
 app.setErrorHandler((error, request, reply) => {
   const response = classifyHttpError(error);
   if (response.status >= 500) {
@@ -274,9 +280,38 @@ app.setErrorHandler((error, request, reply) => {
       "request rejected",
     );
   }
+  const owner =
+    (request as AuthenticatedRequest).makerAuth?.ownerAddress ?? null;
+  if (owner && response.status !== 401 && response.status !== 403) {
+    try {
+      const params = (request.params ?? {}) as Record<string, unknown>;
+      logRequestError({
+        owner,
+        path: request.routeOptions.url ?? request.url,
+        reference: String(request.id),
+        response,
+        ...(typeof params.bundleId === "string"
+          ? { bundleId: params.bundleId }
+          : {}),
+        ...(typeof params.strategyId === "string"
+          ? { strategyId: params.strategyId }
+          : {}),
+      });
+    } catch (auditError) {
+      request.log.error(
+        { err: auditError, correlationId: request.id },
+        "request failure audit failed",
+      );
+    }
+  }
   reply.code(response.status).send({
     error: response.publicMessage,
-    ...(response.status >= 500 ? { requestId: String(request.id) } : {}),
+    ...(response.status < 500
+      ? {
+          code: response.code ?? "invalid-request",
+          ...(response.fix ? { fix: response.fix } : {}),
+        }
+      : { requestId: String(request.id) }),
   });
 });
 
@@ -307,13 +342,21 @@ function assertConfiguredAccounts(
   if (config.makerAccountId) {
     const makerAccount = scoped.getAccountSetup(config.makerAccountId);
     if (!makerAccount?.agentCapId) {
-      throw new Error("The selected Maker account is not authorized");
+      throw new UserFacingError(
+        "account-not-authorized",
+        "Authorize the selected Maker account in Venues before continuing.",
+        { kind: "venues" },
+      );
     }
   }
   if (config.hedge.enabled && config.hedge.accountId) {
     const hedgeAccount = scoped.getAccountSetup(config.hedge.accountId);
     if (!hedgeAccount?.agentCapId) {
-      throw new Error("The selected hedge account is not authorized");
+      throw new UserFacingError(
+        "account-not-authorized",
+        "Authorize the selected hedge account in Venues before continuing.",
+        { kind: "venues" },
+      );
     }
   }
 }
@@ -322,15 +365,21 @@ function assertLiveModeEnabled(
   config: ReturnType<typeof makerConfigSchema.parse>,
 ): void {
   if (config.mode === "observe") {
-    throw new AuthError(400, "Observe is internal; choose Paper or Live");
+    throw new UserFacingError(
+      "mode-required",
+      "Choose Paper or Live mode before saving.",
+      { kind: "bundles" },
+      400,
+    );
   }
   if (
     config.mode === "live" &&
     (!env.LIVE_TRADING_ENABLED || !env.ALLOW_MAINNET)
   ) {
-    throw new AuthError(
-      409,
-      "Live mode requires LIVE_TRADING_ENABLED=true and ALLOW_MAINNET=true",
+    throw new UserFacingError(
+      "live-unavailable",
+      "Live mode is unavailable. Keep this bundle in Paper until the operator enables Live.",
+      { kind: "bundles" },
     );
   }
 }
@@ -438,7 +487,11 @@ app.get("/api/config", async (request) => ({
 app.get("/api/strategies", async (request) => {
   const scoped = tenant(request);
   if (scoped.bundlesRolledBack()) {
-    throw new AuthError(409, "Bundles rolled back");
+    throw new UserFacingError(
+      "bundles-rolled-back",
+      "Bundles rolled back. Refresh Bundles before continuing.",
+      { kind: "bundles" },
+    );
   }
   return {
     strategies: scoped
@@ -450,14 +503,23 @@ app.get("/api/strategies", async (request) => {
 app.get("/api/strategies/:strategyId", async (request) => {
   const scoped = tenant(request);
   if (scoped.bundlesRolledBack()) {
-    throw new AuthError(409, "Bundles rolled back");
+    throw new UserFacingError(
+      "bundles-rolled-back",
+      "Bundles rolled back. Refresh Bundles before continuing.",
+      { kind: "bundles" },
+    );
   }
   const params = z
     .object({ strategyId: z.string().min(1).max(200) })
     .parse(request.params);
   const strategy = scoped.getStrategy(params.strategyId);
   if (!strategy || strategy.archivedAt) {
-    throw new AuthError(404, "Strategy was not found");
+    throw new UserFacingError(
+      "strategy-not-found",
+      "This strategy is no longer available. Choose a strategy in Strategy.",
+      { kind: "strategy" },
+      404,
+    );
   }
   return { strategy };
 });
@@ -465,7 +527,11 @@ app.get("/api/strategies/:strategyId", async (request) => {
 app.post("/api/strategies", async (request) => {
   const scoped = tenant(request);
   if (scoped.bundlesRolledBack()) {
-    throw new AuthError(409, "Bundles rolled back");
+    throw new UserFacingError(
+      "bundles-rolled-back",
+      "Bundles rolled back. Refresh Bundles before continuing.",
+      { kind: "bundles" },
+    );
   }
   const body = z
     .object({
@@ -489,7 +555,11 @@ app.post("/api/strategies", async (request) => {
 app.patch("/api/strategies/:strategyId", async (request) => {
   const scoped = tenant(request);
   if (scoped.bundlesRolledBack()) {
-    throw new AuthError(409, "Bundles rolled back");
+    throw new UserFacingError(
+      "bundles-rolled-back",
+      "Bundles rolled back. Refresh Bundles before continuing.",
+      { kind: "bundles" },
+    );
   }
   const params = z
     .object({ strategyId: z.string().min(1).max(200) })
@@ -511,12 +581,15 @@ app.patch("/api/strategies/:strategyId", async (request) => {
       strategyId: params.strategyId,
     });
   } catch (error) {
+    if (error instanceof UserFacingError) throw error;
     if (
       error instanceof Error &&
       (error.message.includes("Strategy changed elsewhere") ||
         error.message.includes("already quoted by"))
     )
-      throw new AuthError(409, error.message);
+      throw new UserFacingError("strategy-conflict", error.message, {
+        kind: "strategy",
+      });
     throw error;
   }
   await runtimeManager.reconfigureStrategyBundles(
@@ -538,7 +611,11 @@ app.patch("/api/strategies/:strategyId", async (request) => {
 app.post("/api/strategies/:strategyId/duplicate", async (request) => {
   const scoped = tenant(request);
   if (scoped.bundlesRolledBack()) {
-    throw new AuthError(409, "Bundles rolled back");
+    throw new UserFacingError(
+      "bundles-rolled-back",
+      "Bundles rolled back. Refresh Bundles before continuing.",
+      { kind: "bundles" },
+    );
   }
   const params = z
     .object({ strategyId: z.string().min(1).max(200) })
@@ -563,7 +640,11 @@ app.post("/api/strategies/:strategyId/duplicate", async (request) => {
 app.post("/api/strategies/:strategyId/archive", async (request) => {
   const scoped = tenant(request);
   if (scoped.bundlesRolledBack()) {
-    throw new AuthError(409, "Bundles rolled back");
+    throw new UserFacingError(
+      "bundles-rolled-back",
+      "Bundles rolled back. Refresh Bundles before continuing.",
+      { kind: "bundles" },
+    );
   }
   const params = z
     .object({ strategyId: z.string().min(1).max(200) })
@@ -581,7 +662,11 @@ app.post("/api/strategies/:strategyId/archive", async (request) => {
 app.get("/api/bundles", async (request) => {
   const scoped = tenant(request);
   if (scoped.bundlesRolledBack()) {
-    throw new AuthError(409, "Bundles rolled back");
+    throw new UserFacingError(
+      "bundles-rolled-back",
+      "Bundles rolled back. Refresh Bundles before continuing.",
+      { kind: "bundles" },
+    );
   }
   return {
     bundles: scoped.listBundles(),
@@ -592,20 +677,34 @@ app.get("/api/bundles", async (request) => {
 app.get("/api/bundles/:bundleId/config", async (request) => {
   const scoped = tenant(request);
   if (scoped.bundlesRolledBack()) {
-    throw new AuthError(409, "Bundles rolled back");
+    throw new UserFacingError(
+      "bundles-rolled-back",
+      "Bundles rolled back. Refresh Bundles before continuing.",
+      { kind: "bundles" },
+    );
   }
   const params = z
     .object({ bundleId: z.string().min(1).max(200) })
     .parse(request.params);
   const config = scoped.getBundleConfig(params.bundleId);
-  if (!config) throw new AuthError(404, "Bundle was not found");
+  if (!config)
+    throw new UserFacingError(
+      "bundle-not-found",
+      "This bundle is no longer available. Refresh Bundles and choose an active bundle.",
+      { kind: "bundles" },
+      404,
+    );
   return { config };
 });
 
 app.post("/api/bundles/wallet-limits", async (request) => {
   const scoped = tenant(request);
   if (scoped.bundlesRolledBack()) {
-    throw new AuthError(409, "Bundles rolled back");
+    throw new UserFacingError(
+      "bundles-rolled-back",
+      "Bundles rolled back. Refresh Bundles before continuing.",
+      { kind: "bundles" },
+    );
   }
   const body = walletLimitsSchema.parse(request.body);
   const ownerAddress = requestAuth(request).ownerAddress;
@@ -627,7 +726,11 @@ app.post("/api/bundles/wallet-limits", async (request) => {
 app.post("/api/bundles", async (request) => {
   const scoped = tenant(request);
   if (scoped.bundlesRolledBack()) {
-    throw new AuthError(409, "Bundles rolled back");
+    throw new UserFacingError(
+      "bundles-rolled-back",
+      "Bundles rolled back. Refresh Bundles before continuing.",
+      { kind: "bundles" },
+    );
   }
   const body = z
     .union([
@@ -670,9 +773,11 @@ app.post("/api/bundles", async (request) => {
           })()
         : (() => {
             if (body.strategyId && !body.makerAccountId) {
-              throw new AuthError(
+              throw new UserFacingError(
+                "account-required",
+                "Select an authorized Maker account in Venues before creating this bundle.",
+                { kind: "venues" },
                 400,
-                "Select an authorized Maker account before creating this bundle",
               );
             }
             const selectedStrategy = body.strategyId
@@ -684,9 +789,11 @@ app.post("/api/bundles", async (request) => {
               selectedStrategy.config.hedge.enabled &&
               !body.takerAccountId
             ) {
-              throw new AuthError(
+              throw new UserFacingError(
+                "hedge-account-required",
+                "Authorize a separate hedge account in Venues before creating this bundle.",
+                { kind: "venues" },
                 400,
-                "This strategy requires a distinct authorized hedge account before bundle creation",
               );
             }
             for (const accountId of [
@@ -694,7 +801,12 @@ app.post("/api/bundles", async (request) => {
               body.takerAccountId,
             ]) {
               if (accountId && !scoped.getAccountSetup(accountId)?.agentCapId) {
-                throw new Error("The selected account is not authorized");
+                throw new UserFacingError(
+                  "account-not-authorized",
+                  "Authorize the selected account in Venues before continuing.",
+                  { kind: "venues" },
+                  400,
+                );
               }
             }
             return scoped.createAllocatedBundle({
@@ -712,11 +824,18 @@ app.post("/api/bundles", async (request) => {
   } catch (error) {
     if (
       error instanceof AuthError ||
+      error instanceof UserFacingError ||
       (error instanceof Error && error.name === "ZodError")
     )
       throw error;
     const expected = bundleCreateHttpError(error);
-    if (expected) throw new AuthError(expected.status, expected.message);
+    if (expected)
+      throw new UserFacingError(
+        "bundle-precondition",
+        expected.message,
+        { kind: "bundles" },
+        expected.status,
+      );
     throw error;
   }
   store.forBundle(requestAuth(request).ownerAddress, bundle.id).logEvent({
@@ -735,7 +854,11 @@ app.post("/api/bundles", async (request) => {
 app.post("/api/bundles/:bundleId/config", async (request) => {
   const scoped = tenant(request);
   if (scoped.bundlesRolledBack()) {
-    throw new AuthError(409, "Bundles rolled back");
+    throw new UserFacingError(
+      "bundles-rolled-back",
+      "Bundles rolled back. Refresh Bundles before continuing.",
+      { kind: "bundles" },
+    );
   }
   const params = z
     .object({ bundleId: z.string().min(1).max(200) })
@@ -750,10 +873,19 @@ app.post("/api/bundles/:bundleId/config", async (request) => {
   const config = makerConfigSchema.parse(body.config);
   const current = scoped.getStoredBundle(params.bundleId);
   if (!current || current.archivedAt) {
-    throw new AuthError(404, "Bundle was not found");
+    throw new UserFacingError(
+      "bundle-not-found",
+      "This bundle is no longer available. Refresh Bundles and choose an active bundle.",
+      { kind: "bundles" },
+      404,
+    );
   }
   if (current.name !== "Core" && config.mode === "live") {
-    throw new AuthError(409, "Additional bundles can only use Paper mode");
+    throw new UserFacingError(
+      "live-core-only",
+      "Only Core can use Live mode. Switch this bundle to Paper.",
+      { kind: "bundles" },
+    );
   }
   assertLiveModeEnabled(config);
   assertConfiguredAccounts(scoped, config);
@@ -779,7 +911,11 @@ app.post("/api/bundles/:bundleId/config", async (request) => {
 app.patch("/api/bundles/:bundleId", async (request) => {
   const scoped = tenant(request);
   if (scoped.bundlesRolledBack()) {
-    throw new AuthError(409, "Bundles rolled back");
+    throw new UserFacingError(
+      "bundles-rolled-back",
+      "Bundles rolled back. Refresh Bundles before continuing.",
+      { kind: "bundles" },
+    );
   }
   const params = z
     .object({ bundleId: z.string().min(1).max(200) })
@@ -804,7 +940,12 @@ app.patch("/api/bundles/:bundleId", async (request) => {
     .parse(request.body);
   for (const accountId of [body.makerAccountId, body.takerAccountId]) {
     if (accountId && !scoped.getAccountSetup(accountId)?.agentCapId) {
-      throw new Error("The selected account is not authorized");
+      throw new UserFacingError(
+        "account-not-authorized",
+        "Authorize the selected account in Venues before continuing.",
+        { kind: "venues" },
+        400,
+      );
     }
   }
   const bundle = await runtimeManager.updateBundleAllocation({
@@ -838,20 +979,39 @@ app.patch("/api/bundles/:bundleId", async (request) => {
 app.post("/api/bundles/:bundleId/start", async (request) => {
   const scoped = tenant(request);
   if (scoped.bundlesRolledBack()) {
-    throw new AuthError(409, "Bundles rolled back");
+    throw new UserFacingError(
+      "bundles-rolled-back",
+      "Bundles rolled back. Refresh Bundles before continuing.",
+      { kind: "bundles" },
+    );
   }
   const params = z
     .object({ bundleId: z.string().min(1).max(200) })
     .parse(request.params);
   const bundle = scoped.getStoredBundle(params.bundleId);
   if (!bundle || bundle.archivedAt) {
-    throw new AuthError(404, "Bundle was not found");
+    throw new UserFacingError(
+      "bundle-not-found",
+      "This bundle is no longer available. Refresh Bundles and choose an active bundle.",
+      { kind: "bundles" },
+      404,
+    );
   }
   if (bundle.needsStrategy) {
-    throw new AuthError(409, "Attach a strategy before starting this bundle");
+    throw new UserFacingError(
+      "needs-strategy",
+      "Attach a strategy in Bundles before starting this bundle.",
+      { kind: "bundles" },
+    );
   }
   const config = scoped.getBundleConfig(params.bundleId);
-  if (!config) throw new AuthError(404, "Bundle was not found");
+  if (!config)
+    throw new UserFacingError(
+      "bundle-not-found",
+      "This bundle is no longer available. Refresh Bundles and choose an active bundle.",
+      { kind: "bundles" },
+      404,
+    );
   assertLiveModeEnabled(config);
   const started = runtimeManager.startBundle(
     requestAuth(request).ownerAddress,
@@ -863,20 +1023,39 @@ app.post("/api/bundles/:bundleId/start", async (request) => {
 app.post("/api/bundles/:bundleId/resume", async (request) => {
   const scoped = tenant(request);
   if (scoped.bundlesRolledBack()) {
-    throw new AuthError(409, "Bundles rolled back");
+    throw new UserFacingError(
+      "bundles-rolled-back",
+      "Bundles rolled back. Refresh Bundles before continuing.",
+      { kind: "bundles" },
+    );
   }
   const params = z
     .object({ bundleId: z.string().min(1).max(200) })
     .parse(request.params);
   const bundle = scoped.getStoredBundle(params.bundleId);
   if (!bundle || bundle.archivedAt) {
-    throw new AuthError(404, "Bundle was not found");
+    throw new UserFacingError(
+      "bundle-not-found",
+      "This bundle is no longer available. Refresh Bundles and choose an active bundle.",
+      { kind: "bundles" },
+      404,
+    );
   }
   if (bundle.needsStrategy) {
-    throw new AuthError(409, "Attach a strategy before starting this bundle");
+    throw new UserFacingError(
+      "needs-strategy",
+      "Attach a strategy in Bundles before starting this bundle.",
+      { kind: "bundles" },
+    );
   }
   const config = scoped.getBundleConfig(params.bundleId);
-  if (!config) throw new AuthError(404, "Bundle was not found");
+  if (!config)
+    throw new UserFacingError(
+      "bundle-not-found",
+      "This bundle is no longer available. Refresh Bundles and choose an active bundle.",
+      { kind: "bundles" },
+      404,
+    );
   assertLiveModeEnabled(config);
   return runtimeManager.startBundle(
     requestAuth(request).ownerAddress,
@@ -887,7 +1066,11 @@ app.post("/api/bundles/:bundleId/resume", async (request) => {
 app.post("/api/bundles/:bundleId/pause", async (request) => {
   const scoped = tenant(request);
   if (scoped.bundlesRolledBack()) {
-    throw new AuthError(409, "Bundles rolled back");
+    throw new UserFacingError(
+      "bundles-rolled-back",
+      "Bundles rolled back. Refresh Bundles before continuing.",
+      { kind: "bundles" },
+    );
   }
   const params = z
     .object({ bundleId: z.string().min(1).max(200) })
@@ -901,7 +1084,11 @@ app.post("/api/bundles/:bundleId/pause", async (request) => {
 app.post("/api/bundles/:bundleId/archive", async (request) => {
   const scoped = tenant(request);
   if (scoped.bundlesRolledBack()) {
-    throw new AuthError(409, "Bundles rolled back");
+    throw new UserFacingError(
+      "bundles-rolled-back",
+      "Bundles rolled back. Refresh Bundles before continuing.",
+      { kind: "bundles" },
+    );
   }
   const params = z
     .object({ bundleId: z.string().min(1).max(200) })
@@ -926,7 +1113,12 @@ app.get("/api/events", async (request) => {
     query.bundle !== "before" &&
     !tenant(request).getStoredBundle(query.bundle)
   ) {
-    throw new AuthError(404, "Bundle was not found");
+    throw new UserFacingError(
+      "bundle-not-found",
+      "This bundle is no longer available. Refresh Bundles and choose an active bundle.",
+      { kind: "bundles" },
+      404,
+    );
   }
   return { events: tenant(request).listEvents(query.limit, query.bundle) };
 });
@@ -1238,11 +1430,20 @@ app.post("/api/setup/grant-transaction", async (request) => {
   const scoped = tenant(request);
   const setup = scoped.getAccountSetup(body.accountId);
   const agent = scoped.getAgent();
-  if (!setup || !agent) throw new Error("Provision the account first");
+  if (!setup || !agent)
+    throw new UserFacingError(
+      "account-setup-required",
+      "Provision this account in Venues before continuing.",
+      { kind: "venues" },
+    );
 
   const fee = builderCode();
   if (!fee) {
-    throw new Error("Builder-code registration is not complete");
+    throw new UserFacingError(
+      "builder-registration-required",
+      "Venue fee registration is not complete. Ask the operator to complete setup before continuing.",
+      { kind: "venues" },
+    );
   }
   const prepared = await runtime(request)
     .requireGateway()
@@ -1270,11 +1471,20 @@ app.post("/api/setup/confirm", async (request) => {
   const scoped = tenant(request);
   const setup = scoped.getAccountSetup(body.accountId);
   const agent = scoped.getAgent();
-  if (!setup || !agent) throw new Error("Provision the account first");
+  if (!setup || !agent)
+    throw new UserFacingError(
+      "account-setup-required",
+      "Provision this account in Venues before continuing.",
+      { kind: "venues" },
+    );
 
   const fee = builderCode();
   if (!fee) {
-    throw new Error("Builder-code registration is not complete");
+    throw new UserFacingError(
+      "builder-registration-required",
+      "Venue fee registration is not complete. Ask the operator to complete setup before continuing.",
+      { kind: "venues" },
+    );
   }
   const verified = await runtime(request).requireGateway().verifyAgentGrant({
     setup,
@@ -1322,7 +1532,11 @@ app.post("/api/setup/revoke-transaction", async (request) => {
   const setup = scoped.getAccountSetup(body.accountId);
   const agent = scoped.getAgent();
   if (!setup?.agentCapId || !agent) {
-    throw new Error("No confirmed agent capability exists for this account");
+    throw new UserFacingError(
+      "account-not-authorized",
+      "Authorize the trading key for this account in Venues before continuing.",
+      { kind: "venues" },
+    );
   }
 
   const active = runtime(request);
@@ -1339,8 +1553,10 @@ app.post("/api/setup/revoke-transaction", async (request) => {
     0,
   );
   if (taggedOrders > 0) {
-    throw new Error(
-      `Refusing revocation while ${taggedOrders} Maker-tagged orders remain open`,
+    throw new UserFacingError(
+      "orders-open",
+      `Cancel ${taggedOrders} open Maker order${taggedOrders === 1 ? "" : "s"} before revoking the trading key.`,
+      { kind: "venues" },
     );
   }
 
@@ -1367,7 +1583,11 @@ app.post("/api/setup/revoke-confirm", async (request) => {
   const setup = scoped.getAccountSetup(body.accountId);
   const agent = scoped.getAgent();
   if (!setup?.agentCapId || !agent) {
-    throw new Error("No confirmed agent capability exists for this account");
+    throw new UserFacingError(
+      "account-not-authorized",
+      "Authorize the trading key for this account in Venues before continuing.",
+      { kind: "venues" },
+    );
   }
 
   await runtime(request).requireGateway().verifyAgentRevocation({

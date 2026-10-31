@@ -11,6 +11,7 @@ import {
   type RuntimeOptions,
   type StrategyTrialResult,
 } from "./runtime.js";
+import { UserFacingError } from "./http-error.js";
 
 type GatewayOptions = {
   preferredEndpoint?: string;
@@ -118,7 +119,12 @@ export class RuntimeManager {
     const owner = ownerAddress.toLowerCase();
     const bundle = this.store.forTenant(owner).getStoredBundle(bundleId);
     if (!bundle || bundle.archivedAt) {
-      throw new Error("Bundle was not found for this wallet");
+      throw new UserFacingError(
+        "bundle-not-found",
+        "This bundle is no longer available. Refresh Bundles and choose an active bundle.",
+        { kind: "bundles" },
+        404,
+      );
     }
     return this.createBundleRuntime(owner, bundle);
   }
@@ -154,12 +160,21 @@ export class RuntimeManager {
     const owner = inputs.ownerAddress.toLowerCase();
     const bundleId = this.store.coreRuntimeBundleId(owner);
     if (!bundleId) {
-      throw new Error("A saved Core bundle is required for a Paper test run");
+      throw new UserFacingError(
+        "core-required",
+        "Save a Core bundle before starting a Paper test run.",
+        { kind: "bundles" },
+      );
     }
     const tenant = this.store.forTenant(owner);
     const bundle = tenant.getStoredBundle(bundleId);
     if (!bundle || bundle.archivedAt) {
-      throw new Error("Core bundle was not found for this wallet");
+      throw new UserFacingError(
+        "core-not-found",
+        "Core is unavailable. Open Bundles and check its setup before testing.",
+        { kind: "bundles" },
+        404,
+      );
     }
     // The detached runtime is scratch-only, but admission starts from the same
     // saved config, account, wallet-limit, and gas-reserve checks as a bundle.
@@ -167,7 +182,11 @@ export class RuntimeManager {
     this.assertStartGasReserve(owner, bundle, this.getBundle(owner, bundle.id));
     const key = `${owner}:${bundleId}:paper-trial`;
     if (this.paperTrials.has(key)) {
-      throw new Error("A Paper test run is already in progress");
+      throw new UserFacingError(
+        "trial-already-running",
+        "A Paper test run is already in progress. Wait for it to finish before trying again.",
+        { kind: "strategy" },
+      );
     }
     const trial = new MakerRuntime(
       this.store.forBundle(owner, bundleId),
@@ -257,16 +276,35 @@ export class RuntimeManager {
   ): MakerConfig {
     const tenant = this.store.forTenant(ownerAddress);
     if (bundle.needsStrategy) {
-      throw new Error("Attach a strategy before starting this bundle");
+      throw new UserFacingError(
+        "needs-strategy",
+        "Attach a strategy in Bundles before starting this bundle.",
+        { kind: "bundles" },
+      );
     }
     const config = tenant.getBundleConfig(bundle.id);
-    if (!config) throw new Error("Bundle was not found");
-    if (bundle.archivedAt) throw new Error("Bundle was archived");
+    if (!config)
+      throw new UserFacingError(
+        "bundle-not-found",
+        "This bundle is no longer available. Refresh Bundles and choose an active bundle.",
+        { kind: "bundles" },
+        404,
+      );
+    if (bundle.archivedAt)
+      throw new UserFacingError(
+        "bundle-archived",
+        "This bundle was archived. Choose an active bundle in Bundles.",
+        { kind: "bundles" },
+      );
     const walletLimits = tenant.getWalletLimits();
     if (walletLimits) tenant.assertConfigFitsWallet(config, walletLimits);
     if (config.mode === "live") {
       if (bundle.name !== "Core") {
-        throw new Error("Only Core can use Live mode");
+        throw new UserFacingError(
+          "live-core-only",
+          "Only Core can use Live mode. Select Paper for any other bundle.",
+          { kind: "bundles" },
+        );
       }
       const liveOutsideCore = tenant
         .listBundles()
@@ -277,7 +315,11 @@ export class RuntimeManager {
             candidate.mode === "live",
         );
       if (liveOutsideCore) {
-        throw new Error("Live mode requires Core to be the only Live bundle");
+        throw new UserFacingError(
+          "live-core-only",
+          "Core must be the only Live bundle. Switch other bundles to Paper first.",
+          { kind: "bundles" },
+        );
       }
     }
     return config;
@@ -289,6 +331,8 @@ export class RuntimeManager {
     candidateRuntime: MakerRuntime,
   ): void {
     const tenant = this.store.forTenant(ownerAddress);
+    const candidateConfig = tenant.getBundleConfig(candidate.id);
+    if (!candidateConfig) return;
     const active = tenant
       .listBundles()
       .filter(
@@ -296,35 +340,41 @@ export class RuntimeManager {
           !bundle.archivedAt &&
           (bundle.status === "running" || bundle.id === candidate.id),
       );
-    const configs = active.flatMap((bundle) => {
+    const liveConfigs = active.flatMap((bundle) => {
       const config = tenant.getBundleConfig(bundle.id);
-      return config ? [config] : [];
+      return config?.mode === "live" ? [config] : [];
     });
-    if (!configs.length) return;
-    const conservativeGasMist = Math.max(
-      ...configs.map((config) => config.maxGasMist),
-    );
-    // `tenant_maker_orders` is an attribution ledger: it deliberately retains
-    // historical order IDs so fills can be reconciled after cancellation. It
-    // is not a picture of orders that could still need cancellation. Reserving
-    // against that history eventually makes a safely stopped bundle
-    // unstartable. Reserve instead for the configured maximum number of
-    // Maker-owned resting orders each active bundle can create.
-    const restingOrderCount = configs.reduce(
-      (total, config) =>
-        total +
-        (config.rotationMode === "portfolio"
-          ? config.markets.length * 2
-          : Math.min(config.markets.length, 1) * 2),
-      0,
-    );
-    const requiredGasMist = calculateBundleGasReserveMist({
-      cancelGasEstimateMist: conservativeGasMist,
-      hedgeGasBufferMist: conservativeGasMist,
-      fixedSafetyBufferMist: conservativeGasMist,
-      runningBundleCount: active.length,
-      restingOrderCount,
-    });
+    // Paper simulations still set a gas budget and select a gas coin in the
+    // gateway, but never post/cancel/hedge. A single simulation needs at most
+    // maxGasMist; only Live bundles contribute cancellation/hedge reserves.
+    const liveRequiredMist = liveConfigs.length
+      ? (() => {
+          const conservativeGasMist = Math.max(
+            ...liveConfigs.map((config) => config.maxGasMist),
+          );
+          // The order attribution ledger retains historical IDs. Reserve
+          // only for Live orders that can currently be resting.
+          const restingOrderCount = liveConfigs.reduce(
+            (total, config) =>
+              total +
+              (config.rotationMode === "portfolio"
+                ? config.markets.length * 2
+                : Math.min(config.markets.length, 1) * 2),
+            0,
+          );
+          return calculateBundleGasReserveMist({
+            cancelGasEstimateMist: conservativeGasMist,
+            hedgeGasBufferMist: conservativeGasMist,
+            fixedSafetyBufferMist: conservativeGasMist,
+            runningBundleCount: liveConfigs.length,
+            restingOrderCount,
+          });
+        })()
+      : 0;
+    const paperRequiredMist =
+      candidateConfig.mode === "paper" ? candidateConfig.maxGasMist : 0;
+    const requiredGasMist = Math.max(liveRequiredMist, paperRequiredMist);
+    if (!requiredGasMist) return;
     const observedGasMist = [
       candidateRuntime.snapshot.balances.gasSui,
       ...active
@@ -338,13 +388,23 @@ export class RuntimeManager {
       .filter((gasSui): gasSui is number => gasSui !== null)
       .map((gasSui) => Math.floor(gasSui * 1_000_000_000));
     if (!observedGasMist.length) return;
+    const availableGasMist = Math.min(...observedGasMist);
     if (
       !hasBundleGasReserve({
-        availableGasMist: Math.min(...observedGasMist),
+        availableGasMist,
         requiredGasMist,
       })
     ) {
-      throw new Error("Wallet gas reserve is too low to start this bundle");
+      const simulationOnly = liveRequiredMist === 0;
+      const purpose = simulationOnly
+        ? "to simulate one quote"
+        : "to pay for cancels and hedges";
+      const address = candidateRuntime.snapshot.agentAddress;
+      throw new UserFacingError(
+        "gas-reserve-low",
+        `Couldn't start ${candidate.name} ${candidateConfig.mode}. Its trading key has ${(availableGasMist / 1_000_000_000).toFixed(2)} SUI for gas and needs at least ${(requiredGasMist / 1_000_000_000).toFixed(2)} SUI ${purpose}.`,
+        address ? { kind: "copy", value: address } : { kind: "venues" },
+      );
     }
   }
 
@@ -404,7 +464,13 @@ export class RuntimeManager {
     const owner = ownerAddress.toLowerCase();
     const tenant = this.store.forTenant(owner);
     const bundle = tenant.getStoredBundle(bundleId);
-    if (!bundle || bundle.archivedAt) throw new Error("Bundle was not found");
+    if (!bundle || bundle.archivedAt)
+      throw new UserFacingError(
+        "bundle-not-found",
+        "This bundle is no longer available. Refresh Bundles and choose an active bundle.",
+        { kind: "bundles" },
+        404,
+      );
     this.assertStartAllowed(owner, bundle);
     tenant.assertBundleMarketsAvailableToStart(bundle.id);
     const runtime = this.getBundle(owner, bundle.id);
@@ -432,7 +498,13 @@ export class RuntimeManager {
     const owner = ownerAddress.toLowerCase();
     const tenant = this.store.forTenant(owner);
     const bundle = tenant.getStoredBundle(bundleId);
-    if (!bundle || bundle.archivedAt) throw new Error("Bundle was not found");
+    if (!bundle || bundle.archivedAt)
+      throw new UserFacingError(
+        "bundle-not-found",
+        "This bundle is no longer available. Refresh Bundles and choose an active bundle.",
+        { kind: "bundles" },
+        404,
+      );
     const runtime = this.getBundle(owner, bundle.id);
     await runtime.stop();
     return {
@@ -448,7 +520,13 @@ export class RuntimeManager {
     const owner = ownerAddress.toLowerCase();
     const tenant = this.store.forTenant(owner);
     const bundle = tenant.getStoredBundle(bundleId);
-    if (!bundle || bundle.archivedAt) throw new Error("Bundle was not found");
+    if (!bundle || bundle.archivedAt)
+      throw new UserFacingError(
+        "bundle-not-found",
+        "This bundle is no longer available. Refresh Bundles and choose an active bundle.",
+        { kind: "bundles" },
+        404,
+      );
     const runtime = this.runtimes.get(this.runtimeKey(owner, bundle.id));
     if (runtime) await runtime.stop();
     const archived = tenant.archiveBundle(bundle.id);
@@ -500,7 +578,13 @@ export class RuntimeManager {
     const owner = inputs.ownerAddress.toLowerCase();
     const tenant = this.store.forTenant(owner);
     const current = tenant.getStoredBundle(inputs.bundleId);
-    if (!current || current.archivedAt) throw new Error("Bundle was not found");
+    if (!current || current.archivedAt)
+      throw new UserFacingError(
+        "bundle-not-found",
+        "This bundle is no longer available. Refresh Bundles and choose an active bundle.",
+        { kind: "bundles" },
+        404,
+      );
     // A detached bundle cannot keep quoting while it has no strategy. Stop it
     // before changing the projection; Stop remains available if this fails.
     if (inputs.strategyId === null && current.status === "running") {
