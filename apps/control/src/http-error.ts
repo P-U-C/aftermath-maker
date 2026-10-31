@@ -1,7 +1,27 @@
+export type UserErrorFix = {
+  kind: "venues" | "strategy" | "bundles" | "accounts" | "copy";
+  value?: string;
+};
+
+/** Safe, actionable precondition. Unknown failures must never be shown verbatim. */
+export class UserFacingError extends Error {
+  constructor(
+    public readonly code: string,
+    message: string,
+    public readonly fix?: UserErrorFix,
+    public readonly statusCode = 409,
+  ) {
+    super(message);
+    this.name = "UserFacingError";
+  }
+}
+
 export type HttpErrorResponse = {
   status: number;
   publicMessage: string;
   internalMessage: string;
+  code?: string;
+  fix?: UserErrorFix;
 };
 
 export function classifyHttpError(error: unknown): HttpErrorResponse {
@@ -38,5 +58,22 @@ export function classifyHttpError(error: unknown): HttpErrorResponse {
           ? "Service unavailable"
           : "Internal server error"
         : internalMessage,
+    ...(status < 500
+      ? {
+          code:
+            error instanceof UserFacingError
+              ? error.code
+              : status === 401
+                ? "auth-required"
+                : status === 403
+                  ? "access-denied"
+                  : status === 429
+                    ? "rate-limited"
+                    : "invalid-request",
+          ...(error instanceof UserFacingError && error.fix
+            ? { fix: error.fix }
+            : {}),
+        }
+      : {}),
   };
 }

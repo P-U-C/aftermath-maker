@@ -962,28 +962,40 @@ const rewards: RewardDashboard = {
   },
 };
 
+const fixtureEventKinds = [
+  ["paper", "estimated-fill", "estimated"],
+  ["runtime", "cancel-maker-orders", "clear"],
+  ["hedge", "fill-attribution-reconciliation", "waiting"],
+  ["hedge", "fill-attribution-reconciliation", "confirmed"],
+  ["risk", "automatic-paired-rebalance", "retry"],
+  ["risk", "automatic-paired-rebalance", "confirmed"],
+  ["hedge", "post-cancel-reconciliation", "waiting"],
+  ["hedge", "post-cancel-reconciliation", "confirmed"],
+  ["paper", "trial.complete", "success"],
+] as const;
+
 const events: AuditEvent[] = [
   {
     id: 3,
     occurredAt: "2026-10-27T17:08:30.000Z",
     category: "runtime",
-    action: "quote-confirmed",
-    outcome: "success",
-    detail: { market: "MON", mode: "paper" },
+    action: "post-only-retry",
+    outcome: "retry",
+    detail: { marketId: marketRows[0]?.id },
   },
   {
     id: 2,
     occurredAt: "2026-10-27T17:04:11.000Z",
-    category: "risk",
+    category: "hedge",
     action: "post-hedge-reconciliation",
-    outcome: "success",
+    outcome: "confirmed",
     detail: { residualDeltaUsd: 0.0015328 },
   },
   {
     id: 1,
     occurredAt: "2026-10-27T16:51:00.000Z",
     category: "runtime",
-    action: "engine-started",
+    action: "start",
     outcome: "success",
     detail: { markets: 5 },
   },
@@ -992,10 +1004,10 @@ const events: AuditEvent[] = [
     occurredAt: new Date(
       Date.parse("2026-10-27T16:50:00.000Z") - index * 60_000,
     ).toISOString(),
-    category: "runtime",
-    action: "market-cycle-completed",
-    outcome: "success",
-    detail: { cycle: index + 1 },
+    category: fixtureEventKinds[index]![0],
+    action: fixtureEventKinds[index]![1],
+    outcome: fixtureEventKinds[index]![2],
+    detail: { marketId: marketRows[0]?.id },
   })),
 ];
 

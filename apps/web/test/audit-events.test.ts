@@ -3,6 +3,8 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { auditEventCopyKeys, deskEvent } from "../lib/audit-events";
+import { AUDIT_EVENT_KINDS } from "../../control/src/audit-event-kinds";
+import { fixtureStates } from "../e2e/fixtures/control";
 
 const root = path.resolve(import.meta.dirname, "../../..");
 
@@ -57,6 +59,33 @@ function loggedEventKeys() {
 }
 
 describe("desk audit events", () => {
+  it("narrates every declared server kind and every fixture event", () => {
+    const kinds = [
+      ...AUDIT_EVENT_KINDS,
+      ...fixtureStates["paper-running"].events.events.map(
+        (event) => `${event.category}:${event.action}:${event.outcome}`,
+      ),
+    ];
+    for (const kind of kinds) {
+      const [category, action, outcome] = kind.split(":");
+      const result = deskEvent({
+        id: 1,
+        occurredAt: "2026-10-31T00:00:00.000Z",
+        category: category!,
+        action: action!,
+        outcome: outcome!,
+        detail: {
+          message: "Check your bundle settings.",
+          reference: "req-test",
+        },
+      });
+      expect(result.sentence, kind).not.toContain("unclassified");
+    }
+    expect(
+      new Set(AUDIT_EVENT_KINDS.filter((kind) => !kind.startsWith("request:"))),
+    ).toEqual(new Set(auditEventCopyKeys));
+  });
+
   it("uses plain control-log copy for routine progress", () => {
     expect(
       deskEvent({

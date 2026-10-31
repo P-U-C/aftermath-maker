@@ -824,7 +824,9 @@ describe("persistent control store", () => {
       quoteSizeUsd: 17,
       markets: [{ marketId: "0xd001", symbol: "CORE" }],
     });
-    expect(() => tenant.archiveStrategy(shared.id)).toThrow("in use");
+    expect(() => tenant.archiveStrategy(shared.id)).toThrow(
+      "Detach it in Bundles",
+    );
 
     tenant.setConfig({ ...coreConfig, quoteSizeUsd: 19 });
     const forkedCore = tenant.getStoredBundle(core.id)!;
@@ -1468,7 +1470,7 @@ describe("persistent control store", () => {
         mode: "paper",
         strategyId: strategy.id,
       }),
-    ).toThrow("Each account can hold one bundle role");
+    ).toThrow("Select an unused account in Bundles");
     expect(() =>
       tenant.createAllocatedBundle({
         name: "Rewards",
@@ -1492,7 +1494,7 @@ describe("persistent control store", () => {
         mode: "paper",
         strategyId: empty.id,
       }),
-    ).toThrow("Choose a strategy with one or more markets");
+    ).toThrow("Choose a strategy with at least one market");
     expect(() =>
       tenant.createAllocatedBundle({
         name: "Missing strategy",
@@ -1501,7 +1503,7 @@ describe("persistent control store", () => {
         mode: "paper",
         strategyId: "strategy-unknown",
       }),
-    ).toThrow("Strategy was not found for this wallet");
+    ).toThrow("Choose an active strategy in Strategy");
     expect(
       tenant.listBundles().filter((bundle) => !bundle.archivedAt),
     ).toHaveLength(2);
@@ -1521,7 +1523,7 @@ describe("persistent control store", () => {
         mode: "paper",
         strategyId: unattached.id,
       }),
-    ).toThrow("Configure Core wallet limits");
+    ).toThrow("Set Core wallet limits in Bundles");
     expect(freshTenant.listBundles()).toHaveLength(0);
     databaseStore.close();
   });
@@ -1564,7 +1566,7 @@ describe("persistent control store", () => {
 
     expect(() =>
       tenant.createBundle({ name: "Paper", config: paperConfig }),
-    ).toThrow("Confirm the wallet limits");
+    ).toThrow("Confirm wallet limits in Bundles");
     const paper = tenant.createBundle({
       name: "Paper",
       config: paperConfig,
@@ -1587,7 +1589,7 @@ describe("persistent control store", () => {
           markets: [{ marketId: "0x1003", symbol: "THREE" }],
         },
       }),
-    ).toThrow("one bundle role");
+    ).toThrow("Select an unused account in Bundles");
     expect(
       tenant.createBundle({
         name: "Shared market",
@@ -1608,7 +1610,7 @@ describe("persistent control store", () => {
           hedge: { ...paperConfig.hedge, enabled: false, accountId: "5" },
         },
       }),
-    ).toThrow("must be different");
+    ).toThrow("Choose separate Maker and hedge accounts");
     expect(() =>
       tenant.createBundle({
         name: "Beyond envelope",
@@ -1663,7 +1665,7 @@ describe("persistent control store", () => {
       marketIds: [],
     });
     expect(() => databaseStore.forBundle(ownerAddress, paper.id)).toThrow(
-      "not found",
+      "no longer available",
     );
     expect(
       tenant.createBundle({ name: "Released", config: paperConfig }),
@@ -1804,7 +1806,7 @@ describe("persistent control store", () => {
         name: "Live paper",
         config: { ...config(4), mode: "live" },
       }),
-    ).toThrow("Paper mode");
+    ).toThrow("Only Core can use Live mode");
     databaseStore.close();
   });
 });
