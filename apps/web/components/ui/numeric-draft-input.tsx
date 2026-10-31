@@ -7,6 +7,7 @@ export function NumericDraftInput({
   id,
   label,
   unit,
+  accessibleLabel,
   value,
   min,
   max,
@@ -17,6 +18,7 @@ export function NumericDraftInput({
   id: string;
   label: string;
   unit: string;
+  accessibleLabel?: string;
   value: number;
   min: number;
   max: number;
@@ -39,7 +41,7 @@ export function NumericDraftInput({
         type="text"
         inputMode={integer ? "numeric" : "decimal"}
         value={text}
-        aria-label={`${label} (${unit})`}
+        aria-label={accessibleLabel ?? `${label} (${unit})`}
         aria-invalid={Boolean(error)}
         aria-describedby={error ? `${id}-error` : undefined}
         onFocus={() => setFocused(true)}
