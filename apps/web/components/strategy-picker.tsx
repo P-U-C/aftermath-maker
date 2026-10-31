@@ -19,11 +19,13 @@ export function StrategyPicker({
   selectedId,
   draftName,
   onSelect,
+  variant = "card",
 }: {
   strategies: StrategyOption[];
   selectedId: string | null;
   draftName: string | null;
   onSelect: (strategyId: string) => Promise<boolean>;
+  variant?: "card" | "menu";
 }) {
   const details = useRef<HTMLDetailsElement>(null);
   const summary = useRef<HTMLElement>(null);
@@ -77,7 +79,9 @@ export function StrategyPicker({
 
   return (
     <details
-      className="strategy-picker"
+      className={
+        variant === "menu" ? "strategy-picker is-menu" : "strategy-picker"
+      }
       ref={details}
       onKeyDown={onKeyDown}
       onToggle={(event) => {
@@ -91,14 +95,25 @@ export function StrategyPicker({
         ref={summary}
         aria-label={`Choose strategy: ${nameIsDraft ? draftName : (selected?.name ?? "none")}; ${selected ? optionSummary(selected) : "No strategies yet"}`}
       >
-        <span>Strategy</span>
-        <strong>
-          {nameIsDraft ? draftName : (selected?.name ?? "Choose a strategy")}
-        </strong>
-        <small>
-          {selected ? optionSummary(selected) : "No strategies yet"}
-        </small>
-        {nameIsDraft && <em>Draft name · applied as {selected?.name}</em>}
+        {variant === "menu" ? (
+          <strong>
+            {strategies.length}{" "}
+            {strategies.length === 1 ? "strategy" : "strategies"}
+          </strong>
+        ) : (
+          <>
+            <span>Strategy</span>
+            <strong>
+              {nameIsDraft
+                ? draftName
+                : (selected?.name ?? "Choose a strategy")}
+            </strong>
+            <small>
+              {selected ? optionSummary(selected) : "No strategies yet"}
+            </small>
+            {nameIsDraft && <em>Draft name · applied as {selected?.name}</em>}
+          </>
+        )}
       </summary>
       <div
         className="strategy-picker-options"
