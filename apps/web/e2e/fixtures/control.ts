@@ -40,6 +40,8 @@ export type Snapshot = {
   lastCycleAt: string | null;
   lastSuccessfulCycleAt: string | null;
   lastError: string | null;
+  paperBlocker?: import("../../lib/paper-blocker").PaperBlocker | null;
+  accountReadAt?: string | null;
   setupComplete: boolean;
   agentAddress: string | null;
   accountId: string | null;
@@ -315,6 +317,7 @@ export type RewardDashboard = {
 
 export type AuditEvent = {
   id: number;
+  bundleId?: string | null;
   occurredAt: string;
   category: string;
   action: string;
@@ -347,6 +350,8 @@ export type FixtureState = {
     | { status: 200; body: AccessIdentity }
     | { status: 401 | 403; body: { error: string } };
   status: {
+    commit?: string;
+    builtAt?: string;
     snapshot: Snapshot;
     builderCode: { integratorId: number; integratorFee: number } | null;
     liveGates: {
@@ -413,6 +418,8 @@ export type FixtureState = {
       allocatedCollateralUsd: number;
       freeMarginUsd: number;
       positionCount: number;
+      exposureUsd?: number;
+      unrealizedPnlUsd?: number;
       label: string | null;
       tags: string[];
     }>;
@@ -655,6 +662,8 @@ const accountRows: FixtureState["accounts"]["accounts"] = [
     allocatedCollateralUsd: 1.04,
     freeMarginUsd: 6.40246,
     positionCount: 1,
+    exposureUsd: 2.08,
+    unrealizedPnlUsd: -0.01,
     label: "Core maker",
     tags: ["farming", "low-risk"],
   },
@@ -667,6 +676,8 @@ const accountRows: FixtureState["accounts"]["accounts"] = [
     allocatedCollateralUsd: 0,
     freeMarginUsd: 7.44934,
     positionCount: 0,
+    exposureUsd: 0,
+    unrealizedPnlUsd: 0,
     label: "Neutral hedge",
     tags: ["hedge", "delta-neutral"],
   },
@@ -1013,7 +1024,7 @@ const events: AuditEvent[] = [
 
 const identity: AccessIdentity = {
   ownerAddress,
-  operator: false,
+  operator: process.env.MAKER_TEST_OPERATOR === "1",
   registryConfigured: true,
   registryObjectId,
 };
@@ -1091,6 +1102,11 @@ function fixture(
     ...cloned,
     auth,
     status: {
+      commit:
+        process.env.MAKER_TEST_CONTROL_COMMIT ??
+        process.env.NEXT_PUBLIC_GIT_COMMIT ??
+        "unknown",
+      builtAt: "2026-11-01T17:40:00Z",
       snapshot: stateSnapshot,
       builderCode: { integratorId: 2048, integratorFee: 0.0001 },
       liveGates: {
@@ -1183,6 +1199,55 @@ mixedRunning.status.bundles = mixedRunning.bundles.bundles.map((bundle) => ({
 }));
 mixedRunning.status.snapshot = snapshot("paper", true);
 
+const paperBlocked = structuredClone(paperRunning);
+const blockedSnapshot = snapshot("paper", true);
+blockedSnapshot.accountId = "1757";
+blockedSnapshot.accountReadAt = new Date(
+  Date.parse(fixedNow) - 5 * 60_000,
+).toISOString();
+blockedSnapshot.paperBlocker = {
+  code: "collateral",
+  accountId: "1757",
+  availableUsd: 0,
+  requiredUsd: 100,
+  concurrentMarkets: 5,
+  quoteSizeUsd: 10,
+  leverage: 1,
+  observedAt: blockedSnapshot.accountReadAt,
+  message: "Paper is waiting on collateral.",
+};
+blockedSnapshot.lastError = blockedSnapshot.paperBlocker.message;
+paperBlocked.bundles.bundles = paperBlocked.bundles.bundles.map((bundle) =>
+  bundle.id === "core-fixture"
+    ? { ...bundle, status: "running", lastError: blockedSnapshot.lastError }
+    : bundle,
+);
+paperBlocked.status.snapshot = blockedSnapshot;
+paperBlocked.status.bundles = paperBlocked.bundles.bundles.map((bundle) => ({
+  bundle,
+  snapshot:
+    bundle.id === "core-fixture" ? blockedSnapshot : snapshot("paper", true),
+}));
+paperBlocked.events.events = [
+  ...Array.from({ length: 30 }, (_, index) => ({
+    id: 100 + index,
+    occurredAt: new Date(Date.parse(fixedNow) - index * 10_000).toISOString(),
+    category: "runtime",
+    action: "start",
+    outcome: "success",
+    detail: {},
+  })),
+  {
+    id: 1,
+    occurredAt: blockedSnapshot.accountReadAt,
+    category: "paper",
+    action: "simulation",
+    outcome: "blocked",
+    bundleId: "core-fixture",
+    detail: { ...blockedSnapshot.paperBlocker, marketId: marketIds.MON },
+  },
+];
+
 const attention = structuredClone(paperRunning);
 attention.bundles.bundles = attention.bundles.bundles.map((bundle) =>
   bundle.id === "rewards-fixture"
@@ -1226,6 +1291,7 @@ export const fixtureStates = {
   "not-on-list": notOnList,
   onboarding,
   "paper-running": paperRunning,
+  "paper-blocked": paperBlocked,
   "paper-running-no-book": paperRunningNoBook,
   "live-running": liveRunning,
   "mixed-running": mixedRunning,

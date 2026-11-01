@@ -53,12 +53,14 @@ export function classifyHttpError(error: unknown): HttpErrorResponse {
     status,
     internalMessage,
     publicMessage:
-      status >= 500
-        ? status === 503
-          ? "Service unavailable"
-          : "Internal server error"
-        : internalMessage,
-    ...(status < 500
+      error instanceof UserFacingError
+        ? error.message
+        : status >= 500
+          ? status === 503
+            ? "Service unavailable"
+            : "Internal server error"
+          : internalMessage,
+    ...(status < 500 || error instanceof UserFacingError
       ? {
           code:
             error instanceof UserFacingError

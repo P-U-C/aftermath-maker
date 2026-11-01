@@ -302,9 +302,10 @@ describe("risk gates", () => {
     );
   });
 
-  it("requires aggregate collateral and three gas ceilings", () => {
+  it("requires aggregate collateral and three gas ceilings for Live, one for Paper", () => {
     const bounded = makerConfigSchema.parse({
       markets: [{ marketId: "0x1234", symbol: "SUI-PERP" }],
+      mode: "live",
       quoteSizeUsd: 10,
       maxLeverage: 2,
       maxGasMist: 50_000_000,
@@ -337,6 +338,18 @@ describe("risk gates", () => {
 
     expect(checks.find((check) => check.code === "collateral")?.ok).toBe(false);
     expect(checks.find((check) => check.code === "gas")?.ok).toBe(false);
+    const paper = evaluateQuoteSafety({
+      ...safetyDefaults,
+      config: { ...bounded, mode: "paper" },
+      quote,
+      now: new Date("2026-10-26T12:00:01Z"),
+      agentGasSui: 0.06,
+      portfolioAvailableCollateralUsd: 50,
+    });
+    expect(paper.find((check) => check.code === "gas")?.ok).toBe(true);
+    expect(paper.find((check) => check.code === "gas")?.detail).toContain(
+      "one Paper simulation",
+    );
   });
 
   it("stops when run equity drawdown exceeds its circuit breaker", () => {

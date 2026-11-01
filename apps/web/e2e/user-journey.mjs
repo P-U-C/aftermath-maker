@@ -692,7 +692,7 @@ async function nonCoreOnlyReport(browser) {
       .waitFor();
     await page
       .locator(".desk-facts")
-      .getByText(/Maker equity · Rewards/)
+      .getByText(/Rewards maker equity/)
       .waitFor();
     await page.getByRole("link", { name: "Markets", exact: true }).click();
     const marketsView = page.locator(
@@ -984,8 +984,8 @@ async function serviceAndSessionFailures(browser) {
     phone.state.sessionExpired = true;
     await phone.page.waitForTimeout(300);
     await phone.page
-      .locator(".access-notice")
-      .getByText("Your session ended. Sign in again,", { exact: true })
+      .locator(".access-inline-error")
+      .getByText("Your session ended. Sign in again.", { exact: false })
       .waitFor();
     await phone.page
       .getByRole("heading", {

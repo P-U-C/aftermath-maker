@@ -500,9 +500,13 @@ describe("runtime execution boundaries", () => {
 
     expect(runtime.snapshot.running).toBe(true);
     expect(runtime.snapshot.lastError).toContain(
-      "trading key for account 42 has no SUI for gas",
+      "trading key for account 42 needs 0.05 SUI to simulate",
     );
-    expect(runtime.snapshot.lastError).toContain("Send 0.15 SUI");
+    expect(runtime.snapshot.paperBlocker).toMatchObject({
+      code: "gas",
+      requiredGasSui: 0.05,
+      accountId: "42",
+    });
     expect(runtime.snapshot.lastSuccessfulCycleAt).not.toBeNull();
     expect(onBundleError).not.toHaveBeenCalled();
     expect(harness.executionSequence).toEqual([]);
@@ -551,15 +555,25 @@ describe("runtime execution boundaries", () => {
 
     expect(runtime.snapshot.running).toBe(true);
     expect(runtime.snapshot.lastError).toContain(
-      "account 42 has $0.00 available",
+      "account 42. It has $0.00 free collateral",
     );
     expect(runtime.snapshot.lastError).toMatch(
-      /\$40\.00 required for 2 concurrent markets/,
+      /quoting 2 markets at \$10\.00 a side needs \$40\.00/,
     );
     expect(runtime.snapshot.lastError).toContain(
-      "smaller positive orders cannot run with zero available",
+      "quote one market at a time (needs $20.00)",
     );
-    expect(runtime.snapshot.lastError).toContain("Account read recorded");
+    expect(runtime.snapshot.paperBlocker).toMatchObject({
+      code: "collateral",
+      accountId: "42",
+      availableUsd: 0,
+      requiredUsd: 40,
+      concurrentMarkets: 2,
+      quoteSizeUsd: 10,
+    });
+    expect(runtime.snapshot.accountReadAt).toBe(
+      runtime.snapshot.paperBlocker?.observedAt,
+    );
     expect(runtime.snapshot.markets[0]).toMatchObject({
       status: "healthy",
       error: runtime.snapshot.lastError,
@@ -567,6 +581,84 @@ describe("runtime execution boundaries", () => {
     expect(onBundleError).not.toHaveBeenCalled();
     expect(harness.executionSequence).toEqual([]);
     await runtime.stop();
+    expect(runtime.snapshot.lastError).toBeNull();
+    expect(runtime.snapshot.paperBlocker).toBeNull();
+    expect(runtime.snapshot.markets.every((row) => row.error === null)).toBe(
+      true,
+    );
+    harness.store.close();
+  });
+
+  it("logs a five-market collateral block once, reminds after fifteen minutes, then clears on recovery", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-11-01T12:00:00Z"));
+    const harness = createHarness();
+    const saved = harness.tenant.getConfig()!;
+    harness.tenant.setConfig(
+      makerConfigSchema.parse({
+        ...saved,
+        mode: "paper",
+        rotationMode: "portfolio",
+        markets: [
+          ...saved.markets,
+          { marketId: "0x3333", symbol: "M3" },
+          { marketId: "0x4444", symbol: "M4" },
+          { marketId: "0x5555", symbol: "M5" },
+        ],
+      }),
+    );
+    const baseline = await harness.gateway.getAgentPortfolioSnapshot({
+      marketIds: saved.markets.map((market) => market.marketId),
+    } as never);
+    let available = 0;
+    harness.setPortfolioResolver((inputs) => ({
+      ...baseline,
+      markedAt: new Date().toISOString(),
+      availableCollateralUsd: available,
+      gasSui: 1,
+      positions: inputs.marketIds.map((marketId) => ({
+        ...baseline.positions[0]!,
+        marketId,
+      })),
+    }));
+    harness.runtime.start();
+    const blocked = () =>
+      harness.tenant
+        .listEvents(50)
+        .filter(
+          (event) =>
+            event.category === "paper" &&
+            event.action === "simulation" &&
+            event.outcome === "blocked",
+        );
+    await harness.runtime.cycle();
+    expect(harness.runtime.snapshot.paperBlocker).toMatchObject({
+      accountId: "42",
+      code: "collateral",
+      concurrentMarkets: 5,
+      quoteSizeUsd: 10,
+      requiredUsd: 100,
+    });
+    expect(blocked()).toHaveLength(1);
+    await harness.runtime.cycle();
+    expect(blocked()).toHaveLength(1);
+    vi.setSystemTime(new Date("2026-11-01T12:15:00Z"));
+    await harness.runtime.cycle({ executeLive: true });
+    expect(blocked()).toHaveLength(2);
+    available = 150;
+    await harness.runtime.cycle({ executeLive: true });
+    expect(harness.runtime.snapshot.paperBlocker).toBeNull();
+    expect(
+      harness.tenant
+        .listEvents()
+        .filter(
+          (event) =>
+            event.category === "paper" &&
+            event.action === "simulation" &&
+            event.outcome === "cleared",
+        ),
+    ).toHaveLength(1);
+    await harness.runtime.stop();
     harness.store.close();
   });
 

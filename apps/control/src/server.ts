@@ -14,9 +14,10 @@ import {
   USDC_COIN_TYPE,
   type BuilderFeePolicy,
 } from "@puc/core";
-export { AUDIT_EVENT_KINDS } from "./audit-event-kinds.js";
+export { AUDIT_EVENT_KINDS, PROBLEM_OUTCOMES } from "./audit-event-kinds.js";
 import { OnchainAllowlist } from "./allowlist.js";
 import { AuthError, WalletAuth } from "./auth.js";
+import { buildIdentity } from "./build-identity.js";
 import { bundleCreateHttpError } from "./bundle-create-error.js";
 import { classifyHttpError, UserFacingError } from "./http-error.js";
 import {
@@ -270,7 +271,17 @@ const logRequestError = createRequestErrorRecorder((owner, event) =>
   store.forTenant(owner).logEvent(event),
 );
 app.setErrorHandler((error, request, reply) => {
-  const response = classifyHttpError(error);
+  const response = classifyHttpError(
+    request.routeOptions.url === "/api/access-requests" &&
+      (error as { statusCode?: number }).statusCode === 429
+      ? new UserFacingError(
+          "access-request-limit",
+          "You've sent 3 requests this hour. Try again later.",
+          undefined,
+          429,
+        )
+      : error,
+  );
   if (response.status >= 500) {
     request.log.error(
       { err: error, correlationId: request.id },
@@ -306,12 +317,10 @@ app.setErrorHandler((error, request, reply) => {
   }
   reply.code(response.status).send({
     error: response.publicMessage,
-    ...(response.status < 500
-      ? {
-          code: response.code ?? "invalid-request",
-          ...(response.fix ? { fix: response.fix } : {}),
-        }
-      : { requestId: String(request.id) }),
+    ...(response.code
+      ? { code: response.code, ...(response.fix ? { fix: response.fix } : {}) }
+      : {}),
+    ...(response.status >= 500 ? { requestId: String(request.id) } : {}),
   });
 });
 
@@ -385,6 +394,7 @@ function assertLiveModeEnabled(
 }
 
 app.get("/health", async () => ({
+  ...buildIdentity,
   ok: true,
   service: "aftermath-maker-control",
   time: new Date().toISOString(),
@@ -468,6 +478,7 @@ app.get("/api/status", async (request) => {
   const active = runtime(request);
   const identity = requestAuth(request);
   return {
+    ...buildIdentity,
     snapshot: active.snapshot,
     bundles: runtimeManager.bundleSnapshots(identity.ownerAddress),
     activeEndpoint: active.activeEndpoint,
@@ -1106,6 +1117,7 @@ app.get("/api/events", async (request) => {
     .object({
       limit: z.coerce.number().int().min(1).max(200).default(50),
       bundle: z.string().min(1).max(200).optional(),
+      problems: z.enum(["1"]).optional(),
     })
     .parse(request.query);
   if (
@@ -1120,7 +1132,13 @@ app.get("/api/events", async (request) => {
       404,
     );
   }
-  return { events: tenant(request).listEvents(query.limit, query.bundle) };
+  return {
+    events: tenant(request).listEvents(
+      query.limit,
+      query.bundle,
+      query.problems === "1",
+    ),
+  };
 });
 
 app.get("/api/performance", async (request) => {

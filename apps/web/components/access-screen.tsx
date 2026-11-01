@@ -29,12 +29,14 @@ type AccessScreenProps = {
   connected: boolean;
   denied: boolean;
   busy: boolean;
+  checkingAccess: boolean;
   requestBusy: boolean;
   requestSubmitted: boolean;
   accessRequestToken: string | null;
   verifiedAddress: string;
   notice: string | null;
   onVerify: () => void;
+  onRequestStart: () => void;
   onRequestAccess: (input: AccessRequestInput) => void;
 };
 
@@ -71,12 +73,14 @@ export function AccessScreen({
   connected,
   denied,
   busy,
+  checkingAccess,
   requestBusy,
   requestSubmitted,
   accessRequestToken,
   verifiedAddress,
   notice,
   onVerify,
+  onRequestStart,
   onRequestAccess,
 }: AccessScreenProps) {
   const [requestOpen, setRequestOpen] = useState(
@@ -106,7 +110,7 @@ export function AccessScreen({
     if (accessRequestToken) {
       setRequestOpen(true);
     } else {
-      onVerify();
+      onRequestStart();
     }
   }
 
@@ -194,12 +198,6 @@ export function AccessScreen({
         )}
       </header>
 
-      {notice && (
-        <div className="access-notice access-global-notice" role="alert">
-          {notice}
-        </div>
-      )}
-
       <div
         className={`access-layout${landing ? " access-layout-landing" : ""}`}
       >
@@ -268,6 +266,14 @@ export function AccessScreen({
                       tabIndex={-1}
                     />
                   </label>
+                  {notice && (
+                    <div className="access-inline-error" role="alert">
+                      {notice}
+                      <Button variant="quiet" onClick={onVerify}>
+                        Try again
+                      </Button>
+                    </div>
+                  )}
                   <div className="access-request-actions">
                     <Button
                       variant="primary"
@@ -292,7 +298,11 @@ export function AccessScreen({
               )
             ) : (
               <div className="access-actions">
-                {connected ? (
+                {connected && denied && !accessRequestToken ? (
+                  <div className="access-inline-error" role="alert">
+                    {notice ?? "Requests are closed right now."}
+                  </div>
+                ) : connected ? (
                   <div className="access-signin">
                     <Button
                       variant="primary"
@@ -309,30 +319,53 @@ export function AccessScreen({
                       ) : (
                         <ShieldCheck size={18} aria-hidden="true" />
                       )}
-                      {busy ? "Check your wallet" : "Retry sign in"}
+                      {checkingAccess
+                        ? "Checking the access list…"
+                        : busy
+                          ? "Check your wallet"
+                          : "Retry sign in"}
                     </Button>
                     {busy && (
                       <p role="status">
-                        Approve the sign-in message in your wallet. Signing is
-                        free and moves no funds.
+                        {checkingAccess
+                          ? "Checking whether your wallet is on the access list."
+                          : "Approve the sign-in message in your wallet. Signing is free and moves no funds."}
                       </p>
+                    )}
+                    {notice && (
+                      <div className="access-inline-error" role="alert">
+                        {notice}
+                        {notice !== "Requests are closed right now." && (
+                          <Button variant="quiet" onClick={onVerify}>
+                            Try again
+                          </Button>
+                        )}
+                      </div>
                     )}
                   </div>
                 ) : (
                   <div className="access-connect">
                     <ConnectButton>Continue with wallet</ConnectButton>
+                    {notice && (
+                      <div className="access-inline-error" role="alert">
+                        {notice}
+                        <Button variant="quiet" onClick={onVerify}>
+                          Try again
+                        </Button>
+                      </div>
+                    )}
                   </div>
                 )}
                 <div className="access-hero-links">
-                  <button
-                    className="access-request-link"
-                    type="button"
-                    onClick={openRequest}
-                  >
-                    {accessRequestToken
-                      ? "Request access"
-                      : "Verify wallet to request access"}
-                  </button>
+                  {!(denied && !accessRequestToken) && (
+                    <button
+                      className="access-request-link"
+                      type="button"
+                      onClick={openRequest}
+                    >
+                      Request access
+                    </button>
+                  )}
                   <button
                     className="access-watch-link"
                     type="button"

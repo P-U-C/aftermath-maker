@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   AccountFillHistoryCache,
+  AftermathGateway,
   assertIntegratorRegistrationIntent,
   executionGasUsedMist,
   explainTransactionFailure,
@@ -55,6 +56,56 @@ describe("gateway execution evidence", () => {
     expect(() => markPositionInventoryUsd(2.5, 0)).toThrow(
       "positive current index",
     );
+  });
+
+  it("reads each owner account's current marked exposure and unrealized result without a transaction", async () => {
+    const readAccount = async () => ({
+      account: {
+        account: {
+          positions: [
+            {
+              marketId: "0x1",
+              baseAssetAmount: -2,
+              collateralUsd: 1,
+              freeMarginUsd: 2,
+              unrealizedPnlUsd: -0.01,
+              unrealizedFundingsUsd: 0.001,
+            },
+          ],
+          totalEquityUsd: 10,
+          availableCollateralUsd: 9,
+        },
+      },
+    });
+    const readMarkets = async () => ({
+      markets: [{ marketId: "0x1", indexPrice: 10 }],
+    });
+    const gateway = {
+      getOwnedAccountCaps: async () => [
+        {
+          accountId: 1757n,
+          objectId: "0xcap",
+          collateralCoinType: "USDC",
+          isAgent: false,
+        },
+      ],
+      sdk: {
+        Perpetuals: () => ({
+          getAccount: readAccount,
+          getMarkets: readMarkets,
+        }),
+      },
+    };
+    const [account] = await AftermathGateway.prototype.listOwnerAccounts.call(
+      gateway as never,
+      { walletAddress: "0xowner" },
+    );
+    expect(account).toMatchObject({
+      accountId: "1757",
+      exposureUsd: 20,
+      positionCount: 1,
+    });
+    expect(account?.unrealizedPnlUsd).toBeCloseTo(-0.009, 6);
   });
 
   it("selects explicit gas objects and refuses an underfunded payment", () => {

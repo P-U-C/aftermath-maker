@@ -285,6 +285,21 @@ export type RuntimeSnapshot = {
   lastCycleAt: string | null;
   lastSuccessfulCycleAt: string | null;
   lastError: string | null;
+  /** Most recent actual venue account read, not a market-price poll. */
+  accountReadAt?: string | null;
+  paperBlocker?: {
+    code: string;
+    message: string;
+    accountId?: string;
+    availableUsd?: number;
+    requiredUsd?: number;
+    concurrentMarkets?: number;
+    quoteSizeUsd?: number;
+    leverage?: number;
+    observedAt?: string;
+    agentAddress?: string;
+    requiredGasSui?: number;
+  } | null;
   setupComplete: boolean;
   agentAddress: string | null;
   accountId: string | null;

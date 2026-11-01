@@ -3,7 +3,10 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { auditEventCopyKeys, deskEvent } from "../lib/audit-events";
-import { AUDIT_EVENT_KINDS } from "../../control/src/audit-event-kinds";
+import {
+  AUDIT_EVENT_KINDS,
+  PROBLEM_OUTCOMES,
+} from "../../control/src/audit-event-kinds";
 import { fixtureStates } from "../e2e/fixtures/control";
 
 const root = path.resolve(import.meta.dirname, "../../..");
@@ -59,6 +62,47 @@ function loggedEventKeys() {
 }
 
 describe("desk audit events", () => {
+  it("names the bundle when Paper resumes simulation and gives a blocked collateral event both fixes", () => {
+    const cleared = deskEvent(
+      {
+        id: 1,
+        occurredAt: "2026-11-01T00:00:00Z",
+        category: "paper",
+        action: "simulation",
+        outcome: "cleared",
+        detail: { accountId: "1757" },
+      },
+      { bundleName: "Core" },
+    );
+    expect(cleared.sentence).toBe("Paper on Core is simulating again.");
+    const blocked = deskEvent(
+      {
+        id: 2,
+        occurredAt: "2026-11-01T00:00:00Z",
+        category: "paper",
+        action: "simulation",
+        outcome: "blocked",
+        detail: {
+          code: "collateral",
+          accountId: "1757",
+          availableUsd: 0,
+          requiredUsd: 100,
+          concurrentMarkets: 5,
+          quoteSizeUsd: 10,
+          leverage: 1,
+          message: "fallback",
+        },
+      },
+      { bundleName: "Core" },
+    );
+    expect(blocked.sentence).toContain(
+      "Core: Paper is waiting on account 1757.",
+    );
+    expect(blocked.fixes?.map((fix) => fix.label)).toEqual([
+      "Open Venues",
+      "Edit strategy",
+    ]);
+  });
   it("narrates every declared server kind and every fixture event", () => {
     const kinds = [
       ...AUDIT_EVENT_KINDS,
@@ -84,6 +128,27 @@ describe("desk audit events", () => {
     expect(
       new Set(AUDIT_EVENT_KINDS.filter((kind) => !kind.startsWith("request:"))),
     ).toEqual(new Set(auditEventCopyKeys));
+  });
+
+  it("every server-defined problem has a fix destination and warning/error tone", () => {
+    for (const kind of AUDIT_EVENT_KINDS) {
+      const [category, action, outcome] = kind.split(":");
+      if (!PROBLEM_OUTCOMES.some((problem) => problem === outcome)) continue;
+      const row = deskEvent(
+        {
+          id: 1,
+          occurredAt: "2026-11-01T00:00:00Z",
+          category: category!,
+          action: action!,
+          outcome: outcome!,
+          detail: { message: "Review this bundle.", reference: "req-test" },
+        },
+        { bundleName: "Core" },
+      );
+      expect(row.severity, kind).not.toBe("info");
+      expect(row.fixes?.length, kind).toBeGreaterThan(0);
+      expect(row.sentence, kind).toContain("Core");
+    }
   });
 
   it("uses plain control-log copy for routine progress", () => {

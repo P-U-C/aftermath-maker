@@ -38,6 +38,25 @@ function snapshot(
 }
 
 describe("deriveRunState", () => {
+  it("treats structured Paper blockers as attention even when a legacy lastError is empty", () => {
+    const state = deriveRunState(
+      inputs({
+        bundles: [{ ...core, status: "running" }],
+        snapshots: [
+          snapshot("core", {
+            running: true,
+            lastError: null,
+            paperBlocker: {
+              code: "collateral",
+              message: "Paper is waiting on collateral.",
+            },
+          }),
+        ],
+      }),
+    );
+    expect(state.label).toBe("Core needs attention");
+    expect(state.bundles[0]?.phase).toBe("attention");
+  });
   it.each([
     {
       name: "an unconfirmed stop",

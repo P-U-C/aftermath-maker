@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import Database from "better-sqlite3";
+import { PROBLEM_OUTCOMES } from "./audit-event-kinds.js";
 import { UserFacingError } from "./http-error.js";
 import { z } from "zod";
 import type { EncryptedSecret } from "@puc/aftermath";
@@ -4497,6 +4498,7 @@ export class TenantStore {
   listEvents(
     limit = 50,
     bundleId: string | null | undefined = this.bundleId,
+    problems = false,
   ): AuditEvent[] {
     const beforeBundles = bundleId === "before";
     const rows = this.db
@@ -4509,6 +4511,7 @@ export class TenantStore {
              (? = 'before' AND bundle_id IS NULL) OR
              bundle_id = ?
            )
+           AND (? = 0 OR outcome IN (${PROBLEM_OUTCOMES.map(() => "?").join(", ")}))
          ORDER BY id DESC LIMIT ?`,
       )
       .all(
@@ -4516,6 +4519,8 @@ export class TenantStore {
         bundleId ?? null,
         beforeBundles ? "before" : (bundleId ?? null),
         beforeBundles ? "before" : (bundleId ?? null),
+        problems ? 1 : 0,
+        ...PROBLEM_OUTCOMES,
         limit,
       ) as Array<{
       id: number;

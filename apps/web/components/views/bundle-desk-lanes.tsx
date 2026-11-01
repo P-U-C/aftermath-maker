@@ -3,6 +3,11 @@
 import { useEffect, useRef } from "react";
 
 import { formatMoney } from "../../lib/format";
+import {
+  formatPaperBlocker,
+  relativeAccountRead,
+  type PaperBlocker,
+} from "../../lib/paper-blocker";
 import type { RunBundle } from "../../lib/run-state";
 import { useMakerRunControls } from "../maker-shell";
 import { MarketMotion, type MarketMotionHandle } from "../market-motion";
@@ -11,6 +16,9 @@ import { RunStatusChip } from "../run-control";
 type LaneSnapshot = {
   mode: "observe" | "paper" | "live";
   lastError?: string | null;
+  paperBlocker?: PaperBlocker | null;
+  accountReadAt?: string | null;
+  cycleIntervalMs?: number;
   market: {
     symbol: string;
     indexPrice: number | null;
@@ -75,9 +83,30 @@ function BundleLane({ lane }: { lane: RunningBundleLane }) {
           </div>
         </dl>
       </header>
-      {(bundle.lastError ?? snapshot.lastError) && (
-        <p className="bundle-lane-notice" role="status">
-          {bundle.lastError ?? snapshot.lastError}
+      {snapshot.accountReadAt &&
+        Date.now() - Date.parse(snapshot.accountReadAt) >
+          3 * (snapshot.cycleIntervalMs ?? 5_000) && (
+          <p className="bundle-lane-notice" role="status">
+            Account data is stale, last read{" "}
+            {relativeAccountRead(snapshot.accountReadAt)?.replace(
+              /^Checked /,
+              "",
+            )}
+          </p>
+        )}
+      {(snapshot.paperBlocker ?? bundle.lastError ?? snapshot.lastError) && (
+        <p
+          className="bundle-lane-notice"
+          role="status"
+          title={
+            snapshot.paperBlocker
+              ? formatPaperBlocker(snapshot.paperBlocker).sentence
+              : (bundle.lastError ?? snapshot.lastError ?? undefined)
+          }
+        >
+          {snapshot.paperBlocker
+            ? formatPaperBlocker(snapshot.paperBlocker).sentence
+            : (bundle.lastError ?? snapshot.lastError)}
         </p>
       )}
       <MarketMotion
@@ -86,7 +115,7 @@ function BundleLane({ lane }: { lane: RunningBundleLane }) {
         sim={false}
         className="bundle-lane-motion"
         height={
-          snapshot.quote?.bidPrice && snapshot.quote?.askPrice ? 160 : 110
+          snapshot.quote?.bidPrice && snapshot.quote?.askPrice ? 140 : 110
         }
         mid={snapshot.market.indexPrice}
         bid={snapshot.quote?.bidPrice ?? null}

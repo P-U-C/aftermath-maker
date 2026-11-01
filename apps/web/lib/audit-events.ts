@@ -1,3 +1,5 @@
+import { formatPaperBlocker, type PaperBlocker } from "./paper-blocker";
+
 export type AuditEventInput = {
   id: number;
   occurredAt: string;
@@ -12,6 +14,11 @@ export type DeskEvent = {
   occurredAt: string;
   severity: "info" | "warning" | "error";
   sentence: string;
+  fixes?: Array<{
+    label: string;
+    view?: "venues" | "strategy" | "bundles";
+    copyAddress?: string;
+  }>;
 };
 
 export type AuditEventContext = {
@@ -160,7 +167,7 @@ const copies: Record<string, AuditCopy> = {
     sentence: () => "Maker order cancellation failed.",
   },
   "runtime:post-only-retry:retry": {
-    severity: "info",
+    severity: "warning",
     sentence: (detail) =>
       `Maker is retrying a post-only quote${market(detail)}.`,
   },
@@ -188,6 +195,10 @@ const copies: Record<string, AuditCopy> = {
     severity: "info",
     sentence: (detail) =>
       `Estimated Paper fill${market(detail)}. No order was sent.`,
+  },
+  "paper:simulation:cleared": {
+    severity: "info",
+    sentence: () => "Paper is simulating again.",
   },
   "paper:simulation:blocked": {
     severity: "warning",
@@ -230,7 +241,7 @@ const copies: Record<string, AuditCopy> = {
     sentence: () => "No positions needed flattening.",
   },
   "risk:automatic-paired-rebalance:retry": {
-    severity: "info",
+    severity: "warning",
     sentence: () => "Maker is retrying the paired-account rebalance.",
   },
   "risk:automatic-paired-rebalance:confirmed": {
@@ -339,15 +350,79 @@ export function deskEvent(
         event,
         context,
       ),
+      fixes: [
+        /strategy|market-rule|profile/i.test(String(event.detail.code ?? ""))
+          ? { label: "Open Strategy", view: "strategy" }
+          : /gas|account|collateral|authorization/i.test(
+                String(event.detail.code ?? ""),
+              )
+            ? { label: "Open Venues", view: "venues" }
+            : { label: "Open Bundles", view: "bundles" },
+      ],
+    };
+  }
+  if (key === "paper:simulation:cleared") {
+    return {
+      id: event.id,
+      occurredAt: event.occurredAt,
+      severity: "info",
+      sentence: `Paper${context.bundleName ? ` on ${context.bundleName}` : ""} is simulating again.`,
+    };
+  }
+  if (
+    key === "paper:simulation:blocked" &&
+    typeof event.detail.code === "string"
+  ) {
+    const blocker = formatPaperBlocker(event.detail as PaperBlocker);
+    return {
+      id: event.id,
+      occurredAt: event.occurredAt,
+      severity: "warning",
+      sentence: context.bundleName
+        ? `${context.bundleName}: ${blocker.sentence}`
+        : blocker.sentence,
+      fixes: [
+        ...(blocker.destination === "venues"
+          ? [{ label: "Open Venues", view: "venues" as const }]
+          : []),
+        ...(blocker.rotation
+          ? [{ label: "Edit strategy", view: "strategy" as const }]
+          : []),
+        ...(blocker.copyAddress
+          ? [
+              {
+                label: "Copy trading key address",
+                copyAddress: blocker.copyAddress,
+              },
+            ]
+          : []),
+      ],
     };
   }
   const copy = copies[key];
   if (copy) {
+    const needsFix = copy.severity !== "info";
+    const destination =
+      event.category === "risk" || event.category === "strategies"
+        ? ("strategy" as const)
+        : event.category === "hedge" || event.category === "onboarding"
+          ? ("venues" as const)
+          : ("bundles" as const);
     return {
       id: event.id,
       occurredAt: event.occurredAt,
       severity: copy.severity,
       sentence: withContext(copy.sentence(event.detail), event, context),
+      ...(needsFix
+        ? {
+            fixes: [
+              {
+                label: `Open ${destination[0]!.toUpperCase()}${destination.slice(1)}`,
+                view: destination,
+              },
+            ],
+          }
+        : {}),
     };
   }
 

@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, type KeyboardEvent } from "react";
+import { ChevronDown } from "lucide-react";
 
 type StrategyOption = {
   id: string;
@@ -96,10 +97,13 @@ export function StrategyPicker({
         aria-label={`Choose strategy: ${nameIsDraft ? draftName : (selected?.name ?? "none")}; ${selected ? optionSummary(selected) : "No strategies yet"}`}
       >
         {variant === "menu" ? (
-          <strong>
-            {strategies.length}{" "}
-            {strategies.length === 1 ? "strategy" : "strategies"}
-          </strong>
+          <>
+            <strong>
+              {strategies.length}{" "}
+              {strategies.length === 1 ? "strategy" : "strategies"}
+            </strong>
+            <ChevronDown size={14} aria-hidden="true" />
+          </>
         ) : (
           <>
             <span>Strategy</span>

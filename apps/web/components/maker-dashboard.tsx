@@ -56,7 +56,11 @@ import {
 import { deskEvent } from "../lib/audit-events";
 import { selectedActiveBundleId } from "../lib/bundle-options";
 import { configsEqual } from "../lib/config-equality";
-import { withMarketPolicyOverride } from "../lib/strategy-market-policy";
+import {
+  effectiveMarketOverrides,
+  withMarketPolicyOverride,
+} from "../lib/strategy-market-policy";
+import { formatPaperBlocker } from "../lib/paper-blocker";
 import {
   readStrategyAcknowledgement,
   strategyAcknowledgementKey,
@@ -112,6 +116,7 @@ import {
   Button,
   Card,
   KitTable,
+  MenuSelect,
   PageHeader,
   SegmentedTabs,
   Sheet,
@@ -245,6 +250,8 @@ type RuntimeMarket = {
 };
 
 type Snapshot = {
+  paperBlocker?: import("../lib/paper-blocker").PaperBlocker | null;
+  accountReadAt?: string | null;
   mode: Mode;
   running: boolean;
   cycle: number;
@@ -511,6 +518,8 @@ type AccountCap = {
   allocatedCollateralUsd: number;
   freeMarginUsd: number;
   positionCount: number;
+  exposureUsd?: number;
+  unrealizedPnlUsd?: number;
   label: string | null;
   tags: string[];
 };
@@ -936,7 +945,7 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
   }
   if (!response.ok) {
     throw new RequestError(
-      `${data.error ?? `Request failed: ${response.status}`}${response.status >= 500 && data.requestId ? ` (reference ${data.requestId})` : ""}`,
+      `${data.error ?? `Request failed: ${response.status}`}${response.status >= 500 && !data.code && data.requestId ? ` (reference ${data.requestId})` : ""}`,
       response.status,
       data.code,
       data.fix,
@@ -1046,6 +1055,10 @@ function DashboardBody() {
     useState<AccessRequestVerification | null>(null);
   const [requestSubmitted, setRequestSubmitted] = useState(false);
   const [builderCode, setBuilderCode] = useState<BuilderCode | null>(null);
+  const [controlBuild, setControlBuild] = useState<{
+    commit: string;
+    builtAt: string;
+  } | null>(null);
   const [operatorStatus, setOperatorStatus] = useState<OperatorStatus | null>(
     null,
   );
@@ -1129,6 +1142,8 @@ function DashboardBody() {
     return () => window.cancelAnimationFrame(frame);
   }, [activeView, accountFocusId, accounts.length]);
   const [events, setEvents] = useState<AuditEvent[]>([]);
+  const [problemEvents, setProblemEvents] = useState<AuditEvent[]>([]);
+  const [deskProblemFilter, setDeskProblemFilter] = useState(false);
   const [performance, setPerformance] = useState<Performance | null>(null);
   const [performancePeriod, setPerformancePeriod] =
     useState<PerformancePeriod>("1D");
@@ -1273,19 +1288,29 @@ function DashboardBody() {
     ] = await Promise.all([
       request<{
         snapshot: Snapshot;
+        commit?: string;
+        builtAt?: string;
         builderCode: BuilderCode | null;
         liveGates: LiveGates;
         bundles?: BundleSnapshot[];
       }>("api/status"),
       request<{ config: MakerConfig | null }>("api/config"),
       request<SetupState>("api/setup"),
-      request<{ events: AuditEvent[] }>("api/events?limit=12"),
+      request<{ events: AuditEvent[] }>("api/events?limit=50"),
       request<{
         bundles: MakerBundle[];
         walletLimits: BundleWalletLimits | null;
       }>("api/bundles"),
       request<{ strategies: MakerStrategy[] }>("api/strategies"),
     ]);
+    setControlBuild(
+      statusResult.commit
+        ? {
+            commit: statusResult.commit,
+            builtAt: statusResult.builtAt ?? "unknown",
+          }
+        : null,
+    );
     setSnapshot(statusResult.snapshot);
     setControlUnavailable(false);
     setLastControlResponseAt(new Date().toISOString());
@@ -2089,9 +2114,18 @@ function DashboardBody() {
     [accounts, selectedAccount],
   );
 
-  async function signIn() {
-    const connectedAddress = requestOwnerWallet("sign in");
-    if (!connectedAddress) return;
+  async function signIn(intent: "sign in" | "request access" = "sign in") {
+    const connectedAddress = account?.address;
+    if (!connectedAddress) {
+      setNotice(
+        intent === "request access"
+          ? "Connect the wallet you want to use. You'll sign a free message so Maker can check the access list."
+          : "Connect your wallet to sign in.",
+        "warning",
+      );
+      walletPickerRef.current?.show();
+      return;
+    }
     loginAttemptedAddress.current = connectedAddress.toLowerCase();
     setBusy("sign-in");
     setNotice(null);
@@ -2106,6 +2140,7 @@ function DashboardBody() {
       const signed = await wallet.signPersonalMessage({
         message: new TextEncoder().encode(challenge.message),
       });
+      setBusy("access-check");
       const verification = await request<AccessRequestVerification>(
         "api/auth/verify",
         {
@@ -2138,7 +2173,7 @@ function DashboardBody() {
         setAccessRequestVerification(null);
         setAccessDenied(true);
         setRequestSubmitted(false);
-        setNotice(null);
+        setNotice("Requests are closed right now.", "warning");
       } else {
         setNotice(error instanceof Error ? error.message : String(error));
       }
@@ -2192,7 +2227,7 @@ function DashboardBody() {
   function handlePollingFailure(error: unknown) {
     if (error instanceof RequestError && error.status === 401) {
       void logout().then(() => {
-        setNotice("Your session ended. Sign in again,", "warning");
+        setNotice("Your session ended. Sign in again.", "warning");
       });
       return;
     }
@@ -3027,7 +3062,7 @@ function DashboardBody() {
     const markets = withMarketPolicyOverride(
       latest.strategy.markets,
       target.marketId,
-      overrides,
+      effectiveMarketOverrides(overrides, latest.strategy.config),
     );
     const result = await request<{
       strategy: MakerStrategy;
@@ -3530,7 +3565,8 @@ function DashboardBody() {
           venue={primaryVenue}
           connected={Boolean(account?.address)}
           denied={accessDenied}
-          busy={busy === "sign-in"}
+          busy={busy === "sign-in" || busy === "access-check"}
+          checkingAccess={busy === "access-check"}
           requestBusy={busy === "request-access"}
           requestSubmitted={requestSubmitted}
           accessRequestToken={
@@ -3539,6 +3575,7 @@ function DashboardBody() {
           verifiedAddress={accessRequestVerification?.ownerAddress ?? ""}
           notice={notice}
           onVerify={() => void signIn()}
+          onRequestStart={() => void signIn("request access")}
           onRequestAccess={(input) => void submitAccessRequest(input)}
         />
         <ConnectModal ref={walletPickerRef} />
@@ -4027,7 +4064,12 @@ function DashboardBody() {
       return {
         id: selected.marketId,
         symbol: selected.symbol,
-        customFieldCount: Object.keys(selected.overrides ?? {}).length,
+        customFieldCount: Object.keys(
+          effectiveMarketOverrides(
+            selected.overrides,
+            selectedStrategy?.config,
+          ),
+        ).length,
         status: runtimeMarket?.status ?? "queued",
         indexPrice: runtimeMarket?.indexPrice ?? listed?.indexPrice ?? null,
         openInterestBase:
@@ -4091,7 +4133,12 @@ function DashboardBody() {
         return {
           id: marketId,
           symbol: runtimeMarket?.symbol ?? listed?.symbol ?? marketId,
-          customFieldCount: Object.keys(savedMarket?.overrides ?? {}).length,
+          customFieldCount: Object.keys(
+            effectiveMarketOverrides(
+              savedMarket?.overrides,
+              savedStrategy?.config,
+            ),
+          ).length,
           bundleName: bundle.name,
           activityLabel: activity.label,
           status: (activity.active
@@ -4202,7 +4249,12 @@ function DashboardBody() {
         tickSize: listed.tickSize,
         strategyId: savedStrategy?.id ?? null,
         bundleMode: assignedBundle?.mode ?? null,
-        customFields: Object.keys(savedMarket?.overrides ?? {}),
+        customFields: Object.keys(
+          effectiveMarketOverrides(
+            savedMarket?.overrides,
+            savedStrategy?.config,
+          ),
+        ),
         stateLabel: !assignedBundle
           ? "Available"
           : assignedRun?.phase === "attention" || runtimeMarket?.error
@@ -4523,6 +4575,8 @@ function DashboardBody() {
       accountId: owned.accountId,
       label: owned.label,
       equityUsd: owned.equityUsd,
+      exposureUsd: owned.exposureUsd,
+      unrealizedPnlUsd: owned.unrealizedPnlUsd,
       bundle: assignedBundle?.name ?? "Not in a bundle",
       role:
         assignedBundle?.makerAccountId === owned.accountId
@@ -4539,46 +4593,75 @@ function DashboardBody() {
   const venueSnapshots = bundleSnapshots
     .map((entry) => entry.snapshot)
     .filter((entry): entry is Snapshot => Boolean(entry));
-  const venueGrossExposureUsd = venueSnapshots.reduce(
-    (total, entry) => total + Math.abs(entry.portfolio.grossExposureUsd),
-    0,
-  );
-  const venueUnrealizedPnlUsd = venueSnapshots.reduce(
-    (total, entry) => total + entry.portfolio.unrealizedPnlUsd,
-    0,
-  );
+  const venueGrossExposureUsd = accounts.every(
+    (account) => account.exposureUsd !== undefined,
+  )
+    ? accounts.reduce((total, account) => total + (account.exposureUsd ?? 0), 0)
+    : venueSnapshots.reduce(
+        (total, entry) => total + Math.abs(entry.portfolio.grossExposureUsd),
+        0,
+      );
+  const venueUnrealizedPnlUsd = accounts.every(
+    (account) => account.unrealizedPnlUsd !== undefined,
+  )
+    ? accounts.reduce(
+        (total, account) => total + (account.unrealizedPnlUsd ?? 0),
+        0,
+      )
+    : venueSnapshots.reduce(
+        (total, entry) => total + entry.portfolio.unrealizedPnlUsd,
+        0,
+      );
   const venueSelectedMarkets = bundles
     .filter((bundle) => !bundle.archivedAt)
     .reduce((total, bundle) => total + bundle.marketIds.length, 0);
-  const deskEvents = events.map((event) => {
-    const accountId =
-      typeof event.detail.accountId === "string"
-        ? event.detail.accountId
+  const deskEvents = (deskProblemFilter ? problemEvents : events).map(
+    (event) => {
+      const accountId =
+        typeof event.detail.accountId === "string"
+          ? event.detail.accountId
+          : null;
+      const namedBundle =
+        typeof event.detail.name === "string" ? event.detail.name : null;
+      const attributedId =
+        event.bundleId ??
+        (typeof event.detail.bundleId === "string"
+          ? event.detail.bundleId
+          : null);
+      const bundleForEvent = attributedId
+        ? bundles.find((bundle) => bundle.id === attributedId)
         : null;
-    const namedBundle =
-      typeof event.detail.name === "string" ? event.detail.name : null;
-    const attributedId =
-      event.bundleId ??
-      (typeof event.detail.bundleId === "string"
-        ? event.detail.bundleId
-        : null);
-    const bundleForEvent = attributedId
-      ? bundles.find((bundle) => bundle.id === attributedId)
-      : null;
-    const bundleForAccount = accountId
-      ? bundles.find(
-          (bundle) =>
-            !bundle.archivedAt &&
-            (bundle.makerAccountId === accountId ||
-              bundle.takerAccountId === accountId),
-        )
-      : null;
-    return deskEvent(event, {
-      bundleName:
-        namedBundle ?? bundleForEvent?.name ?? bundleForAccount?.name ?? null,
-      accountId,
-    });
-  });
+      const bundleForAccount = accountId
+        ? bundles.find(
+            (bundle) =>
+              !bundle.archivedAt &&
+              (bundle.makerAccountId === accountId ||
+                bundle.takerAccountId === accountId),
+          )
+        : null;
+      const narrated = deskEvent(event, {
+        bundleName:
+          namedBundle ?? bundleForEvent?.name ?? bundleForAccount?.name ?? null,
+        accountId,
+      });
+      if (
+        event.category === "request" &&
+        event.detail.code === "gas-reserve-low"
+      ) {
+        const agentAddress =
+          bundleSnapshots.find((entry) => entry.bundle.id === attributedId)
+            ?.snapshot?.agentAddress ?? snapshot?.agentAddress;
+        if (agentAddress)
+          return {
+            ...narrated,
+            fixes: [
+              { label: "Copy trading key address", copyAddress: agentAddress },
+            ],
+          };
+      }
+      return narrated;
+    },
+  );
   const venueGasText =
     agentGasSui === null
       ? "Not reported"
@@ -4629,7 +4712,17 @@ function DashboardBody() {
       } satisfies Parameters<
         typeof BundleDeskLanes
       >[0]["lanes"][number]["snapshot"]);
-    return [{ bundle, snapshot: laneSnapshot }];
+    return [
+      {
+        bundle,
+        snapshot: {
+          ...laneSnapshot,
+          cycleIntervalMs:
+            strategies.find((strategy) => strategy.id === source?.strategyId)
+              ?.config.refreshMs ?? deskConfig.refreshMs,
+        },
+      },
+    ];
   });
   const selectedBundle = bundles.find(
     (bundle) => bundle.id === selectedBundleId,
@@ -4666,6 +4759,7 @@ function DashboardBody() {
         authorizedAccounts: authorizedAccounts.length,
       }}
       operator={identity.operator}
+      controlBuild={controlBuild}
       notice={notice}
       noticeTone={noticeTone}
       onDismissNotice={() => setNotice(null)}
@@ -5208,8 +5302,8 @@ function DashboardBody() {
         narration={
           runState.running.length > 0 &&
           deskReportSnapshot?.mode === "paper" &&
-          deskReportSnapshot.lastError
-            ? `Paper · Reading markets · Simulation blocked: ${deskReportSnapshot.lastError}`
+          (deskReportSnapshot.paperBlocker || deskReportSnapshot.lastError)
+            ? `Paper is reading markets. ${deskReportSnapshot.paperBlocker ? formatPaperBlocker(deskReportSnapshot.paperBlocker).sentence : deskReportSnapshot.lastError}`
             : deskNarration
         }
         mode={
@@ -5275,6 +5369,21 @@ function DashboardBody() {
         fills={deskFills}
         fillsUpdatedAt={performance?.asOf ?? null}
         events={deskEvents}
+        onEventFix={selectView}
+        onEventFilterChange={(filter) => {
+          setDeskProblemFilter(filter === "problems");
+          if (filter === "problems") {
+            void request<{ events: AuditEvent[] }>(
+              "api/events?problems=1&limit=50",
+            )
+              .then((result) => setProblemEvents(result.events))
+              .catch((error) =>
+                setNotice(
+                  error instanceof Error ? error.message : String(error),
+                ),
+              );
+          }
+        }}
         staleAfterMs={deskReportConfig.refreshMs * 2}
         lastHedgeDigest={deskReportSnapshot?.hedge.lastDigest ?? null}
         unavailable={controlUnavailable}
@@ -5330,20 +5439,15 @@ function DashboardBody() {
                           .map((used) => used.name)
                           .join(", ")
                       : "no bundles"}
-                    . Last saved{" "}
                     {selectedStrategy.updatedAt &&
                     !Number.isNaN(Date.parse(selectedStrategy.updatedAt))
-                      ? new Intl.DateTimeFormat("en-US", {
-                          dateStyle: "medium",
-                          timeStyle: "short",
-                        }).format(new Date(selectedStrategy.updatedAt))
-                      : "time unavailable"}
-                    .
+                      ? `. Last saved ${new Intl.DateTimeFormat("en-US", { dateStyle: "medium", timeStyle: "short" }).format(new Date(selectedStrategy.updatedAt))}.`
+                      : "."}
                   </p>
                 </div>
                 <div className="strategy-summary-actions">
                   <Button
-                    variant="quiet"
+                    variant="secondary"
                     onClick={() => void createStrategy()}
                     disabled={Boolean(busy)}
                   >
@@ -5390,7 +5494,10 @@ function DashboardBody() {
                     </div>
                     <div>
                       <dt>Risk profile</dt>
-                      <dd>{config.strategyProfile}</dd>
+                      <dd>
+                        {config.strategyProfile[0]!.toUpperCase() +
+                          config.strategyProfile.slice(1)}
+                      </dd>
                     </div>
                   </dl>
                 </section>
@@ -5423,7 +5530,12 @@ function DashboardBody() {
                         {config.markets
                           .filter(
                             (market) =>
-                              Object.keys(market.overrides ?? {}).length,
+                              Object.keys(
+                                effectiveMarketOverrides(
+                                  market.overrides,
+                                  selectedStrategy.config,
+                                ),
+                              ).length,
                           )
                           .map((market) => market.symbol)
                           .join(", ") || "None"}
@@ -5435,16 +5547,24 @@ function DashboardBody() {
                       <span
                         key={market.marketId}
                         className={
-                          market.overrides &&
-                          Object.keys(market.overrides).length
+                          Object.keys(
+                            effectiveMarketOverrides(
+                              market.overrides,
+                              selectedStrategy.config,
+                            ),
+                          ).length
                             ? "is-custom"
                             : ""
                         }
                       >
                         {market.symbol}
-                        {market.overrides &&
-                        Object.keys(market.overrides).length
-                          ? `, ${Object.keys(market.overrides).length} custom`
+                        {Object.keys(
+                          effectiveMarketOverrides(
+                            market.overrides,
+                            selectedStrategy.config,
+                          ),
+                        ).length
+                          ? `, ${Object.keys(effectiveMarketOverrides(market.overrides, selectedStrategy.config)).length} custom`
                           : ""}
                       </span>
                     ))}
@@ -7644,6 +7764,7 @@ function DashboardBody() {
           id: strategy.id,
           name: strategy.name,
           marketCount: strategy.markets.length,
+          cycleIntervalMs: strategy.config.refreshMs,
           requiresHedge: strategy.config.hedge.enabled,
         }))}
         onAttachStrategy={attachStrategy}
@@ -7735,7 +7856,10 @@ function DashboardBody() {
           strategyName={policyStrategy.name}
           bundleNames={policyStrategy.usedBy.map((used) => used.name)}
           defaults={policyStrategy.config}
-          current={policyMarket.overrides ?? {}}
+          current={effectiveMarketOverrides(
+            policyMarket.overrides,
+            policyStrategy.config,
+          )}
           blocked={policyBlocked}
           onClose={() => setPolicyEditorTarget(null)}
           onOpenStrategy={() => {
@@ -7772,25 +7896,24 @@ function DashboardBody() {
                   setPerformancePeriod(period);
                 }}
               />
-              <select
-                className="kit-menu"
-                aria-label="Performance bundle"
+              <MenuSelect
+                label="Performance bundle"
                 value={performanceBundle}
-                onChange={(event) => {
+                options={[
+                  { value: "all", label: "All bundles" },
+                  ...bundles
+                    .filter((bundle) => !bundle.archivedAt)
+                    .map((bundle) => ({
+                      value: bundle.id,
+                      label: bundle.name,
+                    })),
+                  { value: "before", label: "Before bundles" },
+                ]}
+                onChange={(value) => {
                   setPerformance(null);
-                  setPerformanceBundle(event.target.value);
+                  setPerformanceBundle(value);
                 }}
-              >
-                <option value="all">All bundles</option>
-                {bundles
-                  .filter((bundle) => !bundle.archivedAt)
-                  .map((bundle) => (
-                    <option key={bundle.id} value={bundle.id}>
-                      {bundle.name}
-                    </option>
-                  ))}
-                <option value="before">Before bundles</option>
-              </select>
+              />
             </>
           }
         />
@@ -8151,85 +8274,87 @@ function DashboardBody() {
               </strong>
             </div>
           </div>
-          <section className="performance-breakdown">
-            <h3>Maker side</h3>
-            <dl>
-              <div>
-                <dt>Maker fills</dt>
-                <dd>{performance?.attributed.fills ?? 0}</dd>
-              </div>
-              <div>
-                <dt>Attributed notional</dt>
-                <dd>{money(performance?.attributed.notionalUsd ?? 0)}</dd>
-              </div>
-              <div>
-                <dt>Realized PnL</dt>
-                <dd
-                  className={
-                    (performance?.attributed.realizedPnlUsd ?? 0) < 0
-                      ? "negative-number"
-                      : ""
-                  }
-                >
-                  {money(performance?.attributed.realizedPnlUsd ?? 0)}
-                </dd>
-              </div>
-              <div>
-                <dt>Known fees</dt>
-                <dd>
-                  {money(
-                    (performance?.attributed.protocolFeesUsd ?? 0) +
-                      (performance?.attributed.estimatedBuilderFeesUsd ?? 0),
-                  )}
-                </dd>
-              </div>
-              <div>
-                <dt>Net known result</dt>
-                <dd
-                  className={
-                    (performance?.attributed.netAfterKnownCostsUsd ?? 0) < 0
-                      ? "negative-number"
-                      : ""
-                  }
-                >
-                  {money(performance?.attributed.netAfterKnownCostsUsd ?? 0)}
-                </dd>
-              </div>
-            </dl>
-          </section>
-          <section className="performance-breakdown">
-            <h3>Hedge side</h3>
-            <dl>
-              <div>
-                <dt>Account</dt>
-                <dd>
-                  {performance?.hedge.accountId
-                    ? accountReference(performance.hedge.accountId)
-                    : "Off"}
-                </dd>
-              </div>
-              <div>
-                <dt>Orders filled</dt>
-                <dd>{performance?.hedge.fills ?? 0}</dd>
-              </div>
-              <div>
-                <dt>Notional</dt>
-                <dd>{money(performance?.hedge.notionalUsd ?? 0)}</dd>
-              </div>
-              <div>
-                <dt>Hedge result</dt>
-                <dd
-                  className={
-                    (performance?.hedge.netAfterKnownCostsUsd ?? 0) < 0
-                      ? "negative-number"
-                      : ""
-                  }
-                >
-                  {money(performance?.hedge.netAfterKnownCostsUsd ?? 0)}
-                </dd>
-              </div>
-            </dl>
-          </section>
+          <div className="performance-sides">
+            <section className="performance-breakdown">
+              <h3>Maker side</h3>
+              <dl>
+                <div>
+                  <dt>Maker fills</dt>
+                  <dd>{performance?.attributed.fills ?? 0}</dd>
+                </div>
+                <div>
+                  <dt>Attributed notional</dt>
+                  <dd>{money(performance?.attributed.notionalUsd ?? 0)}</dd>
+                </div>
+                <div>
+                  <dt>Realized PnL</dt>
+                  <dd
+                    className={
+                      (performance?.attributed.realizedPnlUsd ?? 0) < 0
+                        ? "negative-number"
+                        : ""
+                    }
+                  >
+                    {money(performance?.attributed.realizedPnlUsd ?? 0)}
+                  </dd>
+                </div>
+                <div>
+                  <dt>Known fees</dt>
+                  <dd>
+                    {money(
+                      (performance?.attributed.protocolFeesUsd ?? 0) +
+                        (performance?.attributed.estimatedBuilderFeesUsd ?? 0),
+                    )}
+                  </dd>
+                </div>
+                <div>
+                  <dt>Net known result</dt>
+                  <dd
+                    className={
+                      (performance?.attributed.netAfterKnownCostsUsd ?? 0) < 0
+                        ? "negative-number"
+                        : ""
+                    }
+                  >
+                    {money(performance?.attributed.netAfterKnownCostsUsd ?? 0)}
+                  </dd>
+                </div>
+              </dl>
+            </section>
+            <section className="performance-breakdown">
+              <h3>Hedge side</h3>
+              <dl>
+                <div>
+                  <dt>Account</dt>
+                  <dd>
+                    {performance?.hedge.accountId
+                      ? accountReference(performance.hedge.accountId)
+                      : "Off"}
+                  </dd>
+                </div>
+                <div>
+                  <dt>Orders filled</dt>
+                  <dd>{performance?.hedge.fills ?? 0}</dd>
+                </div>
+                <div>
+                  <dt>Notional</dt>
+                  <dd>{money(performance?.hedge.notionalUsd ?? 0)}</dd>
+                </div>
+                <div>
+                  <dt>Hedge result</dt>
+                  <dd
+                    className={
+                      (performance?.hedge.netAfterKnownCostsUsd ?? 0) < 0
+                        ? "negative-number"
+                        : ""
+                    }
+                  >
+                    {money(performance?.hedge.netAfterKnownCostsUsd ?? 0)}
+                  </dd>
+                </div>
+              </dl>
+            </section>
+          </div>
           <div className="performance-combined">
             <span>Combined known result</span>
             <strong

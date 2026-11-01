@@ -5,6 +5,7 @@ import { useEffect, useRef, useState, type MutableRefObject } from "react";
 import { createPortal } from "react-dom";
 
 import type { RunBundle, RunPhase, RunState } from "../lib/run-state";
+import { formatPaperBlocker } from "../lib/paper-blocker";
 import { Sheet } from "./ui/primitives";
 
 type BundleAction = "start" | "pause" | "resume";
@@ -109,6 +110,8 @@ function rowDetail(
   tone?: "amber" | undefined;
   destination?: "strategy" | "venues" | "bundles" | undefined;
   copyAddress?: string | undefined;
+  rotation?: boolean;
+  checked?: string | null;
 } {
   if (bundle.startError) {
     const fix = bundle.startError.fix;
@@ -133,6 +136,17 @@ function rowDetail(
     };
   }
   if (bundle.phase === "attention") {
+    if (bundle.snapshot?.paperBlocker) {
+      const blocker = formatPaperBlocker(bundle.snapshot.paperBlocker);
+      return {
+        text: blocker.sentence,
+        tone: "amber",
+        destination: blocker.destination ?? undefined,
+        copyAddress: blocker.copyAddress,
+        rotation: blocker.rotation,
+        checked: blocker.checked,
+      };
+    }
     const reason =
       bundle.lastError ?? bundle.snapshot?.lastError ?? "Needs review.";
     const normalized = reason.toLowerCase();
@@ -367,7 +381,8 @@ function RunStatusContent({
                   </span>
                 </div>
                 <p className={detail.tone === "amber" ? "is-amber" : undefined}>
-                  {detail.text}{" "}
+                  {detail.text}
+                  {detail.checked && <> {detail.checked}.</>}{" "}
                   {detail.destination === "venues" && (
                     <button
                       type="button"
@@ -398,6 +413,17 @@ function RunStatusContent({
                       {copiedAddress === bundle.id
                         ? "Copied"
                         : "Copy trading key address"}
+                    </button>
+                  )}
+                  {detail.rotation && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        onOpenStrategy();
+                        onClose();
+                      }}
+                    >
+                      Edit strategy
                     </button>
                   )}
                   {detail.destination === "strategy" && (

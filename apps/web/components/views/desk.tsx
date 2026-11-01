@@ -62,6 +62,11 @@ export type DeskEvent = {
   occurredAt: string;
   severity: "info" | "warning" | "error";
   sentence: string;
+  fixes?: Array<{
+    label: string;
+    view?: "venues" | "strategy" | "bundles";
+    copyAddress?: string;
+  }>;
 };
 
 type DeskViewProps = {
@@ -117,6 +122,8 @@ type DeskViewProps = {
   fills: DeskFill[];
   fillsUpdatedAt: string | null;
   events: DeskEvent[];
+  onEventFilterChange: (filter: "all" | "problems") => void;
+  onEventFix: (view: "venues" | "strategy" | "bundles") => void;
   staleAfterMs: number;
   lastHedgeDigest: string | null;
   unavailable: boolean;
@@ -192,6 +199,8 @@ export function DeskView({
   fills,
   fillsUpdatedAt,
   events,
+  onEventFilterChange,
+  onEventFix,
   staleAfterMs,
   lastHedgeDigest,
   unavailable,
@@ -215,10 +224,9 @@ export function DeskView({
   const fillEnterClass = useRowEnter(fills);
   const eventEnterClass = useRowEnter(events);
   const [eventFilter, setEventFilter] = useState<"all" | "problems">("all");
-  const visibleEvents =
-    eventFilter === "problems"
-      ? events.filter((event) => event.severity !== "info")
-      : events;
+  const [eventsExpanded, setEventsExpanded] = useState(false);
+  const [copiedEventId, setCopiedEventId] = useState<number | null>(null);
+  const visibleEvents = eventsExpanded ? events : events.slice(0, 12);
 
   useEffect(() => {
     const update = {
@@ -286,7 +294,9 @@ export function DeskView({
             </strong>
             <div className="desk-facts">
               <span>
-                Maker equity{reportBundleName ? ` · ${reportBundleName}` : ""}{" "}
+                {reportBundleName
+                  ? `${reportBundleName} maker equity`
+                  : "Maker equity"}{" "}
                 <b>
                   <AnimatedNumber
                     value={formatMoney(equityUsd)}
@@ -325,6 +335,14 @@ export function DeskView({
                     : "Waiting"}
                 </b>
               </span>
+              <Button
+                className="desk-flatten-desktop"
+                variant="secondary"
+                onClick={onFlatten}
+                disabled={flattenDisabled}
+              >
+                Flatten positions…
+              </Button>
               {paper.estimated && (
                 <span>
                   Paper estimate{" "}
@@ -340,7 +358,7 @@ export function DeskView({
           <div className="desk-hero-actions">
             <Button
               className="desk-flatten-phone"
-              variant="quiet"
+              variant="secondary"
               onClick={onFlatten}
               disabled={flattenDisabled}
             >
@@ -615,7 +633,11 @@ export function DeskView({
                 { value: "all", label: "All" },
                 { value: "problems", label: "Problems" },
               ]}
-              onChange={setEventFilter}
+              onChange={(filter) => {
+                setEventFilter(filter);
+                setEventsExpanded(false);
+                onEventFilterChange(filter);
+              }}
             />
           }
         >
@@ -636,7 +658,26 @@ export function DeskView({
                     >
                       {event.severity}
                     </span>
-                    <strong>{event.sentence}</strong>
+                    <strong className="desk-event-description">
+                      {event.sentence}{" "}
+                      {event.fixes?.map((fix) => (
+                        <button
+                          key={fix.label}
+                          type="button"
+                          onClick={() => {
+                            if (fix.view) onEventFix(fix.view);
+                            else if (fix.copyAddress)
+                              void navigator.clipboard
+                                .writeText(fix.copyAddress)
+                                .then(() => setCopiedEventId(event.id));
+                          }}
+                        >
+                          {copiedEventId === event.id && fix.copyAddress
+                            ? "Copied"
+                            : fix.label}
+                        </button>
+                      ))}
+                    </strong>
                   </span>
                 </ListRow>
               ))
@@ -648,6 +689,15 @@ export function DeskView({
               </div>
             )}
           </div>
+          {!eventsExpanded && events.length > 12 && (
+            <Button
+              variant="secondary"
+              size="small"
+              onClick={() => setEventsExpanded(true)}
+            >
+              Show more
+            </Button>
+          )}
         </Card>
       </div>
 

@@ -49,6 +49,23 @@ const scenarios = {
     signPersonalMessage: "resolve",
     accessRequestToken: "fixture-access-request-token",
   },
+  request: {
+    signPersonalMessage: "resolve",
+    accessRequestToken: "fixture-access-request-token",
+    accessFlow: "request",
+  },
+  registry503: { signPersonalMessage: "resolve", accessFlow: "registry503" },
+  closed403: { signPersonalMessage: "resolve", accessFlow: "closed403" },
+  expired410: {
+    signPersonalMessage: "resolve",
+    accessRequestToken: "fixture-access-request-token",
+    accessFlow: "expired410",
+  },
+  rate429: {
+    signPersonalMessage: "resolve",
+    accessRequestToken: "fixture-access-request-token",
+    accessFlow: "rate429",
+  },
   // No injected extension: the Slush browser bridge must still be offered on
   // a phone, where a native wallet app is not a browser extension.
   slush: { mobileBridge: true },
@@ -85,11 +102,35 @@ async function routeControlApi(page, scenario) {
       });
     }
     if (routePath === "api/auth/verify") {
+      if (scenario.accessFlow === "closed403")
+        return json(403, {
+          error: "Requests are closed right now.",
+          code: "access-requests-closed",
+        });
+      if (scenario.accessFlow === "registry503")
+        return json(503, {
+          error:
+            "Maker couldn't check the access list right now. Try again in a minute.",
+          code: "access-list-unavailable",
+        });
       return json(200, {
         accessRequestToken: scenario.accessRequestToken,
         accessRequestExpiresAt: "2026-10-28T00:15:00.000Z",
         ownerAddress: FIRST_ADDRESS,
       });
+    }
+    if (routePath === "api/access-requests") {
+      if (scenario.accessFlow === "expired410")
+        return json(410, {
+          error: "That check expired. Sign again to request access.",
+          code: "access-check-expired",
+        });
+      if (scenario.accessFlow === "rate429")
+        return json(429, {
+          error: "You've sent 3 requests this hour. Try again later.",
+          code: "access-request-limit",
+        });
+      return json(200, { ok: true });
     }
     if (routePath === "api/auth/logout") return json(200, { ok: true });
     return json(501, { error: `No preauth fixture for ${routePath}` });
@@ -190,6 +231,78 @@ async function runSlushMobile(viewport, browser) {
   return failures;
 }
 
+async function runAccessFlow(page, scenario, scenarioName, viewport, output) {
+  await page
+    .getByRole("button", { name: "Request access", exact: true })
+    .first()
+    .click();
+  await page
+    .getByRole("alert")
+    .getByText(
+      "Connect the wallet you want to use. You'll sign a free message so Maker can check the access list.",
+    )
+    .waitFor();
+  await page
+    .getByText("Mock Sui Wallet", { exact: true })
+    .filter({ visible: true })
+    .first()
+    .click();
+  await page.waitForFunction(() =>
+    Boolean(window.__makerMockWallet?.lastSignRequest),
+  );
+  if (scenario.accessFlow === "closed403") {
+    await page
+      .getByRole("alert")
+      .getByText("Requests are closed right now.")
+      .waitFor();
+    if (await page.getByRole("button", { name: "Try again" }).count())
+      throw new Error("closed access prompted a repeat signature");
+    if (await page.getByRole("button", { name: "Retry sign in" }).count())
+      throw new Error(
+        "closed access still offered an unavailable signature loop",
+      );
+    if (
+      await page
+        .getByRole("button", { name: "Request access", exact: true })
+        .count()
+    )
+      throw new Error(
+        "closed access still offered an unavailable request flow",
+      );
+  } else if (scenario.accessFlow === "registry503") {
+    await page
+      .getByRole("alert")
+      .getByText(
+        "Maker couldn't check the access list right now. Try again in a minute.",
+      )
+      .waitFor();
+    await page.getByRole("button", { name: "Try again" }).waitFor();
+  } else {
+    await page
+      .getByRole("heading", { name: "This wallet is not on the list yet." })
+      .waitFor();
+    const form = page.locator(".access-request-form");
+    await form.getByLabel("X / Twitter").fill("@maker_user");
+    await form.getByRole("button", { name: "Send request" }).click();
+    const expected =
+      scenario.accessFlow === "expired410"
+        ? "That check expired. Sign again to request access."
+        : scenario.accessFlow === "rate429"
+          ? "You've sent 3 requests this hour. Try again later."
+          : "Request received";
+    await (
+      expected === "Request received"
+        ? page.getByText(expected)
+        : form.getByRole("alert").getByText(expected)
+    ).waitFor();
+  }
+  await fs.mkdir(output, { recursive: true });
+  await page.screenshot({
+    path: path.join(output, `${scenarioName}-${viewport.name}-result.png`),
+    fullPage: false,
+  });
+}
+
 async function run(scenarioName, viewport, browser) {
   const scenario = scenarios[scenarioName];
   if (scenario.mobileBridge) return runSlushMobile(viewport, browser);
@@ -214,6 +327,16 @@ async function run(scenarioName, viewport, browser) {
   try {
     await page.goto(baseUrl, { waitUntil: "networkidle" });
     await page.getByRole("heading").first().waitFor();
+    if (scenario.accessFlow) {
+      await runAccessFlow(
+        page,
+        scenario,
+        scenarioName,
+        viewport,
+        outputDirectory,
+      );
+      return failures;
+    }
     await connectMockWallet(page);
 
     const badge = page.locator("[data-wallet-control]");

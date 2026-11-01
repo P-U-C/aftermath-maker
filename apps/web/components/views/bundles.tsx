@@ -8,6 +8,10 @@ import {
   availableBundleAccounts,
 } from "../../lib/bundle-options";
 import { formatMoney } from "../../lib/format";
+import {
+  formatPaperBlocker,
+  relativeAccountRead,
+} from "../../lib/paper-blocker";
 import type { RunState } from "../../lib/run-state";
 import { parseNumericDraft } from "../../lib/numeric-draft";
 import { Button, Card, PageHeader, Sheet } from "../ui/primitives";
@@ -72,6 +76,7 @@ type BundlesViewProps = {
     id: string;
     name: string;
     marketCount: number;
+    cycleIntervalMs?: number;
     requiresHedge: boolean;
   }>;
   onAttachStrategy: (bundleId: string, strategyId: string) => Promise<void>;
@@ -469,11 +474,39 @@ export function BundlesView({
                     ? `From ${bundle.strategyName}: ${bundle.marketIds.length ? bundle.marketIds.map((marketId) => markets.find((market) => market.id === marketId)?.symbol ?? marketId).join(", ") : "No markets selected"}`
                     : "No strategy attached"}
                 </p>
-                {runBundle?.lastError && (
-                  <p className="bundle-error" role="status">
-                    {runBundle.lastError}
-                  </p>
-                )}
+                {runBundle?.phase === "attention" &&
+                  (runBundle.snapshot?.paperBlocker || runBundle.lastError) && (
+                    <p
+                      className="bundle-error"
+                      role="status"
+                      title={
+                        runBundle.snapshot?.paperBlocker
+                          ? formatPaperBlocker(runBundle.snapshot.paperBlocker)
+                              .sentence
+                          : (runBundle.lastError ?? undefined)
+                      }
+                    >
+                      {runBundle.snapshot?.paperBlocker
+                        ? formatPaperBlocker(runBundle.snapshot.paperBlocker)
+                            .sentence
+                        : runBundle.lastError}
+                    </p>
+                  )}
+                {(runBundle?.phase === "running" ||
+                  runBundle?.phase === "attention") &&
+                  runBundle.snapshot?.accountReadAt &&
+                  Date.now() - Date.parse(runBundle.snapshot.accountReadAt) >
+                    3 *
+                      (strategies.find(
+                        (strategy) => strategy.id === bundle.strategyId,
+                      )?.cycleIntervalMs ?? 5_000) && (
+                    <p className="bundle-stale" role="status">
+                      Account data is stale, last read{" "}
+                      {relativeAccountRead(
+                        runBundle.snapshot.accountReadAt,
+                      )?.replace(/^Checked /, "")}
+                    </p>
+                  )}
                 <div className="bundle-actions">
                   {runBundle?.needsStrategy ? (
                     <label className="bundle-attach-strategy">

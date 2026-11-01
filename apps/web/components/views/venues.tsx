@@ -24,6 +24,8 @@ export type VenueAccountRow = {
   accountId: string;
   label: string | null;
   equityUsd: number;
+  exposureUsd?: number | undefined;
+  unrealizedPnlUsd?: number | undefined;
   role: "Maker" | "Taker" | "Available";
   bundle: string;
 };
@@ -71,6 +73,11 @@ export function VenueBoard({
       ? "Connected, quoting"
       : "Connected, ready";
   const [revokeConfirm, setRevokeConfirm] = useState(false);
+  const perAccountMetrics = accounts.every(
+    (account) =>
+      account.exposureUsd !== undefined &&
+      account.unrealizedPnlUsd !== undefined,
+  );
   const accountsByBundle = Array.from(
     accounts.reduce((groups, account) => {
       const group = groups.get(account.bundle) ?? [];
@@ -179,15 +186,15 @@ export function VenueBoard({
                 <th>Account</th>
                 <th>Role</th>
                 <th>Equity</th>
-                <th>Exposure</th>
-                <th>Unrealized</th>
+                {perAccountMetrics && <th>Exposure</th>}
+                {perAccountMetrics && <th>Unrealized</th>}
               </tr>
             </thead>
             <tbody>
               {accountsByBundle.map(([bundle, groupedAccounts]) => (
                 <Fragment key={bundle}>
                   <tr className="venue-account-group">
-                    <th colSpan={5}>
+                    <th colSpan={perAccountMetrics ? 5 : 3}>
                       {bundle} <span>{groupedAccounts.length}</span>
                     </th>
                   </tr>
@@ -201,12 +208,21 @@ export function VenueBoard({
                       </td>
                       <td>{account.role}</td>
                       <td>{formatMoney(account.equityUsd)}</td>
-                      <td title="Per-account exposure is not reported by this control read.">
-                        —
-                      </td>
-                      <td title="Per-account unrealized result is not reported by this control read.">
-                        —
-                      </td>
+                      {perAccountMetrics && (
+                        <td>{formatMoney(account.exposureUsd ?? null)}</td>
+                      )}
+                      {perAccountMetrics && (
+                        <td
+                          className={
+                            account.unrealizedPnlUsd &&
+                            account.unrealizedPnlUsd < 0
+                              ? "negative-number"
+                              : ""
+                          }
+                        >
+                          {formatMoney(account.unrealizedPnlUsd ?? null)}
+                        </td>
+                      )}
                     </tr>
                   ))}
                 </Fragment>
