@@ -1498,8 +1498,8 @@ async function capture(browser, stateName, captureConfig, view) {
       await runStatus.waitFor({ state: "hidden" });
       const list = page.locator(".desk-log-card .desk-event-row");
       await page.getByRole("button", { name: "Show more" }).click();
-      if ((await list.count()) !== 31)
-        throw new Error("Show more did not reveal events 13–31");
+      if ((await list.count()) !== 50)
+        throw new Error("Show more did not reveal events 13–50");
       await page.getByRole("tab", { name: "Problems" }).click();
       await page
         .locator(".desk-log-card")

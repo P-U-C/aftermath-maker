@@ -218,7 +218,7 @@ Web container logs had no route-specific records for these paths. Nothing in the
 - `npm run check` — passed (40 core, 53 aftermath, 144 control, 86 web = **323 tests**); final lines: `✓ Running next.config.ts took 26ms` / `customer journey: all stateful audit flows passed`.
 - `npm test` — all four workspace suites passed as part of `npm run check`.
 - `apps/web/e2e/wallet-preauth.mjs --scenario all` — desktop/phone cases passed.
-- `apps/web/e2e/shots.mjs --verify-paper-blocked` — 31-event Show more, server Problems filter, fix links and card cleanup passed.
+- `apps/web/e2e/shots.mjs --verify-paper-blocked` — 50-event Show more, server Problems filter, fix links and card cleanup passed.
 - `apps/web/e2e/shots.mjs --verify-lane-height` — two rendered desk charts measured 187.7 px each (≤200 px).
 - `contrast-audit.mjs` on the final built revision — passed all fixture states in light/dark at desktop, phone and tablet. Last lines: `ok   stopped/dark/desktop` / `ok   stopped/dark/phone` / `ok   stopped/dark/tablet`.
 - `shots.mjs --view all` on the final built revision — passed **664 captures** across every fixture state, view and configured size, with no checks disabled. Final lines: `stopped/learn/phone-dark: … (390px wide)` / `stopped/learn/desktop-reduced: … (1440px wide)`.

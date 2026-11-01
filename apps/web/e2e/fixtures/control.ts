@@ -1246,6 +1246,16 @@ paperBlocked.events.events = [
     bundleId: "core-fixture",
     detail: { ...blockedSnapshot.paperBlocker, marketId: marketIds.MON },
   },
+  ...Array.from({ length: 19 }, (_, index) => ({
+    id: 200 + index,
+    occurredAt: new Date(
+      Date.parse(blockedSnapshot.accountReadAt!) - (index + 1) * 10_000,
+    ).toISOString(),
+    category: "runtime",
+    action: "start",
+    outcome: "success",
+    detail: {},
+  })),
 ];
 
 const attention = structuredClone(paperRunning);
