@@ -7,6 +7,7 @@ import {
 } from "node:crypto";
 import { verifyPersonalMessageSignature } from "@mysten/sui/verify";
 import type { OnchainAllowlist } from "./allowlist.js";
+import { UserFacingError } from "./http-error.js";
 import type { Store } from "./store.js";
 
 const SUI_ADDRESS = /^0x[0-9a-fA-F]{64}$/;
@@ -138,7 +139,12 @@ export class WalletAuth {
     }
     const ownerAddress = normalizeAddress(decoded.address);
     if (decoded.expiresAt <= Date.now()) {
-      throw new AuthError(401, "Access request verification has expired");
+      throw new UserFacingError(
+        "access-check-expired",
+        "That check expired. Sign again to request access.",
+        undefined,
+        410,
+      );
     }
     return ownerAddress;
   }
@@ -205,25 +211,41 @@ export class WalletAuth {
         { address: ownerAddress },
       );
     } catch {
-      throw new AuthError(401, "Wallet signature could not be verified");
+      throw new UserFacingError(
+        "signature-invalid",
+        "Your wallet's signature didn't verify. Sign again.",
+        undefined,
+        401,
+      );
     }
 
     let allowed = false;
     if (this.allowlist.configured) {
       allowed = await this.allowlist.isAllowed(ownerAddress, true);
+    } else if (!this.bootstrapEnabled) {
+      throw new UserFacingError(
+        "access-list-not-configured",
+        "The access list isn't set up yet. The operator needs to finish setup.",
+        undefined,
+        503,
+      );
     } else if (this.bootstrapEnabled) {
       const operator = this.store.getOperatorAddress();
       if (!operator || operator === ownerAddress) {
         this.store.claimBootstrapOperator(ownerAddress);
         allowed = true;
+      } else {
+        throw new UserFacingError(
+          "access-list-not-configured",
+          "The access list isn't set up yet. The operator needs to finish setup.",
+          undefined,
+          503,
+        );
       }
     }
     if (!allowed) {
       if (!this.accessRequestTokenSecret) {
-        throw new AuthError(
-          403,
-          "This wallet is not on the on-chain access list",
-        );
+        throw new AuthError(403, "Requests are closed right now.");
       }
       return {
         ownerAddress,

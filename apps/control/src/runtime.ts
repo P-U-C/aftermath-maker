@@ -217,6 +217,8 @@ const initialSnapshot = (): RuntimeSnapshot => ({
   lastCycleAt: null,
   lastSuccessfulCycleAt: null,
   lastError: null,
+  accountReadAt: null,
+  paperBlocker: null,
   setupComplete: false,
   agentAddress: null,
   accountId: null,
@@ -338,6 +340,7 @@ function paperSimulationBlocker(inputs: {
   agent: { address: string } | null;
   safety: SafetyCheck[];
   symbol: string;
+  observedAt?: string;
   requiredGasSui: number;
   collateral?: {
     availableUsd: number;
@@ -347,7 +350,7 @@ function paperSimulationBlocker(inputs: {
     leverage: number;
     observedAt: string;
   };
-}): { code: string; message: string } | null {
+}): NonNullable<RuntimeSnapshot["paperBlocker"]> | null {
   const accountLabel = inputs.setup
     ? `account ${inputs.setup.accountId}`
     : "this account";
@@ -364,15 +367,21 @@ function paperSimulationBlocker(inputs: {
   if (first.code === "gas") {
     return {
       code: "gas",
-      message: `Paper can't simulate: the trading key for ${accountLabel} has no SUI for gas. Send ${formatSui(inputs.requiredGasSui)} SUI to ${inputs.agent.address}; Maker will keep reading the market.`,
+      accountId: inputs.setup?.accountId,
+      agentAddress: inputs.agent.address,
+      requiredGasSui: inputs.requiredGasSui,
+      ...(inputs.observedAt ? { observedAt: inputs.observedAt } : {}),
+      message: `Paper is waiting on gas. The trading key for ${accountLabel} needs ${formatSui(inputs.requiredGasSui)} SUI to simulate.`,
     };
   }
   if (first.code === "collateral") {
     return {
       code: "collateral",
+      accountId: inputs.setup?.accountId,
+      ...(inputs.collateral ?? {}),
       message: inputs.collateral
-        ? `Paper can't simulate: ${accountLabel} has $${inputs.collateral.availableUsd.toFixed(2)} available collateral; $${inputs.collateral.requiredUsd.toFixed(2)} required for ${inputs.collateral.concurrentMarkets} concurrent ${inputs.collateral.concurrentMarkets === 1 ? "market" : "markets"}, including a $${inputs.collateral.quoteSizeUsd.toFixed(2)} quote per side at ${inputs.collateral.leverage}x. Account read recorded ${inputs.collateral.observedAt}. ${inputs.collateral.availableUsd <= 0 ? `Deposit collateral into ${accountLabel}; smaller positive orders cannot run with zero available.` : "Add collateral or review smaller sizes within venue and risk limits."} Maker will keep reading the market.`
-        : `Paper can't simulate: ${accountLabel} has ${first.detail}. Add collateral or review sizing; Maker will keep reading the market.`,
+        ? `Paper is waiting on ${accountLabel}. It has $${inputs.collateral.availableUsd.toFixed(2)} free collateral, and quoting ${inputs.collateral.concurrentMarkets} ${inputs.collateral.concurrentMarkets === 1 ? "market" : "markets"} at $${inputs.collateral.quoteSizeUsd.toFixed(2)} a side needs $${inputs.collateral.requiredUsd.toFixed(2)}. Deposit at least $${Math.max(0, inputs.collateral.requiredUsd - inputs.collateral.availableUsd).toFixed(2)}${inputs.collateral.concurrentMarkets > 1 ? `, or quote one market at a time (needs $${((inputs.collateral.quoteSizeUsd * 2) / Math.max(1, inputs.collateral.leverage)).toFixed(2)})` : ""}.`
+        : `Paper is waiting on ${accountLabel}. Add collateral or review quote size in Strategy.`,
     };
   }
   if (first.code === "fair-value") {
@@ -507,6 +516,7 @@ export class MakerRuntime {
   private strategyTrialActive = false;
   private paperTrialId: string | null = null;
   private paperSimulationBlockerKey: string | null = null;
+  private paperSimulationBlockerLastLoggedAt = 0;
 
   constructor(
     private readonly store: TenantStore,
@@ -697,7 +707,10 @@ export class MakerRuntime {
     this.snapshotValue.mode = config.mode;
     this.snapshotValue.startedAt = startedAt;
     this.snapshotValue.lastError = null;
+    this.snapshotValue.paperBlocker = null;
+    this.snapshotValue.accountReadAt = null;
     this.paperSimulationBlockerKey = null;
+    this.paperSimulationBlockerLastLoggedAt = 0;
     this.runPeakEquityUsd = null;
     this.clearActiveQuoteState();
     this.marketSelectedAt = null;
@@ -839,6 +852,16 @@ export class MakerRuntime {
     this.timer = null;
     this.watchdogTimer = null;
     this.snapshotValue.running = false;
+    if (this.snapshotValue.paperBlocker) {
+      this.snapshotValue.lastError = null;
+      this.snapshotValue.paperBlocker = null;
+      this.paperSimulationBlockerKey = null;
+      this.paperSimulationBlockerLastLoggedAt = 0;
+      this.snapshotValue.markets = this.snapshotValue.markets.map((row) => ({
+        ...row,
+        error: null,
+      }));
+    }
     if (reason === "operator") {
       this.snapshotValue.watchdog = {
         state: "idle",
@@ -2052,13 +2075,14 @@ export class MakerRuntime {
   }
 
   private recordPaperSimulationBlocker(inputs: {
-    blocker: { code: string; message: string };
+    blocker: NonNullable<RuntimeSnapshot["paperBlocker"]>;
     selected: MakerMarket;
     updatedAt: string;
     trialId: string;
   }): void {
     const { blocker, selected, updatedAt, trialId } = inputs;
     this.snapshotValue.lastError = blocker.message;
+    this.snapshotValue.paperBlocker = blocker;
     this.snapshotValue.execution.lastDecision = "held";
     this.snapshotValue.lastSuccessfulCycleAt = updatedAt;
     this.snapshotValue.markets = this.snapshotValue.markets.map((row) =>
@@ -2066,22 +2090,47 @@ export class MakerRuntime {
         ? { ...row, status: "healthy", error: blocker.message, updatedAt }
         : row,
     );
-    const key = `${trialId}:${selected.marketId}:${blocker.code}:${blocker.message}`;
-    if (this.paperSimulationBlockerKey !== key) {
+    const key = `${trialId}:${selected.marketId}:${blocker.code}:${Math.round((blocker.requiredUsd ?? blocker.requiredGasSui ?? 0) * 100)}`;
+    const now = Date.now();
+    if (
+      this.paperSimulationBlockerKey !== key ||
+      now - this.paperSimulationBlockerLastLoggedAt >= 15 * 60_000
+    ) {
       this.store.logEvent({
         category: "paper",
         action: "simulation",
         outcome: "blocked",
         detail: {
-          code: blocker.code,
-          message: blocker.message,
+          ...blocker,
           marketId: selected.marketId,
           accountId: this.snapshotValue.accountId,
           agentAddress: this.snapshotValue.agentAddress,
         },
       });
       this.paperSimulationBlockerKey = key;
+      this.paperSimulationBlockerLastLoggedAt = now;
     }
+  }
+
+  private clearPaperSimulationBlocker(): void {
+    if (!this.snapshotValue.paperBlocker) return;
+    if (
+      this.snapshotValue.lastError === this.snapshotValue.paperBlocker.message
+    )
+      this.snapshotValue.lastError = null;
+    this.snapshotValue.paperBlocker = null;
+    this.paperSimulationBlockerKey = null;
+    this.paperSimulationBlockerLastLoggedAt = 0;
+    this.snapshotValue.markets = this.snapshotValue.markets.map((row) => ({
+      ...row,
+      error: null,
+    }));
+    this.store.logEvent({
+      category: "paper",
+      action: "simulation",
+      outcome: "cleared",
+      detail: { accountId: this.snapshotValue.accountId },
+    });
   }
 
   private async runCycle(inputs: {
@@ -2199,6 +2248,7 @@ export class MakerRuntime {
           agentAddress: agent.address,
           marketIds: config.markets.map((item) => item.marketId),
         });
+        this.snapshotValue.accountReadAt = portfolio.markedAt;
         if (config.hedge.enabled && config.hedge.accountId) {
           const hedgeAccount = this.store.getAccountSetup(
             config.hedge.accountId,
@@ -2475,7 +2525,10 @@ export class MakerRuntime {
         mode: config.mode,
         cycle: this.snapshotValue.cycle + 1,
         lastCycleAt: updatedAt,
-        lastError: null,
+        lastError:
+          config.mode === "paper"
+            ? (this.snapshotValue.paperBlocker?.message ?? null)
+            : null,
         setupComplete: Boolean(setup && account?.agentCapId && agent),
         agentAddress: agent?.address ?? null,
         accountId: setup?.accountId ?? null,
@@ -2630,7 +2683,8 @@ export class MakerRuntime {
           agent,
           safety,
           symbol: market.metadata?.symbol ?? selected.symbol,
-          requiredGasSui: (config.maxGasMist * 3) / 1_000_000_000,
+          requiredGasSui: config.maxGasMist / 1_000_000_000,
+          observedAt: portfolio.markedAt,
           collateral: {
             availableUsd: portfolio.availableCollateralUsd,
             requiredUsd: portfolioQuoteRisk.requiredQuoteCollateralUsd,
@@ -2669,8 +2723,16 @@ export class MakerRuntime {
           this.recordPaperSimulationBlocker({
             blocker: {
               code: gasRelated ? "gas" : "dry-run",
+              ...(gasRelated
+                ? {
+                    accountId: setup!.accountId,
+                    agentAddress: agent!.address,
+                    requiredGasSui: config.maxGasMist / 1_000_000_000,
+                  }
+                : {}),
+              observedAt: portfolio.markedAt,
               message: gasRelated
-                ? `Paper can't simulate: the trading key for account ${setup!.accountId} has no SUI for gas. Send ${formatSui((config.maxGasMist * 3) / 1_000_000_000)} SUI to ${agent!.address}; Maker will keep reading the market.`
+                ? `Paper is waiting on gas. The trading key for account ${setup!.accountId} needs ${formatSui(config.maxGasMist / 1_000_000_000)} SUI to simulate.`
                 : `Paper couldn't dry-run ${market.metadata?.symbol ?? selected.symbol}. Check the trading key and market conditions, then try again; Maker will keep reading the market.`,
             },
             selected,
@@ -2698,7 +2760,7 @@ export class MakerRuntime {
           outcome: "dry-run",
           gasUsedMist: receipt.gasUsedMist,
         });
-        this.paperSimulationBlockerKey = null;
+        this.clearPaperSimulationBlocker();
         this.snapshotValue.execution.lastDecision = "quoted";
         this.snapshotValue.lastSuccessfulCycleAt = updatedAt;
         return;

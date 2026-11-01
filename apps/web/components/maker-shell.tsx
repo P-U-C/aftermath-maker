@@ -634,6 +634,7 @@ type MakerShellProps = {
     authorizedAccounts: number;
   };
   operator: boolean;
+  controlBuild: { commit: string; builtAt: string } | null;
   notice: string | null;
   noticeTone: MakerNoticeTone;
   onDismissNotice: () => void;
@@ -655,6 +656,7 @@ export function MakerShell({
   walletLabel,
   walletSummary,
   operator,
+  controlBuild,
   notice,
   noticeTone,
   onDismissNotice,
@@ -929,6 +931,35 @@ export function MakerShell({
                       Disconnect
                     </button>
                   </div>
+                  <div className="maker-build-info">
+                    Web{" "}
+                    {(process.env.NEXT_PUBLIC_GIT_COMMIT ?? "unknown").slice(
+                      0,
+                      7,
+                    )}
+                    , control {(controlBuild?.commit ?? "unknown").slice(0, 7)}
+                  </div>
+                  {operator &&
+                    process.env.NEXT_PUBLIC_GIT_COMMIT &&
+                    process.env.NEXT_PUBLIC_GIT_COMMIT !== "unknown" &&
+                    (!controlBuild || controlBuild.commit === "unknown") && (
+                      <p className="maker-build-skew" role="status">
+                        Control build identity is unavailable. Deploy both from
+                        the same commit.
+                      </p>
+                    )}
+                  {operator &&
+                    controlBuild &&
+                    process.env.NEXT_PUBLIC_GIT_COMMIT &&
+                    process.env.NEXT_PUBLIC_GIT_COMMIT !== "unknown" &&
+                    controlBuild.commit !== "unknown" &&
+                    process.env.NEXT_PUBLIC_GIT_COMMIT !==
+                      controlBuild.commit && (
+                      <p className="maker-build-skew" role="status">
+                        Web and control are on different builds. Deploy both
+                        from the same commit.
+                      </p>
+                    )}
                 </div>
               </details>
             </div>

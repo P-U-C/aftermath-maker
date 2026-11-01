@@ -1,5 +1,5 @@
 /** Shared control-API fixture routing for headless runs. */
-function fallbackStrategy(fixture) {
+function fallbackStrategy(fixture, bundle = fixture.bundles.bundles[0]) {
   const maker = fixture.config.config;
   if (!maker) return null;
   const {
@@ -11,16 +11,18 @@ function fallbackStrategy(fixture) {
   } = maker;
   const { accountId: _hedgeAccountId, ...hedgeSettings } = hedge;
   return {
-    id: "core-strategy",
-    name: "Core strategy",
+    id: bundle.strategyId,
+    name: bundle.strategyName,
     config: { ...settings, hedge: hedgeSettings },
     marketRule: {
       kind: "preferred-list",
-      marketIds: markets.map((market) => market.marketId),
+      marketIds: bundle.marketIds,
     },
-    markets,
+    markets: markets.filter((market) =>
+      bundle.marketIds.includes(market.marketId),
+    ),
     version: 1,
-    usedBy: [{ id: "core-fixture", name: "Core" }],
+    usedBy: [{ id: bundle.id, name: bundle.name }],
     archivedAt: null,
   };
 }
@@ -92,24 +94,28 @@ export function apiResponse(fixture, url, method = "GET") {
     return { status: 200, body: fixture.config };
   }
   if (routePath === "api/strategies") {
-    const fallback = fallbackStrategy(fixture);
+    const fallback = fixture.bundles.bundles
+      .filter((bundle) => bundle.strategyId)
+      .map((bundle) => fallbackStrategy(fixture, bundle));
     return {
       status: 200,
       body: {
-        strategies:
-          fixture.strategies?.strategies ?? (fallback ? [fallback] : []),
+        strategies: fixture.strategies?.strategies ?? fallback,
       },
     };
   }
   if (routePath.startsWith("api/strategies/")) {
-    return {
-      status: 200,
-      body: {
-        strategy:
-          fixture.strategies?.strategies?.[0] ?? fallbackStrategy(fixture),
-        affectedBundles: [],
-      },
-    };
+    const strategyId = decodeURIComponent(routePath.split("/")[2] ?? "");
+    const bundle = fixture.bundles.bundles.find(
+      (entry) => entry.strategyId === strategyId,
+    );
+    const strategy =
+      fixture.strategies?.strategies?.find(
+        (entry) => entry.id === strategyId,
+      ) ?? (bundle ? fallbackStrategy(fixture, bundle) : null);
+    return strategy
+      ? { status: 200, body: { strategy, affectedBundles: [] } }
+      : { status: 404, body: { error: "Strategy not found" } };
   }
   if (routePath === "api/bundles") {
     return { status: 200, body: fixture.bundles };
@@ -133,7 +139,25 @@ export function apiResponse(fixture, url, method = "GET") {
     return { status: 200, body: fixture.setup };
   }
   if (routePath === "api/events") {
-    return { status: 200, body: fixture.events };
+    const limit = Number(url.searchParams.get("limit") ?? 50);
+    const problems = url.searchParams.get("problems") === "1";
+    const outcomes = new Set([
+      "blocked",
+      "error",
+      "rejected",
+      "partial",
+      "timeout",
+      "tripped",
+      "retry",
+    ]);
+    return {
+      status: 200,
+      body: {
+        events: fixture.events.events
+          .filter((event) => !problems || outcomes.has(event.outcome))
+          .slice(0, limit),
+      },
+    };
   }
   if (routePath === "api/performance") {
     const period = url.searchParams.get("period") ?? "1D";
@@ -164,6 +188,9 @@ export function apiResponse(fixture, url, method = "GET") {
   }
   if (routePath === "api/operator/status") {
     return { status: 200, body: fixture.operator };
+  }
+  if (routePath === "api/operator/access-requests") {
+    return { status: 200, body: { accessRequests: [] } };
   }
 
   return {

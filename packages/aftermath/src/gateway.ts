@@ -142,6 +142,9 @@ export type OwnerAccountSummary = {
   allocatedCollateralUsd: number;
   freeMarginUsd: number;
   positionCount: number;
+  /** Current venue-marked notional of this account's open positions. */
+  exposureUsd?: number;
+  unrealizedPnlUsd?: number;
 };
 
 export type PerformanceOrder = {
@@ -1218,6 +1221,26 @@ export class AftermathGateway {
           (sum, position) => sum + position.freeMarginUsd,
           0,
         );
+        const openPositions = account.account.positions.filter(
+          (position) => position.baseAssetAmount !== 0,
+        );
+        const marks = openPositions.length
+          ? (
+              await this.sdk.Perpetuals().getMarkets({
+                marketIds: openPositions.map((position) => position.marketId),
+              })
+            ).markets
+          : [];
+        const priceByMarket = new Map(
+          marks.map((market) => [
+            market.marketId.toLowerCase(),
+            market.indexPrice,
+          ]),
+        );
+        const marked = openPositions.every((position) => {
+          const price = priceByMarket.get(position.marketId.toLowerCase());
+          return price !== undefined && Number.isFinite(price) && price > 0;
+        });
         return {
           accountId: cap.accountId.toString(),
           accountCapId: cap.objectId,
@@ -1226,9 +1249,29 @@ export class AftermathGateway {
           availableCollateralUsd: account.account.availableCollateralUsd,
           allocatedCollateralUsd,
           freeMarginUsd,
-          positionCount: account.account.positions.filter(
-            (position) => position.baseAssetAmount !== 0,
-          ).length,
+          positionCount: openPositions.length,
+          ...(marked
+            ? {
+                exposureUsd: openPositions.reduce(
+                  (total, position) =>
+                    total +
+                    Math.abs(
+                      markPositionInventoryUsd(
+                        position.baseAssetAmount,
+                        priceByMarket.get(position.marketId.toLowerCase())!,
+                      ),
+                    ),
+                  0,
+                ),
+                unrealizedPnlUsd: openPositions.reduce(
+                  (total, position) =>
+                    total +
+                    (position.unrealizedPnlUsd ?? 0) +
+                    (position.unrealizedFundingsUsd ?? 0),
+                  0,
+                ),
+              }
+            : {}),
         };
       }),
     );

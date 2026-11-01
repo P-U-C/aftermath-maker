@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { withMarketPolicyOverride } from "../lib/strategy-market-policy";
+import {
+  effectiveMarketOverrides,
+  withMarketPolicyOverride,
+} from "../lib/strategy-market-policy";
 import { makerMarketOverridesSchema } from "@puc/core";
 
 describe("per-market strategy PATCH body", () => {
@@ -30,6 +33,32 @@ describe("per-market strategy PATCH body", () => {
       ],
     });
     expect(strategy.markets[0]).toEqual({ marketId: "MON", symbol: "MON" });
+  });
+
+  it("drops overrides that merely repeat the strategy value", () => {
+    const defaults = {
+      quoteSizeUsd: 1.04,
+      spreadBps: 42,
+      maxInventoryUsd: 2.5,
+      inventoryTargetUsd: 0,
+      inventorySkewBps: 20,
+      maxLeverage: 1,
+    };
+    const normalized = effectiveMarketOverrides(
+      { ...defaults, spreadBps: 30 },
+      defaults,
+    );
+    expect(normalized).toEqual({ spreadBps: 30 });
+    expect(effectiveMarketOverrides(defaults, defaults)).toEqual({});
+    expect(
+      withMarketPolicyOverride(
+        [{ marketId: "MON", symbol: "MON", overrides: defaults }],
+        "MON",
+        normalized,
+      ),
+    ).toEqual([
+      { marketId: "MON", symbol: "MON", overrides: { spreadBps: 30 } },
+    ]);
   });
 
   it("removes an empty override object and leaves other markets untouched", () => {

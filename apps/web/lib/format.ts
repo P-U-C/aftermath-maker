@@ -18,7 +18,7 @@ const eventClock = new Intl.DateTimeFormat("en-US", {
 });
 
 export type MoneyFormatOptions = {
-  /** Table amounts may retain four decimals when they are smaller than one cent. */
+  /** Retained for old call sites; money (including table values) always defaults to cents. */
   table?: boolean;
   minimumFractionDigits?: number;
   maximumFractionDigits?: number;
@@ -28,16 +28,10 @@ function normalized(value: number): number {
   return Object.is(value, -0) || Math.abs(value) < Number.EPSILON ? 0 : value;
 }
 
-function moneyPrecision(options: MoneyFormatOptions, value: number) {
-  const amount = Math.abs(value);
-  const small = amount > 0 && amount < 1;
-  const fourSignificantDigits = small
-    ? Math.min(8, Math.max(2, 3 - Math.floor(Math.log10(amount))))
-    : 2;
+function moneyPrecision(options: MoneyFormatOptions, _value: number) {
   return {
     minimumFractionDigits: options.minimumFractionDigits ?? 2,
-    maximumFractionDigits:
-      options.maximumFractionDigits ?? fourSignificantDigits,
+    maximumFractionDigits: options.maximumFractionDigits ?? 2,
   };
 }
 

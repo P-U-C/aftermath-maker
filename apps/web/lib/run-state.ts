@@ -1,3 +1,5 @@
+import type { PaperBlocker } from "./paper-blocker";
+
 export type RunStartIssue = {
   message: string;
   code?: string;
@@ -32,6 +34,8 @@ export type RunSnapshotInput = {
   running?: boolean;
   startedAt?: string | null;
   lastError?: string | null;
+  paperBlocker?: PaperBlocker | null;
+  accountReadAt?: string | null;
   restingQuoteMarketIds?: string[] | null;
   paper?: { openOrders?: number | null } | null;
   markets?: Array<{ symbol?: string | null }> | null;
@@ -147,7 +151,8 @@ export function deriveRunState<TSnapshot extends RunSnapshotInput>({
       phase = "starting";
     } else if (
       input.status === "error" ||
-      (input.status === "running" && Boolean(snapshot?.lastError))
+      (input.status === "running" &&
+        Boolean(snapshot?.paperBlocker || snapshot?.lastError))
     ) {
       phase = "attention";
     } else if (input.status === "running") {

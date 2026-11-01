@@ -131,7 +131,7 @@ export const MarketMotion = forwardRef<MarketMotionHandle, MarketMotionProps>(
         sim,
         compact,
         static: reduced,
-        height: layout === "phone" ? undefined : height,
+        height: layout === "phone" && !compact ? undefined : height,
         mid: first.mid && first.mid > 0 ? first.mid : undefined,
         sizeUsd,
         hedgeTriggerUsd,

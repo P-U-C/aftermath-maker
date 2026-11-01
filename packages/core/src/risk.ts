@@ -119,7 +119,9 @@ export function evaluateQuoteSafety(inputs: {
   const requiredQuoteCollateralUsd =
     portfolioRequiredQuoteCollateralUsd ??
     (quote.sizeUsd * 2) / config.maxLeverage;
-  const requiredGasSui = (config.maxGasMist * 3) / 1_000_000_000;
+  // Paper only simulates one transaction. Live still reserves quote, cancel and incident gas.
+  const requiredGasSui =
+    (config.maxGasMist * (config.mode === "paper" ? 1 : 3)) / 1_000_000_000;
   const bookMid = (quote.bestBid + quote.bestAsk) / 2;
   const bookDivergenceBps =
     (Math.abs(bookMid - quote.indexPrice) / quote.indexPrice) * 10_000;
@@ -177,7 +179,10 @@ export function evaluateQuoteSafety(inputs: {
       code: "gas",
       label: "Agent gas",
       ok: agentGasSui >= requiredGasSui,
-      detail: `${agentGasSui.toFixed(4)} SUI available; ${requiredGasSui.toFixed(4)} SUI reserves quote, cancel, and incident margin`,
+      detail:
+        config.mode === "paper"
+          ? `${agentGasSui.toFixed(4)} SUI available; ${requiredGasSui.toFixed(4)} SUI needed for one Paper simulation`
+          : `${agentGasSui.toFixed(4)} SUI available; ${requiredGasSui.toFixed(4)} SUI reserves quote, cancel, and incident margin`,
     },
     {
       code: "unrealized-loss",

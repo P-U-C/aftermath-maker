@@ -98,9 +98,9 @@ describe("wallet authentication", () => {
       if (shouldPass) {
         await expect(verification).resolves.toMatchObject({ operator: true });
       } else {
-        await expect(verification).resolves.toMatchObject({
-          ownerAddress: address,
-          accessRequestToken: expect.any(String),
+        await expect(verification).rejects.toMatchObject({
+          statusCode: 503,
+          code: "access-list-not-configured",
         });
       }
     }
@@ -165,7 +165,7 @@ describe("wallet authentication", () => {
       vi.setSystemTime(new Date(verified.accessRequestExpiresAt));
       expect(() =>
         auth.requireAccessRequestToken(verified.accessRequestToken),
-      ).toThrow("verification has expired");
+      ).toThrow("That check expired. Sign again to request access.");
     } finally {
       vi.useRealTimers();
     }

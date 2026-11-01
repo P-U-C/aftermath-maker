@@ -1,6 +1,7 @@
 import { SuiGrpcClient } from "@mysten/sui/grpc";
 import { Transaction } from "@mysten/sui/transactions";
 import type { Store } from "./store.js";
+import { UserFacingError } from "./http-error.js";
 
 const SUI_ADDRESS = /^0x[0-9a-fA-F]{64}$/;
 
@@ -55,25 +56,58 @@ export class OnchainAllowlist {
       return this.cached.members.has(normalized);
     }
 
-    const response = await this.client.getObject({
-      objectId,
-      include: { json: true },
-    });
     const packageId = this.store.getSystemValue<string>("whitelist_package_id");
     if (!packageId) {
-      throw new Error("Whitelist package ID is not configured");
+      throw new UserFacingError(
+        "access-list-not-configured",
+        "The access list isn't set up yet. The operator needs to finish setup.",
+        undefined,
+        503,
+      );
+    }
+    let response;
+    try {
+      response = await this.client.getObject({
+        objectId,
+        include: { json: true },
+      });
+    } catch {
+      throw new UserFacingError(
+        "access-list-unavailable",
+        "Maker couldn't check the access list right now. Try again in a minute.",
+        undefined,
+        503,
+      );
     }
     const expectedType =
       `${normalizeAddress(packageId)}::access::Registry`.toLowerCase();
     if (response.object.type.toLowerCase() !== expectedType) {
-      throw new Error(
-        "Configured whitelist object is not the pinned Maker registry",
+      throw new UserFacingError(
+        "access-list-not-configured",
+        "The access list isn't set up yet. The operator needs to finish setup.",
+        undefined,
+        503,
       );
     }
     if (!response.object.json) {
-      throw new Error("Whitelist registry did not return structured content");
+      throw new UserFacingError(
+        "access-list-unavailable",
+        "Maker couldn't check the access list right now. Try again in a minute.",
+        undefined,
+        503,
+      );
     }
-    const members = new Set(memberList(response.object.json));
+    let members: Set<string>;
+    try {
+      members = new Set(memberList(response.object.json));
+    } catch {
+      throw new UserFacingError(
+        "access-list-unavailable",
+        "Maker couldn't check the access list right now. Try again in a minute.",
+        undefined,
+        503,
+      );
+    }
     this.cached = {
       objectId,
       version: response.object.version,

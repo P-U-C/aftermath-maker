@@ -34,6 +34,7 @@ const CONTROL_EVENT_KINDS = [
   "operator:runtime.stop-tenant:not-found",
   "paper:estimated-fill:estimated",
   "paper:simulation:blocked",
+  "paper:simulation:cleared",
   "paper:trial.complete:success",
   "paper:trial.start:success",
   "paper:trial:error",
@@ -63,6 +64,17 @@ const CONTROL_EVENT_KINDS = [
   "strategies:update:success",
   "system:gateway.replace:success",
   "system:runtime.initialize:success",
+] as const;
+
+/** Outcomes which merit attention; shared by audit filtering and its tests. */
+export const PROBLEM_OUTCOMES = [
+  "blocked",
+  "error",
+  "rejected",
+  "partial",
+  "timeout",
+  "tripped",
+  "retry",
 ] as const;
 
 export const AUDIT_EVENT_KINDS: readonly string[] = [

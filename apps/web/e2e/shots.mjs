@@ -49,6 +49,9 @@ const verifyExplain = process.argv.includes("--verify-explain");
 const verifyLearn = process.argv.includes("--verify-learn");
 const verifyMotion = process.argv.includes("--verify-motion");
 const showRunStatus = process.argv.includes("--run-status");
+const showWalletMenu = process.argv.includes("--wallet-menu");
+const verifyPaperBlocked = process.argv.includes("--verify-paper-blocked");
+const verifyLaneHeight = process.argv.includes("--verify-lane-height");
 const beginStop = process.argv.includes("--begin-stop");
 const waitForStopTimeout = process.argv.includes("--wait-stop-timeout");
 const exerciseAccessRequest = process.argv.includes("--access-request");
@@ -743,9 +746,9 @@ async function capture(browser, stateName, captureConfig, view) {
     ) {
       const headers = page.locator(".market-table thead th button");
       const headerCount = await headers.count();
-      if (headerCount !== 13) {
+      if (headerCount !== 9) {
         throw new Error(
-          `Market table exposed ${headerCount} sortable headers, expected 13`,
+          `Market table exposed ${headerCount} sortable headers, expected 9`,
         );
       }
       for (let index = 0; index < headerCount; index += 1) {
@@ -761,9 +764,12 @@ async function capture(browser, stateName, captureConfig, view) {
       const groups = await page
         .locator(".market-table .market-group-heading")
         .allTextContents();
-      if (groups.join("|") !== "In use|Available") {
+      if (
+        groups.map((group) => group.replace(/\s+/g, " ").trim()).join("|") !==
+        "In use 4|Available 1"
+      ) {
         throw new Error(
-          `Market groups were not ordered In use then Available: ${groups}`,
+          `Market groups were not ordered In use then Available with correct counts: ${groups}`,
         );
       }
       process.stdout.write(
@@ -1452,10 +1458,65 @@ async function capture(browser, stateName, captureConfig, view) {
       );
     }
 
+    if (verifyLaneHeight && view === "desk" && fixture.auth.status === 200) {
+      const heights = await page
+        .locator(".bundle-lane-motion svg")
+        .evaluateAll((nodes) =>
+          nodes.map((node) => ({
+            rendered: node.getBoundingClientRect().height,
+            viewBox: node.getAttribute("viewBox"),
+          })),
+        );
+      console.log("Lane chart heights:", JSON.stringify(heights));
+      if (heights.some((height) => height.rendered > 200))
+        throw new Error(
+          `Sparse desk chart exceeds 200px: ${JSON.stringify(heights)}`,
+        );
+    }
     const file = path.join(
       outputDirectory,
       `${stateName}${view ? `-${view}` : ""}${learnChapter ? `-${learnChapter}` : ""}${showFlattenSheet ? "-flatten" : ""}${showLiveSheet ? "-live" : ""}${showRunStatus ? "-run-status" : ""}${beginStop ? "-stopping" : ""}${waitForStopTimeout ? "-timeout" : ""}-${captureConfig.name}.png`,
     );
+    if (
+      verifyPaperBlocked &&
+      stateName === "paper-blocked" &&
+      view === "desk"
+    ) {
+      const runStatus = page.getByRole("region", { name: "Run status" });
+      if (!(await runStatus.isVisible())) {
+        await page
+          .getByRole("button", { name: /needs attention/i })
+          .first()
+          .click();
+      }
+      await runStatus
+        .getByText("Paper is waiting on account 1757.", { exact: false })
+        .waitFor();
+      await runStatus.getByRole("button", { name: "Open Venues" }).waitFor();
+      await runStatus.getByRole("button", { name: "Edit strategy" }).waitFor();
+      await page.keyboard.press("Escape");
+      await runStatus.waitFor({ state: "hidden" });
+      const list = page.locator(".desk-log-card .desk-event-row");
+      await page.getByRole("button", { name: "Show more" }).click();
+      if ((await list.count()) !== 50)
+        throw new Error("Show more did not reveal events 13–50");
+      await page.getByRole("tab", { name: "Problems" }).click();
+      await page
+        .locator(".desk-log-card")
+        .getByText("Paper is waiting on account 1757.", { exact: false })
+        .waitFor();
+      if ((await list.count()) !== 1)
+        throw new Error("Server-side Problems did not find the buried blocker");
+      await page
+        .locator(".desk-log-card")
+        .getByRole("button", { name: "Open Venues" })
+        .waitFor();
+      await page.locator(".desk-log-card").scrollIntoViewIfNeeded();
+    }
+    if (showWalletMenu && fixture.auth.status === 200) {
+      await page.locator(".maker-wallet-menu > summary").click();
+      await page.locator(".maker-build-info").waitFor();
+    }
     await page.screenshot({ path: file, fullPage: false });
     process.stdout.write(
       `${stateName}${view ? `/${view}` : ""}/${captureConfig.name}: ${file} (${dimensions.scrollWidth}px wide)\n`,
@@ -1506,6 +1567,31 @@ async function capture(browser, stateName, captureConfig, view) {
       );
     }
 
+    if (
+      verifyPaperBlocked &&
+      stateName === "paper-blocked" &&
+      view === "desk"
+    ) {
+      await page
+        .getByRole("button", { name: "Stop all", exact: true })
+        .first()
+        .click();
+      await page.getByRole("link", { name: "Bundles", exact: true }).click();
+      const coreCard = page.locator(".bundle-card").filter({
+        has: page.getByRole("heading", { name: "Core", exact: true }),
+      });
+      await coreCard.waitFor();
+      await page.waitForFunction(() => {
+        const card = Array.from(document.querySelectorAll(".bundle-card")).find(
+          (element) => element.querySelector("h2")?.textContent === "Core",
+        );
+        return (
+          card &&
+          !card.querySelector(".bundle-error") &&
+          !card.querySelector(".bundle-stale")
+        );
+      });
+    }
     if (exerciseStop) {
       const stop = page
         .getByRole("button", { name: "Stop all", exact: true })

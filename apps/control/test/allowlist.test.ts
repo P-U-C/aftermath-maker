@@ -123,7 +123,7 @@ describe("on-chain allowlist confirmation", () => {
     store.setSystemSetting("whitelist_package_id", attacker);
 
     await expect(allowlist.isAllowed(operator, true)).rejects.toThrow(
-      "pinned Maker registry",
+      "The access list isn't set up yet. The operator needs to finish setup.",
     );
     store.close();
   });

@@ -1,5 +1,18 @@
 import type { MakerMarketOverrides } from "@puc/core";
 
+/** An exception equal to the strategy is inheritance, not a custom policy. */
+export function effectiveMarketOverrides(
+  overrides: MakerMarketOverrides | undefined,
+  defaults: Partial<Record<keyof MakerMarketOverrides, number>> | undefined,
+): MakerMarketOverrides {
+  return Object.fromEntries(
+    Object.entries(overrides ?? {}).filter(
+      ([field, value]) =>
+        value !== defaults?.[field as keyof MakerMarketOverrides],
+    ),
+  ) as MakerMarketOverrides;
+}
+
 /** Change exactly one market; an empty override object means inheritance. */
 export function withMarketPolicyOverride<
   T extends {

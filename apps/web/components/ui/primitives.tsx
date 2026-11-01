@@ -1,6 +1,6 @@
 "use client";
 
-import { X } from "lucide-react";
+import { ChevronDown, X } from "lucide-react";
 import {
   forwardRef,
   useEffect,
@@ -48,6 +48,59 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(
     );
   },
 );
+
+/** Keyboard-accessible menu button for a small single-selection list. */
+export function MenuSelect({
+  label,
+  value,
+  options,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  options: Array<{ value: string; label: string }>;
+  onChange: (value: string) => void;
+}) {
+  const details = useRef<HTMLDetailsElement>(null);
+  const summary = useRef<HTMLElement>(null);
+  useEffect(() => {
+    const closeOutside = (event: PointerEvent) => {
+      if (
+        event.target instanceof Node &&
+        !details.current?.contains(event.target) &&
+        details.current
+      )
+        details.current.open = false;
+    };
+    document.addEventListener("pointerdown", closeOutside);
+    return () => document.removeEventListener("pointerdown", closeOutside);
+  }, []);
+  return (
+    <details className="ui-menu" ref={details}>
+      <summary ref={summary} aria-label={label}>
+        {options.find((item) => item.value === value)?.label ??
+          options[0]?.label}{" "}
+        <ChevronDown size={14} aria-hidden="true" />
+      </summary>
+      <div className="ui-menu-options" role="group" aria-label={label}>
+        {options.map((option) => (
+          <button
+            type="button"
+            key={option.value}
+            aria-current={value === option.value ? "true" : undefined}
+            onClick={() => {
+              onChange(option.value);
+              if (details.current) details.current.open = false;
+              summary.current?.focus();
+            }}
+          >
+            {option.label}
+          </button>
+        ))}
+      </div>
+    </details>
+  );
+}
 
 type PillProps = HTMLAttributes<HTMLSpanElement> & {
   tone?: "live" | "paper" | "neutral";
