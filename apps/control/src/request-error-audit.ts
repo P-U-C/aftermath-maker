@@ -14,6 +14,12 @@ export type RequestFailureEvent = {
   };
 };
 
+/** Only stable opaque bundle/strategy IDs are safe to copy into audit detail. */
+export const safeAuditId = (value: unknown): string | null =>
+  typeof value === "string" && /^[A-Za-z0-9_-]{1,100}$/.test(value)
+    ? value
+    : null;
+
 const routes: Record<string, string> = {
   "/api/bundles/:bundleId/start": "bundle-start",
   "/api/bundles/:bundleId/resume": "bundle-resume",

@@ -6,10 +6,18 @@ import { Store } from "../src/store.js";
 import { classifyHttpError, UserFacingError } from "../src/http-error.js";
 import {
   createRequestErrorRecorder,
+  safeAuditId,
   type RequestFailureEvent,
 } from "../src/request-error-audit.js";
 
 describe("owner-scoped request failures", () => {
+  it("does not persist unbounded or sensitive route parameters", () => {
+    expect(safeAuditId("bundle-123_a")).toBe("bundle-123_a");
+    expect(safeAuditId("x-session-secret/seed")).toBeNull();
+    expect(safeAuditId("a".repeat(101))).toBeNull();
+    expect(safeAuditId(null)).toBeNull();
+  });
+
   it("classifies fixable errors without exposing unknown failures", () => {
     expect(
       classifyHttpError(

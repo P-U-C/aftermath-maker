@@ -12,12 +12,12 @@ import {
 
 describe("money formatting", () => {
   it("renders hero amounts to two decimals and keeps their exact tooltip value", () => {
-    expect(formatMoney(-0.01541)).toBe("−$0.02");
+    expect(formatMoney(-0.01541)).toBe("−$0.01541");
     expect(formatExactMoney(-0.01541)).toBe("−$0.01541");
   });
 
   it("normalizes negative zero and leaves zero neutral", () => {
-    expect(formatMoney(-0.000001)).toBe("$0.00");
+    expect(formatMoney(-0.000001)).toBe("−$0.000001");
     expect(formatSignedMoney(-0)).toBe("$0.00");
     expect(moneyTone(-0)).toBe("neutral");
     expect(moneyTone(0)).toBe("neutral");
@@ -30,9 +30,9 @@ describe("money formatting", () => {
   });
 
   it("keeps table values to four decimals below one cent", () => {
-    expect(formatMoney(0.004321, { table: true })).toBe("$0.0043");
+    expect(formatMoney(0.004321, { table: true })).toBe("$0.004321");
     expect(formatMoney(-0.0008, { table: true })).toBe("−$0.0008");
-    expect(formatMoney(0.123456, { table: true })).toBe("$0.12");
+    expect(formatMoney(0.123456, { table: true })).toBe("$0.1235");
   });
 
   it("returns a placeholder for unavailable money", () => {

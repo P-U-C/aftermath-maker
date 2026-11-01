@@ -10,6 +10,7 @@ import {
   type HTMLAttributes,
   type InputHTMLAttributes,
   type ReactNode,
+  type TableHTMLAttributes,
 } from "react";
 
 function classes(...values: Array<string | false | null | undefined>) {
@@ -17,7 +18,7 @@ function classes(...values: Array<string | false | null | undefined>) {
 }
 
 type ButtonProps = ButtonHTMLAttributes<HTMLButtonElement> & {
-  variant?: "primary" | "quiet" | "stop";
+  variant?: "primary" | "secondary" | "quiet" | "danger" | "stop";
   size?: "small" | "medium" | "large" | "icon";
 };
 
@@ -181,6 +182,42 @@ export function Toggle({
   );
 }
 
+/** Shared page hierarchy across Desk, Strategy, Markets, Bundles, Performance and Venues. */
+export function PageHeader({
+  title,
+  description,
+  actions,
+  className,
+}: {
+  title: ReactNode;
+  description?: ReactNode;
+  actions?: ReactNode;
+  className?: string;
+}) {
+  return (
+    <header className={classes("ui-page-header", className)}>
+      <div>
+        <h1>{title}</h1>
+        {description && <p>{description}</p>}
+      </div>
+      {actions && <div className="ui-page-header-actions">{actions}</div>}
+    </header>
+  );
+}
+
+/** A single table surface; callers provide semantic table sections, not styles. */
+export function KitTable({
+  className,
+  children,
+  ...props
+}: TableHTMLAttributes<HTMLTableElement>) {
+  return (
+    <table className={classes("ui-table", className)} {...props}>
+      {children}
+    </table>
+  );
+}
+
 type CardProps = Omit<HTMLAttributes<HTMLElement>, "title"> & {
   title?: ReactNode;
   subtitle?: string;
@@ -237,13 +274,22 @@ type MeterProps = {
   value: number;
   max: number;
   valueText: string;
+  tone?: "normal" | "warning" | "limit";
 };
 
-export function Meter({ label, value, max, valueText }: MeterProps) {
+export function Meter({
+  label,
+  value,
+  max,
+  valueText,
+  tone: toneOverride,
+}: MeterProps) {
   const safeMax = max > 0 ? max : 1;
   const safeValue = Math.max(0, Math.min(value, safeMax));
   const ratio = safeValue / safeMax;
-  const tone = ratio >= 1 ? "limit" : ratio >= 0.7 ? "warning" : "normal";
+  const tone =
+    toneOverride ??
+    (ratio > 0.9 ? "limit" : ratio >= 0.75 ? "warning" : "normal");
 
   return (
     <div

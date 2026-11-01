@@ -102,20 +102,20 @@ Current `ui/round8` source locations; the server keeps unknown errors generic 5x
 | `apps/control/src/runtime-manager.ts:122` | `bundle-not-found` | "This bundle is no longer available. Refresh Bundles and choose an active bundle." |
 | `apps/control/src/runtime-manager.ts:163` | `core-required` | "Save a Core bundle before starting a Paper test run." |
 | `apps/control/src/runtime-manager.ts:172` | `core-not-found` | "Core is unavailable. Open Bundles and check its setup before testing." |
-| `apps/control/src/runtime-manager.ts:185` | `trial-already-running` | "A Paper test run is already in progress. Wait for it to finish before trying again." |
-| `apps/control/src/runtime-manager.ts:279` | `needs-strategy` | "Attach a strategy in Bundles before starting this bundle." |
-| `apps/control/src/runtime-manager.ts:287` | `bundle-not-found` | "This bundle is no longer available. Refresh Bundles and choose an active bundle." |
-| `apps/control/src/runtime-manager.ts:294` | `bundle-archived` | "This bundle was archived. Choose an active bundle in Bundles." |
-| `apps/control/src/runtime-manager.ts:303` | `live-core-only` | "Only Core can use Live mode. Select Paper for any other bundle." |
-| `apps/control/src/runtime-manager.ts:318` | `live-core-only` | "Core must be the only Live bundle. Switch other bundles to Paper first." |
-| `apps/control/src/runtime-manager.ts:403` | `gas-reserve-low` | 'Couldn't start ${candidate.name} ${candidateConfig.mode}. Its trading key has ${(availableGasMist / 1_000_000_000).toFixed(2)} SUI for gas and needs at least ${(requiredGasMist / 1_000_000_000).toFixed(2)} SUI ${purpose |
-| `apps/control/src/runtime-manager.ts:468` | `bundle-not-found` | "This bundle is no longer available. Refresh Bundles and choose an active bundle." |
-| `apps/control/src/runtime-manager.ts:502` | `bundle-not-found` | "This bundle is no longer available. Refresh Bundles and choose an active bundle." |
-| `apps/control/src/runtime-manager.ts:524` | `bundle-not-found` | "This bundle is no longer available. Refresh Bundles and choose an active bundle." |
-| `apps/control/src/runtime-manager.ts:582` | `bundle-not-found` | "This bundle is no longer available. Refresh Bundles and choose an active bundle." |
+| `apps/control/src/runtime-manager.ts:190` | `trial-already-running` | "A Paper test run is already in progress. Wait for it to finish before trying again." |
+| `apps/control/src/runtime-manager.ts:284` | `needs-strategy` | "Attach a strategy in Bundles before starting this bundle." |
+| `apps/control/src/runtime-manager.ts:292` | `bundle-not-found` | "This bundle is no longer available. Refresh Bundles and choose an active bundle." |
+| `apps/control/src/runtime-manager.ts:299` | `bundle-archived` | "This bundle was archived. Choose an active bundle in Bundles." |
+| `apps/control/src/runtime-manager.ts:308` | `live-core-only` | "Only Core can use Live mode. Select Paper for any other bundle." |
+| `apps/control/src/runtime-manager.ts:323` | `live-core-only` | "Core must be the only Live bundle. Switch other bundles to Paper first." |
+| `apps/control/src/runtime-manager.ts:418` | `gas-reserve-low` | 'Couldn't start ${candidate.name} ${paperTrial ? "Paper test" : candidateConfig.mode}. Its trading key has ${(availableGasMist / 1_000_000_000).toFixed(2)} SUI for gas and needs at least ${(requiredGasMist / 1_000_000_00 |
+| `apps/control/src/runtime-manager.ts:483` | `bundle-not-found` | "This bundle is no longer available. Refresh Bundles and choose an active bundle." |
+| `apps/control/src/runtime-manager.ts:517` | `bundle-not-found` | "This bundle is no longer available. Refresh Bundles and choose an active bundle." |
+| `apps/control/src/runtime-manager.ts:539` | `bundle-not-found` | "This bundle is no longer available. Refresh Bundles and choose an active bundle." |
+| `apps/control/src/runtime-manager.ts:597` | `bundle-not-found` | "This bundle is no longer available. Refresh Bundles and choose an active bundle." |
 
 `WalletLimitError` in `apps/control/src/store.ts` is a typed `wallet-limit` precondition for missing Core limits and limits below running use. It reports the used amount and directs the owner to Bundles.
 
 ## B1 finding
 
-The Paper simulation path in `packages/aftermath/src/gateway.ts` sets a gas budget of `config.maxGasMist`, selects a gas coin with `setAgentGasPayment`, and then calls `simulateTransaction`. Paper therefore needs one `maxGasMist` budget; it does not need the Live cancellation, hedge, or multi-bundle safety reserve. The admission guard now computes the Live reserve from Live configs and their resting-order maxima only, and requires the maximum of that reserve and the Paper candidate simulation budget. The Live-only calculation is unchanged; the same guard covers the Strategy Paper test run. No production database, Live setting or trading flow was touched.
+The Paper simulation path in `packages/aftermath/src/gateway.ts` sets a gas budget of `config.maxGasMist`, selects a gas coin with `setAgentGasPayment`, and then calls `simulateTransaction`. Paper therefore needs one `maxGasMist` budget; it does not need the Live cancellation, hedge, or multi-bundle safety reserve. The admission guard now computes the Live reserve from Live configs and their resting-order maxima only, and requires the maximum of that reserve and the Paper candidate simulation budget. The Live-only calculation is unchanged; the same guard treats a stopped Core saved in Live mode as a Paper candidate when the Strategy Paper test run is requested. A running Live Core still contributes its Live reserve. No production database, Live setting or trading flow was touched.

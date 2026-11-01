@@ -108,7 +108,14 @@ import {
   type MakerNoticeTone,
   type MakerView,
 } from "./maker-shell";
-import { Button, Sheet } from "./ui/primitives";
+import {
+  Button,
+  Card,
+  KitTable,
+  PageHeader,
+  SegmentedTabs,
+  Sheet,
+} from "./ui/primitives";
 import { NumericDraftInput } from "./ui/numeric-draft-input";
 import { SpreadMark } from "./spread-mark";
 import { StrategyPicker } from "./strategy-picker";
@@ -1545,21 +1552,38 @@ function DashboardBody() {
     let createdId: string | null = null;
     try {
       await mutate("create-strategy", async () => {
-        const result = await request<{ strategy: MakerStrategy }>(
-          "api/strategies",
-          {
-            method: "POST",
-            body: JSON.stringify({
-              name: `Strategy ${sequence}`,
-              config: strategySettingsFromConfig(config),
-              marketRule: {
-                kind: "preferred-list",
-                marketIds: config.markets.map((market) => market.marketId),
+        let result: { strategy: MakerStrategy } | null = null;
+        for (let attempt = 0; attempt < 64 && !result; attempt += 1) {
+          try {
+            result = await request<{ strategy: MakerStrategy }>(
+              "api/strategies",
+              {
+                method: "POST",
+                body: JSON.stringify({
+                  name: `Strategy ${sequence}`,
+                  config: strategySettingsFromConfig(config),
+                  marketRule: {
+                    kind: "preferred-list",
+                    marketIds: config.markets.map((market) => market.marketId),
+                  },
+                  markets: config.markets,
+                }),
               },
-              markets: config.markets,
-            }),
-          },
-        );
+            );
+          } catch (error) {
+            if (
+              !(error instanceof RequestError) ||
+              error.code !== "strategy-name-taken"
+            )
+              throw error;
+            sequence += 1;
+            while (names.has(`strategy ${sequence}`)) sequence += 1;
+          }
+        }
+        if (!result)
+          throw new Error(
+            "No unused strategy name was available. Rename an archived strategy before trying again.",
+          );
         setStrategies((current) => [result.strategy, ...current]);
         if (!(await selectStrategy(result.strategy.id))) return;
         createdId = result.strategy.id;
@@ -3902,7 +3926,6 @@ function DashboardBody() {
         ? `Saved · used by ${selectedStrategy.usedBy.map((bundle) => bundle.name).join(", ")}`
         : "Saved · not used by a bundle";
 
-  const topRewardOpportunity = focusedRewardOpportunities[0] ?? null;
   const uptimeQualifiedPct =
     rewards &&
     Number.isFinite(rewards.account.uptime) &&
@@ -4004,6 +4027,7 @@ function DashboardBody() {
       return {
         id: selected.marketId,
         symbol: selected.symbol,
+        customFieldCount: Object.keys(selected.overrides ?? {}).length,
         status: runtimeMarket?.status ?? "queued",
         indexPrice: runtimeMarket?.indexPrice ?? listed?.indexPrice ?? null,
         openInterestBase:
@@ -4067,6 +4091,7 @@ function DashboardBody() {
         return {
           id: marketId,
           symbol: runtimeMarket?.symbol ?? listed?.symbol ?? marketId,
+          customFieldCount: Object.keys(savedMarket?.overrides ?? {}).length,
           bundleName: bundle.name,
           activityLabel: activity.label,
           status: (activity.active
@@ -4680,7 +4705,6 @@ function DashboardBody() {
           <section className="onboarding">
             <div className="section-heading">
               <div>
-                <span className="eyebrow">One-time setup</span>
                 <h1>Authorize once. Run unattended.</h1>
               </div>
               <span className="step-count">
@@ -4822,7 +4846,6 @@ function DashboardBody() {
           >
             <div className="section-heading compact">
               <div>
-                <span className="eyebrow">Account desk</span>
                 <h2>Trading accounts</h2>
               </div>
               <span className="account-desk-status">
@@ -5105,7 +5128,6 @@ function DashboardBody() {
           aria-labelledby="account-security-title"
         >
           <header>
-            <span className="eyebrow">Security</span>
             <h2 id="account-security-title">What Maker can do</h2>
             <p>
               Maker can trade for the accounts you authorize. It cannot withdraw
@@ -6881,7 +6903,6 @@ function DashboardBody() {
             <section className="strategy-market-ranks strategy-step strategy-step-markets">
               <header>
                 <div>
-                  <span className="eyebrow">Market rank</span>
                   <h2>Eligible pairs</h2>
                 </div>
                 <span>
@@ -6894,7 +6915,7 @@ function DashboardBody() {
                 </span>
               </header>
               <div className="strategy-market-ranks-wrap">
-                <table>
+                <KitTable>
                   <thead>
                     <tr>
                       <th>Rank</th>
@@ -6951,7 +6972,7 @@ function DashboardBody() {
                         </tr>
                       ))}
                   </tbody>
-                </table>
+                </KitTable>
               </div>
             </section>
 
@@ -7632,13 +7653,11 @@ function DashboardBody() {
       />
 
       <MarketsView active={displayedView === "markets"}>
-        <header className="markets-title">
-          <h1>Markets</h1>
-          <p>
-            See which markets your bundles use, and edit each market&apos;s
-            strategy policy.
-          </p>
-        </header>
+        <PageHeader
+          className="markets-title"
+          title="Markets"
+          description="See which markets your bundles use, and edit each market's strategy policy."
+        />
         <section className="rotation-board market-clean-board">
           <header className="market-clean-heading">
             <div>
@@ -7659,7 +7678,7 @@ function DashboardBody() {
             role="region"
             aria-label="Aftermath market table, scroll horizontally for more columns"
           >
-            <table className="market-table market-clean-table">
+            <KitTable className="market-table market-clean-table">
               <thead>
                 <tr>
                   {marketHeaders.map(({ key, label }) => (
@@ -7704,7 +7723,7 @@ function DashboardBody() {
                 )}
                 {marketTableGroups.available.map(renderMarketRow)}
               </tbody>
-            </table>
+            </KitTable>
           </div>
         </section>
       </MarketsView>
@@ -7734,6 +7753,47 @@ function DashboardBody() {
       )}
 
       <PerformanceView active={displayedView === "performance"}>
+        <PageHeader
+          title="Performance"
+          className="performance-page-header"
+          description="Results from Maker's own fills, after known costs."
+          actions={
+            <>
+              <SegmentedTabs
+                label="Performance period"
+                value={performancePeriod}
+                options={[
+                  { value: "1D", label: "24h" },
+                  { value: "EPOCH", label: "Epoch" },
+                  { value: "ALL", label: "All time" },
+                ]}
+                onChange={(period) => {
+                  setPerformance(null);
+                  setPerformancePeriod(period);
+                }}
+              />
+              <select
+                className="kit-menu"
+                aria-label="Performance bundle"
+                value={performanceBundle}
+                onChange={(event) => {
+                  setPerformance(null);
+                  setPerformanceBundle(event.target.value);
+                }}
+              >
+                <option value="all">All bundles</option>
+                {bundles
+                  .filter((bundle) => !bundle.archivedAt)
+                  .map((bundle) => (
+                    <option key={bundle.id} value={bundle.id}>
+                      {bundle.name}
+                    </option>
+                  ))}
+                <option value="before">Before bundles</option>
+              </select>
+            </>
+          }
+        />
         <section className="rewards-board">
           <div className="section-heading compact rewards-heading">
             <div>
@@ -7746,13 +7806,13 @@ function DashboardBody() {
                 <strong>{timeUntil(rewards?.epoch.cutoffAt ?? null)}</strong>
               </div>
               <a
-                className="reward-claim-link"
+                className="ui-button ui-button-secondary ui-button-medium reward-claim-link"
                 href={primaryVenue.rewardsUrl}
                 target="_blank"
                 rel="noreferrer"
               >
                 <Coins size={15} aria-hidden="true" />
-                Claim rewards
+                Claim on Aftermath
                 <ExternalLink size={13} aria-hidden="true" />
               </a>
             </div>
@@ -7837,33 +7897,21 @@ function DashboardBody() {
                 }
               >
                 <b aria-hidden="true">{objective.mark}</b>
-                <span>{objective.name}</span>
+                <span>
+                  {objective.name}
+                  {config.strategyObjective ===
+                    objective.name.toLowerCase() && (
+                    <small className="objective-goal-tag">Your goal</small>
+                  )}
+                </span>
                 <strong>{objective.headline}</strong>
                 <p>{objective.evidence}</p>
               </div>
             ))}
           </section>
 
-          <div className="reward-command">
-            <div className="reward-leader">
-              <span>Strategy opportunity</span>
-              <strong>
-                {topRewardOpportunity
-                  ? `${topRewardOpportunity.symbol} / ${topRewardOpportunity.score}`
-                  : "Scanning markets"}
-              </strong>
-              <small>
-                {topRewardOpportunity?.reasons[0] ??
-                  "Choose or stage markets from Strategy."}
-              </small>
-            </div>
-            <a href="#strategy" onClick={() => selectView("strategy")}>
-              Set markets in Strategy
-            </a>
-          </div>
-
           <div className="reward-table-wrap">
-            <table className="reward-table">
+            <KitTable className="reward-table">
               <thead>
                 <tr>
                   <th>
@@ -8008,10 +8056,10 @@ function DashboardBody() {
                   </tr>
                 )}
               </tbody>
-            </table>
+            </KitTable>
           </div>
           <details className="reward-method">
-            <summary>Method and limits</summary>
+            <summary>How these numbers are measured</summary>
             <p>{rewards?.marketModel.methodology}</p>
             <p>
               Thin books means $100-$1,000 of balanced depth within 50 bps, at
@@ -8034,98 +8082,15 @@ function DashboardBody() {
         </section>
 
         <section className="performance-board">
-          <div className="section-heading compact performance-heading">
-            <div>
-              <span className="eyebrow">
-                {performancePeriod === "1D"
-                  ? "Last 24 hours"
-                  : performancePeriod === "EPOCH"
-                    ? `Epoch ${rewards?.epoch.number ?? ""}`
-                    : "All time"}
-              </span>
-              <h2>Attributed strategy performance</h2>
-            </div>
-            <div className="performance-heading-actions">
-              <div
-                className="performance-period"
-                role="group"
-                aria-label="Performance period"
-              >
-                {(
-                  [
-                    ["1D", "24h"],
-                    ["EPOCH", "Epoch"],
-                    ["ALL", "All time"],
-                  ] as const
-                ).map(([period, label]) => (
-                  <button
-                    key={period}
-                    type="button"
-                    className={performancePeriod === period ? "selected" : ""}
-                    aria-pressed={performancePeriod === period}
-                    onClick={() => {
-                      setPerformance(null);
-                      setPerformancePeriod(period);
-                    }}
-                  >
-                    {label}
-                  </button>
-                ))}
-              </div>
-              <div
-                className="performance-period performance-bundle"
-                role="group"
-                aria-label="Performance bundle"
-              >
-                <button
-                  type="button"
-                  className={performanceBundle === "all" ? "selected" : ""}
-                  aria-pressed={performanceBundle === "all"}
-                  onClick={() => {
-                    setPerformance(null);
-                    setPerformanceBundle("all");
-                  }}
-                >
-                  By wallet
-                </button>
-                {bundles
-                  .filter((bundle) => !bundle.archivedAt)
-                  .map((bundle) => (
-                    <button
-                      key={bundle.id}
-                      type="button"
-                      className={
-                        performanceBundle === bundle.id ? "selected" : ""
-                      }
-                      aria-pressed={performanceBundle === bundle.id}
-                      onClick={() => {
-                        setPerformance(null);
-                        setPerformanceBundle(bundle.id);
-                      }}
-                    >
-                      {bundle.name}
-                    </button>
-                  ))}
-                <button
-                  type="button"
-                  className={performanceBundle === "before" ? "selected" : ""}
-                  aria-pressed={performanceBundle === "before"}
-                  onClick={() => {
-                    setPerformance(null);
-                    setPerformanceBundle("before");
-                  }}
-                >
-                  Before bundles
-                </button>
-              </div>
-              <span className="coverage-badge">
-                {performance?.attributed.makerVolumeCoveragePct === null ||
-                performance?.attributed.makerVolumeCoveragePct === undefined
-                  ? "Awaiting fills"
-                  : `${performance.attributed.makerVolumeCoveragePct.toFixed(1)}% of maker volume traced`}
-              </span>
-            </div>
-          </div>
+          <p className="performance-coverage">
+            <CircleCheck size={16} aria-hidden="true" />
+            {performance?.attributed.makerVolumeCoveragePct === 100
+              ? "Every maker fill in this period is traced to a bundle."
+              : performance?.attributed.makerVolumeCoveragePct === null ||
+                  performance?.attributed.makerVolumeCoveragePct === undefined
+                ? "Awaiting maker fills for coverage."
+                : `${performance.attributed.makerVolumeCoveragePct.toFixed(1)}% of maker volume is traced to a bundle.`}
+          </p>
           {performanceBundle === "before" && (
             <p className="performance-before-bundles" role="status">
               Before bundles: this unassigned history counts in wallet totals,
@@ -8142,7 +8107,7 @@ function DashboardBody() {
           )}
           <div className="performance-v3-stats">
             <div>
-              <span>Net result</span>
+              <span>Net known result</span>
               <strong
                 className={
                   moneyTone(performance?.combinedNetAfterKnownCostsUsd ?? 0) ===
@@ -8186,195 +8151,218 @@ function DashboardBody() {
               </strong>
             </div>
           </div>
-          <div className="performance-metrics">
-            <div>
-              <span>Maker fills</span>
-              <strong>{performance?.attributed.fills ?? 0}</strong>
-            </div>
-            <div>
-              <span>Attributed notional</span>
-              <strong>{money(performance?.attributed.notionalUsd ?? 0)}</strong>
-            </div>
-            <div>
-              <span>Realized PnL</span>
-              <strong
-                className={
-                  (performance?.attributed.realizedPnlUsd ?? 0) < 0
-                    ? "negative-number"
-                    : ""
-                }
-              >
-                {money(performance?.attributed.realizedPnlUsd ?? 0)}
-              </strong>
-            </div>
-            <div>
-              <span>Protocol fees</span>
-              <strong>
-                {money(performance?.attributed.protocolFeesUsd ?? 0)}
-              </strong>
-            </div>
-            <div>
-              <span>Est. venue fees</span>
-              <strong>
-                {money(performance?.attributed.estimatedBuilderFeesUsd ?? 0)}
-              </strong>
-            </div>
-            <div>
-              <span>Net known result</span>
-              <strong
-                className={
-                  (performance?.attributed.netAfterKnownCostsUsd ?? 0) < 0
-                    ? "negative-number"
-                    : ""
-                }
-              >
-                {money(performance?.attributed.netAfterKnownCostsUsd ?? 0)}
-              </strong>
-            </div>
-          </div>
-          <div className="hedge-performance-strip">
-            <div>
-              <span>Taker account</span>
-              <strong>
-                {performance?.hedge.accountId
-                  ? accountReference(performance.hedge.accountId)
-                  : "Off"}
-              </strong>
-            </div>
-            <div>
-              <span>Taker executions / fills</span>
-              <strong>
-                {performance?.hedge.executions ?? 0} /{" "}
-                {performance?.hedge.fills ?? 0}
-              </strong>
-            </div>
-            <div>
-              <span>Taker notional</span>
-              <strong>{money(performance?.hedge.notionalUsd ?? 0)}</strong>
-            </div>
-            <div>
-              <span>Combined known result</span>
-              <strong
-                className={
-                  (performance?.combinedNetAfterKnownCostsUsd ?? 0) < 0
-                    ? "negative-number"
-                    : ""
-                }
-              >
-                {money(performance?.combinedNetAfterKnownCostsUsd ?? 0)}
-              </strong>
-            </div>
-          </div>
-          <section
-            className="performance-volume-by-market"
-            data-padding-check="performance-volume"
-          >
-            <header>
-              <h3>Volume by market</h3>
-              <p>Maker and Taker activity reconciled from account history.</p>
-            </header>
-            <div className="performance-volume-table-wrap">
-              <table>
-                <thead>
-                  <tr>
-                    <th>Market</th>
-                    <th>Maker volume / fills</th>
-                    <th>Taker volume / fills</th>
-                    <th>Share of volume</th>
-                    <th>Net</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {performanceVolumeByMarket.length ? (
-                    performanceVolumeByMarket.map((row) => {
-                      const totalVolume =
-                        performanceVolumeByMarket.reduce(
-                          (sum, value) =>
-                            sum +
-                            value.makerNotionalUsd +
-                            value.takerNotionalUsd,
-                          0,
-                        ) || 1;
-                      const rowVolume =
-                        row.makerNotionalUsd + row.takerNotionalUsd;
-                      const expanded =
-                        expandedPerformanceMarket === row.marketId;
-                      return (
-                        <Fragment key={row.marketId}>
-                          <tr>
-                            <td>
-                              <button
-                                type="button"
-                                className="performance-market-expand"
-                                aria-expanded={expanded}
-                                onClick={() =>
-                                  setExpandedPerformanceMarket(
-                                    expanded ? null : row.marketId,
-                                  )
-                                }
-                              >
-                                {row.symbol}
-                              </button>
-                            </td>
-                            <td>
-                              {money(row.makerNotionalUsd)} / {row.makerFills}
-                            </td>
-                            <td>
-                              {money(row.takerNotionalUsd)} / {row.takerFills}
-                            </td>
-                            <td>
-                              {percent((rowVolume / totalVolume) * 100, 1)}
-                            </td>
-                            <td>{money(row.realizedPnlUsd - row.feesUsd)}</td>
-                          </tr>
-                          {expanded && (
-                            <tr className="performance-market-fills">
-                              <td colSpan={5}>
-                                {(performance?.fills ?? [])
-                                  .filter(
-                                    (fill) => fill.marketId === row.marketId,
-                                  )
-                                  .map((fill) => (
-                                    <span
-                                      key={`${fill.txDigest}:${fill.orderId}`}
-                                    >
-                                      {formatEventTimestamp(fill.occurredAt)} ·{" "}
-                                      {fill.estimated ? "Estimated " : ""}
-                                      {fill.side === "bid"
-                                        ? "Bought"
-                                        : "Sold"}{" "}
-                                      {money(fill.notionalUsd)}
-                                    </span>
-                                  ))}
-                                {!(performance?.fills ?? []).some(
-                                  (fill) => fill.marketId === row.marketId,
-                                ) && (
-                                  <span>
-                                    Maker fills are not attributed for this
-                                    market in the selected period.
-                                  </span>
-                                )}
-                              </td>
-                            </tr>
-                          )}
-                        </Fragment>
-                      );
-                    })
-                  ) : (
-                    <tr>
-                      <td colSpan={5}>
-                        Taker volume is shown in the account total until market
-                        history is available.
-                      </td>
-                    </tr>
+          <section className="performance-breakdown">
+            <h3>Maker side</h3>
+            <dl>
+              <div>
+                <dt>Maker fills</dt>
+                <dd>{performance?.attributed.fills ?? 0}</dd>
+              </div>
+              <div>
+                <dt>Attributed notional</dt>
+                <dd>{money(performance?.attributed.notionalUsd ?? 0)}</dd>
+              </div>
+              <div>
+                <dt>Realized PnL</dt>
+                <dd
+                  className={
+                    (performance?.attributed.realizedPnlUsd ?? 0) < 0
+                      ? "negative-number"
+                      : ""
+                  }
+                >
+                  {money(performance?.attributed.realizedPnlUsd ?? 0)}
+                </dd>
+              </div>
+              <div>
+                <dt>Known fees</dt>
+                <dd>
+                  {money(
+                    (performance?.attributed.protocolFeesUsd ?? 0) +
+                      (performance?.attributed.estimatedBuilderFeesUsd ?? 0),
                   )}
-                </tbody>
-              </table>
-            </div>
+                </dd>
+              </div>
+              <div>
+                <dt>Net known result</dt>
+                <dd
+                  className={
+                    (performance?.attributed.netAfterKnownCostsUsd ?? 0) < 0
+                      ? "negative-number"
+                      : ""
+                  }
+                >
+                  {money(performance?.attributed.netAfterKnownCostsUsd ?? 0)}
+                </dd>
+              </div>
+            </dl>
           </section>
-
+          <section className="performance-breakdown">
+            <h3>Hedge side</h3>
+            <dl>
+              <div>
+                <dt>Account</dt>
+                <dd>
+                  {performance?.hedge.accountId
+                    ? accountReference(performance.hedge.accountId)
+                    : "Off"}
+                </dd>
+              </div>
+              <div>
+                <dt>Orders filled</dt>
+                <dd>{performance?.hedge.fills ?? 0}</dd>
+              </div>
+              <div>
+                <dt>Notional</dt>
+                <dd>{money(performance?.hedge.notionalUsd ?? 0)}</dd>
+              </div>
+              <div>
+                <dt>Hedge result</dt>
+                <dd
+                  className={
+                    (performance?.hedge.netAfterKnownCostsUsd ?? 0) < 0
+                      ? "negative-number"
+                      : ""
+                  }
+                >
+                  {money(performance?.hedge.netAfterKnownCostsUsd ?? 0)}
+                </dd>
+              </div>
+            </dl>
+          </section>
+          <div className="performance-combined">
+            <span>Combined known result</span>
+            <strong
+              className={
+                (performance?.combinedNetAfterKnownCostsUsd ?? 0) < 0
+                  ? "negative-number"
+                  : ""
+              }
+            >
+              {money(performance?.combinedNetAfterKnownCostsUsd ?? 0)}
+            </strong>
+          </div>
+          <div className="performance-note">
+            <span>
+              Account-wide:{" "}
+              {compactUsd(performance?.account?.makerVolumeUsd ?? 0)} maker
+              volume / {money(performance?.account?.fundingPnlUsd ?? 0)} funding
+            </span>
+            <span>
+              {performance && !performance.historyComplete
+                ? `History covers ${performance.fills.length} attributed fills; account totals remain complete.`
+                : (performance?.note ??
+                  "Attribution starts when this release records its first order IDs.")}
+            </span>
+          </div>
+        </section>
+        <Card
+          className="performance-volume-by-market"
+          data-padding-check="performance-volume"
+          title="By market"
+          subtitle="Maker and Taker activity reconciled from account history."
+        >
+          <div className="performance-volume-table-wrap">
+            <KitTable>
+              <thead>
+                <tr>
+                  <th>Market</th>
+                  <th>Maker volume / fills</th>
+                  <th>Taker volume / fills</th>
+                  <th>Share of volume</th>
+                  <th>Net</th>
+                </tr>
+              </thead>
+              <tbody>
+                {performanceVolumeByMarket.length ? (
+                  performanceVolumeByMarket.map((row) => {
+                    const totalVolume =
+                      performanceVolumeByMarket.reduce(
+                        (sum, value) =>
+                          sum + value.makerNotionalUsd + value.takerNotionalUsd,
+                        0,
+                      ) || 1;
+                    const rowVolume =
+                      row.makerNotionalUsd + row.takerNotionalUsd;
+                    const expanded = expandedPerformanceMarket === row.marketId;
+                    return (
+                      <Fragment key={row.marketId}>
+                        <tr>
+                          <td>
+                            <button
+                              type="button"
+                              className="performance-market-expand"
+                              aria-expanded={expanded}
+                              onClick={() =>
+                                setExpandedPerformanceMarket(
+                                  expanded ? null : row.marketId,
+                                )
+                              }
+                            >
+                              {row.symbol}
+                            </button>
+                          </td>
+                          <td>
+                            {money(row.makerNotionalUsd)} / {row.makerFills}
+                          </td>
+                          <td>
+                            {money(row.takerNotionalUsd)} / {row.takerFills}
+                          </td>
+                          <td>{percent((rowVolume / totalVolume) * 100, 1)}</td>
+                          <td>{money(row.realizedPnlUsd - row.feesUsd)}</td>
+                        </tr>
+                        {expanded && (
+                          <tr className="performance-market-fills">
+                            <td colSpan={5}>
+                              {(performance?.fills ?? [])
+                                .filter(
+                                  (fill) => fill.marketId === row.marketId,
+                                )
+                                .map((fill) => (
+                                  <span
+                                    key={`${fill.txDigest}:${fill.orderId}`}
+                                  >
+                                    {formatEventTimestamp(fill.occurredAt)} ·{" "}
+                                    {fill.estimated ? "Estimated " : ""}
+                                    {fill.side === "bid"
+                                      ? "Bought"
+                                      : "Sold"}{" "}
+                                    {money(fill.notionalUsd)}
+                                  </span>
+                                ))}
+                              {!(performance?.fills ?? []).some(
+                                (fill) => fill.marketId === row.marketId,
+                              ) && (
+                                <span>
+                                  Maker fills are not attributed for this market
+                                  in the selected period.
+                                </span>
+                              )}
+                            </td>
+                          </tr>
+                        )}
+                      </Fragment>
+                    );
+                  })
+                ) : (
+                  <tr>
+                    <td colSpan={5}>
+                      Taker volume is shown in the account total until market
+                      history is available.
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </KitTable>
+          </div>
+        </Card>
+        <Card
+          className="performance-recent-fills"
+          title="Recent fills"
+          subtitle="Maker and hedge fills, with known costs and transaction receipts."
+        >
           <div className="fill-table-wrap">
-            <table className="fill-table">
+            <KitTable className="fill-table">
               <thead>
                 <tr>
                   <th>Time</th>
@@ -8429,22 +8417,9 @@ function DashboardBody() {
                   </tr>
                 )}
               </tbody>
-            </table>
+            </KitTable>
           </div>
-          <div className="performance-note">
-            <span>
-              Account-wide:{" "}
-              {compactUsd(performance?.account?.makerVolumeUsd ?? 0)} maker
-              volume / {money(performance?.account?.fundingPnlUsd ?? 0)} funding
-            </span>
-            <span>
-              {performance && !performance.historyComplete
-                ? `History covers ${performance.fills.length} attributed fills; account totals remain complete.`
-                : (performance?.note ??
-                  "Attribution starts when this release records its first order IDs.")}
-            </span>
-          </div>
-        </section>
+        </Card>
       </PerformanceView>
 
       <VenuesView active={displayedView === "venues"}>
@@ -8482,7 +8457,6 @@ function DashboardBody() {
             <div className="fee-panel">
               <div className="section-heading compact">
                 <div>
-                  <span className="eyebrow">Account inspection</span>
                   <h2>Venue fee</h2>
                 </div>
                 <Search size={18} />
@@ -8538,7 +8512,6 @@ function DashboardBody() {
           <section className="operator-panel">
             <div className="section-heading compact">
               <div>
-                <span className="eyebrow">Operator</span>
                 <h2>Public access rail</h2>
               </div>
               <ShieldCheck size={18} />

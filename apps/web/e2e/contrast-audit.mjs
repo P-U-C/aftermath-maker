@@ -268,11 +268,20 @@ async function auditState(browser, stateName, colorScheme, viewport) {
       fixture.auth.status === 200 && Boolean(fixture.setup?.setup);
     const targets = signedIn ? views : [null];
     for (const view of targets) {
+      const previousRun = page.getByRole("region", { name: "Run status" });
+      if (await previousRun.isVisible()) {
+        const modal = page.getByRole("dialog", { name: "Run status" });
+        if (await modal.isVisible())
+          await modal.getByRole("button", { name: "Close" }).click();
+        else await page.getByRole("button", { name: /Run status:/ }).click();
+      }
       await page.goto(`${baseUrl}${view ? `#${view}` : ""}`, {
         waitUntil: "domcontentloaded",
       });
       if (signedIn) {
-        await page.getByRole("navigation", { name: "Maker views" }).waitFor();
+        await page
+          .locator('nav[aria-label="Maker views"]')
+          .waitFor({ state: "attached" });
         await page.locator(`[data-view="${view}"]:not([hidden])`).waitFor();
         const trigger = page.getByRole("button", { name: /Run status:/ });
         await trigger.click();

@@ -205,7 +205,6 @@ export function LearnView({ active }: { active: boolean }) {
     <ViewFrame active={active} name="learn">
       <main className="learn-view">
         <header className="learn-heading">
-          <p className="eyebrow">Illustration</p>
           <h1>Watch a market being made.</h1>
           <p>
             Each chapter directs one moment in the same order-book animation.
@@ -268,7 +267,6 @@ export function LearnView({ active }: { active: boolean }) {
 
         <section className="learn-glossary" aria-labelledby="learn-glossary">
           <header>
-            <p className="eyebrow">Glossary</p>
             <h2 id="learn-glossary">The words on your desk.</h2>
           </header>
           <dl>

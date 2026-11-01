@@ -29,11 +29,15 @@ function normalized(value: number): number {
 }
 
 function moneyPrecision(options: MoneyFormatOptions, value: number) {
-  const subCent =
-    options.table && Math.abs(value) > 0 && Math.abs(value) < 0.01;
+  const amount = Math.abs(value);
+  const small = amount > 0 && amount < 1;
+  const fourSignificantDigits = small
+    ? Math.min(8, Math.max(2, 3 - Math.floor(Math.log10(amount))))
+    : 2;
   return {
-    minimumFractionDigits: options.minimumFractionDigits ?? (subCent ? 4 : 2),
-    maximumFractionDigits: options.maximumFractionDigits ?? (subCent ? 4 : 2),
+    minimumFractionDigits: options.minimumFractionDigits ?? 2,
+    maximumFractionDigits:
+      options.maximumFractionDigits ?? fourSignificantDigits,
   };
 }
 

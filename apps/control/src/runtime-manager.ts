@@ -179,7 +179,12 @@ export class RuntimeManager {
     // The detached runtime is scratch-only, but admission starts from the same
     // saved config, account, wallet-limit, and gas-reserve checks as a bundle.
     this.assertStartAllowed(owner, bundle);
-    this.assertStartGasReserve(owner, bundle, this.getBundle(owner, bundle.id));
+    this.assertStartGasReserve(
+      owner,
+      bundle,
+      this.getBundle(owner, bundle.id),
+      true,
+    );
     const key = `${owner}:${bundleId}:paper-trial`;
     if (this.paperTrials.has(key)) {
       throw new UserFacingError(
@@ -329,6 +334,7 @@ export class RuntimeManager {
     ownerAddress: string,
     candidate: StoredBundle,
     candidateRuntime: MakerRuntime,
+    paperTrial = false,
   ): void {
     const tenant = this.store.forTenant(ownerAddress);
     const candidateConfig = tenant.getBundleConfig(candidate.id);
@@ -342,7 +348,14 @@ export class RuntimeManager {
       );
     const liveConfigs = active.flatMap((bundle) => {
       const config = tenant.getBundleConfig(bundle.id);
-      return config?.mode === "live" ? [config] : [];
+      return config?.mode === "live" &&
+        !(
+          paperTrial &&
+          bundle.id === candidate.id &&
+          bundle.status !== "running"
+        )
+        ? [config]
+        : [];
     });
     // Paper simulations still set a gas budget and select a gas coin in the
     // gateway, but never post/cancel/hedge. A single simulation needs at most
@@ -372,7 +385,9 @@ export class RuntimeManager {
         })()
       : 0;
     const paperRequiredMist =
-      candidateConfig.mode === "paper" ? candidateConfig.maxGasMist : 0;
+      paperTrial || candidateConfig.mode === "paper"
+        ? candidateConfig.maxGasMist
+        : 0;
     const requiredGasMist = Math.max(liveRequiredMist, paperRequiredMist);
     if (!requiredGasMist) return;
     const observedGasMist = [
@@ -402,7 +417,7 @@ export class RuntimeManager {
       const address = candidateRuntime.snapshot.agentAddress;
       throw new UserFacingError(
         "gas-reserve-low",
-        `Couldn't start ${candidate.name} ${candidateConfig.mode}. Its trading key has ${(availableGasMist / 1_000_000_000).toFixed(2)} SUI for gas and needs at least ${(requiredGasMist / 1_000_000_000).toFixed(2)} SUI ${purpose}.`,
+        `Couldn't start ${candidate.name} ${paperTrial ? "Paper test" : candidateConfig.mode}. Its trading key has ${(availableGasMist / 1_000_000_000).toFixed(2)} SUI for gas and needs at least ${(requiredGasMist / 1_000_000_000).toFixed(2)} SUI ${purpose}.`,
         address ? { kind: "copy", value: address } : { kind: "venues" },
       );
     }
