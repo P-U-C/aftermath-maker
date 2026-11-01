@@ -1,5 +1,7 @@
 # Maker Round 8b — PR #44 follow-up
 
+**PR #44 was merged by another actor at 2026-11-01 18:49:58 UTC**, before the Round 8b branch commits were pushed. Its merge commit `6dc3bf3` does not contain Round 8b. This report accompanies a separate draft follow-up PR against that merged main. The agent did not merge or deploy.
+
 The verbatim owner instructions were committed first as [`AGENT_INSTRUCTIONS-8b.md`](AGENT_INSTRUCTIONS-8b.md) (`d2f5b4a`). This work remains on `ui/round8-kit`; no production API, database, signing, deployment, or merge operations were performed. Production inspection was restricted to container labels and logs.
 
 ## Acceptance

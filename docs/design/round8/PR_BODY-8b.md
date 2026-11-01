@@ -1,5 +1,7 @@
 # Maker Round 8 — acceptance report
 
+> Historical combined PR-body draft. PR #44 merged externally at 2026-11-01 18:49:58 UTC before Round 8b could be attached. This file was **not** applied to the merged PR; the separate Round 8b draft PR carries [`ROUND8B_REPORT.md`](ROUND8B_REPORT.md). The agent did not merge or deploy.
+
 The [verbatim spec](https://github.com/P-U-C/aftermath-maker/blob/ui/round8-kit/docs/design/round8/AGENT_INSTRUCTIONS.md) was committed before implementation. Parts A–D landed through [PR #43](https://github.com/P-U-C/aftermath-maker/pull/43), merged by another actor at 2026-10-31 19:55 UTC while this work was in progress. **I did not merge or deploy.** This PR is the remaining Kit follow-up against current main.
 
 | Part | Accept status | Evidence and missing |
