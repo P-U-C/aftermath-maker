@@ -1,6 +1,6 @@
 "use client";
 
-import { Archive, Pencil, Plus } from "lucide-react";
+import { Archive, Check, Circle, Pencil, Plus } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
 import {
@@ -8,6 +8,12 @@ import {
   availableBundleAccounts,
 } from "../../lib/bundle-options";
 import { formatMoney } from "../../lib/format";
+import {
+  nextStage,
+  stageTitle,
+  type BundleReadiness,
+  type BundleStageId,
+} from "../../lib/bundle-readiness";
 import {
   formatPaperBlocker,
   relativeAccountRead,
@@ -35,6 +41,7 @@ export type BundleCard = {
   strategyId: string | null;
   strategyName: string | null;
   needsStrategy: boolean;
+  readiness?: BundleReadiness | null;
   mode: "observe" | "paper" | "live";
   status: "stopped" | "running" | "paused" | "error";
   makerAccountId: string | null;
@@ -66,6 +73,8 @@ type BundlesViewProps = {
   run: RunState;
   onSelect: (bundleId: string) => void;
   onArchive: (bundleId: string) => void;
+  onFixStage: (bundle: BundleCard, stage: BundleStageId) => void;
+  onStart: (bundleId: string) => void;
   accounts: Array<{
     accountId: string;
     label: string | null;
@@ -124,6 +133,8 @@ export function BundlesView({
   run,
   onSelect,
   onArchive,
+  onFixStage,
+  onStart,
   accounts,
   markets,
   strategies,
@@ -459,21 +470,80 @@ export function BundlesView({
                   <div>
                     <h2>{bundle.name}</h2>
                     <p>
-                      Maker account {bundle.makerAccountId ?? "not assigned"}.
-                      {bundle.takerAccountId
-                        ? ` Hedge account ${bundle.takerAccountId}.`
-                        : " Hedging is off."}
+                      {bundle.strategyName
+                        ? `${bundle.strategyName}, ${bundle.marketIds.length} markets`
+                        : "No strategy attached"}
                     </p>
                   </div>
-                  <strong title={formatMoney(bundle.resultUsd)}>
-                    {formatMoney(bundle.resultUsd)}
-                  </strong>
+                  <span
+                    className={`bundle-stage-chip ${runBundle?.phase === "running" ? "is-quoting" : bundle.readiness?.ready ? "is-ready" : "is-pending"}`}
+                  >
+                    {runBundle?.phase === "running"
+                      ? "Quoting"
+                      : bundle.readiness?.ready
+                        ? "Ready to start"
+                        : bundle.readiness
+                          ? (() => {
+                              const remaining = bundle.readiness.stages.filter(
+                                (stage) => stage.status !== "done",
+                              ).length;
+                              return !bundle.strategyId
+                                ? "Draft"
+                                : `${remaining} ${remaining === 1 ? "step" : "steps"} left`;
+                            })()
+                          : "Checking readiness…"}
+                  </span>
                 </div>
-                <p className="bundle-markets">
-                  {bundle.strategyName
-                    ? `From ${bundle.strategyName}: ${bundle.marketIds.length ? bundle.marketIds.map((marketId) => markets.find((market) => market.id === marketId)?.symbol ?? marketId).join(", ") : "No markets selected"}`
-                    : "No strategy attached"}
-                </p>
+                {bundle.readiness && (
+                  <ol className="bundle-stage-list">
+                    {bundle.readiness.stages.map((stage) => {
+                      const fixLabel =
+                        stage.id === "collateral"
+                          ? `Deposit ${formatMoney(stage.shortfallUsd ?? 0)}`
+                          : stage.id === "gas"
+                            ? "Add gas"
+                            : stage.id === "tradingKeys"
+                              ? "Authorize"
+                              : stage.id === "strategy"
+                                ? "Choose strategy"
+                                : "Assign accounts";
+                      return (
+                        <li
+                          key={stage.id}
+                          className={`bundle-stage-row is-${stage.status}`}
+                        >
+                          <span aria-hidden="true">
+                            {stage.status === "done" ? (
+                              <Check size={17} />
+                            ) : (
+                              <Circle size={15} />
+                            )}
+                          </span>
+                          <div>
+                            <strong>{stageTitle[stage.id]}</strong>
+                            <small>{stage.detail}</small>
+                          </div>
+                          {stage.status === "todo" && (
+                            <Button
+                              variant="primary"
+                              size="small"
+                              onClick={() => onFixStage(bundle, stage.id)}
+                            >
+                              {fixLabel}
+                            </Button>
+                          )}
+                        </li>
+                      );
+                    })}
+                  </ol>
+                )}
+                {!bundle.readiness && (
+                  <p className="bundle-markets">
+                    {bundle.strategyName
+                      ? `From ${bundle.strategyName}: ${bundle.marketIds.length ? bundle.marketIds.map((marketId) => markets.find((market) => market.id === marketId)?.symbol ?? marketId).join(", ") : "No markets selected"}`
+                      : "No strategy attached"}
+                  </p>
+                )}
                 {runBundle?.phase === "attention" &&
                   (runBundle.snapshot?.paperBlocker || runBundle.lastError) && (
                     <p
@@ -507,11 +577,27 @@ export function BundlesView({
                       )?.replace(/^Checked /, "")}
                     </p>
                   )}
+                {bundle.readiness && (
+                  <p className="bundle-stage-footer-note">
+                    {editing
+                      ? runBundle?.snapshot?.startedAt
+                        ? `Running since ${new Intl.DateTimeFormat("en-US", { hour: "numeric", minute: "2-digit" }).format(new Date(runBundle.snapshot.startedAt))}`
+                        : "Bundle is running."
+                      : bundle.readiness.ready
+                        ? "Ready to start."
+                        : bundle.readiness.stages.find(
+                              (stage) => stage.status === "todo",
+                            )?.id === "collateral"
+                          ? "Can start after the deposit."
+                          : `${bundle.readiness.stages.filter((stage) => stage.status !== "done").length} steps before it can start.`}
+                  </p>
+                )}
                 <div className="bundle-actions">
                   {runBundle?.needsStrategy ? (
                     <label className="bundle-attach-strategy">
                       <span>Attach strategy</span>
                       <select
+                        id={`bundle-attach-${bundle.id}`}
                         value=""
                         disabled={busy || !strategies.length}
                         onChange={(event) => {
@@ -535,12 +621,27 @@ export function BundlesView({
                         ))}
                       </select>
                     </label>
-                  ) : runBundle ? (
+                  ) : runBundle && (editing || !bundle.readiness) ? (
                     <RunStatusChip
                       bundle={runBundle}
                       onClick={() => openRunControls(bundle.id)}
                     />
                   ) : null}
+                  {bundle.readiness && !editing && (
+                    <Button
+                      variant="primary"
+                      size="small"
+                      onClick={() => onStart(bundle.id)}
+                      disabled={!bundle.readiness.ready || busy}
+                      title={
+                        !bundle.readiness.ready
+                          ? `${nextStage(bundle.readiness)?.detail ?? "Not ready"} before starting`
+                          : undefined
+                      }
+                    >
+                      Start
+                    </Button>
+                  )}
                   {bundle.name !== "Core" && (
                     <Button
                       variant="secondary"
@@ -564,6 +665,12 @@ export function BundlesView({
                     </Button>
                   )}
                 </div>
+                <small
+                  className="bundle-card-result"
+                  title={formatMoney(bundle.resultUsd)}
+                >
+                  Result {formatMoney(bundle.resultUsd)}
+                </small>
               </Card>
             );
           })}

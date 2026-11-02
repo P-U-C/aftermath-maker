@@ -1,4 +1,6 @@
 import { describe, expect, it } from "vitest";
+import { Transaction } from "@mysten/sui/transactions";
+import { assertOwnerTransactionIntent } from "../src/owner-transaction-intent.js";
 import {
   AccountFillHistoryCache,
   AftermathGateway,
@@ -42,6 +44,117 @@ const result = {
 };
 
 describe("gateway execution evidence", () => {
+  it("composes exactly two owner deposits in one guarded transaction", async () => {
+    const owner = `0x${"11".repeat(32)}`;
+    const pkg = `0x${"44".repeat(32)}`;
+    const registry = `0x${"55".repeat(32)}`;
+    const coin = `0x${"77".repeat(32)}::usdc::USDC`;
+    const caps = new Map([
+      [
+        "1",
+        {
+          objectId: `0x${"22".repeat(32)}`,
+          accountObjectId: `0x${"33".repeat(32)}`,
+        },
+      ],
+      [
+        "2",
+        {
+          objectId: `0x${"88".repeat(32)}`,
+          accountObjectId: `0x${"99".repeat(32)}`,
+        },
+      ],
+    ]);
+    const gateway = {
+      findAccountCap: async ({ accountId }: { accountId: string }) =>
+        caps.get(accountId),
+      sdk: {
+        Perpetuals: () => ({
+          getAccount: async ({
+            accountCap,
+          }: {
+            accountCap: { objectId: string; accountObjectId: string };
+          }) => ({
+            account: {
+              account: { positions: [] },
+              getDepositCollateralTx: async ({
+                depositAmount,
+                tx,
+              }: {
+                depositAmount: bigint;
+                tx: Transaction;
+              }) => {
+                const balance = tx.moveCall({
+                  target: "0x2::coin::redeem_funds",
+                  typeArguments: [coin],
+                  arguments: [
+                    tx.withdrawal({ amount: depositAmount, type: coin }),
+                  ],
+                });
+                tx.moveCall({
+                  target: `${pkg}::account::deposit_collateral`,
+                  typeArguments: [coin],
+                  arguments: [
+                    tx.object(accountCap.accountObjectId),
+                    tx.object(accountCap.objectId),
+                    tx.object(registry),
+                    balance,
+                  ],
+                });
+                return { tx };
+              },
+            },
+          }),
+        }),
+      },
+      ownerTransactionTrust: async () => ({
+        protocolPackageId: pkg,
+        registryObjectId: registry,
+      }),
+      prepareOwnerTransaction: async (
+        tx: Transaction,
+        sender: string,
+        intent: import("../src/owner-transaction-intent.js").OwnerTransactionIntent,
+      ) => {
+        tx.setSender(sender);
+        assertOwnerTransactionIntent(tx, intent);
+        return { transaction: await tx.toJSON(), intent };
+      },
+    };
+    const result =
+      await AftermathGateway.prototype.buildDepositCollateralBatchTransaction.call(
+        gateway as never,
+        {
+          ownerAddress: owner,
+          collateralCoinType: coin,
+          deposits: [
+            { accountId: "1", amount: 1_000n },
+            { accountId: "2", amount: 2_000n },
+          ],
+        },
+      );
+    expect(result.intent).toMatchObject({
+      kind: "deposit-batch",
+      deposits: [{ amount: 1_000n }, { amount: 2_000n }],
+    });
+    expect(
+      Transaction.from(result.transaction).getData().commands,
+    ).toHaveLength(4);
+    await expect(
+      AftermathGateway.prototype.buildDepositCollateralBatchTransaction.call(
+        gateway as never,
+        {
+          ownerAddress: owner,
+          collateralCoinType: coin,
+          deposits: [
+            { accountId: "1", amount: 1_000n },
+            { accountId: "1", amount: 2_000n },
+          ],
+        },
+      ),
+    ).rejects.toThrow("different owned accounts");
+  });
+
   it("calculates paid gas net of the storage rebate", () => {
     expect(executionGasUsedMist(result)).toBe(130);
   });

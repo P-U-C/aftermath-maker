@@ -1,4 +1,5 @@
 import { bcs } from "@mysten/sui/bcs";
+import { Transaction } from "@mysten/sui/transactions";
 import { toBase64 } from "@mysten/sui/utils";
 import { describe, expect, it } from "vitest";
 import {
@@ -44,7 +45,10 @@ function result(index: number) {
   return { Result: index, $kind: "Result" };
 }
 
-function protocolCall(fn: string, args: ReturnType<typeof input>[]) {
+function protocolCall(
+  fn: string,
+  args: Array<ReturnType<typeof input> | ReturnType<typeof result>>,
+) {
   return {
     MoveCall: {
       package: packageId,
@@ -124,6 +128,162 @@ function mutate(
 }
 
 describe("owner transaction intent", () => {
+  it("binds two account capabilities to their own redeemed amounts in one batch", () => {
+    const secondCap = `0x${"ab".repeat(32)}`;
+    const secondAccount = `0x${"cd".repeat(32)}`;
+    const batch: OwnerTransactionIntent = {
+      kind: "deposit-batch",
+      sender: owner,
+      protocolPackageId: packageId,
+      registryObjectId: registryId,
+      collateralCoinType,
+      deposits: [
+        {
+          accountCapId: capId,
+          accountObjectId: accountId,
+          allowedMarketIds: [],
+          amount: 1_000n,
+        },
+        {
+          accountCapId: secondCap,
+          accountObjectId: secondAccount,
+          allowedMarketIds: [],
+          amount: 2_000n,
+        },
+      ],
+    };
+    const funds = (amount: string) => ({
+      FundsWithdrawal: {
+        reservation: { MaxAmountU64: amount },
+        typeArg: { Balance: collateralCoinType },
+        withdrawFrom: { Sender: true },
+      },
+    });
+    const redeem = (index: number) => ({
+      MoveCall: {
+        package: "0x2",
+        module: "coin",
+        function: "redeem_funds",
+        typeArguments: [collateralCoinType],
+        arguments: [input(index)],
+      },
+    });
+    const snapshot = {
+      sender: owner,
+      inputs: [
+        shared(capId, false),
+        shared(accountId, true),
+        shared(secondCap, false),
+        shared(secondAccount, true),
+        shared(registryId, false),
+        funds("1000"),
+        funds("2000"),
+      ],
+      commands: [
+        redeem(5),
+        protocolCall("deposit_collateral", [
+          input(1),
+          input(0),
+          input(4),
+          result(0),
+        ]),
+        redeem(6),
+        protocolCall("deposit_collateral", [
+          input(3),
+          input(2),
+          input(4),
+          result(2),
+        ]),
+      ],
+    };
+    expect(() =>
+      assertOwnerTransactionIntent({ getData: () => snapshot }, batch),
+    ).not.toThrow();
+    expect(
+      deserializeOwnerTransactionIntent(serializeOwnerTransactionIntent(batch)),
+    ).toEqual(batch);
+    const swapped = structuredClone(snapshot);
+    swapped.commands[3]!.MoveCall!.arguments[3] = result(0);
+    expect(() =>
+      assertOwnerTransactionIntent({ getData: () => swapped }, batch),
+    ).toThrow("own redeemed owner funds");
+    const mismatched = structuredClone(snapshot);
+    mismatched.inputs[6] = funds("2001");
+    expect(() =>
+      assertOwnerTransactionIntent({ getData: () => mismatched }, batch),
+    ).toThrow("amount");
+    const differentAccount = structuredClone(snapshot);
+    differentAccount.commands[3]!.MoveCall!.arguments[1] = input(0);
+    expect(() =>
+      assertOwnerTransactionIntent({ getData: () => differentAccount }, batch),
+    ).toThrow("capability");
+    expect(() =>
+      assertOwnerSimulationEffects(
+        {
+          $kind: "Transaction",
+          Transaction: {
+            balanceChanges: [
+              {
+                coinType: collateralCoinType,
+                address: owner,
+                amount: "-3000",
+              },
+            ],
+          },
+        },
+        batch,
+      ),
+    ).not.toThrow();
+    expect(() =>
+      assertOwnerSimulationEffects(
+        {
+          $kind: "Transaction",
+          Transaction: {
+            balanceChanges: [
+              {
+                coinType: collateralCoinType,
+                address: owner,
+                amount: "-2000",
+              },
+            ],
+          },
+        },
+        batch,
+      ),
+    ).toThrow("collateral change");
+  });
+
+  it("accepts exactly one owner gas top-up and rejects recipient or amount substitution", () => {
+    const recipient = `0x${"99".repeat(32)}`;
+    const intent: OwnerTransactionIntent = {
+      kind: "gas-top-up",
+      sender: owner,
+      protocolPackageId: packageId,
+      registryObjectId: registryId,
+      collateralCoinType,
+      accountCapId: capId,
+      accountObjectId: accountId,
+      allowedMarketIds: [],
+      agentAddress: recipient,
+      gasMist: 250_000_000n,
+    };
+    const tx = new Transaction();
+    tx.setSender(owner);
+    const [coin] = tx.splitCoins(tx.gas, [250_000_000n]);
+    tx.transferObjects([coin], recipient);
+    expect(() => assertOwnerTransactionIntent(tx, intent)).not.toThrow();
+    expect(
+      deserializeOwnerTransactionIntent(
+        serializeOwnerTransactionIntent(intent),
+      ),
+    ).toEqual(intent);
+    expect(() =>
+      assertOwnerTransactionIntent(tx, { ...intent, agentAddress: owner }),
+    ).toThrow("recipient");
+    expect(() =>
+      assertOwnerTransactionIntent(tx, { ...intent, gasMist: 500_000_000n }),
+    ).toThrow("amount");
+  });
   it("round-trips bigint fields through the browser-safe response", () => {
     const intent: OwnerTransactionIntent = {
       kind: "grant-agent",

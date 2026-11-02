@@ -168,12 +168,12 @@ describe("runtime endpoint management", () => {
     store.close();
   });
 
-  it("allows paused market overlap but refuses a second running bundle", () => {
+  it("starts a second Paper bundle with the same market", async () => {
     const store = storeHarness();
     const ownerAddress = `0x${"6".repeat(64)}`;
     const tenant = store.forTenant(ownerAddress);
     const core = makerConfigSchema.parse({
-      markets: [{ marketId: "0x6001", symbol: "BTC" }],
+      markets: [{ marketId: "0x6001", symbol: "NEAR" }],
     });
     tenant.setConfig(core);
     tenant.confirmWalletLimits();
@@ -190,13 +190,63 @@ describe("runtime endpoint management", () => {
       .listBundles()
       .find((bundle) => bundle.name === "Core")!;
     tenant.setBundleStatus(coreBundle.id, "running");
-    const manager = new RuntimeManager(store, {} as never, {});
-
-    expect(() => manager.startBundle(ownerAddress, duplicate.id)).toThrow(
-      "BTC is already quoted by Core. Duplicate the strategy and change its markets.",
+    const manager = new RuntimeManager(
+      store,
+      {} as never,
+      {},
+      async () =>
+        ({
+          ...gateway("https://local.test"),
+          getOrderbook: async () => {
+            await new Promise((resolve) => setTimeout(resolve, 20));
+            throw new Error("Deliberately unavailable local test book");
+          },
+        }) as unknown as AftermathGateway,
     );
-    expect(tenant.getStoredBundle(duplicate.id)?.status).toBe("stopped");
+    await manager.initialize();
+    // No network, signing, broadcast or mainnet Live gate is involved.
+    const started = manager.startBundle(ownerAddress, duplicate.id);
+    expect(started.bundle.status).toBe("running");
+    expect(started.bundle.marketIds).toContain("0x6001");
+    await manager.pauseBundle(ownerAddress, duplicate.id);
     manager.close();
+    store.close();
+  });
+
+  it("still rejects a second running Live overlap in a test-only legacy state", () => {
+    const store = storeHarness();
+    const owner = `0x${"7".repeat(64)}`;
+    const tenant = store.forTenant(owner);
+    const config = makerConfigSchema.parse({
+      markets: [{ marketId: "0x7001", symbol: "NEAR" }],
+    });
+    tenant.setConfig(config);
+    tenant.confirmWalletLimits();
+    const core = tenant.listBundles().find((bundle) => bundle.name === "Core")!;
+    const other = tenant.createBundle({
+      name: "Rewards",
+      config: makerConfigSchema.parse({
+        ...config,
+        makerAccountId: "3",
+        hedge: { ...config.hedge, accountId: "4" },
+      }),
+    });
+    // Live is Core-only in the public API. Seed an impossible legacy collision
+    // in a disposable test database to exercise the future fail-closed guard.
+    const testDb = (
+      store as unknown as {
+        db: {
+          prepare: (sql: string) => { run: (...args: string[]) => unknown };
+        };
+      }
+    ).db;
+    testDb
+      .prepare("UPDATE bundles SET mode = 'live' WHERE id IN (?, ?)")
+      .run(core.id, other.id);
+    tenant.setBundleStatus(core.id, "running");
+    expect(() => tenant.assertBundleMarketsAvailableToStart(other.id)).toThrow(
+      "NEAR is already quoted live by Core. Only one Live bundle can quote a market.",
+    );
     store.close();
   });
 

@@ -2,7 +2,7 @@ import { AftermathGateway, type EndpointHealth } from "@puc/aftermath";
 import type { MakerConfig, RuntimeSnapshot } from "@puc/core";
 import {
   admitBundleProposals,
-  calculateBundleGasReserveMist,
+  requiredBundleGasMist,
   hasBundleGasReserve,
 } from "./bundle-supervisor.js";
 import type { BundleWalletUsage, Store, StoredBundle } from "./store.js";
@@ -357,38 +357,13 @@ export class RuntimeManager {
         ? [config]
         : [];
     });
-    // Paper simulations still set a gas budget and select a gas coin in the
-    // gateway, but never post/cancel/hedge. A single simulation needs at most
-    // maxGasMist; only Live bundles contribute cancellation/hedge reserves.
-    const liveRequiredMist = liveConfigs.length
-      ? (() => {
-          const conservativeGasMist = Math.max(
-            ...liveConfigs.map((config) => config.maxGasMist),
-          );
-          // The order attribution ledger retains historical IDs. Reserve
-          // only for Live orders that can currently be resting.
-          const restingOrderCount = liveConfigs.reduce(
-            (total, config) =>
-              total +
-              (config.rotationMode === "portfolio"
-                ? config.markets.length * 2
-                : Math.min(config.markets.length, 1) * 2),
-            0,
-          );
-          return calculateBundleGasReserveMist({
-            cancelGasEstimateMist: conservativeGasMist,
-            hedgeGasBufferMist: conservativeGasMist,
-            fixedSafetyBufferMist: conservativeGasMist,
-            runningBundleCount: liveConfigs.length,
-            restingOrderCount,
-          });
-        })()
-      : 0;
-    const paperRequiredMist =
-      paperTrial || candidateConfig.mode === "paper"
-        ? candidateConfig.maxGasMist
-        : 0;
-    const requiredGasMist = Math.max(liveRequiredMist, paperRequiredMist);
+    // The same Paper-only simulation budget and Live-only reserve power the
+    // readiness stage; neither path signs here.
+    const requiredGasMist = requiredBundleGasMist(
+      liveConfigs,
+      candidateConfig,
+      paperTrial,
+    );
     if (!requiredGasMist) return;
     const observedGasMist = [
       candidateRuntime.snapshot.balances.gasSui,
@@ -410,7 +385,7 @@ export class RuntimeManager {
         requiredGasMist,
       })
     ) {
-      const simulationOnly = liveRequiredMist === 0;
+      const simulationOnly = liveConfigs.length === 0;
       const purpose = simulationOnly
         ? "to simulate one quote"
         : "to pay for cancels and hedges";

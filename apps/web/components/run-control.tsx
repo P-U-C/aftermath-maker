@@ -6,6 +6,7 @@ import { createPortal } from "react-dom";
 
 import type { RunBundle, RunPhase, RunState } from "../lib/run-state";
 import { formatPaperBlocker } from "../lib/paper-blocker";
+import { nextStage } from "../lib/bundle-readiness";
 import { Sheet } from "./ui/primitives";
 
 type BundleAction = "start" | "pause" | "resume";
@@ -22,6 +23,7 @@ type RunControlProps = {
   onManageBundles: () => void;
   onOpenStrategy: () => void;
   onOpenVenues: () => void;
+  onFundBundle?: ((bundleId: string, accountId: string) => void) | undefined;
 };
 
 function usePhoneLayout() {
@@ -172,6 +174,16 @@ function rowDetail(
     };
   }
   if (bundle.phase === "stopped") {
+    const stage = nextStage(bundle.readiness);
+    if (stage)
+      return {
+        text:
+          stage.id === "collateral"
+            ? `Deposit $${(stage.shortfallUsd ?? 0).toFixed(2)} to start`
+            : `${stage.detail} to start`,
+        tone: "amber",
+        destination: stage.id === "strategy" ? "strategy" : "venues",
+      };
     return stoppedAt
       ? {
           text: `Stopped at ${formatSince(stoppedAt)}. Its orders are cancelled.`,
@@ -211,9 +223,12 @@ function actionLabel(
   }
   const verb =
     action === "pause" ? "Pause" : action === "resume" ? "Resume" : "Start";
-  return blocked
-    ? `${verb} ${bundle.name}, apply its strategy changes first`
-    : `${verb} ${bundle.name}`;
+  const next = nextStage(bundle.readiness);
+  return next && action !== "pause"
+    ? `${verb} ${bundle.name}, ${next.detail.toLowerCase()} first`
+    : blocked
+      ? `${verb} ${bundle.name}, apply its strategy changes first`
+      : `${verb} ${bundle.name}`;
 }
 
 function sortedBundles(bundles: RunBundle[]) {
@@ -264,6 +279,7 @@ function RunStatusContent({
   onManageBundles,
   onOpenStrategy,
   onOpenVenues,
+  onFundBundle,
   headingRef,
   rowsRef,
 }: {
@@ -276,6 +292,7 @@ function RunStatusContent({
   onManageBundles: () => void;
   onOpenStrategy: () => void;
   onOpenVenues: () => void;
+  onFundBundle?: ((bundleId: string, accountId: string) => void) | undefined;
   headingRef: MutableRefObject<HTMLHeadingElement | null>;
   rowsRef: MutableRefObject<Record<string, HTMLDivElement | null>>;
 }) {
@@ -351,7 +368,8 @@ function RunStatusContent({
         {sortedBundles(run.bundles).map((bundle) => {
           const action = actionFor(bundle);
           const blocked = Boolean(
-            run.configDirty && (action === "start" || action === "resume"),
+            (run.configDirty || bundle.readiness?.ready === false) &&
+            (action === "start" || action === "resume"),
           );
           const detail = rowDetail(bundle, stoppedAt[bundle.id]);
           const busy =
@@ -383,20 +401,43 @@ function RunStatusContent({
                 <p className={detail.tone === "amber" ? "is-amber" : undefined}>
                   {detail.text}
                   {detail.checked && <> {detail.checked}.</>}{" "}
-                  {detail.destination === "venues" && (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        onOpenVenues();
-                        onClose();
-                      }}
-                    >
-                      {bundle.startError?.fix?.kind === "venues" ||
-                      bundle.startError?.fix?.kind === "accounts"
-                        ? "Authorize it in Venues"
-                        : "Open Venues"}
-                    </button>
-                  )}
+                  {nextStage(bundle.readiness)?.id === "collateral" &&
+                    nextStage(bundle.readiness)?.accountId &&
+                    onFundBundle && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          onFundBundle(
+                            bundle.id,
+                            nextStage(bundle.readiness)!.accountId!,
+                          );
+                          onClose();
+                        }}
+                      >
+                        Deposit $
+                        {(
+                          nextStage(bundle.readiness)?.shortfallUsd ?? 0
+                        ).toFixed(2)}
+                      </button>
+                    )}
+                  {detail.destination === "venues" &&
+                    !(
+                      nextStage(bundle.readiness)?.id === "collateral" &&
+                      onFundBundle
+                    ) && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          onOpenVenues();
+                          onClose();
+                        }}
+                      >
+                        {bundle.startError?.fix?.kind === "venues" ||
+                        bundle.startError?.fix?.kind === "accounts"
+                          ? "Authorize it in Venues"
+                          : "Open Venues"}
+                      </button>
+                    )}
                   {detail.copyAddress && (
                     <button
                       type="button"
@@ -533,6 +574,7 @@ export function RunControl({
   onManageBundles,
   onOpenStrategy,
   onOpenVenues,
+  onFundBundle,
 }: RunControlProps) {
   const phone = usePhoneLayout();
   const visible = compact ? phone : !phone;
@@ -629,6 +671,7 @@ export function RunControl({
       onManageBundles={onManageBundles}
       onOpenStrategy={onOpenStrategy}
       onOpenVenues={onOpenVenues}
+      onFundBundle={onFundBundle}
       headingRef={headingRef}
       rowsRef={rowsRef}
     />

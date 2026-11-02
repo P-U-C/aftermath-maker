@@ -37,6 +37,7 @@ const views = [
   "desk",
   "strategy",
   "markets",
+  "bundles",
   "performance",
   "accounts",
   "venues",

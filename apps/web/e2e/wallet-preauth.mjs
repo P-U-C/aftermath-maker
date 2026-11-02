@@ -55,6 +55,7 @@ const scenarios = {
     accessFlow: "request",
   },
   registry503: { signPersonalMessage: "resolve", accessFlow: "registry503" },
+  signature503: { signPersonalMessage: "resolve", accessFlow: "signature503" },
   closed403: { signPersonalMessage: "resolve", accessFlow: "closed403" },
   expired410: {
     signPersonalMessage: "resolve",
@@ -106,6 +107,12 @@ async function routeControlApi(page, scenario) {
         return json(403, {
           error: "Requests are closed right now.",
           code: "access-requests-closed",
+        });
+      if (scenario.accessFlow === "signature503")
+        return json(503, {
+          error:
+            "Maker couldn't check your wallet's signature right now. Try again in a minute.",
+          code: "signature-check-unavailable",
         });
       if (scenario.accessFlow === "registry503")
         return json(503, {
@@ -269,6 +276,14 @@ async function runAccessFlow(page, scenario, scenarioName, viewport, output) {
       throw new Error(
         "closed access still offered an unavailable request flow",
       );
+  } else if (scenario.accessFlow === "signature503") {
+    await page
+      .getByRole("alert")
+      .getByText(
+        "Maker couldn't check your wallet's signature right now. Try again in a minute.",
+      )
+      .waitFor();
+    await page.getByRole("button", { name: "Try again" }).waitFor();
   } else if (scenario.accessFlow === "registry503") {
     await page
       .getByRole("alert")

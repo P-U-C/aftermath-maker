@@ -11677,6 +11677,238 @@ mysten-dapp-kit-connect-modal,
 .market-clean-table tbody tr:last-child td {
   border-bottom: 0;
 }
+/* Round 9: one owner-signed account funding workflow on Venues. */
+.ui-sheet-scrim.venue-funding-scrim {
+  top: 64px;
+  padding: 0;
+  align-items: stretch;
+  justify-items: end;
+  background: rgba(16, 18, 22, 0.14);
+  backdrop-filter: none;
+}
+.ui-sheet.venue-funding-sheet {
+  width: min(440px, 100vw);
+  height: calc(100dvh - 64px);
+  max-height: none;
+  border-radius: 0;
+}
+.venue-funding-sheet .ui-sheet-body {
+  overflow-y: auto;
+}
+.venue-funding-sheet .ui-sheet-header h2 {
+  font-size: 19px;
+  font-weight: 650;
+}
+.venue-funding-body {
+  display: grid;
+  gap: 16px;
+  color: var(--ink-2);
+  font-size: 13.5px;
+}
+.venue-funding-body > p,
+.venue-funding-body > small {
+  margin: 0;
+}
+.venue-funding-amount {
+  display: grid;
+  gap: 7px;
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 620;
+}
+.venue-funding-amount > span {
+  height: 48px;
+  padding: 0 12px;
+  display: flex;
+  align-items: center;
+  border: 1px solid var(--hair);
+  border-radius: 10px;
+  background: var(--surface);
+}
+.venue-funding-amount > span:focus-within {
+  border-color: var(--tide-text);
+  box-shadow: 0 0 0 3px var(--tide-soft);
+}
+.venue-funding-amount input {
+  width: 100%;
+  height: 100%;
+  border: 0;
+  outline: none;
+  background: none;
+  color: var(--ink);
+  font:
+    620 20px var(--font-mona),
+    Arial,
+    sans-serif;
+  font-variant-numeric: tabular-nums;
+}
+.venue-funding-amount b {
+  color: var(--ink-2);
+  font-size: 13px;
+}
+.venue-bundle-fund-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 72px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--line);
+}
+.venue-bundle-fund-row > span:first-child {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+.venue-bundle-fund-row strong {
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 620;
+}
+.venue-bundle-fund-row small {
+  color: var(--ink-2);
+  font-size: 12.5px;
+}
+.venue-bundle-fund-field {
+  display: flex;
+  align-items: center;
+  width: 132px;
+  min-width: 110px;
+  height: 40px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  color: var(--ink-2);
+}
+.venue-bundle-fund-field input:focus-visible,
+.venue-funding-amount input:focus-visible {
+  outline: none;
+  box-shadow: none;
+}
+.venue-bundle-fund-field input {
+  min-width: 0;
+  width: 100%;
+  border: 0;
+  background: none;
+  text-align: right;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+.venue-bundle-fund-field:focus-within {
+  border-color: var(--tide-text);
+  box-shadow: 0 0 0 3px var(--tide-soft);
+}
+.venue-funding-picks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.venue-funding-picks button {
+  min-height: 32px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 10px;
+  background: var(--fill);
+  color: var(--ink);
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.venue-funding-picks button.is-selected {
+  color: var(--tide-text);
+  background: var(--tide-soft);
+}
+.venue-funding-summary {
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+  border-radius: 12px;
+  background: var(--fill);
+}
+.venue-funding-summary > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+.venue-funding-summary strong {
+  color: var(--ink);
+  font-weight: 650;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.venue-funding-summary p {
+  margin: 0;
+  font-weight: 620;
+}
+.venue-funding-summary .is-ready {
+  color: var(--tide-text);
+}
+.venue-funding-summary .is-short,
+.venue-funding-warning {
+  color: var(--amber-text);
+}
+.venue-funding-warning {
+  padding: 12px;
+  border-radius: 12px;
+  background: var(--amber-soft);
+  line-height: 1.5;
+}
+.venue-funding-done {
+  display: grid;
+  place-items: center;
+  gap: 10px;
+  padding: 35px 10px;
+  text-align: center;
+}
+.venue-funding-done > span {
+  width: 48px;
+  height: 48px;
+  display: grid;
+  place-items: center;
+  color: var(--tide-text);
+  background: var(--tide-soft);
+  border-radius: 50%;
+}
+.venue-funding-done h3,
+.venue-funding-done p {
+  margin: 0;
+}
+.venue-funding-done a {
+  color: var(--tide-text);
+  font-weight: 600;
+}
+@media (max-width: 700px) {
+  .ui-sheet-scrim.venue-funding-scrim {
+    top: 0;
+  }
+  .ui-sheet.venue-funding-sheet {
+    width: 100vw;
+    height: 100dvh;
+  }
+  .venue-funding-picks button {
+    min-height: 44px;
+  }
+}
+
+.market-clean-table .market-bundle-child td {
+  height: 52px;
+  background: rgba(22, 24, 29, 0.02);
+}
+.market-shared-count {
+  font-weight: 620;
+}
+.market-shared-connector {
+  width: 19px;
+  height: 15px;
+  margin-left: 9px;
+  display: inline-block;
+  border-left: 1.5px solid var(--ink-3);
+  border-bottom: 1.5px solid var(--ink-3);
+  border-bottom-left-radius: 5px;
+}
+.market-bundle-child .market-state-label {
+  white-space: nowrap;
+}
 .market-cell-name strong {
   display: block;
   overflow: hidden;
@@ -12449,6 +12681,183 @@ mysten-dapp-kit-connect-modal,
   overflow-x: auto;
   contain: layout paint;
 }
+.venue-blocked-banner {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  box-shadow: inset 0 0 0 1px rgba(232, 162, 0, 0.45);
+}
+.venue-blocked-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--amber-text);
+  flex: 0 0 auto;
+}
+.venue-blocked-banner > div {
+  flex: 1;
+  min-width: 0;
+}
+.venue-blocked-banner h2 {
+  margin: 0 0 4px;
+  font-size: 17px;
+  font-weight: 650;
+}
+.venue-blocked-banner p {
+  margin: 0;
+  color: var(--ink-2);
+  font-size: 13.5px;
+}
+.venue-blocked-banner .ui-button {
+  flex: 0 0 auto;
+}
+.venue-facts-strip .venue-kit-facts {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  margin: 0;
+}
+.venue-facts-strip .venue-kit-facts > div {
+  border-top: 0;
+  min-height: 54px;
+}
+@media (max-width: 700px) {
+  .venue-blocked-banner {
+    flex-wrap: wrap;
+  }
+  .venue-blocked-banner > div {
+    flex-basis: calc(100% - 30px);
+  }
+  .venue-facts-strip .venue-kit-facts {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+.venue-wallet-balance {
+  display: grid;
+  gap: 4px;
+  min-width: 250px;
+  padding: 12px 16px;
+  background: var(--surface);
+  border-radius: 12px;
+  box-shadow: 0 1px 1px rgba(16, 18, 22, 0.04);
+}
+.venue-wallet-balance span {
+  color: var(--ink-2);
+  font-size: 12.5px;
+}
+.venue-wallet-balance strong {
+  font-size: 14px;
+  font-weight: 620;
+  font-variant-numeric: tabular-nums;
+}
+.venue-accounts-title {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+}
+.venue-accounts-title .venue-state {
+  font-size: 12px;
+}
+.venue-bundle-group {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+.venue-bundle-group .bundle-mode {
+  font-size: 12px;
+}
+.venue-bundle-group > strong {
+  color: var(--ink);
+  font-weight: 650;
+}
+.venue-bundle-group .is-ready {
+  color: var(--tide-text);
+}
+.venue-bundle-group .is-short,
+.venue-amount-short {
+  color: var(--amber-text);
+}
+.venue-bundle-group > .ui-button {
+  margin-left: auto;
+}
+.venue-kit-table {
+  min-width: 1040px;
+  table-layout: auto;
+}
+.venue-kit-table th:first-child {
+  min-width: 140px;
+}
+.venue-kit-table th:last-child {
+  min-width: 225px;
+}
+.venue-kit-table .venue-account-group th {
+  height: 48px;
+}
+.venue-kit-table :is(th, td):nth-child(n + 3) {
+  text-align: left;
+}
+.venue-kit-table :is(th, td):nth-child(3),
+.venue-kit-table :is(th, td):nth-child(5) {
+  text-align: right;
+}
+.venue-kit-table td:is(.venue-amount, .venue-amount-short) {
+  font-variant-numeric: tabular-nums;
+}
+.venue-kit-table td:nth-child(4) {
+  white-space: nowrap;
+}
+.venue-stage {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  padding: 2px 8px;
+  border-radius: 8px;
+  white-space: nowrap;
+}
+.venue-stage.is-ready {
+  color: var(--tide-text);
+  background: var(--tide-soft);
+}
+.venue-stage.is-short {
+  color: var(--amber-text);
+  background: var(--amber-soft);
+}
+.venue-account-actions {
+  white-space: nowrap;
+}
+.venue-account-actions .ui-button {
+  min-height: 32px;
+}
+.venue-account-menu {
+  display: inline-block;
+  position: relative;
+  margin-left: 5px;
+}
+.venue-account-menu > div {
+  position: absolute;
+  right: 0;
+  z-index: 11;
+  width: 190px;
+  padding: 6px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  box-shadow: 0 12px 32px rgba(16, 18, 22, 0.14);
+}
+.venue-account-menu > div button {
+  display: block;
+  width: 100%;
+  min-height: 38px;
+  padding: 7px 10px;
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  text-align: left;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.venue-account-menu > div button:hover {
+  background: var(--fill);
+}
 .venue-account-footnote {
   margin: 12px 0 0;
   color: var(--ink-2);
@@ -12732,6 +13141,96 @@ mysten-dapp-kit-connect-modal,
 }
 .bundle-card-grid > .bundle-card {
   height: 100%;
+}
+.bundle-stage-chip {
+  flex: 0 0 auto;
+  align-self: flex-start;
+  min-height: 28px;
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 9px;
+  border-radius: 8px;
+  background: var(--amber-soft);
+  color: var(--amber-text);
+  font-size: 12px;
+  font-weight: 620;
+}
+.bundle-stage-chip.is-quoting,
+.bundle-stage-chip.is-ready {
+  color: var(--tide-text);
+  background: var(--tide-soft);
+}
+.bundle-stage-list {
+  list-style: none;
+  margin: 12px 0 0;
+  padding: 0;
+}
+.bundle-stage-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 52px;
+  border-top: 1px solid var(--line);
+}
+.bundle-stage-row > span {
+  color: var(--amber-text);
+}
+.bundle-stage-row.is-done > span {
+  color: var(--tide-text);
+}
+.bundle-stage-row.is-waiting > span,
+.bundle-stage-row.is-waiting small {
+  color: var(--ink-3);
+}
+.bundle-stage-row > div {
+  min-width: 0;
+  flex: 1;
+  display: grid;
+  gap: 2px;
+}
+.bundle-stage-row strong {
+  font-size: 13.5px;
+  font-weight: 600;
+}
+.bundle-stage-row small {
+  color: var(--amber-text);
+  font-size: 12px;
+}
+.bundle-stage-row.is-done small {
+  color: var(--ink-2);
+}
+.bundle-stage-row .ui-button {
+  flex: 0 0 auto;
+  min-height: 32px;
+  height: 32px;
+  padding: 0 9px;
+  font-size: 12px;
+}
+.bundle-stage-footer-note {
+  font-size: 12.5px;
+  color: var(--ink-2);
+}
+.bundle-card-result {
+  margin-top: 9px;
+  display: block;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-2);
+}
+@media (min-width: 1100px) {
+  .bundle-card-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+@media (max-width: 1099px) {
+  .bundle-card-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+@media (max-width: 700px) {
+  .bundle-stage-row .ui-button {
+    min-height: 44px;
+    height: 44px;
+  }
 }
 @media (max-width: 700px) {
   .bundle-actions .ui-button {

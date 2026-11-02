@@ -3,6 +3,7 @@
 import {
   DAppKitProvider,
   useCurrentAccount,
+  useCurrentClient,
   useDAppKit,
 } from "@mysten/dapp-kit-react";
 import { ConnectModal } from "@mysten/dapp-kit-react/ui";
@@ -10,6 +11,7 @@ import type { DAppKitConnectModal } from "@mysten/dapp-kit-core/web";
 import { Transaction } from "@mysten/sui/transactions";
 import {
   aggregatePortfolioQuoteRisk,
+  requiredMakerCollateralUsd,
   makerConfigSchema,
   type MakerMarketOverrides,
 } from "@puc/core";
@@ -55,6 +57,7 @@ import {
 } from "../lib/access";
 import { deskEvent } from "../lib/audit-events";
 import { selectedActiveBundleId } from "../lib/bundle-options";
+import type { BundleReadiness } from "../lib/bundle-readiness";
 import { configsEqual } from "../lib/config-equality";
 import {
   effectiveMarketOverrides,
@@ -139,6 +142,15 @@ import { MarketsView } from "./views/markets";
 import { PerformanceView } from "./views/performance";
 import { GoLiveSheet, StrategyView } from "./views/strategy";
 import { VenueBoard, VenuesView } from "./views/venues";
+import {
+  BundleFundingSheet,
+  type BundleFundingAccount,
+} from "./bundle-funding-sheet";
+import {
+  VenueFundingSheet,
+  type FundingMode,
+  type FundingTarget,
+} from "./venue-funding-sheet";
 
 type PreparedOwnerTransactionResponse = {
   transaction: string;
@@ -149,6 +161,8 @@ type ExpectedOwnerIntent = {
   kind: SerializedOwnerTransactionIntent["kind"];
   sender: string;
   amount?: bigint;
+  accountCapId?: string;
+  deposits?: Array<{ accountCapId: string; amount: bigint }>;
   recipient?: string;
   agentAddress?: string;
   gasMist?: bigint;
@@ -171,6 +185,30 @@ function verifiedOwnerTransaction(
     (!("amount" in intent) || intent.amount !== expected.amount)
   ) {
     throw new Error("Prepared collateral amount does not match this action");
+  }
+  if (
+    expected.accountCapId &&
+    (!("accountCapId" in intent) ||
+      intent.accountCapId.toLowerCase() !== expected.accountCapId.toLowerCase())
+  ) {
+    throw new Error(
+      "Prepared transaction account does not match the selected account",
+    );
+  }
+  if (
+    expected.deposits &&
+    (intent.kind !== "deposit-batch" ||
+      intent.deposits.length !== expected.deposits.length ||
+      intent.deposits.some(
+        (entry, index) =>
+          entry.accountCapId.toLowerCase() !==
+            expected.deposits![index]?.accountCapId.toLowerCase() ||
+          entry.amount !== expected.deposits![index]?.amount,
+      ))
+  ) {
+    throw new Error(
+      "Prepared deposits do not match both selected accounts and amounts",
+    );
   }
   if (
     expected.recipient &&
@@ -207,6 +245,11 @@ function verifiedOwnerTransaction(
   const transaction = Transaction.from(prepared.transaction);
   assertOwnerTransactionIntent(transaction, intent);
   return transaction;
+}
+
+function suiMistFromText(value: string): bigint {
+  const [whole = "0", fraction = ""] = value.split(".");
+  return BigInt(whole) * 1_000_000_000n + BigInt(fraction.padEnd(9, "0"));
 }
 
 function usdcBaseUnits(value: string): bigint {
@@ -483,6 +526,7 @@ type MakerBundle = {
   strategyId: string | null;
   strategyName: string | null;
   strategyVersionApplied: number | null;
+  readiness?: BundleReadiness | null;
   needsStrategy: boolean;
   makerAccountId: string | null;
   takerAccountId: string | null;
@@ -515,6 +559,8 @@ type AccountCap = {
   collateralCoinType: string;
   equityUsd: number;
   availableCollateralUsd: number;
+  withdrawableCollateralUsd?: number;
+  openMakerOrderCount?: number;
   allocatedCollateralUsd: number;
   freeMarginUsd: number;
   positionCount: number;
@@ -1045,6 +1091,7 @@ const timeUntil = (timestamp: string | null) => {
 
 function DashboardBody() {
   const account = useCurrentAccount();
+  const suiClient = useCurrentClient();
   const wallet = useDAppKit();
   const { activeView, selectView } = useMakerView();
   const [identity, setIdentity] = useState<AccessIdentity | null>(null);
@@ -1198,6 +1245,17 @@ function DashboardBody() {
   const [collateralAmounts, setCollateralAmounts] = useState<
     Record<string, string>
   >({});
+  const [fundingTarget, setFundingTarget] = useState<FundingTarget | null>(
+    null,
+  );
+  const [bundleFunding, setBundleFunding] = useState<{
+    bundleName: string;
+    accounts: BundleFundingAccount[];
+  } | null>(null);
+  const [walletBalances, setWalletBalances] = useState<{
+    usdcUsd: number;
+    sui: number;
+  } | null>(null);
   const [busy, setBusy] = useState("");
   const bundleCreateInFlight = useRef(false);
   const [flattenArmed, setFlattenArmed] = useState(false);
@@ -1759,6 +1817,7 @@ function DashboardBody() {
           setStartErrors((current) => ({ ...current, [bundleId]: undefined }));
         }, 60_000);
       }
+      return completed;
     } finally {
       if (action !== "archive") {
         setBundlePending((current) => ({ ...current, [bundleId]: undefined }));
@@ -2047,6 +2106,36 @@ function DashboardBody() {
     loadPerformance,
     loadAccessRequests,
   ]);
+
+  useEffect(() => {
+    if (
+      activeView !== "venues" ||
+      !identity ||
+      !account?.address ||
+      account.address.toLowerCase() !== identity.ownerAddress.toLowerCase()
+    ) {
+      setWalletBalances(null);
+      return;
+    }
+    let active = true;
+    void Promise.all([
+      suiClient.getBalance({ owner: account.address, coinType: USDC }),
+      suiClient.getBalance({ owner: account.address }),
+    ])
+      .then(([usdc, gas]) => {
+        if (!active) return;
+        setWalletBalances({
+          usdcUsd: Number(usdc.balance.balance) / 1_000_000,
+          sui: Number(gas.balance.balance) / 1_000_000_000,
+        });
+      })
+      .catch(() => {
+        if (active) setWalletBalances(null);
+      });
+    return () => {
+      active = false;
+    };
+  }, [activeView, identity, account?.address, suiClient]);
 
   useEffect(() => {
     if (!identity || walletSessionMismatch) return;
@@ -2535,6 +2624,158 @@ function DashboardBody() {
         "success",
       );
     });
+  }
+
+  async function submitVenueFunding(
+    mode: FundingMode,
+    accountId: string,
+    amountText: string,
+  ): Promise<{ digest: string; freeUsd: number | null }> {
+    const ownerAddress = requestOwnerWallet(
+      mode === "gas" ? "top up the trading key" : mode,
+    );
+    if (!ownerAddress)
+      throw new Error(
+        "Connect the owner wallet before preparing a transaction.",
+      );
+    const owned = accounts.find(
+      (candidate) => candidate.accountId === accountId,
+    );
+    if (!owned)
+      throw new Error("This account is no longer owned by your wallet.");
+    const amount =
+      mode === "gas" ? suiMistFromText(amountText) : usdcBaseUnits(amountText);
+    const path =
+      mode === "gas"
+        ? "api/setup/gas-transaction"
+        : `api/accounts/${mode}-transaction`;
+    const body =
+      mode === "gas"
+        ? { accountId, gasMist: amount.toString() }
+        : { accountId, amountUsdc: amountText };
+    const built = await request<PreparedOwnerTransactionResponse>(path, {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+    const expected: ExpectedOwnerIntent = {
+      kind: mode === "gas" ? "gas-top-up" : mode,
+      sender: ownerAddress,
+      accountCapId: owned.accountCapId,
+      ...(mode === "gas"
+        ? { agentAddress: setup.agent?.address ?? "", gasMist: amount }
+        : { amount }),
+      ...(mode === "withdraw" ? { recipient: ownerAddress } : {}),
+    };
+    const transaction = verifiedOwnerTransaction(built, expected);
+    const result = await wallet.signAndExecuteTransaction({ transaction });
+    if (result.$kind === "FailedTransaction") {
+      throw new Error(
+        "The wallet transaction did not complete. Check its receipt before retrying.",
+      );
+    }
+    const digest = result.Transaction.digest;
+    let freeUsd: number | null = null;
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      const read = await request<{ accounts: AccountCap[] }>(
+        `api/accounts?collateralCoinType=${encodeURIComponent(USDC)}`,
+      );
+      setAccounts(read.accounts);
+      freeUsd =
+        read.accounts.find((candidate) => candidate.accountId === accountId)
+          ?.availableCollateralUsd ?? null;
+      void refresh().catch(() => undefined);
+    } catch {
+      // A confirmed owner transaction stays complete even when a follow-up read fails.
+    }
+    setWalletBalances((current) =>
+      current
+        ? {
+            usdcUsd: Math.max(
+              0,
+              current.usdcUsd -
+                (mode === "deposit"
+                  ? Number(amountText)
+                  : mode === "withdraw"
+                    ? -Number(amountText)
+                    : 0),
+            ),
+            sui: Math.max(
+              0,
+              current.sui - (mode === "gas" ? Number(amountText) : 0),
+            ),
+          }
+        : current,
+    );
+    return { digest, freeUsd };
+  }
+
+  async function submitBundleFunding(
+    deposits: Array<{ accountId: string; amountUsdc: string }>,
+  ): Promise<string> {
+    const ownerAddress = requestOwnerWallet("fund both accounts");
+    if (!ownerAddress)
+      throw new Error(
+        "Connect the owner wallet before preparing a transaction.",
+      );
+    if (
+      deposits.length < 1 ||
+      deposits.length > 2 ||
+      new Set(deposits.map((deposit) => deposit.accountId)).size !==
+        deposits.length
+    )
+      throw new Error("Choose one or two different owned accounts.");
+    const expected = deposits.map((deposit) => {
+      const owned = accounts.find(
+        (account) => account.accountId === deposit.accountId,
+      );
+      if (!owned)
+        throw new Error(
+          "One of the accounts is no longer owned by your wallet.",
+        );
+      const amount = usdcBaseUnits(deposit.amountUsdc);
+      if (amount <= 0n)
+        throw new Error("Enter a positive deposit for each account.");
+      return { accountCapId: owned.accountCapId, amount };
+    });
+    const built = await request<PreparedOwnerTransactionResponse>(
+      "api/accounts/deposit-transaction",
+      {
+        method: "POST",
+        body: JSON.stringify({ deposits }),
+      },
+    );
+    const transaction = verifiedOwnerTransaction(built, {
+      kind: "deposit-batch",
+      sender: ownerAddress,
+      deposits: expected,
+    });
+    const result = await wallet.signAndExecuteTransaction({ transaction });
+    if (result.$kind === "FailedTransaction")
+      throw new Error(
+        "The wallet transaction did not complete. Check its receipt before retrying.",
+      );
+    const digest = result.Transaction.digest;
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      const read = await request<{ accounts: AccountCap[] }>(
+        `api/accounts?collateralCoinType=${encodeURIComponent(USDC)}`,
+      );
+      setAccounts(read.accounts);
+      void refresh().catch(() => undefined);
+    } catch {
+      // Never erase a confirmed transaction just because the next read failed.
+    }
+    const total = expected.reduce(
+      (sum, entry) => sum + Number(entry.amount) / 1_000_000,
+      0,
+    );
+    setWalletBalances((current) =>
+      current
+        ? { ...current, usdcUsd: Math.max(0, current.usdcUsd - total) }
+        : current,
+    );
+    return digest;
   }
 
   async function provision(accountId = selectedAccount) {
@@ -4232,6 +4473,54 @@ function DashboardBody() {
             ]
           : [];
       });
+      const sharedBundles =
+        assigned.length > 1
+          ? assigned.map((bundle) => {
+              const bundleRun = runBundleById.get(bundle.id) ?? null;
+              const bundleSnapshot = bundleRun?.snapshot ?? null;
+              const marketSnapshot =
+                bundleSnapshot?.markets.find(
+                  (market) => market.id === listed.id,
+                ) ?? null;
+              const strategy = strategies.find(
+                (item) => item.id === bundle.strategyId,
+              );
+              const selected = strategy?.markets.find(
+                (market) => market.marketId === listed.id,
+              );
+              const activity = marketActivity({
+                mode: bundleRun?.mode ?? "paper",
+                status: activityStatusFor(bundle.id),
+                marketId: listed.id,
+                marketError: marketSnapshot?.error ?? null,
+                snapshot: bundleSnapshot,
+                now: Date.now(),
+              });
+              const stateLabel =
+                bundleRun?.phase === "attention" || marketSnapshot?.error
+                  ? "Needs attention"
+                  : bundleRun?.phase === "paused"
+                    ? "Paused"
+                    : bundleRun?.phase === "running" && activity.active
+                      ? "Quoting"
+                      : "Waiting for first quote";
+              return {
+                id: bundle.id,
+                name: bundle.name,
+                mode: bundle.mode,
+                stateLabel,
+                strategyId: strategy?.id ?? null,
+                customFields: Object.keys(
+                  effectiveMarketOverrides(
+                    selected?.overrides,
+                    strategy?.config,
+                  ),
+                ),
+                inventoryUsd: marketSnapshot?.inventoryUsd ?? 0,
+                unrealizedPnlUsd: marketSnapshot?.unrealizedPnlUsd ?? 0,
+              };
+            })
+          : [];
       const activity = assignedBundle
         ? marketActivity({
             mode: assignedRun?.mode ?? "paper",
@@ -4242,11 +4531,20 @@ function DashboardBody() {
             now: Date.now(),
           })
         : { label: "Not assigned", active: false, error: null };
+      const sharedWaiting = sharedBundles.filter(
+        (bundle) =>
+          bundle.stateLabel === "Waiting for first quote" ||
+          bundle.stateLabel === "Paused",
+      ).length;
+      const sharedAttention = sharedBundles.filter(
+        (bundle) => bundle.stateLabel === "Needs attention",
+      ).length;
       return {
         id: listed.id,
         symbol: listed.symbol,
         displayName: listed.displayName,
         tickSize: listed.tickSize,
+        sharedBundles,
         strategyId: savedStrategy?.id ?? null,
         bundleMode: assignedBundle?.mode ?? null,
         customFields: Object.keys(
@@ -4257,14 +4555,22 @@ function DashboardBody() {
         ),
         stateLabel: !assignedBundle
           ? "Available"
-          : assignedRun?.phase === "attention" || runtimeMarket?.error
-            ? "Needs attention"
-            : assignedRun?.phase === "paused"
-              ? "Paused"
-              : assignedRun?.phase === "running" && activity.active
-                ? "Quoting"
-                : "Waiting for first quote",
-        bundleName: assignedBundle?.name ?? "Available",
+          : sharedBundles.length
+            ? sharedAttention
+              ? `${sharedAttention} need attention`
+              : sharedWaiting
+                ? `${sharedWaiting} waiting`
+                : "All quoting"
+            : assignedRun?.phase === "attention" || runtimeMarket?.error
+              ? "Needs attention"
+              : assignedRun?.phase === "paused"
+                ? "Paused"
+                : assignedRun?.phase === "running" && activity.active
+                  ? "Quoting"
+                  : "Waiting for first quote",
+        bundleName: sharedBundles.length
+          ? `${sharedBundles.length} bundles`
+          : (assignedBundle?.name ?? "Available"),
         bundleLabels: assigned.map((bundle) => {
           const phase = runBundleById.get(bundle.id)?.phase ?? "stopped";
           return `${bundle.name} · ${bundle.mode} · ${phase}`;
@@ -4294,8 +4600,12 @@ function DashboardBody() {
           listed.openInterestUtilizationPct,
         volume24hUsd: runtimeMarket?.volume24hUsd ?? listed.volume24hUsd,
         fundingRate: runtimeMarket?.fundingRate ?? listed.fundingRate,
-        inventoryUsd: runtimeMarket?.inventoryUsd ?? 0,
-        unrealizedPnlUsd: runtimeMarket?.unrealizedPnlUsd ?? 0,
+        inventoryUsd: sharedBundles.length
+          ? 0
+          : (runtimeMarket?.inventoryUsd ?? 0),
+        unrealizedPnlUsd: sharedBundles.length
+          ? 0
+          : (runtimeMarket?.unrealizedPnlUsd ?? 0),
         effectiveSpreadBps: savedMarket
           ? (savedMarket.overrides?.spreadBps ??
             savedStrategy!.config.spreadBps)
@@ -4366,113 +4676,202 @@ function DashboardBody() {
   ];
 
   const renderMarketRow = (row: (typeof marketTableRows)[number]) => (
-    <tr key={row.id}>
-      <td className="market-cell-name">
-        <strong>{row.symbol}</strong>
-        <small>{row.displayName}</small>
-      </td>
-      <td>
-        {row.bundleName === "Available" ? (
-          <span className="market-muted">Not in a bundle</span>
-        ) : (
-          <span className="market-bundle-label">
-            <strong>{row.bundleName}</strong>
-            <small
-              className={`run-mode-tag is-${row.bundleMode === "live" ? "live" : "paper"}`}
-            >
-              {row.bundleMode === "live" ? "Live" : "Paper"}
-            </small>
-          </span>
-        )}
-      </td>
-      <td>
-        <span
-          className={`market-state-label is-${row.stateLabel.toLowerCase().replaceAll(" ", "-")}`}
-        >
-          <i aria-hidden="true" />
-          {row.stateLabel}
-        </span>
-      </td>
-      <td>
-        {!row.strategyId ? (
-          <span className="market-muted">—</span>
-        ) : row.customFields.length ? (
-          <span
-            className="market-policy-custom"
-            title={row.customFields.map(reviewFieldName).join(", ")}
-          >
-            {row.customFields.length} custom
-          </span>
-        ) : (
-          <span className="market-muted">Strategy</span>
-        )}
-      </td>
-      <td className="market-number">
-        {marketPrice(row.indexPrice, row.tickSize)}
-      </td>
-      <td className="market-number">
-        <span>{compactUsd(row.openInterestUsd)}</span>
-        {row.openInterestUtilizationPct !== null && (
-          <span
-            className="market-capacity-bar"
-            role="progressbar"
-            aria-label={`${row.symbol} open interest capacity`}
-            aria-valuemin={0}
-            aria-valuemax={100}
-            aria-valuenow={Math.max(
-              0,
-              Math.min(100, row.openInterestUtilizationPct),
-            )}
-            aria-valuetext={`${percent(row.openInterestUtilizationPct, 1)} of the venue limit`}
-            title={`${percent(row.openInterestUtilizationPct, 1)} of the venue limit`}
-          >
-            <i
-              style={{
-                width: `${Math.max(0, Math.min(100, row.openInterestUtilizationPct))}%`,
-              }}
-            />
-          </span>
-        )}
-      </td>
-      <td className="market-number">{compactUsd(row.volume24hUsd)}</td>
-      <td
-        className={`market-number ${row.fundingRate !== null && row.fundingRate < 0 ? "negative-number" : ""}`}
+    <Fragment key={row.id}>
+      <tr
+        className={
+          row.sharedBundles.length ? "market-shared-parent" : undefined
+        }
       >
-        {row.fundingRate === null
-          ? "—"
-          : `${row.fundingRate >= 0 ? "+" : "−"}${Math.abs(row.fundingRate * 100).toFixed(4)}%`}
-      </td>
-      <td className="market-number">
-        {row.inventoryUsd === 0 ? "—" : money(row.inventoryUsd)}
-        {row.unrealizedPnlUsd !== 0 && (
-          <small
-            className={
-              row.unrealizedPnlUsd < 0 ? "negative-number" : "positive-number"
-            }
+        <td className="market-cell-name">
+          <strong>{row.symbol}</strong>
+          <small>{row.displayName}</small>
+        </td>
+        <td>
+          {row.sharedBundles.length ? (
+            <strong className="market-shared-count">
+              {row.sharedBundles.length} bundles
+            </strong>
+          ) : row.bundleName === "Available" ? (
+            <span className="market-muted">Not in a bundle</span>
+          ) : (
+            <span className="market-bundle-label">
+              <strong>{row.bundleName}</strong>
+              <small
+                className={`run-mode-tag is-${row.bundleMode === "live" ? "live" : "paper"}`}
+              >
+                {row.bundleMode === "live" ? "Live" : "Paper"}
+              </small>
+            </span>
+          )}
+        </td>
+        <td>
+          <span
+            className={`market-state-label is-${row.stateLabel.toLowerCase().replaceAll(" ", "-")}`}
           >
-            {money(row.unrealizedPnlUsd)} unrealized
-          </small>
-        )}
-      </td>
-      <td>
-        {row.strategyId && (
-          <button
-            className="market-policy-edit"
-            type="button"
-            aria-label={`Edit ${row.symbol} policy`}
-            onClick={() =>
-              setPolicyEditorTarget({
-                marketId: row.id,
-                symbol: row.symbol,
-                strategyId: row.strategyId!,
-              })
-            }
-          >
-            Edit
-          </button>
-        )}
-      </td>
-    </tr>
+            <i aria-hidden="true" />
+            {row.stateLabel}
+          </span>
+        </td>
+        <td>
+          {row.sharedBundles.length ? (
+            <span className="market-muted">Per bundle</span>
+          ) : !row.strategyId ? (
+            <span className="market-muted">—</span>
+          ) : row.customFields.length ? (
+            <span
+              className="market-policy-custom"
+              title={row.customFields.map(reviewFieldName).join(", ")}
+            >
+              {row.customFields.length} custom
+            </span>
+          ) : (
+            <span className="market-muted">Strategy</span>
+          )}
+        </td>
+        <td className="market-number">
+          {marketPrice(row.indexPrice, row.tickSize)}
+        </td>
+        <td className="market-number">
+          <span>{compactUsd(row.openInterestUsd)}</span>
+          {row.openInterestUtilizationPct !== null && (
+            <span
+              className="market-capacity-bar"
+              role="progressbar"
+              aria-label={`${row.symbol} open interest capacity`}
+              aria-valuemin={0}
+              aria-valuemax={100}
+              aria-valuenow={Math.max(
+                0,
+                Math.min(100, row.openInterestUtilizationPct),
+              )}
+              aria-valuetext={`${percent(row.openInterestUtilizationPct, 1)} of the venue limit`}
+              title={`${percent(row.openInterestUtilizationPct, 1)} of the venue limit`}
+            >
+              <i
+                style={{
+                  width: `${Math.max(0, Math.min(100, row.openInterestUtilizationPct))}%`,
+                }}
+              />
+            </span>
+          )}
+        </td>
+        <td className="market-number">{compactUsd(row.volume24hUsd)}</td>
+        <td
+          className={`market-number ${row.fundingRate !== null && row.fundingRate < 0 ? "negative-number" : ""}`}
+        >
+          {row.fundingRate === null
+            ? "—"
+            : `${row.fundingRate >= 0 ? "+" : "−"}${Math.abs(row.fundingRate * 100).toFixed(4)}%`}
+        </td>
+        <td className="market-number">
+          {row.inventoryUsd === 0 ? "—" : money(row.inventoryUsd)}
+          {row.unrealizedPnlUsd !== 0 && (
+            <small
+              className={
+                row.unrealizedPnlUsd < 0 ? "negative-number" : "positive-number"
+              }
+            >
+              {money(row.unrealizedPnlUsd)} unrealized
+            </small>
+          )}
+        </td>
+        <td>
+          {row.strategyId && !row.sharedBundles.length && (
+            <button
+              className="market-policy-edit"
+              type="button"
+              aria-label={`Edit ${row.symbol} policy`}
+              onClick={() =>
+                setPolicyEditorTarget({
+                  marketId: row.id,
+                  symbol: row.symbol,
+                  strategyId: row.strategyId!,
+                })
+              }
+            >
+              Edit
+            </button>
+          )}
+        </td>
+      </tr>
+      {row.sharedBundles.map((bundle) => (
+        <tr
+          className="market-bundle-child"
+          key={bundle.id}
+          aria-label={`${row.symbol} in ${bundle.name}`}
+        >
+          <td>
+            <span className="market-shared-connector" aria-hidden="true" />
+          </td>
+          <td>
+            <span className="market-bundle-label">
+              <strong>{bundle.name}</strong>
+              <small
+                className={`run-mode-tag is-${bundle.mode === "live" ? "live" : "paper"}`}
+              >
+                {bundle.mode === "live" ? "Live" : "Paper"}
+              </small>
+            </span>
+          </td>
+          <td>
+            <span
+              className={`market-state-label is-${bundle.stateLabel.toLowerCase().replaceAll(" ", "-")}`}
+            >
+              <i aria-hidden="true" />
+              {bundle.stateLabel}
+            </span>
+          </td>
+          <td>
+            {bundle.customFields.length ? (
+              <span
+                className="market-policy-custom"
+                title={bundle.customFields.map(reviewFieldName).join(", ")}
+              >
+                {bundle.customFields.length} custom
+              </span>
+            ) : (
+              <span className="market-muted">Strategy</span>
+            )}
+          </td>
+          <td />
+          <td />
+          <td />
+          <td />
+          <td className="market-number">
+            {bundle.inventoryUsd === 0 ? "—" : money(bundle.inventoryUsd)}
+            {bundle.unrealizedPnlUsd !== 0 && (
+              <small
+                className={
+                  bundle.unrealizedPnlUsd < 0
+                    ? "negative-number"
+                    : "positive-number"
+                }
+              >
+                {money(bundle.unrealizedPnlUsd)} unrealized
+              </small>
+            )}
+          </td>
+          <td>
+            {bundle.strategyId && (
+              <button
+                className="market-policy-edit"
+                type="button"
+                aria-label={`Edit ${row.symbol} policy in ${bundle.name}`}
+                onClick={() =>
+                  setPolicyEditorTarget({
+                    marketId: row.id,
+                    symbol: row.symbol,
+                    strategyId: bundle.strategyId!,
+                  })
+                }
+              >
+                Edit
+              </button>
+            )}
+          </td>
+        </tr>
+      ))}
+    </Fragment>
   );
 
   const deskLatestMarketUpdate = deskRotationRows.reduce<string | null>(
@@ -4571,12 +4970,42 @@ function DashboardBody() {
         (bundle.makerAccountId === owned.accountId ||
           bundle.takerAccountId === owned.accountId),
     );
+    const strategy = strategies.find(
+      (item) => item.id === assignedBundle?.strategyId,
+    );
+    const requiredUsd =
+      assignedBundle?.makerAccountId === owned.accountId && strategy
+        ? requiredMakerCollateralUsd({
+            ...configWithStrategySettings(config, strategy.config),
+            markets: strategy.markets,
+          })
+        : assignedBundle?.takerAccountId === owned.accountId &&
+            strategy?.config.hedge.enabled &&
+            owned.availableCollateralUsd <= 0
+          ? 0.01
+          : 0;
     return {
       accountId: owned.accountId,
       label: owned.label,
       equityUsd: owned.equityUsd,
       exposureUsd: owned.exposureUsd,
       unrealizedPnlUsd: owned.unrealizedPnlUsd,
+      freeUsd: owned.availableCollateralUsd,
+      withdrawableUsd:
+        owned.withdrawableCollateralUsd ?? owned.availableCollateralUsd,
+      authorized: Boolean(
+        setup.accounts.find((entry) => entry.accountId === owned.accountId)
+          ?.agentCapId,
+      ),
+      gasSui:
+        assignedBundle?.readiness?.stages[3].availableGasSui ?? agentGasSui,
+      requiredUsd,
+      shortfallUsd: assignedBundle?.readiness
+        ? Math.max(0, requiredUsd - owned.availableCollateralUsd)
+        : 0,
+      bundleMode: assignedBundle?.mode ?? null,
+      bundleRunning: assignedBundle?.status === "running",
+      readiness: assignedBundle?.readiness ?? null,
       bundle: assignedBundle?.name ?? "Not in a bundle",
       role:
         assignedBundle?.makerAccountId === owned.accountId
@@ -4586,6 +5015,29 @@ function DashboardBody() {
             : ("Available" as const),
     };
   });
+  function openVenueFunding(
+    row: import("./views/venues").VenueAccountRow,
+    mode: FundingMode,
+  ) {
+    setBundleFunding(null);
+    const gasStage = row.readiness?.stages[3];
+    setFundingTarget({
+      mode,
+      accountId: row.accountId,
+      bundleName: row.bundle,
+      role: row.role,
+      freeUsd: row.freeUsd,
+      equityUsd: row.equityUsd,
+      withdrawableUsd: row.withdrawableUsd,
+      requiredUsd: row.requiredUsd,
+      shortfallUsd: row.shortfallUsd,
+      bundleRunning: row.bundleRunning,
+      keyGasSui: row.gasSui ?? 0,
+      paperGasSui: gasStage?.requiredGasPaperSui ?? 0,
+      liveGasSui: gasStage?.requiredGasLiveSui ?? 0,
+    });
+  }
+
   const venueEquityUsd = accounts.reduce(
     (total, owned) => total + owned.equityUsd,
     0,
@@ -4746,6 +5198,13 @@ function DashboardBody() {
           return;
         }
         void bundleAction(bundleId, action);
+      }}
+      onFundBundle={(_bundleId, accountId) => {
+        const row = venueAccountRows.find(
+          (candidate) => candidate.accountId === accountId,
+        );
+        selectView("venues");
+        if (row) openVenueFunding(row, "deposit");
       }}
       canOperate={canOperate}
       serviceUnavailable={controlUnavailable}
@@ -7747,6 +8206,37 @@ function DashboardBody() {
         run={runState}
         onSelect={(bundleId) => void selectBundle(bundleId)}
         onArchive={(bundleId) => void bundleAction(bundleId, "archive")}
+        onStart={(bundleId) => {
+          if (configDirty) {
+            setNotice(
+              "Apply or discard strategy changes before starting a bundle.",
+              "warning",
+            );
+            return;
+          }
+          void bundleAction(bundleId, "start");
+        }}
+        onFixStage={(bundle, stage) => {
+          const detail = bundle.readiness?.stages.find(
+            (entry) => entry.id === stage,
+          );
+          if (stage === "strategy") {
+            document.getElementById(`bundle-attach-${bundle.id}`)?.focus();
+            return;
+          }
+          if (stage === "accounts" || stage === "tradingKeys") {
+            selectView("accounts");
+            if (detail?.accountId) setSelectedAccount(detail.accountId);
+            return;
+          }
+          const row = venueAccountRows.find(
+            (account) =>
+              account.accountId ===
+              (detail?.accountId ?? bundle.makerAccountId),
+          );
+          selectView("venues");
+          if (row) openVenueFunding(row, stage === "gas" ? "gas" : "deposit");
+        }}
         accounts={accounts.map((account) => ({
           accountId: account.accountId,
           label: account.label,
@@ -7784,8 +8274,8 @@ function DashboardBody() {
             <div>
               <h2>Aftermath markets</h2>
               <p>
-                {marketTableGroups.inUse.length} in use by your bundles,{" "}
-                {marketTableGroups.available.length} available.
+                Several Paper bundles can quote the same market. Only one Live
+                bundle can.
               </p>
             </div>
             <span className="market-last-update">
@@ -8568,6 +9058,71 @@ function DashboardBody() {
           unrealizedPnlUsd={venueUnrealizedPnlUsd}
           onManage={() => selectView("accounts")}
           onNewAccount={() => void createVenueAccount()}
+          walletAddress={identity.ownerAddress}
+          walletUsdcUsd={walletBalances?.usdcUsd ?? null}
+          walletSui={walletBalances?.sui ?? null}
+          onFund={(row, mode) => openVenueFunding(row, mode)}
+          onFundBundle={(bundleName, groupedAccounts) => {
+            const relevant = groupedAccounts.filter(
+              (row) => row.role !== "Available",
+            );
+            if (!relevant.length || relevant.length > 2) return;
+            setFundingTarget(null);
+            setBundleFunding({
+              bundleName,
+              accounts: relevant.map((row) => ({
+                accountId: row.accountId,
+                label: row.label ?? `Account ${row.accountId}`,
+                role: row.role as "Maker" | "Taker",
+                freeUsd: row.freeUsd,
+                requiredUsd: row.requiredUsd,
+                shortfallUsd: row.shortfallUsd,
+              })),
+            });
+          }}
+          onAuthorize={(accountId) => {
+            selectView("accounts");
+            setSelectedAccount(accountId);
+          }}
+          onOpenStrategy={() => {
+            const blocked = bundles.find(
+              (candidate) =>
+                candidate.status === "running" &&
+                candidate.readiness?.stages[4].status === "todo",
+            );
+            void (async () => {
+              if (
+                blocked?.strategyId &&
+                !(await selectStrategy(blocked.strategyId))
+              )
+                return;
+              setStrategyEditing(true);
+              setStrategyStep(2);
+              selectView("strategy");
+            })();
+          }}
+          blockedBundle={(() => {
+            const bundle = bundles.find(
+              (candidate) =>
+                candidate.status === "running" &&
+                candidate.readiness?.stages[4].status === "todo",
+            );
+            const stage = bundle?.readiness?.stages[4];
+            const config = strategies.find(
+              (strategy) => strategy.id === bundle?.strategyId,
+            )?.config;
+            return bundle && stage?.accountId && config
+              ? {
+                  name: bundle.name,
+                  accountId: stage.accountId,
+                  freeUsd: stage.availableUsd ?? 0,
+                  requiredUsd: stage.requiredUsd ?? 0,
+                  shortfallUsd: stage.shortfallUsd ?? 0,
+                  markets: bundle.marketIds.length,
+                  quoteSizeUsd: config.quoteSizeUsd,
+                }
+              : null;
+          })()}
           {...(activeMakerAccountId
             ? {
                 onRevoke: () => {
@@ -8576,6 +9131,46 @@ function DashboardBody() {
               }
             : {})}
         />
+        {bundleFunding && (
+          <BundleFundingSheet
+            key={bundleFunding.bundleName}
+            bundleName={bundleFunding.bundleName}
+            accounts={bundleFunding.accounts}
+            walletAddress={identity.ownerAddress}
+            walletUsdcUsd={walletBalances?.usdcUsd ?? null}
+            onClose={() => setBundleFunding(null)}
+            onConnectWallet={() => walletPickerRef.current?.show()}
+            onSubmit={submitBundleFunding}
+          />
+        )}
+        {fundingTarget && (
+          <VenueFundingSheet
+            key={`${fundingTarget.accountId}:${fundingTarget.mode}`}
+            target={fundingTarget}
+            walletAddress={identity.ownerAddress}
+            walletUsdcUsd={walletBalances?.usdcUsd ?? null}
+            walletSui={walletBalances?.sui ?? null}
+            onClose={() => setFundingTarget(null)}
+            onSubmit={submitVenueFunding}
+            onConnectWallet={() => walletPickerRef.current?.show()}
+            onPause={async (bundleName) => {
+              const bundle = bundles.find(
+                (candidate) =>
+                  candidate.name === bundleName && !candidate.archivedAt,
+              );
+              if (!bundle) return;
+              if (!(await bundleAction(bundle.id, "pause")))
+                throw new Error(
+                  "Pause was not confirmed. Check the bundle status before withdrawing.",
+                );
+              setFundingTarget((current) =>
+                current?.bundleName === bundleName
+                  ? { ...current, bundleRunning: false }
+                  : current,
+              );
+            }}
+          />
+        )}
 
         {identity.operator && (
           <section className="lower-grid lower-grid-venues">

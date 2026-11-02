@@ -34,6 +34,25 @@ export function aggregatePortfolioQuoteRisk(
   );
 }
 
+/** Conservative concurrent quote collateral across one strategy's markets. */
+export function requiredMakerCollateralUsd(config: MakerConfig): number {
+  const risks = config.markets.map((market) => ({
+    inventoryUsd: 0,
+    restingQuoteSizeUsd: market.overrides?.quoteSizeUsd ?? config.quoteSizeUsd,
+    maxLeverage: market.overrides?.maxLeverage ?? config.maxLeverage,
+  }));
+  if (config.rotationMode === "single-slot") {
+    return Math.max(
+      0,
+      ...risks.map(
+        (risk) =>
+          aggregatePortfolioQuoteRisk([risk]).requiredQuoteCollateralUsd,
+      ),
+    );
+  }
+  return aggregatePortfolioQuoteRisk(risks).requiredQuoteCollateralUsd;
+}
+
 export function evaluateQuoteSafety(inputs: {
   config: MakerConfig;
   quote: QuoteIntent | null;

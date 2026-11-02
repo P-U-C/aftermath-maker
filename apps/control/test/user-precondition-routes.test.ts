@@ -164,8 +164,8 @@ describe("typed preconditions on user-facing routes", () => {
       route: "POST /api/bundles/:id/start (market taken)",
       code: "market-taken",
       status: 409,
-      message: "Duplicate the strategy",
-      run: ({ tenant, core, config }) => {
+      message: "already quoted live by",
+      run: ({ store, tenant, core, config }) => {
         tenant.confirmWalletLimits();
         const other = tenant.createAllocatedBundle({
           name: "Second",
@@ -175,6 +175,18 @@ describe("typed preconditions on user-facing routes", () => {
           strategyId: core.strategyId,
           markets: config.markets,
         });
+        // The public API remains Core-only for Live. Exercise this fail-closed
+        // market guard using a disposable test-only legacy state.
+        const testDb = (
+          store as unknown as {
+            db: {
+              prepare: (sql: string) => { run: (...args: string[]) => unknown };
+            };
+          }
+        ).db;
+        testDb
+          .prepare("UPDATE bundles SET mode = 'live' WHERE id IN (?, ?)")
+          .run(core.id, other.id);
         tenant.setBundleStatus(core.id, "running");
         tenant.assertBundleMarketsAvailableToStart(other.id);
       },

@@ -302,6 +302,28 @@ describe("risk gates", () => {
     );
   });
 
+  it("counts each Paper bundle's resting quotes even when both quote NEAR", () => {
+    const sharedNear = [
+      {
+        marketId: "NEAR",
+        bundleId: "Core",
+        inventoryUsd: 0,
+        restingQuoteSizeUsd: 10,
+        maxLeverage: 1,
+      },
+      {
+        marketId: "NEAR",
+        bundleId: "Rewards",
+        inventoryUsd: 0,
+        restingQuoteSizeUsd: 10,
+        maxLeverage: 1,
+      },
+    ];
+    const risk = aggregatePortfolioQuoteRisk(sharedNear);
+    expect(risk.worstCaseGrossExposureUsd).toBe(20);
+    expect(risk.requiredQuoteCollateralUsd).toBe(40);
+  });
+
   it("requires aggregate collateral and three gas ceilings for Live, one for Paper", () => {
     const bounded = makerConfigSchema.parse({
       markets: [{ marketId: "0x1234", symbol: "SUI-PERP" }],

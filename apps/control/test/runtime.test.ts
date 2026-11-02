@@ -1072,6 +1072,96 @@ describe("runtime execution boundaries", () => {
     harness.store.close();
   });
 
+  it("keeps two bundles' NEAR fills separated by Maker account despite a shared market", async () => {
+    const harness = createHarness();
+    const ownerAddress = `0x${"1".repeat(64)}`;
+    const near = { marketId: "0x5678", symbol: "NEAR" };
+    const coreConfig = makerConfigSchema.parse({
+      ...harness.tenant.getConfig()!,
+      mode: "paper",
+      markets: [near],
+      makerAccountId: "42",
+      hedge: { enabled: false, accountId: null },
+    });
+    harness.tenant.setConfig(coreConfig);
+    harness.tenant.confirmWalletLimits();
+    const hedgeSetup = setupSchema.parse({
+      ownerAddress,
+      accountId: "43",
+      accountCapId: "0x1243",
+    });
+    harness.tenant.setSetup(hedgeSetup);
+    harness.tenant.confirmAgentGrant({
+      accountId: "43",
+      digest: "H".repeat(32),
+      agentCapId: "0xhedge",
+    });
+    const rewards = harness.tenant.createBundle({
+      name: "Rewards",
+      config: makerConfigSchema.parse({ ...coreConfig, makerAccountId: "43" }),
+    });
+    const coreBundle = harness.tenant
+      .listBundles()
+      .find((bundle) => bundle.name === "Core")!;
+    harness.store.forBundle(ownerAddress, coreBundle.id).trackMakerOrders({
+      accountId: "42",
+      marketId: near.marketId,
+      quoteDigest: "core-quote",
+      orderIds: ["core-order"],
+    });
+    harness.store.forBundle(ownerAddress, rewards.id).trackMakerOrders({
+      accountId: "43",
+      marketId: near.marketId,
+      quoteDigest: "rewards-quote",
+      orderIds: ["rewards-order"],
+    });
+    harness.setPerformanceHistory({
+      orders: ["core-order", "rewards-order"].map((orderId, index) => ({
+        timestampMs: Date.parse("2026-10-26T12:00:00Z") + index * 1000,
+        txDigest: orderId,
+        marketId: near.marketId,
+        eventType: "FilledMakerOrder",
+        side: "bid" as const,
+        price: 10,
+        size: 1,
+        orderId,
+        realizedPnlUsd: index === 0 ? 1 : 2,
+        feesUsd: 0,
+        maker: true,
+      })),
+      marginHistory: [],
+    });
+    const coreRuntime = new MakerRuntime(
+      harness.store.forBundle(ownerAddress, coreBundle.id),
+      harness.gateway as never,
+      harness.runtimeOptions,
+    );
+    const rewardsRuntime = new MakerRuntime(
+      harness.store.forBundle(ownerAddress, rewards.id),
+      harness.gateway as never,
+      harness.runtimeOptions,
+    );
+    const [coreResult, rewardsResult] = await Promise.all([
+      coreRuntime.performance(),
+      rewardsRuntime.performance(),
+    ]);
+    expect(coreResult.attributed).toMatchObject({
+      fills: 1,
+      realizedPnlUsd: 1,
+    });
+    expect(coreResult.fills.map((fill) => fill.orderId)).toEqual([
+      "core-order",
+    ]);
+    expect(rewardsResult.attributed).toMatchObject({
+      fills: 1,
+      realizedPnlUsd: 2,
+    });
+    expect(rewardsResult.fills.map((fill) => fill.orderId)).toEqual([
+      "rewards-order",
+    ]);
+    harness.store.close();
+  });
+
   it("does not hedge an untracked account fill", async () => {
     const harness = createHarness();
     const hedgeSetup = setupSchema.parse({

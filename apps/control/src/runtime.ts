@@ -9,6 +9,7 @@ import {
 } from "@puc/aftermath";
 import {
   aggregatePortfolioQuoteRisk,
+  requiredMakerCollateralUsd,
   assertSafe,
   buildQuoteIntent,
   evaluateQuoteSafety,
@@ -2504,7 +2505,12 @@ export class MakerRuntime {
           (hedgeRiskPortfolio?.grossExposureUsd ?? 0),
         portfolioAvailableCollateralUsd: portfolio.availableCollateralUsd,
         portfolioRequiredQuoteCollateralUsd:
-          portfolioQuoteRisk.requiredQuoteCollateralUsd,
+          config.mode === "paper"
+            ? Math.max(
+                portfolioQuoteRisk.requiredQuoteCollateralUsd,
+                requiredMakerCollateralUsd(config),
+              )
+            : portfolioQuoteRisk.requiredQuoteCollateralUsd,
         agentGasSui: portfolio.gasSui,
         runDrawdownUsd,
       });
@@ -2687,7 +2693,10 @@ export class MakerRuntime {
           observedAt: portfolio.markedAt,
           collateral: {
             availableUsd: portfolio.availableCollateralUsd,
-            requiredUsd: portfolioQuoteRisk.requiredQuoteCollateralUsd,
+            requiredUsd: Math.max(
+              portfolioQuoteRisk.requiredQuoteCollateralUsd,
+              requiredMakerCollateralUsd(config),
+            ),
             concurrentMarkets:
               config.rotationMode === "single-slot" ? 1 : config.markets.length,
             quoteSizeUsd: quote.sizeUsd,

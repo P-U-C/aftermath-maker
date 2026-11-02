@@ -14,6 +14,10 @@ import path from "node:path";
 import process from "node:process";
 import { chromium } from "playwright-core";
 import { Transaction } from "@mysten/sui/transactions";
+import {
+  GetBalanceRequest,
+  GetBalanceResponse,
+} from "../../../node_modules/@mysten/sui/dist/grpc/proto/sui/rpc/v2/state_service.mjs";
 
 import { apiResponse } from "./fixtures/api.mjs";
 import { fixtureStates, ownerAddress } from "./fixtures/control.ts";
@@ -212,6 +216,176 @@ async function installStatefulControl(page, state) {
       });
     }
     if (
+      routePath === "api/setup/gas-transaction" &&
+      request.method() === "POST"
+    ) {
+      const body = JSON.parse(request.postData() ?? "{}");
+      const account = state.fixture.accounts.accounts.find(
+        (entry) => entry.accountId === body.accountId,
+      );
+      if (!account) return json(404, { error: "Account was not found" });
+      const gasMist = BigInt(body.gasMist);
+      const protocolPackageId = `0x${"99".repeat(32)}`;
+      const registryObjectId = `0x${"33".repeat(32)}`;
+      const accountObjectId = `0x${"88".repeat(32)}`;
+      const agentAddress = state.fixture.setup.agent.address;
+      const transaction = new Transaction();
+      transaction.setSender(ownerAddress);
+      const [sui] = transaction.splitCoins(transaction.gas, [gasMist]);
+      transaction.transferObjects([sui], agentAddress);
+      state.pendingGasTopUp = { gasMist, accountId: body.accountId };
+      state.lastGasTopUpIntent = {
+        kind: "gas-top-up",
+        sender: ownerAddress,
+        protocolPackageId,
+        registryObjectId,
+        collateralCoinType: account.collateralCoinType,
+        accountCapId: account.accountCapId,
+        accountObjectId,
+        allowedMarketIds: [],
+        agentAddress,
+        gasMist,
+      };
+      return json(200, {
+        transaction: await transaction.toJSON(),
+        intent: { ...state.lastGasTopUpIntent, gasMist: gasMist.toString() },
+      });
+    }
+    if (
+      routePath === "api/accounts" &&
+      state.pendingGasTopUp &&
+      (await page.evaluate(() =>
+        Boolean(window.__makerMockWallet?.lastExecution),
+      ))
+    ) {
+      const stage = state.fixture.bundles.bundles[0].readiness.stages[3];
+      stage.availableGasSui =
+        Number(state.pendingGasTopUp.gasMist) / 1_000_000_000;
+      stage.status = "done";
+      stage.detail = `${stage.availableGasSui.toFixed(2)} SUI available`;
+      state.pendingGasTopUp = null;
+    }
+    if (
+      routePath === "api/accounts/deposit-transaction" &&
+      request.method() === "POST"
+    ) {
+      const body = JSON.parse(request.postData() ?? "{}");
+      const batch = Array.isArray(body.deposits);
+      const inputDeposits = batch ? body.deposits : [body];
+      const protocolPackageId = `0x${"99".repeat(32)}`;
+      const registryObjectId = `0x${"33".repeat(32)}`;
+      const accountObjectIds = [`0x${"88".repeat(32)}`, `0x${"89".repeat(32)}`];
+      const transaction = new Transaction();
+      transaction.setSender(ownerAddress);
+      const deposits = inputDeposits.map((item, index) => {
+        const account = state.fixture.accounts.accounts.find(
+          (entry) => entry.accountId === item.accountId,
+        );
+        if (!account)
+          throw new Error(`Unknown fixture account ${item.accountId}`);
+        const amount = BigInt(Math.round(Number(item.amountUsdc) * 1_000_000));
+        const balance = transaction.moveCall({
+          target: "0x2::coin::redeem_funds",
+          typeArguments: [account.collateralCoinType],
+          arguments: [
+            transaction.withdrawal({
+              amount,
+              type: account.collateralCoinType,
+            }),
+          ],
+        });
+        transaction.moveCall({
+          target: `${protocolPackageId}::account::deposit_collateral`,
+          typeArguments: [account.collateralCoinType],
+          arguments: [
+            transaction.object(accountObjectIds[index]),
+            transaction.object(account.accountCapId),
+            transaction.object(registryObjectId),
+            balance,
+          ],
+        });
+        return {
+          accountId: item.accountId,
+          accountCapId: account.accountCapId,
+          accountObjectId: accountObjectIds[index],
+          allowedMarketIds: [],
+          amount,
+        };
+      });
+      state.pendingBatchDeposits = inputDeposits;
+      const common = {
+        sender: ownerAddress,
+        protocolPackageId,
+        registryObjectId,
+        collateralCoinType:
+          state.fixture.accounts.accounts[0].collateralCoinType,
+      };
+      state.lastBatchIntent = batch
+        ? { ...common, kind: "deposit-batch", deposits }
+        : { ...common, kind: "deposit", ...deposits[0] };
+      return json(200, {
+        transaction: await transaction.toJSON(),
+        intent: batch
+          ? {
+              ...common,
+              kind: "deposit-batch",
+              deposits: deposits.map((entry) => ({
+                accountCapId: entry.accountCapId,
+                accountObjectId: entry.accountObjectId,
+                allowedMarketIds: entry.allowedMarketIds,
+                amount: entry.amount.toString(),
+              })),
+            }
+          : { ...state.lastBatchIntent, amount: deposits[0].amount.toString() },
+      });
+    }
+    if (
+      routePath === "api/accounts" &&
+      state.pendingBatchDeposits &&
+      (await page.evaluate(() =>
+        Boolean(window.__makerMockWallet?.lastExecution),
+      ))
+    ) {
+      for (const deposit of state.pendingBatchDeposits) {
+        const account = state.fixture.accounts.accounts.find(
+          (item) => item.accountId === deposit.accountId,
+        );
+        account.availableCollateralUsd += Number(deposit.amountUsdc);
+      }
+      state.fixture.bundles.bundles[0].readiness = {
+        ...state.fixture.bundles.bundles[0].readiness,
+        ready: true,
+        stages: state.fixture.bundles.bundles[0].readiness.stages.map(
+          (stage) =>
+            stage.id === "collateral"
+              ? {
+                  ...stage,
+                  status: "done",
+                  detail: "$300.00 free",
+                  availableUsd: 300,
+                  shortfallUsd: 0,
+                }
+              : stage,
+        ),
+      };
+      state.pendingBatchDeposits = null;
+    }
+    if (
+      routePath === "api/accounts" &&
+      state.pendingRound9Withdraw &&
+      (await page.evaluate(() =>
+        Boolean(window.__makerMockWallet?.lastExecution),
+      ))
+    ) {
+      const account = state.fixture.accounts.accounts.find(
+        (item) => item.accountId === state.pendingRound9Withdraw.accountId,
+      );
+      account.availableCollateralUsd -= Number(
+        state.pendingRound9Withdraw.amountUsdc,
+      );
+      state.pendingRound9Withdraw = null;
+    }
+    if (
       routePath === "api/accounts/withdraw-transaction" &&
       request.method() === "POST"
     ) {
@@ -255,6 +429,7 @@ async function installStatefulControl(page, state) {
         transaction.pure.address(ownerAddress),
       );
       state.lastWithdrawIntent = intent;
+      if (state.mockRound9Withdraw) state.pendingRound9Withdraw = body;
       return json(200, {
         transaction: await transaction.toJSON(),
         intent: { ...intent, amount: amount.toString() },
@@ -520,7 +695,7 @@ async function installStatefulControl(page, state) {
       state.fixture.config.config = JSON.parse(request.postData() ?? "{}");
       return json(200, { config: state.fixture.config.config });
     }
-    const response = apiResponse(state.fixture, url);
+    const response = apiResponse(state.fixture, url, request.method());
     return json(response.status, response.body);
   });
 
@@ -880,6 +1055,230 @@ async function revokeWithoutWallet(browser) {
       .filter({ visible: true })
       .waitFor();
     await capture(page, "v5-audit-revoke-wallet-desktop.png");
+  } finally {
+    await context.close();
+  }
+}
+
+async function mockWalletBalanceReads(page) {
+  await page.route("https://fullnode.mainnet.sui.io/**", async (route) => {
+    if (!route.request().url().includes("GetBalance"))
+      return route.abort("blockedbyclient");
+    const frame = Buffer.from(route.request().postData() ?? "", "base64");
+    const request = GetBalanceRequest.fromBinary(
+      frame.subarray(5, 5 + frame.readUInt32BE(1)),
+    );
+    const isSui = String(request.coinType ?? "")
+      .toLowerCase()
+      .includes("sui::sui");
+    const balance = isSui ? "4200000000" : "1250000000";
+    const encoded = Buffer.from(
+      GetBalanceResponse.toBinary({
+        balance: {
+          coinType: request.coinType,
+          balance,
+          coinBalance: balance,
+          addressBalance: "0",
+        },
+      }),
+    );
+    const message = Buffer.alloc(5 + encoded.length);
+    message.writeUInt32BE(encoded.length, 1);
+    encoded.copy(message, 5);
+    const status = Buffer.from("grpc-status: 0\r\n");
+    const trailer = Buffer.alloc(5 + status.length);
+    trailer[0] = 0x80;
+    trailer.writeUInt32BE(status.length, 1);
+    status.copy(trailer, 5);
+    return route.fulfill({
+      status: 200,
+      headers: {
+        "content-type": "application/grpc-web-text+proto",
+        "access-control-allow-origin": "*",
+      },
+      body: Buffer.concat([message, trailer]).toString("base64"),
+    });
+  });
+}
+
+async function withdrawsAfterItsBundlePauses(browser, viewport) {
+  const { context, page, state } = await newPage(browser, viewport);
+  try {
+    state.mockRound9Withdraw = true;
+    await mockWalletBalanceReads(page);
+    await goToDesk(page);
+    await page.getByRole("link", { name: "Venues", exact: true }).click();
+    await page
+      .getByRole("button", { name: "More actions for account 1745" })
+      .click();
+    await page
+      .getByRole("group", { name: "Account 1745 actions" })
+      .getByRole("button", { name: "Withdraw" })
+      .click();
+    const sheet = page.getByRole("dialog", {
+      name: "Withdraw from account 1745",
+    });
+    await sheet.waitFor();
+    assert(
+      await sheet
+        .getByRole("textbox", { name: "Withdraw amount" })
+        .isDisabled(),
+      "Withdraw field must be blocked while its bundle runs",
+    );
+    assert(
+      await sheet.getByRole("button", { name: /Withdraw \$/ }).isDisabled(),
+      "Withdraw button must be blocked while its bundle runs",
+    );
+    await sheet.getByRole("button", { name: "Pause Core" }).click();
+    await sheet
+      .getByRole("textbox", { name: "Withdraw amount" })
+      .waitFor({ state: "visible" });
+    await sheet.getByRole("textbox", { name: "Withdraw amount" }).fill("1.00");
+    await sheet.getByRole("button", { name: "Connect wallet" }).click();
+    await page
+      .locator("mysten-dapp-kit-connect-modal")
+      .getByText("Mock Sui Wallet", { exact: true })
+      .filter({ visible: true })
+      .click();
+    await sheet.getByRole("button", { name: "Withdraw $1.00" }).click();
+    await sheet.getByRole("heading", { name: "Withdrew $1.00" }).waitFor();
+    assert(
+      state.fixture.bundles.bundles[0].status === "paused" &&
+        state.lastWithdrawIntent?.recipient === ownerAddress &&
+        state.fixture.accounts.accounts[0].availableCollateralUsd < 6,
+      `Withdrawal was not owner-directed or its paused account did not refresh: ${JSON.stringify({ status: state.fixture.bundles.bundles[0].status, recipient: state.lastWithdrawIntent?.recipient, available: state.fixture.accounts.accounts[0].availableCollateralUsd, pending: state.pendingRound9Withdraw })}`,
+    );
+    await capture(page, `r9-withdraw-after-pause-${viewport.width}.png`);
+  } finally {
+    await context.close();
+  }
+}
+
+async function topsUpTradingKeyWithOwnerWallet(browser, viewport) {
+  const { context, page, state } = await newPage(browser, viewport);
+  try {
+    state.fixture = structuredClone(fixtureStates["bundy-gas-short"]);
+    state.strategies = initialStrategies(state.fixture);
+    await mockWalletBalanceReads(page);
+    await goToDesk(page);
+    await page.getByRole("link", { name: "Venues", exact: true }).click();
+    await page
+      .getByRole("button", { name: "More actions for account 1745" })
+      .click();
+    await page
+      .getByRole("group", { name: "Account 1745 actions" })
+      .getByRole("button", { name: "Add gas" })
+      .click();
+    const sheet = page.getByRole("dialog", {
+      name: "Add gas to trading key for account 1745",
+    });
+    await sheet.waitFor();
+    await sheet.getByRole("button", { name: "Connect wallet" }).click();
+    await page
+      .locator("mysten-dapp-kit-connect-modal")
+      .getByText("Mock Sui Wallet", { exact: true })
+      .filter({ visible: true })
+      .click();
+    await sheet.getByText("Your wallet has 4.20 SUI.").waitFor();
+    await sheet.getByRole("button", { name: "Add gas 0.25 SUI" }).click();
+    await sheet.getByRole("heading", { name: "Gas added" }).waitFor();
+    assert(
+      state.lastGasTopUpIntent?.agentAddress ===
+        state.fixture.setup.agent.address &&
+        state.lastGasTopUpIntent?.gasMist === 250_000_000n,
+      "Mock owner transaction did not preserve the trading key address and exact SUI amount",
+    );
+    await page
+      .locator(".venue-kit-table")
+      .getByText("0.25 SUI", { exact: true })
+      .first()
+      .waitFor();
+    await capture(page, `r9-gas-top-up-${viewport.width}.png`);
+  } finally {
+    await context.close();
+  }
+}
+
+async function depositsWhilePaperBundleRuns(browser, viewport) {
+  const { context, page, state } = await newPage(browser, viewport);
+  try {
+    state.fixture = structuredClone(fixtureStates["bundy-short"]);
+    state.strategies = initialStrategies(state.fixture);
+    await mockWalletBalanceReads(page);
+    await goToDesk(page);
+    await page.getByRole("link", { name: "Venues", exact: true }).click();
+    await page
+      .locator(".venue-blocked-banner")
+      .getByRole("button", { name: "Deposit $300.00" })
+      .click();
+    const sheet = page.getByRole("dialog", { name: "Deposit to account 1745" });
+    await sheet.waitFor();
+    await sheet.getByRole("button", { name: "Connect wallet" }).click();
+    await page
+      .locator("mysten-dapp-kit-connect-modal")
+      .getByText("Mock Sui Wallet", { exact: true })
+      .filter({ visible: true })
+      .click();
+    await sheet.getByText("Your wallet has $1,250.00 USDC.").waitFor();
+    await sheet.getByRole("button", { name: "Deposit $300.00" }).click();
+    await sheet.getByRole("heading", { name: "Deposited $300.00" }).waitFor();
+    assert(
+      state.lastBatchIntent?.kind === "deposit" &&
+        state.fixture.accounts.accounts[0].availableCollateralUsd === 300 &&
+        state.fixture.bundles.bundles[0].status === "running",
+      "Single deposit while the Paper bundle runs was not confirmed in its account row",
+    );
+    await capture(page, `r9-deposit-while-running-${viewport.width}.png`);
+  } finally {
+    await context.close();
+  }
+}
+
+async function depositsToTwoAccountsWithOneOwnerSignature(browser) {
+  const { context, page, state } = await newPage(browser, {
+    width: 1440,
+    height: 900,
+  });
+  try {
+    state.fixture = structuredClone(fixtureStates["bundy-dual-short"]);
+    state.strategies = initialStrategies(state.fixture);
+    await mockWalletBalanceReads(page);
+    await goToDesk(page);
+    await page.getByRole("link", { name: "Venues", exact: true }).click();
+    await page.getByRole("button", { name: "Fund Bundy" }).click();
+    const sheet = page.getByRole("dialog", { name: "Fund Bundy" });
+    await sheet.waitFor();
+    assert(
+      (await sheet
+        .getByRole("textbox", { name: "Deposit to account 1745" })
+        .inputValue()) === "300.00",
+      "Maker account was not prefilled with its $300 shortfall",
+    );
+    assert(
+      (await sheet
+        .getByRole("textbox", { name: "Deposit to account 1746" })
+        .inputValue()) === "0.01",
+      "Hedge account was not prefilled with its $0.01 shortfall",
+    );
+    await sheet.getByRole("button", { name: "Connect wallet" }).click();
+    await page
+      .locator("mysten-dapp-kit-connect-modal")
+      .getByText("Mock Sui Wallet", { exact: true })
+      .filter({ visible: true })
+      .click();
+    await sheet.getByText("Your wallet has $1,250.00 USDC.").waitFor();
+    await sheet.getByRole("button", { name: "Deposit $300.01" }).click();
+    await sheet.getByRole("heading", { name: "Deposited $300.01" }).waitFor();
+    assert(
+      state.lastBatchIntent?.deposits.length === 2,
+      "Bundle funding did not prepare one transaction with two owner accounts",
+    );
+    assert(
+      state.fixture.accounts.accounts[0].availableCollateralUsd === 300 &&
+        state.fixture.accounts.accounts[1].availableCollateralUsd === 0.01,
+      "Account rows did not refresh after the single mock wallet execution",
+    );
+    await capture(page, "r9-two-accounts-one-signature-desktop.png");
   } finally {
     await context.close();
   }
@@ -2226,7 +2625,7 @@ async function v7BundleDeskAndStrategy(browser) {
     await page.getByRole("link", { name: "Venues", exact: true }).click();
     await page
       .locator(".venue-accounts-card")
-      .getByText(/Equity .* exposure .* wallet limit/)
+      .getByText(/Each account needs a trading key/)
       .waitFor();
     await page.locator(".venue-kit-table").waitFor();
     await page.locator(".venue-accounts-card").scrollIntoViewIfNeeded();
@@ -2870,7 +3269,18 @@ const browser = await chromium.launch({
 });
 
 try {
-  if (process.argv.includes("--landing-only")) {
+  if (process.argv.includes("--round9-batch-only")) {
+    await depositsToTwoAccountsWithOneOwnerSignature(browser);
+    await depositsWhilePaperBundleRuns(browser, { width: 1440, height: 900 });
+    await depositsWhilePaperBundleRuns(browser, { width: 390, height: 844 });
+    await topsUpTradingKeyWithOwnerWallet(browser, {
+      width: 1440,
+      height: 900,
+    });
+    await topsUpTradingKeyWithOwnerWallet(browser, { width: 390, height: 844 });
+    await withdrawsAfterItsBundlePauses(browser, { width: 1440, height: 900 });
+    await withdrawsAfterItsBundlePauses(browser, { width: 390, height: 844 });
+  } else if (process.argv.includes("--landing-only")) {
     await round8LandingPending(browser);
   } else if (process.argv.includes("--kit-only")) {
     await round8KitHeaders(browser);
@@ -2907,6 +3317,22 @@ try {
       await v7BundleDeskAndStrategy(browser);
       await revokeWithoutWallet(browser);
       await withdrawsToOwnerWallet(browser);
+      await depositsToTwoAccountsWithOneOwnerSignature(browser);
+      await depositsWhilePaperBundleRuns(browser, { width: 1440, height: 900 });
+      await depositsWhilePaperBundleRuns(browser, { width: 390, height: 844 });
+      await topsUpTradingKeyWithOwnerWallet(browser, {
+        width: 1440,
+        height: 900,
+      });
+      await topsUpTradingKeyWithOwnerWallet(browser, {
+        width: 390,
+        height: 844,
+      });
+      await withdrawsAfterItsBundlePauses(browser, {
+        width: 1440,
+        height: 900,
+      });
+      await withdrawsAfterItsBundlePauses(browser, { width: 390, height: 844 });
       await serviceAndSessionFailures(browser);
       await createBundleWithFreeChoices(browser);
       await lowerWalletLimitsWhenCreating(browser);

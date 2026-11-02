@@ -2920,8 +2920,8 @@ export class TenantStore {
   }
 
   /**
-   * Market membership is strategy-owned. Multiple paused bundles may share a
-   * market; only a transition to running reserves it for this wallet.
+   * Market membership is strategy-owned. Paper may share a market with any
+   * bundle; only another running Live bundle reserves a Live market.
    */
   assertBundleMarketsAvailableToStart(bundleId: string): void {
     const bundle = this.getStoredBundle(bundleId);
@@ -2940,6 +2940,7 @@ export class TenantStore {
         409,
       );
     }
+    if (bundle.mode !== "live") return;
     const assigned = this.db.prepare(
       `SELECT bundles.name
        FROM bundles
@@ -2948,6 +2949,7 @@ export class TenantStore {
          AND bundles.id <> ?
          AND bundles.archived_at IS NULL
          AND bundles.status = 'running'
+         AND bundles.mode = 'live'
          AND strategy_markets.market_id = ?
        ORDER BY bundles.created_at ASC, bundles.id ASC
        LIMIT 1`,
@@ -2961,7 +2963,7 @@ export class TenantStore {
       if (existing) {
         throw new UserFacingError(
           "market-taken",
-          `${market.symbol} is already quoted by ${existing.name}. Duplicate the strategy and change its markets.`,
+          `${market.symbol} is already quoted live by ${existing.name}. Only one Live bundle can quote a market.`,
           { kind: "strategy" },
         );
       }
@@ -3411,12 +3413,13 @@ export class TenantStore {
         };
       });
       const running = projections.filter(
-        (projection) => projection.status === "running",
+        (projection) =>
+          projection.status === "running" && projection.config.mode === "live",
       );
       if (running.length > 1 && markets.length) {
         throw new UserFacingError(
           "market-taken",
-          `${markets[0]!.symbol} is already quoted by ${running[0]!.bundle.name}. Duplicate the strategy and change its markets.`,
+          `${markets[0]!.symbol} is already quoted live by ${running[0]!.bundle.name}. Only one Live bundle can quote a market.`,
           { kind: "strategy" },
         );
       }
@@ -3429,6 +3432,7 @@ export class TenantStore {
            WHERE bundles.owner_address = ?
              AND bundles.archived_at IS NULL
              AND bundles.status = 'running'
+             AND bundles.mode = 'live'
              AND bundles.strategy_id <> ?
              AND strategy_markets.market_id = ?
            ORDER BY bundles.created_at ASC, bundles.id ASC
@@ -3443,7 +3447,7 @@ export class TenantStore {
           if (existing) {
             throw new UserFacingError(
               "market-taken",
-              `${market.symbol} is already quoted by ${existing.name}. Duplicate the strategy and change its markets.`,
+              `${market.symbol} is already quoted live by ${existing.name}. Only one Live bundle can quote a market.`,
               { kind: "strategy" },
             );
           }

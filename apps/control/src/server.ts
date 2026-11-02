@@ -4,7 +4,11 @@ import rateLimit from "@fastify/rate-limit";
 import { SuiGrpcClient } from "@mysten/sui/grpc";
 import Fastify, { type FastifyRequest } from "fastify";
 import { z } from "zod";
-import { agentEncryptionContext, createEncryptedAgent } from "@puc/aftermath";
+import {
+  agentEncryptionContext,
+  createEncryptedAgent,
+  type OwnerAccountSummary,
+} from "@puc/aftermath";
 import {
   decimalToBaseUnits,
   integratorInspectionSchema,
@@ -19,6 +23,12 @@ import { OnchainAllowlist } from "./allowlist.js";
 import { AuthError, WalletAuth } from "./auth.js";
 import { buildIdentity } from "./build-identity.js";
 import { bundleCreateHttpError } from "./bundle-create-error.js";
+import { assertCollateralWithdrawalAllowed } from "./collateral-guard.js";
+import {
+  deriveBundleReadiness,
+  assertBundleReadyToStart,
+  type BundleReadiness,
+} from "./bundle-readiness.js";
 import { classifyHttpError, UserFacingError } from "./http-error.js";
 import {
   createRequestErrorRecorder,
@@ -164,10 +174,11 @@ const publicGrpc =
   env.SUI_VALIDATOR_GRPC_URL ??
   env.SUI_FALLBACK_GRPC_URL ??
   "https://fullnode.mainnet.sui.io:443";
-const allowlist = new OnchainAllowlist(
-  new SuiGrpcClient({ network: "mainnet", baseUrl: publicGrpc }),
-  store,
-);
+const publicSuiClient = new SuiGrpcClient({
+  network: "mainnet",
+  baseUrl: publicGrpc,
+});
+const allowlist = new OnchainAllowlist(publicSuiClient, store);
 const auth = new WalletAuth(
   store,
   allowlist,
@@ -184,6 +195,7 @@ const auth = new WalletAuth(
     });
   },
   env.CONTROL_TOKEN,
+  publicSuiClient,
 );
 
 type RequestAuth = {
@@ -670,6 +682,65 @@ app.post("/api/strategies/:strategyId/archive", async (request) => {
   return { strategy };
 });
 
+async function ownerBundleReadiness(
+  scoped: TenantStore,
+  ownerAddress: string,
+): Promise<Map<string, BundleReadiness>> {
+  const bundles = scoped.listBundles().filter((bundle) => !bundle.archivedAt);
+  const agent = scoped.getAgent();
+  let accounts: OwnerAccountSummary[] | null = null;
+  let gasSui: number | null = null;
+  try {
+    const gateway = runtimeManager.get(ownerAddress).requireGateway();
+    [accounts, gasSui] = await Promise.all([
+      gateway
+        .listOwnerAccounts({
+          walletAddress: ownerAddress,
+          collateralCoinType: USDC_COIN_TYPE,
+        })
+        .catch(() => null),
+      agent
+        ? gateway.getTradingKeyGasSui(agent.address).catch(() => null)
+        : Promise.resolve(null),
+    ]);
+  } catch {
+    // Preserve the Bundles read when the venue is unavailable. Waiting stages
+    // fail closed at Start and show which account data could not be checked.
+  }
+  const authorizedAccountIds = new Set(
+    scoped
+      .listAccountSetups()
+      .filter((entry) => entry.agentCapId)
+      .map((entry) => entry.accountId),
+  );
+  const runningLive = bundles.flatMap((bundle) => {
+    const config = scoped.getBundleConfig(bundle.id);
+    return bundle.status === "running" && config?.mode === "live"
+      ? [config]
+      : [];
+  });
+  return new Map(
+    bundles.map((bundle) => {
+      const config = scoped.getBundleConfig(bundle.id);
+      const liveConfigs =
+        config?.mode === "live" && bundle.status !== "running"
+          ? [...runningLive, config]
+          : runningLive;
+      return [
+        bundle.id,
+        deriveBundleReadiness({
+          bundle,
+          config,
+          accounts,
+          authorizedAccountIds,
+          gasSui,
+          liveConfigs,
+        }),
+      ];
+    }),
+  );
+}
+
 app.get("/api/bundles", async (request) => {
   const scoped = tenant(request);
   if (scoped.bundlesRolledBack()) {
@@ -679,8 +750,13 @@ app.get("/api/bundles", async (request) => {
       { kind: "bundles" },
     );
   }
+  const owner = requestAuth(request).ownerAddress;
+  const readiness = await ownerBundleReadiness(scoped, owner);
   return {
-    bundles: scoped.listBundles(),
+    bundles: scoped.listBundles().map((bundle) => ({
+      ...bundle,
+      readiness: readiness.get(bundle.id) ?? null,
+    })),
     walletLimits: scoped.getWalletLimits(),
   };
 });
@@ -1011,7 +1087,7 @@ app.post("/api/bundles/:bundleId/start", async (request) => {
   if (bundle.needsStrategy) {
     throw new UserFacingError(
       "needs-strategy",
-      "Attach a strategy in Bundles before starting this bundle.",
+      `Attach a strategy in Bundles before starting ${bundle.name}.`,
       { kind: "bundles" },
     );
   }
@@ -1024,6 +1100,12 @@ app.post("/api/bundles/:bundleId/start", async (request) => {
       404,
     );
   assertLiveModeEnabled(config);
+  assertBundleReadyToStart(
+    bundle,
+    (await ownerBundleReadiness(scoped, requestAuth(request).ownerAddress)).get(
+      bundle.id,
+    ),
+  );
   const started = runtimeManager.startBundle(
     requestAuth(request).ownerAddress,
     params.bundleId,
@@ -1055,7 +1137,7 @@ app.post("/api/bundles/:bundleId/resume", async (request) => {
   if (bundle.needsStrategy) {
     throw new UserFacingError(
       "needs-strategy",
-      "Attach a strategy in Bundles before starting this bundle.",
+      `Attach a strategy in Bundles before starting ${bundle.name}.`,
       { kind: "bundles" },
     );
   }
@@ -1068,6 +1150,12 @@ app.post("/api/bundles/:bundleId/resume", async (request) => {
       404,
     );
   assertLiveModeEnabled(config);
+  assertBundleReadyToStart(
+    bundle,
+    (await ownerBundleReadiness(scoped, requestAuth(request).ownerAddress)).get(
+      bundle.id,
+    ),
+  );
   return runtimeManager.startBundle(
     requestAuth(request).ownerAddress,
     params.bundleId,
@@ -1319,12 +1407,55 @@ const collateralMutationSchema = z
   })
   .strict();
 
+const depositBatchSchema = z
+  .object({
+    deposits: z
+      .array(collateralMutationSchema)
+      .min(1)
+      .max(2)
+      .refine(
+        (items) =>
+          new Set(items.map((entry) => entry.accountId)).size === items.length,
+        "Choose different accounts for one combined deposit",
+      ),
+  })
+  .strict();
+
 app.post("/api/accounts/deposit-transaction", async (request) => {
   const identity = requestAuth(request);
-  const body = collateralMutationSchema.parse(request.body);
+  const body = z
+    .union([collateralMutationSchema, depositBatchSchema])
+    .parse(request.body);
   const active = runtime(request);
-  if (active.snapshot.running) {
-    throw new AuthError(409, "Stop the engine before changing collateral");
+  if ("deposits" in body) {
+    const deposits = body.deposits.map((entry) => ({
+      accountId: entry.accountId,
+      amount: decimalToBaseUnits(entry.amountUsdc, 6),
+    }));
+    if (deposits.some((entry) => entry.amount <= 0n))
+      throw new UserFacingError(
+        "deposit-amount-invalid",
+        "Enter a positive amount for each account.",
+        { kind: "venues" },
+        400,
+      );
+    const prepared = await active
+      .requireGateway()
+      .buildDepositCollateralBatchTransaction({
+        ownerAddress: identity.ownerAddress,
+        collateralCoinType: USDC_COIN_TYPE,
+        deposits,
+      });
+    tenant(request).logEvent({
+      category: "collateral",
+      action: "deposit.transaction",
+      outcome: "prepared",
+      detail: {
+        accountIds: deposits.map((entry) => entry.accountId),
+        combined: true,
+      },
+    });
+    return prepared;
   }
   const amount = decimalToBaseUnits(body.amountUsdc, 6);
   if (amount <= 0n) throw new AuthError(400, "Deposit amount must be positive");
@@ -1349,13 +1480,31 @@ app.post("/api/accounts/withdraw-transaction", async (request) => {
   const identity = requestAuth(request);
   const body = collateralMutationSchema.parse(request.body);
   const active = runtime(request);
-  if (active.snapshot.running) {
-    throw new AuthError(409, "Stop the engine before changing collateral");
-  }
   const amount = decimalToBaseUnits(body.amountUsdc, 6);
   if (amount <= 0n) {
     throw new AuthError(400, "Withdrawal amount must be positive");
   }
+  const owned = await active.requireGateway().listOwnerAccounts({
+    walletAddress: identity.ownerAddress,
+    collateralCoinType: USDC_COIN_TYPE,
+  });
+  const account = owned.find((item) => item.accountId === body.accountId);
+  if (!account)
+    throw new UserFacingError(
+      "account-not-found",
+      "Choose an account owned by this wallet in Venues.",
+      { kind: "venues" },
+      404,
+    );
+  assertCollateralWithdrawalAllowed({
+    accountId: body.accountId,
+    amountUsdc: body.amountUsdc,
+    bundles: tenant(request)
+      .listBundles()
+      .filter((bundle) => !bundle.archivedAt),
+    openMakerOrderCount: account.openMakerOrderCount,
+    withdrawableCollateralUsd: account.withdrawableCollateralUsd,
+  });
   const prepared = await active
     .requireGateway()
     .buildWithdrawCollateralTransaction({
@@ -1369,6 +1518,43 @@ app.post("/api/accounts/withdraw-transaction", async (request) => {
     action: "withdraw.transaction",
     outcome: "prepared",
     detail: { accountId: body.accountId, amountUsdc: body.amountUsdc },
+  });
+  return prepared;
+});
+
+app.post("/api/setup/gas-transaction", async (request) => {
+  const identity = requestAuth(request);
+  const body = z
+    .object({
+      accountId: z.string().regex(/^\d+$/),
+      gasMist: z.coerce.bigint().min(10_000_000n).max(10_000_000_000n),
+    })
+    .strict()
+    .parse(request.body);
+  const scoped = tenant(request);
+  const account = scoped.getAccountSetup(body.accountId);
+  const agent = scoped.getAgent();
+  if (!account?.agentCapId || !agent) {
+    throw new UserFacingError(
+      "needs-trading-key",
+      "Authorize a trading key for this account in Venues before adding gas.",
+      { kind: "venues" },
+    );
+  }
+  const prepared = await runtime(request)
+    .requireGateway()
+    .buildTopUpAgentGasTransaction({
+      ownerAddress: identity.ownerAddress,
+      accountId: body.accountId,
+      collateralCoinType: account.collateralCoinType,
+      agentAddress: agent.address,
+      gasMist: body.gasMist,
+    });
+  scoped.logEvent({
+    category: "onboarding",
+    action: "agent.gas-transaction",
+    outcome: "prepared",
+    detail: { accountId: body.accountId },
   });
   return prepared;
 });

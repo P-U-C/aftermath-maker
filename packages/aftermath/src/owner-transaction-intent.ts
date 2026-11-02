@@ -20,10 +20,24 @@ type AccountCommon = OwnerCommon & {
 export type OwnerTransactionIntent =
   | (OwnerCommon & { kind: "create-account" })
   | (AccountCommon & { kind: "deposit"; amount: bigint })
+  | (OwnerCommon & {
+      kind: "deposit-batch";
+      deposits: Array<
+        Pick<
+          AccountCommon,
+          "accountCapId" | "accountObjectId" | "allowedMarketIds"
+        > & { amount: bigint }
+      >;
+    })
   | (AccountCommon & {
       kind: "withdraw";
       amount: bigint;
       recipient: string;
+    })
+  | (AccountCommon & {
+      kind: "gas-top-up";
+      agentAddress: string;
+      gasMist: bigint;
     })
   | (AccountCommon & {
       kind: "grant-agent";
@@ -242,7 +256,12 @@ function assertObjects(
   intent: OwnerTransactionIntent,
 ): void {
   const trustedMutable = new Set([address(intent.registryObjectId)]);
-  if (intent.kind !== "create-account") {
+  if (intent.kind === "deposit-batch") {
+    for (const account of intent.deposits) {
+      trustedMutable.add(address(account.accountObjectId));
+      account.allowedMarketIds.forEach((id) => trustedMutable.add(address(id)));
+    }
+  } else if (intent.kind !== "create-account") {
     trustedMutable.add(address(intent.accountObjectId));
     intent.allowedMarketIds.forEach((id) => trustedMutable.add(address(id)));
   }
@@ -354,6 +373,120 @@ function assertDeposit(
   }
   assertProtocolCall(deposit[0]!, intent, "account", "deposit_collateral");
   assertAccountArguments(snapshot, deposit[0]!, intent);
+}
+
+/** Every deposit is tied to its own redeemed owner funds and account capability. */
+function assertDepositBatch(
+  snapshot: Snapshot,
+  intent: Extract<OwnerTransactionIntent, { kind: "deposit-batch" }>,
+): void {
+  if (
+    intent.deposits.length < 1 ||
+    intent.deposits.length > 2 ||
+    new Set(intent.deposits.map((entry) => address(entry.accountObjectId)))
+      .size !== intent.deposits.length ||
+    new Set(intent.deposits.map((entry) => address(entry.accountCapId)))
+      .size !== intent.deposits.length ||
+    intent.deposits.some((entry) => entry.amount <= 0n)
+  ) {
+    fail("batch must contain one or two different positive owner deposits");
+  }
+  if (snapshot.commands.some((command) => !command.MoveCall))
+    fail("batch contains a transfer or non-Move command");
+  const txCalls = calls(snapshot);
+  const redeem = txCalls.filter(
+    (call) => call.module === "coin" && call.function === "redeem_funds",
+  );
+  const deposit = txCalls.filter(
+    (call) =>
+      call.module === "account" && call.function === "deposit_collateral",
+  );
+  const deallocations = txCalls.filter(
+    (call) =>
+      call.module === "clearing_house" &&
+      call.function === "deallocate_free_collateral",
+  );
+  if (
+    redeem.length !== intent.deposits.length ||
+    deposit.length !== intent.deposits.length ||
+    txCalls.length !== redeem.length + deposit.length + deallocations.length
+  )
+    fail("batch command set changed");
+  const usedFunds = new Set<number>();
+  for (const entry of intent.deposits) {
+    const accountIntent = { ...intent, ...entry, kind: "deposit" as const };
+    const ownedDeposit = deposit.filter(
+      (call) =>
+        objectFor(snapshot, call.arguments[0], "deposit account") ===
+        address(entry.accountObjectId),
+    );
+    if (ownedDeposit.length !== 1)
+      fail("batch account must receive exactly one deposit");
+    const call = ownedDeposit[0]!;
+    assertProtocolCall(call, accountIntent, "account", "deposit_collateral");
+    assertAccountArguments(snapshot, call, accountIntent);
+    const fundsArgument = call.arguments[3];
+    const fundsIndex =
+      fundsArgument?.Result ??
+      (fundsArgument?.NestedResult?.[1] === 0
+        ? fundsArgument.NestedResult[0]
+        : undefined);
+    const ownerFunds = redeem.find(
+      (candidate) => candidate.index === fundsIndex,
+    );
+    if (
+      !ownerFunds ||
+      ownerFunds.index >= call.index ||
+      usedFunds.has(ownerFunds.index)
+    )
+      fail("batch deposit must use its own redeemed owner funds");
+    usedFunds.add(ownerFunds.index);
+    assertSystemCall(ownerFunds, "coin", "redeem_funds");
+    const withdrawal =
+      snapshot.inputs[inputIndex(ownerFunds.arguments[0], "batch funds")]
+        ?.FundsWithdrawal;
+    if (
+      withdrawal?.reservation?.MaxAmountU64 !== entry.amount.toString() ||
+      withdrawal.typeArg?.Balance !== intent.collateralCoinType ||
+      withdrawal.withdrawFrom?.Sender !== true
+    )
+      fail("batch owner funds do not match the account amount");
+    for (const deallocation of deallocations.filter(
+      (candidate) =>
+        objectFor(snapshot, candidate.arguments[2], "deallocation account") ===
+        address(entry.accountObjectId),
+    )) {
+      assertProtocolCall(
+        deallocation,
+        accountIntent,
+        "clearing_house",
+        "deallocate_free_collateral",
+      );
+      if (
+        objectFor(
+          snapshot,
+          deallocation.arguments[1],
+          "deallocation capability",
+        ) !== address(entry.accountCapId) ||
+        !entry.allowedMarketIds
+          .map(address)
+          .includes(
+            objectFor(
+              snapshot,
+              deallocation.arguments[0],
+              "deallocation market",
+            ),
+          )
+      )
+        fail("batch deallocation belongs to a different account or market");
+    }
+  }
+  // A deallocation for an unlisted account cannot be assigned to any entry.
+  for (const call of deallocations) {
+    const id = objectFor(snapshot, call.arguments[2], "deallocation account");
+    if (!intent.deposits.some((entry) => address(entry.accountObjectId) === id))
+      fail("batch touches an unexpected account");
+  }
 }
 
 function assertWithdraw(
@@ -506,6 +639,34 @@ function assertGrant(
   }
 }
 
+function assertGasTopUp(
+  snapshot: Snapshot,
+  intent: Extract<OwnerTransactionIntent, { kind: "gas-top-up" }>,
+): void {
+  if (snapshot.commands.length !== 2)
+    fail("gas top-up must contain exactly two commands");
+  const split = snapshot.commands[0]?.SplitCoins;
+  const transfer = snapshot.commands[1]?.TransferObjects;
+  if (
+    !split ||
+    !transfer ||
+    split.coin.GasCoin !== true ||
+    split.amounts.length !== 1 ||
+    parseU64(snapshot, split.amounts[0], "gas top-up") !== intent.gasMist
+  ) {
+    fail("gas top-up must split the exact owner gas amount");
+  }
+  if (
+    transfer.objects.length !== 1 ||
+    transfer.objects[0]?.NestedResult?.[0] !== 0 ||
+    transfer.objects[0]?.NestedResult?.[1] !== 0 ||
+    parseAddress(snapshot, transfer.address, "gas top-up recipient") !==
+      address(intent.agentAddress)
+  ) {
+    fail("gas top-up recipient or amount does not match intent");
+  }
+}
+
 function assertRevoke(
   snapshot: Snapshot,
   intent: Extract<OwnerTransactionIntent, { kind: "revoke-agent" }>,
@@ -571,8 +732,11 @@ export function assertOwnerTransactionIntent(
   assertObjects(snapshot, intent);
   if (intent.kind === "create-account") return assertCreate(snapshot, intent);
   if (intent.kind === "deposit") return assertDeposit(snapshot, intent);
+  if (intent.kind === "deposit-batch")
+    return assertDepositBatch(snapshot, intent);
   if (intent.kind === "withdraw") return assertWithdraw(snapshot, intent);
   if (intent.kind === "grant-agent") return assertGrant(snapshot, intent);
+  if (intent.kind === "gas-top-up") return assertGasTopUp(snapshot, intent);
   return assertRevoke(snapshot, intent);
 }
 
@@ -580,6 +744,17 @@ export type SerializedOwnerTransactionIntent =
   | Extract<OwnerTransactionIntent, { kind: "create-account" }>
   | (Omit<Extract<OwnerTransactionIntent, { kind: "deposit" }>, "amount"> & {
       amount: string;
+    })
+  | (Omit<
+      Extract<OwnerTransactionIntent, { kind: "deposit-batch" }>,
+      "deposits"
+    > & {
+      deposits: Array<{
+        accountCapId: string;
+        accountObjectId: string;
+        allowedMarketIds: string[];
+        amount: string;
+      }>;
     })
   | (Omit<Extract<OwnerTransactionIntent, { kind: "withdraw" }>, "amount"> & {
       amount: string;
@@ -590,6 +765,10 @@ export type SerializedOwnerTransactionIntent =
     > & {
       gasMist: string;
     })
+  | (Omit<
+      Extract<OwnerTransactionIntent, { kind: "gas-top-up" }>,
+      "gasMist"
+    > & { gasMist: string })
   | Extract<OwnerTransactionIntent, { kind: "revoke-agent" }>;
 
 export type PreparedOwnerTransaction = {
@@ -603,7 +782,16 @@ export function serializeOwnerTransactionIntent(
   if (intent.kind === "deposit" || intent.kind === "withdraw") {
     return { ...intent, amount: intent.amount.toString() };
   }
-  if (intent.kind === "grant-agent") {
+  if (intent.kind === "deposit-batch") {
+    return {
+      ...intent,
+      deposits: intent.deposits.map((entry) => ({
+        ...entry,
+        amount: entry.amount.toString(),
+      })),
+    };
+  }
+  if (intent.kind === "grant-agent" || intent.kind === "gas-top-up") {
     return { ...intent, gasMist: intent.gasMist.toString() };
   }
   return intent;
@@ -615,7 +803,16 @@ export function deserializeOwnerTransactionIntent(
   if (intent.kind === "deposit" || intent.kind === "withdraw") {
     return { ...intent, amount: BigInt(intent.amount) };
   }
-  if (intent.kind === "grant-agent") {
+  if (intent.kind === "deposit-batch") {
+    return {
+      ...intent,
+      deposits: intent.deposits.map((entry) => ({
+        ...entry,
+        amount: BigInt(entry.amount),
+      })),
+    };
+  }
+  if (intent.kind === "grant-agent" || intent.kind === "gas-top-up") {
     return { ...intent, gasMist: BigInt(intent.gasMist) };
   }
   return intent;
@@ -654,13 +851,21 @@ export function assertOwnerSimulationEffects(
   );
   if (otherCoins.length) fail("simulation changes an unexpected coin");
 
-  if (intent.kind === "deposit" || intent.kind === "withdraw") {
+  if (
+    intent.kind === "deposit" ||
+    intent.kind === "withdraw" ||
+    intent.kind === "deposit-batch"
+  ) {
     const expectedAddress =
-      intent.kind === "deposit"
-        ? address(intent.sender)
-        : address(intent.recipient);
+      intent.kind === "withdraw"
+        ? address(intent.recipient)
+        : address(intent.sender);
     const expectedAmount =
-      intent.kind === "deposit" ? -intent.amount : intent.amount;
+      intent.kind === "withdraw"
+        ? intent.amount
+        : intent.kind === "deposit"
+          ? -intent.amount
+          : -intent.deposits.reduce((total, entry) => total + entry.amount, 0n);
     if (
       collateralChanges.length !== 1 ||
       typeof collateralChanges[0]!.address !== "string" ||
@@ -676,7 +881,7 @@ export function assertOwnerSimulationEffects(
   const suiChanges = changes.filter(
     (change) => change.coinType === SUI_COIN_TYPE,
   );
-  if (intent.kind === "grant-agent") {
+  if (intent.kind === "grant-agent" || intent.kind === "gas-top-up") {
     let ownerDelta = 0n;
     let agentDelta = 0n;
     for (const change of suiChanges) {
