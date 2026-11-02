@@ -1,4 +1,5 @@
 import { bcs } from "@mysten/sui/bcs";
+import { Transaction } from "@mysten/sui/transactions";
 import { toBase64 } from "@mysten/sui/utils";
 import { describe, expect, it } from "vitest";
 import {
@@ -124,6 +125,37 @@ function mutate(
 }
 
 describe("owner transaction intent", () => {
+  it("accepts exactly one owner gas top-up and rejects recipient or amount substitution", () => {
+    const recipient = `0x${"99".repeat(32)}`;
+    const intent: OwnerTransactionIntent = {
+      kind: "gas-top-up",
+      sender: owner,
+      protocolPackageId: packageId,
+      registryObjectId: registryId,
+      collateralCoinType,
+      accountCapId: capId,
+      accountObjectId: accountId,
+      allowedMarketIds: [],
+      agentAddress: recipient,
+      gasMist: 250_000_000n,
+    };
+    const tx = new Transaction();
+    tx.setSender(owner);
+    const [coin] = tx.splitCoins(tx.gas, [250_000_000n]);
+    tx.transferObjects([coin], recipient);
+    expect(() => assertOwnerTransactionIntent(tx, intent)).not.toThrow();
+    expect(
+      deserializeOwnerTransactionIntent(
+        serializeOwnerTransactionIntent(intent),
+      ),
+    ).toEqual(intent);
+    expect(() =>
+      assertOwnerTransactionIntent(tx, { ...intent, agentAddress: owner }),
+    ).toThrow("recipient");
+    expect(() =>
+      assertOwnerTransactionIntent(tx, { ...intent, gasMist: 500_000_000n }),
+    ).toThrow("amount");
+  });
   it("round-trips bigint fields through the browser-safe response", () => {
     const intent: OwnerTransactionIntent = {
       kind: "grant-agent",

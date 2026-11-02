@@ -1,4 +1,39 @@
+import type { MakerConfig } from "@puc/core";
 import type { BundleWalletLimits } from "./store.js";
+
+/** Shared by the Start guard and each bundle's readiness/gas stage. */
+export function requiredBundleGasMist(
+  liveConfigs: MakerConfig[],
+  candidate: MakerConfig,
+  paperTrial = false,
+): number {
+  const liveRequiredMist = liveConfigs.length
+    ? (() => {
+        const conservativeGasMist = Math.max(
+          ...liveConfigs.map((config) => config.maxGasMist),
+        );
+        const restingOrderCount = liveConfigs.reduce(
+          (total, config) =>
+            total +
+            (config.rotationMode === "portfolio"
+              ? config.markets.length * 2
+              : Math.min(config.markets.length, 1) * 2),
+          0,
+        );
+        return calculateBundleGasReserveMist({
+          cancelGasEstimateMist: conservativeGasMist,
+          hedgeGasBufferMist: conservativeGasMist,
+          fixedSafetyBufferMist: conservativeGasMist,
+          runningBundleCount: liveConfigs.length,
+          restingOrderCount,
+        });
+      })()
+    : 0;
+  return Math.max(
+    liveRequiredMist,
+    paperTrial || candidate.mode === "paper" ? candidate.maxGasMist : 0,
+  );
+}
 
 export type BundleWalletObservation = {
   bundleId: string;

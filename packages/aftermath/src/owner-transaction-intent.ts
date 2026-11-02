@@ -26,6 +26,11 @@ export type OwnerTransactionIntent =
       recipient: string;
     })
   | (AccountCommon & {
+      kind: "gas-top-up";
+      agentAddress: string;
+      gasMist: bigint;
+    })
+  | (AccountCommon & {
       kind: "grant-agent";
       agentAddress: string;
       gasMist: bigint;
@@ -506,6 +511,34 @@ function assertGrant(
   }
 }
 
+function assertGasTopUp(
+  snapshot: Snapshot,
+  intent: Extract<OwnerTransactionIntent, { kind: "gas-top-up" }>,
+): void {
+  if (snapshot.commands.length !== 2)
+    fail("gas top-up must contain exactly two commands");
+  const split = snapshot.commands[0]?.SplitCoins;
+  const transfer = snapshot.commands[1]?.TransferObjects;
+  if (
+    !split ||
+    !transfer ||
+    split.coin.GasCoin !== true ||
+    split.amounts.length !== 1 ||
+    parseU64(snapshot, split.amounts[0], "gas top-up") !== intent.gasMist
+  ) {
+    fail("gas top-up must split the exact owner gas amount");
+  }
+  if (
+    transfer.objects.length !== 1 ||
+    transfer.objects[0]?.NestedResult?.[0] !== 0 ||
+    transfer.objects[0]?.NestedResult?.[1] !== 0 ||
+    parseAddress(snapshot, transfer.address, "gas top-up recipient") !==
+      address(intent.agentAddress)
+  ) {
+    fail("gas top-up recipient or amount does not match intent");
+  }
+}
+
 function assertRevoke(
   snapshot: Snapshot,
   intent: Extract<OwnerTransactionIntent, { kind: "revoke-agent" }>,
@@ -573,6 +606,7 @@ export function assertOwnerTransactionIntent(
   if (intent.kind === "deposit") return assertDeposit(snapshot, intent);
   if (intent.kind === "withdraw") return assertWithdraw(snapshot, intent);
   if (intent.kind === "grant-agent") return assertGrant(snapshot, intent);
+  if (intent.kind === "gas-top-up") return assertGasTopUp(snapshot, intent);
   return assertRevoke(snapshot, intent);
 }
 
@@ -590,6 +624,10 @@ export type SerializedOwnerTransactionIntent =
     > & {
       gasMist: string;
     })
+  | (Omit<
+      Extract<OwnerTransactionIntent, { kind: "gas-top-up" }>,
+      "gasMist"
+    > & { gasMist: string })
   | Extract<OwnerTransactionIntent, { kind: "revoke-agent" }>;
 
 export type PreparedOwnerTransaction = {
@@ -603,7 +641,7 @@ export function serializeOwnerTransactionIntent(
   if (intent.kind === "deposit" || intent.kind === "withdraw") {
     return { ...intent, amount: intent.amount.toString() };
   }
-  if (intent.kind === "grant-agent") {
+  if (intent.kind === "grant-agent" || intent.kind === "gas-top-up") {
     return { ...intent, gasMist: intent.gasMist.toString() };
   }
   return intent;
@@ -615,7 +653,7 @@ export function deserializeOwnerTransactionIntent(
   if (intent.kind === "deposit" || intent.kind === "withdraw") {
     return { ...intent, amount: BigInt(intent.amount) };
   }
-  if (intent.kind === "grant-agent") {
+  if (intent.kind === "grant-agent" || intent.kind === "gas-top-up") {
     return { ...intent, gasMist: BigInt(intent.gasMist) };
   }
   return intent;
@@ -676,7 +714,7 @@ export function assertOwnerSimulationEffects(
   const suiChanges = changes.filter(
     (change) => change.coinType === SUI_COIN_TYPE,
   );
-  if (intent.kind === "grant-agent") {
+  if (intent.kind === "grant-agent" || intent.kind === "gas-top-up") {
     let ownerDelta = 0n;
     let agentDelta = 0n;
     for (const change of suiChanges) {

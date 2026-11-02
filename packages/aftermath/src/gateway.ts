@@ -142,6 +142,8 @@ export type OwnerAccountSummary = {
   allocatedCollateralUsd: number;
   freeMarginUsd: number;
   positionCount: number;
+  withdrawableCollateralUsd: number;
+  openMakerOrderCount: number;
   /** Current venue-marked notional of this account's open positions. */
   exposureUsd?: number;
   unrealizedPnlUsd?: number;
@@ -1202,6 +1204,12 @@ export class AftermathGateway {
     return result.accountCaps;
   }
 
+  /** Read-only owner-funded trading-key gas balance; no signing path. */
+  async getTradingKeyGasSui(agentAddress: string): Promise<number> {
+    const result = await this.client.getBalance({ owner: agentAddress });
+    return totalSuiBalance(result.balance);
+  }
+
   async listOwnerAccounts(inputs: {
     walletAddress: string;
     collateralCoinType?: string;
@@ -1250,6 +1258,15 @@ export class AftermathGateway {
           allocatedCollateralUsd,
           freeMarginUsd,
           positionCount: openPositions.length,
+          withdrawableCollateralUsd: account.account.availableCollateralUsd,
+          openMakerOrderCount: account.account.positions.reduce(
+            (total, position) =>
+              total +
+              (position.pendingOrders ?? []).filter((order) =>
+                isMakerClientOrderId(order.clientOrderId),
+              ).length,
+            0,
+          ),
           ...(marked
             ? {
                 exposureUsd: openPositions.reduce(
@@ -1328,6 +1345,44 @@ export class AftermathGateway {
     });
   }
 
+  async buildTopUpAgentGasTransaction(inputs: {
+    ownerAddress: string;
+    accountId: string;
+    collateralCoinType: string;
+    agentAddress: string;
+    gasMist: bigint;
+  }): Promise<PreparedOwnerTransaction> {
+    if (inputs.gasMist < 10_000_000n || inputs.gasMist > 10_000_000_000n) {
+      throw new Error("Gas top-up must be between 0.01 and 10 SUI");
+    }
+    const cap = await this.findAccountCap({
+      walletAddress: inputs.ownerAddress,
+      accountId: inputs.accountId,
+      collateralCoinType: inputs.collateralCoinType,
+      requireAgent: false,
+    });
+    const { account } = await this.sdk
+      .Perpetuals()
+      .getAccount({ accountCap: cap });
+    const tx = new Transaction();
+    const [gasCoin] = tx.splitCoins(tx.gas, [inputs.gasMist]);
+    tx.transferObjects([gasCoin], inputs.agentAddress);
+    const trust = await this.ownerTransactionTrust();
+    return this.prepareOwnerTransaction(tx, inputs.ownerAddress, {
+      kind: "gas-top-up",
+      sender: inputs.ownerAddress,
+      collateralCoinType: inputs.collateralCoinType,
+      accountCapId: cap.objectId,
+      accountObjectId: cap.accountObjectId,
+      allowedMarketIds: account.account.positions.map(
+        (position) => position.marketId,
+      ),
+      agentAddress: inputs.agentAddress,
+      gasMist: inputs.gasMist,
+      ...trust,
+    });
+  }
+
   async buildWithdrawCollateralTransaction(inputs: {
     ownerAddress: string;
     accountId: string;
@@ -1345,6 +1400,19 @@ export class AftermathGateway {
     const { account } = await this.sdk.Perpetuals().getAccount({
       accountCap: cap,
     });
+    if (
+      inputs.amount >
+      BigInt(
+        Math.max(
+          0,
+          Math.round(account.account.availableCollateralUsd * 1_000_000),
+        ),
+      )
+    ) {
+      throw new Error(
+        "Withdrawal exceeds the venue's currently available collateral",
+      );
+    }
     const { tx } = await account.getWithdrawCollateralTx({
       withdrawAmount: inputs.amount,
       recipientAddress: inputs.ownerAddress,

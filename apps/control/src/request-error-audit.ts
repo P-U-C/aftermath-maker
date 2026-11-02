@@ -35,6 +35,7 @@ const routes: Record<string, string> = {
   "/api/strategies": "strategy-create",
   "/api/setup/provision": "account-setup",
   "/api/setup/grant-transaction": "account-grant",
+  "/api/setup/gas-transaction": "account-gas-top-up",
   "/api/setup/confirm": "account-confirm",
   "/api/setup/revoke-transaction": "account-revoke",
   "/api/runtime/paper-trial": "paper-trial",

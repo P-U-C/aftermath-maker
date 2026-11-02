@@ -26,6 +26,7 @@ const CONTROL_EVENT_KINDS = [
   "inspection:builder-fee:success",
   "onboarding:account.create-transaction:prepared",
   "onboarding:agent.grant:confirmed",
+  "onboarding:agent.gas-transaction:prepared",
   "onboarding:agent.provision:success",
   "onboarding:agent.revoke:confirmed",
   "operator:runtime.stop-all:completed",
