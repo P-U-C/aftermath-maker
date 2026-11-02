@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
   aggregatePortfolioQuoteRisk,
+  requiredMakerCollateralUsd,
+  requiredHedgeCollateralUsd,
+  HEDGE_FEE_ALLOWANCE_BPS,
   assertBuilderFeePolicy,
   assertNoBuilderFee,
   buildQuoteIntent,
@@ -18,6 +21,57 @@ const safetyDefaults = {
   portfolioAvailableCollateralUsd: 1_000,
   agentGasSui: 1,
 };
+
+describe("hedge collateral floor", () => {
+  const hedged = makerConfigSchema.parse({
+    ...config,
+    quoteSizeUsd: 10,
+    maxLeverage: 1,
+    makerAccountId: "42",
+    hedge: {
+      ...config.hedge,
+      enabled: true,
+      accountId: "43",
+      maxOrderUsd: 100,
+      maxSlippageBps: 75,
+    },
+  });
+  it("requires $100.85 at 1x with one named 10 bps fee allowance", () => {
+    expect(HEDGE_FEE_ALLOWANCE_BPS).toBe(10);
+    expect(requiredHedgeCollateralUsd(hedged)).toBeCloseTo(100.85, 9);
+  });
+  it("uses 3x when all markets use it", () => {
+    expect(
+      requiredHedgeCollateralUsd({ ...hedged, maxLeverage: 3 }),
+    ).toBeCloseTo(34.1833333333, 7);
+  });
+  it("uses a per-market override that lowers the effective leverage", () => {
+    expect(
+      requiredHedgeCollateralUsd({
+        ...hedged,
+        maxLeverage: 3,
+        markets: [
+          { marketId: "0x1", symbol: "A" },
+          { marketId: "0x2", symbol: "B", overrides: { maxLeverage: 1 } },
+        ],
+      }),
+    ).toBeCloseTo(100.85, 9);
+  });
+  it("adds both requirements for one shared maker/hedge account", () => {
+    const quoteRisk = requiredMakerCollateralUsd(hedged);
+    expect(quoteRisk).toBe(20);
+    expect(quoteRisk + requiredHedgeCollateralUsd(hedged)).toBeCloseTo(
+      120.85,
+      9,
+    );
+    expect(
+      requiredHedgeCollateralUsd({
+        ...hedged,
+        hedge: { ...hedged.hedge, enabled: false },
+      }),
+    ).toBe(0);
+  });
+});
 
 describe("quote strategy", () => {
   it("stays post-only and skews away from a long inventory", () => {

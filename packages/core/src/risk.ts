@@ -53,6 +53,28 @@ export function requiredMakerCollateralUsd(config: MakerConfig): number {
   return aggregatePortfolioQuoteRisk(risks).requiredQuoteCollateralUsd;
 }
 
+/** Conservative taker margin + slippage/fee cushion for the largest permitted hedge. */
+export const HEDGE_FEE_ALLOWANCE_BPS = 10;
+
+export function lowestEffectiveHedgeLeverage(config: MakerConfig): number {
+  return config.markets.length
+    ? Math.min(
+        ...config.markets.map(
+          (market) => market.overrides?.maxLeverage ?? config.maxLeverage,
+        ),
+      )
+    : config.maxLeverage;
+}
+
+export function requiredHedgeCollateralUsd(config: MakerConfig): number {
+  if (!config.hedge.enabled) return 0;
+  const order = config.hedge.maxOrderUsd;
+  return (
+    order / Math.max(1, lowestEffectiveHedgeLeverage(config)) +
+    (order * (config.hedge.maxSlippageBps + HEDGE_FEE_ALLOWANCE_BPS)) / 10_000
+  );
+}
+
 export function evaluateQuoteSafety(inputs: {
   config: MakerConfig;
   quote: QuoteIntent | null;

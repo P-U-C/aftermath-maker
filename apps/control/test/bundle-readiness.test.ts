@@ -139,7 +139,7 @@ describe("five ordered bundle readiness stages", () => {
       paper.stages[3].requiredGasSui!,
     );
   });
-  it("uses the largest one-market override for single-slot and any positive hedge collateral", () => {
+  it("uses the largest one-market override and requires full hedge margin plus costs", () => {
     const single = makerConfigSchema.parse({
       ...config,
       rotationMode: "single-slot",
@@ -158,7 +158,13 @@ describe("five ordered bundle readiness stages", () => {
     const hedge = makerConfigSchema.parse({
       ...single,
       makerAccountId: "42",
-      hedge: { ...single.hedge, enabled: true, accountId: "43" },
+      hedge: {
+        ...single.hedge,
+        enabled: true,
+        accountId: "43",
+        maxOrderUsd: 100,
+        maxSlippageBps: 75,
+      },
     });
     const result = deriveBundleReadiness({
       ...base,
@@ -173,7 +179,24 @@ describe("five ordered bundle readiness stages", () => {
     expect(result.stages[4]).toMatchObject({
       status: "todo",
       accountId: "43",
-      shortfallUsd: 0.01,
+      shortfallUsd: expect.any(Number),
+      detail:
+        "Hedge account 43 needs $100.85 free collateral to place one hedge of up to $100.00 at 1x. It has $0.00.",
     });
+    expect(result.stages[4].shortfallUsd).toBeCloseTo(100.85, 7);
+    const shared = deriveBundleReadiness({
+      ...base,
+      config: hedge,
+      bundle: { ...base.bundle, takerAccountId: "42" },
+      accounts: [{ accountId: "42", availableCollateralUsd: 120 }],
+    });
+    expect(shared.stages[4]).toMatchObject({
+      accountId: "42",
+      status: "todo",
+      requiredUsd: expect.any(Number),
+      shortfallUsd: expect.any(Number),
+    });
+    expect(shared.stages[4].requiredUsd).toBeCloseTo(140.85, 7);
+    expect(shared.stages[4].shortfallUsd).toBeCloseTo(20.85, 7);
   });
 });

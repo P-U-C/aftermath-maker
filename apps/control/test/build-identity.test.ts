@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 describe("public build identity", () => {
   it("exposes non-empty commit and build time in health and authenticated status", () => {
     const server = readFileSync(
-      fileURLToPath(new URL("../src/server.ts", import.meta.url)),
+      fileURLToPath(new URL("../src/server-app.ts", import.meta.url)),
       "utf8",
     );
     const health = server.match(
