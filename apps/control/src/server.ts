@@ -1407,10 +1407,56 @@ const collateralMutationSchema = z
   })
   .strict();
 
+const depositBatchSchema = z
+  .object({
+    deposits: z
+      .array(collateralMutationSchema)
+      .min(1)
+      .max(2)
+      .refine(
+        (items) =>
+          new Set(items.map((entry) => entry.accountId)).size === items.length,
+        "Choose different accounts for one combined deposit",
+      ),
+  })
+  .strict();
+
 app.post("/api/accounts/deposit-transaction", async (request) => {
   const identity = requestAuth(request);
-  const body = collateralMutationSchema.parse(request.body);
+  const body = z
+    .union([collateralMutationSchema, depositBatchSchema])
+    .parse(request.body);
   const active = runtime(request);
+  if ("deposits" in body) {
+    const deposits = body.deposits.map((entry) => ({
+      accountId: entry.accountId,
+      amount: decimalToBaseUnits(entry.amountUsdc, 6),
+    }));
+    if (deposits.some((entry) => entry.amount <= 0n))
+      throw new UserFacingError(
+        "deposit-amount-invalid",
+        "Enter a positive amount for each account.",
+        { kind: "venues" },
+        400,
+      );
+    const prepared = await active
+      .requireGateway()
+      .buildDepositCollateralBatchTransaction({
+        ownerAddress: identity.ownerAddress,
+        collateralCoinType: USDC_COIN_TYPE,
+        deposits,
+      });
+    tenant(request).logEvent({
+      category: "collateral",
+      action: "deposit.transaction",
+      outcome: "prepared",
+      detail: {
+        accountIds: deposits.map((entry) => entry.accountId),
+        combined: true,
+      },
+    });
+    return prepared;
+  }
   const amount = decimalToBaseUnits(body.amountUsdc, 6);
   if (amount <= 0n) throw new AuthError(400, "Deposit amount must be positive");
   const prepared = await active

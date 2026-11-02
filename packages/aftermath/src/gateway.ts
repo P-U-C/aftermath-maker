@@ -1345,6 +1345,64 @@ export class AftermathGateway {
     });
   }
 
+  /** Two owner accounts, one wallet signature; never signs or sends in control. */
+  async buildDepositCollateralBatchTransaction(inputs: {
+    ownerAddress: string;
+    collateralCoinType: string;
+    deposits: Array<{ accountId: string; amount: bigint }>;
+  }): Promise<PreparedOwnerTransaction> {
+    if (
+      inputs.deposits.length < 1 ||
+      inputs.deposits.length > 2 ||
+      new Set(inputs.deposits.map((entry) => entry.accountId)).size !==
+        inputs.deposits.length ||
+      inputs.deposits.some((entry) => entry.amount <= 0n)
+    ) {
+      throw new Error(
+        "Choose one or two different owned accounts with positive amounts",
+      );
+    }
+    let tx = new Transaction();
+    const deposits: Array<{
+      accountCapId: string;
+      accountObjectId: string;
+      allowedMarketIds: string[];
+      amount: bigint;
+    }> = [];
+    for (const entry of inputs.deposits) {
+      const cap = await this.findAccountCap({
+        walletAddress: inputs.ownerAddress,
+        accountId: entry.accountId,
+        collateralCoinType: inputs.collateralCoinType,
+        requireAgent: false,
+      });
+      const { account } = await this.sdk
+        .Perpetuals()
+        .getAccount({ accountCap: cap });
+      const prepared = await account.getDepositCollateralTx({
+        depositAmount: entry.amount,
+        tx,
+      });
+      tx = prepared.tx;
+      deposits.push({
+        accountCapId: cap.objectId,
+        accountObjectId: cap.accountObjectId,
+        allowedMarketIds: account.account.positions.map(
+          (position) => position.marketId,
+        ),
+        amount: entry.amount,
+      });
+    }
+    const trust = await this.ownerTransactionTrust();
+    return this.prepareOwnerTransaction(tx, inputs.ownerAddress, {
+      kind: "deposit-batch",
+      sender: inputs.ownerAddress,
+      collateralCoinType: inputs.collateralCoinType,
+      deposits,
+      ...trust,
+    });
+  }
+
   async buildTopUpAgentGasTransaction(inputs: {
     ownerAddress: string;
     accountId: string;
