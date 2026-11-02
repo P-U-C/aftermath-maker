@@ -1189,6 +1189,25 @@ stopped.status.bundles = stopped.bundles.bundles.map((bundle) => ({
   snapshot: snapshot("paper", false),
 }));
 
+const paperShared = structuredClone(paperRunning);
+paperShared.bundles.bundles = paperShared.bundles.bundles.map((bundle) =>
+  bundle.id === "rewards-fixture"
+    ? { ...bundle, marketIds: [...bundle.marketIds, marketIds.NEAR] }
+    : bundle,
+);
+paperShared.status.bundles = paperShared.bundles.bundles.map((bundle) => {
+  const bundleSnapshot = snapshot("paper", true);
+  if (bundle.id === "rewards-fixture") {
+    bundleSnapshot.market.id = marketIds.NEAR;
+    bundleSnapshot.market.symbol = "NEAR";
+    const near = bundleSnapshot.markets.find(
+      (market) => market.id === marketIds.NEAR,
+    );
+    if (near) near.status = "healthy";
+  }
+  return { bundle, snapshot: bundleSnapshot };
+});
+
 const mixedRunning = structuredClone(paperRunning);
 mixedRunning.bundles.bundles = mixedRunning.bundles.bundles.map((bundle) =>
   bundle.id === "rewards-fixture" ? { ...bundle, mode: "live" } : bundle,
@@ -1301,6 +1320,7 @@ export const fixtureStates = {
   "not-on-list": notOnList,
   onboarding,
   "paper-running": paperRunning,
+  "paper-shared": paperShared,
   "paper-blocked": paperBlocked,
   "paper-running-no-book": paperRunningNoBook,
   "live-running": liveRunning,

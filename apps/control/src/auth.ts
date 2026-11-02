@@ -6,6 +6,7 @@ import {
   timingSafeEqual,
 } from "node:crypto";
 import { verifyPersonalMessageSignature } from "@mysten/sui/verify";
+import type { SuiGrpcClient } from "@mysten/sui/grpc";
 import type { OnchainAllowlist } from "./allowlist.js";
 import { UserFacingError } from "./http-error.js";
 import type { Store } from "./store.js";
@@ -62,6 +63,7 @@ export class WalletAuth {
     private readonly chainRefreshMs = 30_000,
     private readonly onAccessRevoked?: (ownerAddress: string) => Promise<void>,
     private readonly accessRequestTokenSecret?: string,
+    private readonly verificationClient?: SuiGrpcClient,
   ) {}
 
   private signAccessRequestToken(payload: string): string {
@@ -204,19 +206,53 @@ export class WalletAuth {
       message: inputs.message,
     });
 
+    let chainCheckUnavailable = false;
+    // The SDK checks zkLogin (including a zkLogin multisig member) through
+    // client.core. Mark transport failures without mistaking a chain-level
+    // success:false verdict for an invalid network connection.
+    const verificationClient = this.verificationClient
+      ? ({
+          core: {
+            verifyZkLoginSignature: async (
+              args: Parameters<
+                SuiGrpcClient["core"]["verifyZkLoginSignature"]
+              >[0],
+            ) => {
+              try {
+                return await this.verificationClient!.core.verifyZkLoginSignature(
+                  args,
+                );
+              } catch {
+                chainCheckUnavailable = true;
+                throw new Error("Signature chain check unavailable");
+              }
+            },
+          },
+        } as unknown as SuiGrpcClient)
+      : undefined;
     try {
       await verifyPersonalMessageSignature(
         new TextEncoder().encode(inputs.message),
         inputs.signature,
-        { address: ownerAddress },
+        {
+          address: ownerAddress,
+          ...(verificationClient ? { client: verificationClient } : {}),
+        },
       );
     } catch {
-      throw new UserFacingError(
-        "signature-invalid",
-        "Your wallet's signature didn't verify. Sign again.",
-        undefined,
-        401,
-      );
+      throw chainCheckUnavailable
+        ? new UserFacingError(
+            "signature-check-unavailable",
+            "Maker couldn't check your wallet's signature right now. Try again in a minute.",
+            undefined,
+            503,
+          )
+        : new UserFacingError(
+            "signature-invalid",
+            "Your wallet's signature didn't verify. Sign again.",
+            undefined,
+            401,
+          );
     }
 
     let allowed = false;

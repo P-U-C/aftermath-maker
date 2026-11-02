@@ -2,11 +2,16 @@ import { randomBytes } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { Ed25519Keypair } from "@mysten/sui/keypairs/ed25519";
+import {
+  getZkLoginSignature,
+  toZkLoginPublicIdentifier,
+} from "@mysten/sui/zklogin";
+import type { SuiGrpcClient } from "@mysten/sui/grpc";
 import { describe, expect, it, vi } from "vitest";
 import { WalletAuth } from "../src/auth.js";
 import { Store } from "../src/store.js";
 
-function harness() {
+function harness(verificationClient?: SuiGrpcClient) {
   const directory = join(
     process.env.TMPDIR ?? "/tmp",
     "aftermath-maker-auth-" + randomBytes(8).toString("hex"),
@@ -26,11 +31,101 @@ function harness() {
     0,
     undefined,
     "access-request-test-secret",
+    verificationClient,
   );
   return { store, auth };
 }
 
+function zkLoginFixture() {
+  const issuer = "https://accounts.google.com";
+  const inputs = {
+    proofPoints: { a: [], b: [], c: [] },
+    issBase64Details: {
+      value: Buffer.from(`"iss":"${issuer}",`).toString("base64url"),
+      indexMod4: 0,
+    },
+    headerBase64: "",
+    addressSeed: "1",
+  };
+  return {
+    address: toZkLoginPublicIdentifier(1n, issuer, {
+      legacyAddress: false,
+    }).toSuiAddress(),
+    signature: getZkLoginSignature({
+      inputs,
+      maxEpoch: 99,
+      userSignature: new Uint8Array([1, 2]),
+    }),
+  };
+}
+
 describe("wallet authentication", () => {
+  it("keeps Ed25519 sign-in offline even when a verification client is present", async () => {
+    const chainCheck = vi.fn();
+    const { store, auth } = harness({
+      core: { verifyZkLoginSignature: chainCheck },
+    } as unknown as SuiGrpcClient);
+    const signer = new Ed25519Keypair();
+    const address = signer.toSuiAddress();
+    const challenge = auth.begin(address);
+    const { signature } = await signer.signPersonalMessage(
+      new TextEncoder().encode(challenge.message),
+    );
+    await expect(
+      auth.verify({ ...challenge, address, signature }),
+    ).resolves.toMatchObject({ ownerAddress: address });
+    expect(chainCheck).not.toHaveBeenCalled();
+    store.close();
+  });
+
+  it("verifies zkLogin personal messages through the owner-address chain check", async () => {
+    const chainCheck = vi.fn(async () => ({ success: true, errors: [] }));
+    const { store, auth } = harness({
+      core: { verifyZkLoginSignature: chainCheck },
+    } as unknown as SuiGrpcClient);
+    const { address, signature } = zkLoginFixture();
+    const challenge = auth.begin(address);
+    await expect(
+      auth.verify({ ...challenge, address, signature }),
+    ).resolves.toMatchObject({ ownerAddress: address });
+    expect(chainCheck).toHaveBeenCalledWith(
+      expect.objectContaining({ address, intentScope: "PersonalMessage" }),
+    );
+    store.close();
+  });
+
+  it("returns a retryable 503 for a zkLogin chain/RPC failure", async () => {
+    const chainCheck = vi.fn(async () => {
+      throw new Error("private RPC diagnostic");
+    });
+    const { store, auth } = harness({
+      core: { verifyZkLoginSignature: chainCheck },
+    } as unknown as SuiGrpcClient);
+    const { address, signature } = zkLoginFixture();
+    const challenge = auth.begin(address);
+    await expect(
+      auth.verify({ ...challenge, address, signature }),
+    ).rejects.toMatchObject({
+      statusCode: 503,
+      code: "signature-check-unavailable",
+      message:
+        "Maker couldn't check your wallet's signature right now. Try again in a minute.",
+    });
+    store.close();
+  });
+
+  it("returns 401 for a zkLogin chain verdict success:false", async () => {
+    const chainCheck = vi.fn(async () => ({ success: false, errors: [] }));
+    const { store, auth } = harness({
+      core: { verifyZkLoginSignature: chainCheck },
+    } as unknown as SuiGrpcClient);
+    const { address, signature } = zkLoginFixture();
+    const challenge = auth.begin(address);
+    await expect(
+      auth.verify({ ...challenge, address, signature }),
+    ).rejects.toMatchObject({ statusCode: 401, code: "signature-invalid" });
+    store.close();
+  });
   it("binds a one-time challenge to a wallet and creates a hashed session", async () => {
     const { store, auth } = harness();
     const keypair = new Ed25519Keypair();

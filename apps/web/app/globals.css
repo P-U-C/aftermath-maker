@@ -11677,6 +11677,25 @@ mysten-dapp-kit-connect-modal,
 .market-clean-table tbody tr:last-child td {
   border-bottom: 0;
 }
+.market-clean-table .market-bundle-child td {
+  height: 52px;
+  background: rgba(22, 24, 29, 0.02);
+}
+.market-shared-count {
+  font-weight: 620;
+}
+.market-shared-connector {
+  width: 19px;
+  height: 15px;
+  margin-left: 9px;
+  display: inline-block;
+  border-left: 1.5px solid var(--ink-3);
+  border-bottom: 1.5px solid var(--ink-3);
+  border-bottom-left-radius: 5px;
+}
+.market-bundle-child .market-state-label {
+  white-space: nowrap;
+}
 .market-cell-name strong {
   display: block;
   overflow: hidden;

@@ -4232,6 +4232,54 @@ function DashboardBody() {
             ]
           : [];
       });
+      const sharedBundles =
+        assigned.length > 1
+          ? assigned.map((bundle) => {
+              const bundleRun = runBundleById.get(bundle.id) ?? null;
+              const bundleSnapshot = bundleRun?.snapshot ?? null;
+              const marketSnapshot =
+                bundleSnapshot?.markets.find(
+                  (market) => market.id === listed.id,
+                ) ?? null;
+              const strategy = strategies.find(
+                (item) => item.id === bundle.strategyId,
+              );
+              const selected = strategy?.markets.find(
+                (market) => market.marketId === listed.id,
+              );
+              const activity = marketActivity({
+                mode: bundleRun?.mode ?? "paper",
+                status: activityStatusFor(bundle.id),
+                marketId: listed.id,
+                marketError: marketSnapshot?.error ?? null,
+                snapshot: bundleSnapshot,
+                now: Date.now(),
+              });
+              const stateLabel =
+                bundleRun?.phase === "attention" || marketSnapshot?.error
+                  ? "Needs attention"
+                  : bundleRun?.phase === "paused"
+                    ? "Paused"
+                    : bundleRun?.phase === "running" && activity.active
+                      ? "Quoting"
+                      : "Waiting for first quote";
+              return {
+                id: bundle.id,
+                name: bundle.name,
+                mode: bundle.mode,
+                stateLabel,
+                strategyId: strategy?.id ?? null,
+                customFields: Object.keys(
+                  effectiveMarketOverrides(
+                    selected?.overrides,
+                    strategy?.config,
+                  ),
+                ),
+                inventoryUsd: marketSnapshot?.inventoryUsd ?? 0,
+                unrealizedPnlUsd: marketSnapshot?.unrealizedPnlUsd ?? 0,
+              };
+            })
+          : [];
       const activity = assignedBundle
         ? marketActivity({
             mode: assignedRun?.mode ?? "paper",
@@ -4242,11 +4290,20 @@ function DashboardBody() {
             now: Date.now(),
           })
         : { label: "Not assigned", active: false, error: null };
+      const sharedWaiting = sharedBundles.filter(
+        (bundle) =>
+          bundle.stateLabel === "Waiting for first quote" ||
+          bundle.stateLabel === "Paused",
+      ).length;
+      const sharedAttention = sharedBundles.filter(
+        (bundle) => bundle.stateLabel === "Needs attention",
+      ).length;
       return {
         id: listed.id,
         symbol: listed.symbol,
         displayName: listed.displayName,
         tickSize: listed.tickSize,
+        sharedBundles,
         strategyId: savedStrategy?.id ?? null,
         bundleMode: assignedBundle?.mode ?? null,
         customFields: Object.keys(
@@ -4257,14 +4314,22 @@ function DashboardBody() {
         ),
         stateLabel: !assignedBundle
           ? "Available"
-          : assignedRun?.phase === "attention" || runtimeMarket?.error
-            ? "Needs attention"
-            : assignedRun?.phase === "paused"
-              ? "Paused"
-              : assignedRun?.phase === "running" && activity.active
-                ? "Quoting"
-                : "Waiting for first quote",
-        bundleName: assignedBundle?.name ?? "Available",
+          : sharedBundles.length
+            ? sharedAttention
+              ? `${sharedAttention} need attention`
+              : sharedWaiting
+                ? `${sharedWaiting} waiting`
+                : "All quoting"
+            : assignedRun?.phase === "attention" || runtimeMarket?.error
+              ? "Needs attention"
+              : assignedRun?.phase === "paused"
+                ? "Paused"
+                : assignedRun?.phase === "running" && activity.active
+                  ? "Quoting"
+                  : "Waiting for first quote",
+        bundleName: sharedBundles.length
+          ? `${sharedBundles.length} bundles`
+          : (assignedBundle?.name ?? "Available"),
         bundleLabels: assigned.map((bundle) => {
           const phase = runBundleById.get(bundle.id)?.phase ?? "stopped";
           return `${bundle.name} · ${bundle.mode} · ${phase}`;
@@ -4294,8 +4359,12 @@ function DashboardBody() {
           listed.openInterestUtilizationPct,
         volume24hUsd: runtimeMarket?.volume24hUsd ?? listed.volume24hUsd,
         fundingRate: runtimeMarket?.fundingRate ?? listed.fundingRate,
-        inventoryUsd: runtimeMarket?.inventoryUsd ?? 0,
-        unrealizedPnlUsd: runtimeMarket?.unrealizedPnlUsd ?? 0,
+        inventoryUsd: sharedBundles.length
+          ? 0
+          : (runtimeMarket?.inventoryUsd ?? 0),
+        unrealizedPnlUsd: sharedBundles.length
+          ? 0
+          : (runtimeMarket?.unrealizedPnlUsd ?? 0),
         effectiveSpreadBps: savedMarket
           ? (savedMarket.overrides?.spreadBps ??
             savedStrategy!.config.spreadBps)
@@ -4366,113 +4435,202 @@ function DashboardBody() {
   ];
 
   const renderMarketRow = (row: (typeof marketTableRows)[number]) => (
-    <tr key={row.id}>
-      <td className="market-cell-name">
-        <strong>{row.symbol}</strong>
-        <small>{row.displayName}</small>
-      </td>
-      <td>
-        {row.bundleName === "Available" ? (
-          <span className="market-muted">Not in a bundle</span>
-        ) : (
-          <span className="market-bundle-label">
-            <strong>{row.bundleName}</strong>
-            <small
-              className={`run-mode-tag is-${row.bundleMode === "live" ? "live" : "paper"}`}
-            >
-              {row.bundleMode === "live" ? "Live" : "Paper"}
-            </small>
-          </span>
-        )}
-      </td>
-      <td>
-        <span
-          className={`market-state-label is-${row.stateLabel.toLowerCase().replaceAll(" ", "-")}`}
-        >
-          <i aria-hidden="true" />
-          {row.stateLabel}
-        </span>
-      </td>
-      <td>
-        {!row.strategyId ? (
-          <span className="market-muted">—</span>
-        ) : row.customFields.length ? (
-          <span
-            className="market-policy-custom"
-            title={row.customFields.map(reviewFieldName).join(", ")}
-          >
-            {row.customFields.length} custom
-          </span>
-        ) : (
-          <span className="market-muted">Strategy</span>
-        )}
-      </td>
-      <td className="market-number">
-        {marketPrice(row.indexPrice, row.tickSize)}
-      </td>
-      <td className="market-number">
-        <span>{compactUsd(row.openInterestUsd)}</span>
-        {row.openInterestUtilizationPct !== null && (
-          <span
-            className="market-capacity-bar"
-            role="progressbar"
-            aria-label={`${row.symbol} open interest capacity`}
-            aria-valuemin={0}
-            aria-valuemax={100}
-            aria-valuenow={Math.max(
-              0,
-              Math.min(100, row.openInterestUtilizationPct),
-            )}
-            aria-valuetext={`${percent(row.openInterestUtilizationPct, 1)} of the venue limit`}
-            title={`${percent(row.openInterestUtilizationPct, 1)} of the venue limit`}
-          >
-            <i
-              style={{
-                width: `${Math.max(0, Math.min(100, row.openInterestUtilizationPct))}%`,
-              }}
-            />
-          </span>
-        )}
-      </td>
-      <td className="market-number">{compactUsd(row.volume24hUsd)}</td>
-      <td
-        className={`market-number ${row.fundingRate !== null && row.fundingRate < 0 ? "negative-number" : ""}`}
+    <Fragment key={row.id}>
+      <tr
+        className={
+          row.sharedBundles.length ? "market-shared-parent" : undefined
+        }
       >
-        {row.fundingRate === null
-          ? "—"
-          : `${row.fundingRate >= 0 ? "+" : "−"}${Math.abs(row.fundingRate * 100).toFixed(4)}%`}
-      </td>
-      <td className="market-number">
-        {row.inventoryUsd === 0 ? "—" : money(row.inventoryUsd)}
-        {row.unrealizedPnlUsd !== 0 && (
-          <small
-            className={
-              row.unrealizedPnlUsd < 0 ? "negative-number" : "positive-number"
-            }
+        <td className="market-cell-name">
+          <strong>{row.symbol}</strong>
+          <small>{row.displayName}</small>
+        </td>
+        <td>
+          {row.sharedBundles.length ? (
+            <strong className="market-shared-count">
+              {row.sharedBundles.length} bundles
+            </strong>
+          ) : row.bundleName === "Available" ? (
+            <span className="market-muted">Not in a bundle</span>
+          ) : (
+            <span className="market-bundle-label">
+              <strong>{row.bundleName}</strong>
+              <small
+                className={`run-mode-tag is-${row.bundleMode === "live" ? "live" : "paper"}`}
+              >
+                {row.bundleMode === "live" ? "Live" : "Paper"}
+              </small>
+            </span>
+          )}
+        </td>
+        <td>
+          <span
+            className={`market-state-label is-${row.stateLabel.toLowerCase().replaceAll(" ", "-")}`}
           >
-            {money(row.unrealizedPnlUsd)} unrealized
-          </small>
-        )}
-      </td>
-      <td>
-        {row.strategyId && (
-          <button
-            className="market-policy-edit"
-            type="button"
-            aria-label={`Edit ${row.symbol} policy`}
-            onClick={() =>
-              setPolicyEditorTarget({
-                marketId: row.id,
-                symbol: row.symbol,
-                strategyId: row.strategyId!,
-              })
-            }
-          >
-            Edit
-          </button>
-        )}
-      </td>
-    </tr>
+            <i aria-hidden="true" />
+            {row.stateLabel}
+          </span>
+        </td>
+        <td>
+          {row.sharedBundles.length ? (
+            <span className="market-muted">Per bundle</span>
+          ) : !row.strategyId ? (
+            <span className="market-muted">—</span>
+          ) : row.customFields.length ? (
+            <span
+              className="market-policy-custom"
+              title={row.customFields.map(reviewFieldName).join(", ")}
+            >
+              {row.customFields.length} custom
+            </span>
+          ) : (
+            <span className="market-muted">Strategy</span>
+          )}
+        </td>
+        <td className="market-number">
+          {marketPrice(row.indexPrice, row.tickSize)}
+        </td>
+        <td className="market-number">
+          <span>{compactUsd(row.openInterestUsd)}</span>
+          {row.openInterestUtilizationPct !== null && (
+            <span
+              className="market-capacity-bar"
+              role="progressbar"
+              aria-label={`${row.symbol} open interest capacity`}
+              aria-valuemin={0}
+              aria-valuemax={100}
+              aria-valuenow={Math.max(
+                0,
+                Math.min(100, row.openInterestUtilizationPct),
+              )}
+              aria-valuetext={`${percent(row.openInterestUtilizationPct, 1)} of the venue limit`}
+              title={`${percent(row.openInterestUtilizationPct, 1)} of the venue limit`}
+            >
+              <i
+                style={{
+                  width: `${Math.max(0, Math.min(100, row.openInterestUtilizationPct))}%`,
+                }}
+              />
+            </span>
+          )}
+        </td>
+        <td className="market-number">{compactUsd(row.volume24hUsd)}</td>
+        <td
+          className={`market-number ${row.fundingRate !== null && row.fundingRate < 0 ? "negative-number" : ""}`}
+        >
+          {row.fundingRate === null
+            ? "—"
+            : `${row.fundingRate >= 0 ? "+" : "−"}${Math.abs(row.fundingRate * 100).toFixed(4)}%`}
+        </td>
+        <td className="market-number">
+          {row.inventoryUsd === 0 ? "—" : money(row.inventoryUsd)}
+          {row.unrealizedPnlUsd !== 0 && (
+            <small
+              className={
+                row.unrealizedPnlUsd < 0 ? "negative-number" : "positive-number"
+              }
+            >
+              {money(row.unrealizedPnlUsd)} unrealized
+            </small>
+          )}
+        </td>
+        <td>
+          {row.strategyId && !row.sharedBundles.length && (
+            <button
+              className="market-policy-edit"
+              type="button"
+              aria-label={`Edit ${row.symbol} policy`}
+              onClick={() =>
+                setPolicyEditorTarget({
+                  marketId: row.id,
+                  symbol: row.symbol,
+                  strategyId: row.strategyId!,
+                })
+              }
+            >
+              Edit
+            </button>
+          )}
+        </td>
+      </tr>
+      {row.sharedBundles.map((bundle) => (
+        <tr
+          className="market-bundle-child"
+          key={bundle.id}
+          aria-label={`${row.symbol} in ${bundle.name}`}
+        >
+          <td>
+            <span className="market-shared-connector" aria-hidden="true" />
+          </td>
+          <td>
+            <span className="market-bundle-label">
+              <strong>{bundle.name}</strong>
+              <small
+                className={`run-mode-tag is-${bundle.mode === "live" ? "live" : "paper"}`}
+              >
+                {bundle.mode === "live" ? "Live" : "Paper"}
+              </small>
+            </span>
+          </td>
+          <td>
+            <span
+              className={`market-state-label is-${bundle.stateLabel.toLowerCase().replaceAll(" ", "-")}`}
+            >
+              <i aria-hidden="true" />
+              {bundle.stateLabel}
+            </span>
+          </td>
+          <td>
+            {bundle.customFields.length ? (
+              <span
+                className="market-policy-custom"
+                title={bundle.customFields.map(reviewFieldName).join(", ")}
+              >
+                {bundle.customFields.length} custom
+              </span>
+            ) : (
+              <span className="market-muted">Strategy</span>
+            )}
+          </td>
+          <td />
+          <td />
+          <td />
+          <td />
+          <td className="market-number">
+            {bundle.inventoryUsd === 0 ? "—" : money(bundle.inventoryUsd)}
+            {bundle.unrealizedPnlUsd !== 0 && (
+              <small
+                className={
+                  bundle.unrealizedPnlUsd < 0
+                    ? "negative-number"
+                    : "positive-number"
+                }
+              >
+                {money(bundle.unrealizedPnlUsd)} unrealized
+              </small>
+            )}
+          </td>
+          <td>
+            {bundle.strategyId && (
+              <button
+                className="market-policy-edit"
+                type="button"
+                aria-label={`Edit ${row.symbol} policy in ${bundle.name}`}
+                onClick={() =>
+                  setPolicyEditorTarget({
+                    marketId: row.id,
+                    symbol: row.symbol,
+                    strategyId: bundle.strategyId!,
+                  })
+                }
+              >
+                Edit
+              </button>
+            )}
+          </td>
+        </tr>
+      ))}
+    </Fragment>
   );
 
   const deskLatestMarketUpdate = deskRotationRows.reduce<string | null>(
@@ -7784,8 +7942,8 @@ function DashboardBody() {
             <div>
               <h2>Aftermath markets</h2>
               <p>
-                {marketTableGroups.inUse.length} in use by your bundles,{" "}
-                {marketTableGroups.available.length} available.
+                Several Paper bundles can quote the same market. Only one Live
+                bundle can.
               </p>
             </div>
             <span className="market-last-update">

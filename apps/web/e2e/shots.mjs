@@ -50,6 +50,7 @@ const verifyLearn = process.argv.includes("--verify-learn");
 const verifyMotion = process.argv.includes("--verify-motion");
 const showRunStatus = process.argv.includes("--run-status");
 const showWalletMenu = process.argv.includes("--wallet-menu");
+const focusSharedMarket = process.argv.includes("--focus-shared-market");
 const verifyPaperBlocked = process.argv.includes("--verify-paper-blocked");
 const verifyLaneHeight = process.argv.includes("--verify-lane-height");
 const beginStop = process.argv.includes("--begin-stop");
@@ -1516,6 +1517,13 @@ async function capture(browser, stateName, captureConfig, view) {
     if (showWalletMenu && fixture.auth.status === 200) {
       await page.locator(".maker-wallet-menu > summary").click();
       await page.locator(".maker-build-info").waitFor();
+    }
+    if (
+      focusSharedMarket &&
+      view === "markets" &&
+      stateName === "paper-shared"
+    ) {
+      await page.locator(".market-shared-parent").scrollIntoViewIfNeeded();
     }
     await page.screenshot({ path: file, fullPage: false });
     process.stdout.write(

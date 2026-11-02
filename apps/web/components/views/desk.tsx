@@ -533,7 +533,7 @@ export function DeskView({
               {markets.length ? (
                 markets.map((row) => (
                   <ListRow
-                    key={row.id}
+                    key={`${row.bundleName ?? "available"}:${row.id}`}
                     trailing={
                       <span
                         className={`desk-row-pnl is-${moneyTone(row.unrealizedPnlUsd)}`}

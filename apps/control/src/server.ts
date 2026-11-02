@@ -164,10 +164,11 @@ const publicGrpc =
   env.SUI_VALIDATOR_GRPC_URL ??
   env.SUI_FALLBACK_GRPC_URL ??
   "https://fullnode.mainnet.sui.io:443";
-const allowlist = new OnchainAllowlist(
-  new SuiGrpcClient({ network: "mainnet", baseUrl: publicGrpc }),
-  store,
-);
+const publicSuiClient = new SuiGrpcClient({
+  network: "mainnet",
+  baseUrl: publicGrpc,
+});
+const allowlist = new OnchainAllowlist(publicSuiClient, store);
 const auth = new WalletAuth(
   store,
   allowlist,
@@ -184,6 +185,7 @@ const auth = new WalletAuth(
     });
   },
   env.CONTROL_TOKEN,
+  publicSuiClient,
 );
 
 type RequestAuth = {
