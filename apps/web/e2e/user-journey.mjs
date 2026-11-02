@@ -2226,7 +2226,7 @@ async function v7BundleDeskAndStrategy(browser) {
     await page.getByRole("link", { name: "Venues", exact: true }).click();
     await page
       .locator(".venue-accounts-card")
-      .getByText(/Equity .* exposure .* wallet limit/)
+      .getByText(/Each account needs a trading key/)
       .waitFor();
     await page.locator(".venue-kit-table").waitFor();
     await page.locator(".venue-accounts-card").scrollIntoViewIfNeeded();

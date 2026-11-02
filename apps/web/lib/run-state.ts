@@ -1,5 +1,7 @@
 import type { PaperBlocker } from "./paper-blocker";
 
+import type { BundleReadiness } from "./bundle-readiness";
+
 export type RunStartIssue = {
   message: string;
   code?: string;
@@ -28,6 +30,7 @@ export type RunBundleInput = {
   status: "stopped" | "running" | "paused" | "error" | string;
   lastError?: string | null;
   needsStrategy?: boolean;
+  readiness?: BundleReadiness | null;
 };
 
 export type RunSnapshotInput = {

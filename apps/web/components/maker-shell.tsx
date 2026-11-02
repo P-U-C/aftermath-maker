@@ -622,6 +622,7 @@ type MakerShellProps = {
     bundleId: string,
     action: "start" | "pause" | "resume",
   ) => void;
+  onFundBundle?: (bundleId: string, accountId: string) => void;
   canOperate: boolean;
   serviceUnavailable: boolean;
   lastGoodDataAt: string | null;
@@ -649,6 +650,7 @@ export function MakerShell({
   run,
   stoppedAt,
   onBundleAction,
+  onFundBundle,
   canOperate,
   serviceUnavailable,
   lastGoodDataAt,
@@ -787,6 +789,7 @@ export function MakerShell({
                   onManageBundles={() => selectView("bundles")}
                   onOpenStrategy={() => selectView("strategy")}
                   onOpenVenues={() => selectView("venues")}
+                  onFundBundle={onFundBundle}
                 />
                 <button
                   ref={phoneExplainSwitch}
@@ -844,6 +847,7 @@ export function MakerShell({
                 onManageBundles={() => selectView("bundles")}
                 onOpenStrategy={() => selectView("strategy")}
                 onOpenVenues={() => selectView("venues")}
+                onFundBundle={onFundBundle}
               />
               <button
                 ref={explainSwitch}

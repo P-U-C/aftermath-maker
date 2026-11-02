@@ -388,6 +388,7 @@ export type FixtureState = {
       strategyName: string | null;
       strategyVersionApplied: number | null;
       needsStrategy: boolean;
+      readiness?: import("../../lib/bundle-readiness").BundleReadiness | null;
       makerAccountId: string | null;
       takerAccountId: string | null;
       mode: Mode;
@@ -1277,6 +1278,80 @@ paperBlocked.events.events = [
   })),
 ];
 
+const bundyShort = structuredClone(paperBlocked);
+const shortCore = bundyShort.bundles.bundles.find(
+  (bundle) => bundle.id === "core-fixture",
+)!;
+shortCore.name = "Bundy";
+const syntheticMarkets = Array.from({ length: 15 }, (_, index) => ({
+  marketId: `0x${(40_000 + index).toString(16)}`,
+  symbol: `M${index + 1}`,
+}));
+shortCore.marketIds = syntheticMarkets.map((market) => market.marketId);
+shortCore.readiness = {
+  ready: false,
+  stages: [
+    { id: "strategy", status: "done", detail: "15 markets selected" },
+    { id: "accounts", status: "done", detail: "2 assigned" },
+    { id: "tradingKeys", status: "done", detail: "2 authorized" },
+    {
+      id: "gas",
+      status: "done",
+      detail: "2.99 SUI available",
+      requiredGasSui: 0.05,
+      requiredGasPaperSui: 0.05,
+      requiredGasLiveSui: 1.65,
+      availableGasSui: 2.99,
+    },
+    {
+      id: "collateral",
+      status: "todo",
+      detail: "Needs $300.00 collateral",
+      requiredUsd: 300,
+      availableUsd: 0,
+      shortfallUsd: 300,
+      accountId: "1745",
+    },
+  ],
+};
+bundyShort.config.config = {
+  ...bundyShort.config.config!,
+  quoteSizeUsd: 10,
+  maxLeverage: 1,
+  maxInventoryUsd: 20,
+  maxGrossExposureUsd: 400,
+  maxQuoteAgeMs: 250_000,
+  rotationMode: "portfolio",
+  markets: [...bundyShort.config.config!.markets, ...syntheticMarkets],
+};
+bundyShort.bundles.walletLimits.maxGrossExposureUsd = 500;
+bundyShort.bundles.walletLimits.maxInventoryUsd = 100;
+bundyShort.accounts.accounts[0]!.availableCollateralUsd = 0;
+bundyShort.accounts.accounts[0]!.freeMarginUsd = 0;
+bundyShort.status.bundles = (bundyShort.status.bundles ?? []).map((entry) =>
+  entry.bundle.id === "core-fixture"
+    ? {
+        ...entry,
+        bundle: shortCore,
+        snapshot: {
+          ...entry.snapshot!,
+          accountId: "1745",
+          paperBlocker: {
+            code: "collateral",
+            accountId: "1745",
+            availableUsd: 0,
+            requiredUsd: 300,
+            concurrentMarkets: 15,
+            quoteSizeUsd: 10,
+            leverage: 1,
+            observedAt: fixedNow,
+            message: "Paper is waiting on collateral.",
+          },
+        },
+      }
+    : entry,
+);
+
 const attention = structuredClone(paperRunning);
 attention.bundles.bundles = attention.bundles.bundles.map((bundle) =>
   bundle.id === "rewards-fixture"
@@ -1322,6 +1397,7 @@ export const fixtureStates = {
   "paper-running": paperRunning,
   "paper-shared": paperShared,
   "paper-blocked": paperBlocked,
+  "bundy-short": bundyShort,
   "paper-running-no-book": paperRunningNoBook,
   "live-running": liveRunning,
   "mixed-running": mixedRunning,

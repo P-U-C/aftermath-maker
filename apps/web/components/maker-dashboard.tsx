@@ -3,6 +3,7 @@
 import {
   DAppKitProvider,
   useCurrentAccount,
+  useCurrentClient,
   useDAppKit,
 } from "@mysten/dapp-kit-react";
 import { ConnectModal } from "@mysten/dapp-kit-react/ui";
@@ -55,6 +56,7 @@ import {
 } from "../lib/access";
 import { deskEvent } from "../lib/audit-events";
 import { selectedActiveBundleId } from "../lib/bundle-options";
+import type { BundleReadiness } from "../lib/bundle-readiness";
 import { configsEqual } from "../lib/config-equality";
 import {
   effectiveMarketOverrides,
@@ -139,6 +141,11 @@ import { MarketsView } from "./views/markets";
 import { PerformanceView } from "./views/performance";
 import { GoLiveSheet, StrategyView } from "./views/strategy";
 import { VenueBoard, VenuesView } from "./views/venues";
+import {
+  VenueFundingSheet,
+  type FundingMode,
+  type FundingTarget,
+} from "./venue-funding-sheet";
 
 type PreparedOwnerTransactionResponse = {
   transaction: string;
@@ -149,6 +156,7 @@ type ExpectedOwnerIntent = {
   kind: SerializedOwnerTransactionIntent["kind"];
   sender: string;
   amount?: bigint;
+  accountCapId?: string;
   recipient?: string;
   agentAddress?: string;
   gasMist?: bigint;
@@ -171,6 +179,15 @@ function verifiedOwnerTransaction(
     (!("amount" in intent) || intent.amount !== expected.amount)
   ) {
     throw new Error("Prepared collateral amount does not match this action");
+  }
+  if (
+    expected.accountCapId &&
+    (!("accountCapId" in intent) ||
+      intent.accountCapId.toLowerCase() !== expected.accountCapId.toLowerCase())
+  ) {
+    throw new Error(
+      "Prepared transaction account does not match the selected account",
+    );
   }
   if (
     expected.recipient &&
@@ -207,6 +224,11 @@ function verifiedOwnerTransaction(
   const transaction = Transaction.from(prepared.transaction);
   assertOwnerTransactionIntent(transaction, intent);
   return transaction;
+}
+
+function suiMistFromText(value: string): bigint {
+  const [whole = "0", fraction = ""] = value.split(".");
+  return BigInt(whole) * 1_000_000_000n + BigInt(fraction.padEnd(9, "0"));
 }
 
 function usdcBaseUnits(value: string): bigint {
@@ -483,6 +505,7 @@ type MakerBundle = {
   strategyId: string | null;
   strategyName: string | null;
   strategyVersionApplied: number | null;
+  readiness?: BundleReadiness | null;
   needsStrategy: boolean;
   makerAccountId: string | null;
   takerAccountId: string | null;
@@ -515,6 +538,8 @@ type AccountCap = {
   collateralCoinType: string;
   equityUsd: number;
   availableCollateralUsd: number;
+  withdrawableCollateralUsd?: number;
+  openMakerOrderCount?: number;
   allocatedCollateralUsd: number;
   freeMarginUsd: number;
   positionCount: number;
@@ -1045,6 +1070,7 @@ const timeUntil = (timestamp: string | null) => {
 
 function DashboardBody() {
   const account = useCurrentAccount();
+  const suiClient = useCurrentClient();
   const wallet = useDAppKit();
   const { activeView, selectView } = useMakerView();
   const [identity, setIdentity] = useState<AccessIdentity | null>(null);
@@ -1198,6 +1224,13 @@ function DashboardBody() {
   const [collateralAmounts, setCollateralAmounts] = useState<
     Record<string, string>
   >({});
+  const [fundingTarget, setFundingTarget] = useState<FundingTarget | null>(
+    null,
+  );
+  const [walletBalances, setWalletBalances] = useState<{
+    usdcUsd: number;
+    sui: number;
+  } | null>(null);
   const [busy, setBusy] = useState("");
   const bundleCreateInFlight = useRef(false);
   const [flattenArmed, setFlattenArmed] = useState(false);
@@ -1759,6 +1792,7 @@ function DashboardBody() {
           setStartErrors((current) => ({ ...current, [bundleId]: undefined }));
         }, 60_000);
       }
+      return completed;
     } finally {
       if (action !== "archive") {
         setBundlePending((current) => ({ ...current, [bundleId]: undefined }));
@@ -2047,6 +2081,36 @@ function DashboardBody() {
     loadPerformance,
     loadAccessRequests,
   ]);
+
+  useEffect(() => {
+    if (
+      activeView !== "venues" ||
+      !identity ||
+      !account?.address ||
+      account.address.toLowerCase() !== identity.ownerAddress.toLowerCase()
+    ) {
+      setWalletBalances(null);
+      return;
+    }
+    let active = true;
+    void Promise.all([
+      suiClient.getBalance({ owner: account.address, coinType: USDC }),
+      suiClient.getBalance({ owner: account.address }),
+    ])
+      .then(([usdc, gas]) => {
+        if (!active) return;
+        setWalletBalances({
+          usdcUsd: Number(usdc.balance.balance) / 1_000_000,
+          sui: Number(gas.balance.balance) / 1_000_000_000,
+        });
+      })
+      .catch(() => {
+        if (active) setWalletBalances(null);
+      });
+    return () => {
+      active = false;
+    };
+  }, [activeView, identity, account?.address, suiClient]);
 
   useEffect(() => {
     if (!identity || walletSessionMismatch) return;
@@ -2535,6 +2599,90 @@ function DashboardBody() {
         "success",
       );
     });
+  }
+
+  async function submitVenueFunding(
+    mode: FundingMode,
+    accountId: string,
+    amountText: string,
+  ): Promise<{ digest: string; freeUsd: number | null }> {
+    const ownerAddress = requestOwnerWallet(
+      mode === "gas" ? "top up the trading key" : mode,
+    );
+    if (!ownerAddress)
+      throw new Error(
+        "Connect the owner wallet before preparing a transaction.",
+      );
+    const owned = accounts.find(
+      (candidate) => candidate.accountId === accountId,
+    );
+    if (!owned)
+      throw new Error("This account is no longer owned by your wallet.");
+    const amount =
+      mode === "gas" ? suiMistFromText(amountText) : usdcBaseUnits(amountText);
+    const path =
+      mode === "gas"
+        ? "api/setup/gas-transaction"
+        : `api/accounts/${mode}-transaction`;
+    const body =
+      mode === "gas"
+        ? { accountId, gasMist: amount.toString() }
+        : { accountId, amountUsdc: amountText };
+    const built = await request<PreparedOwnerTransactionResponse>(path, {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+    const expected: ExpectedOwnerIntent = {
+      kind: mode === "gas" ? "gas-top-up" : mode,
+      sender: ownerAddress,
+      accountCapId: owned.accountCapId,
+      ...(mode === "gas"
+        ? { agentAddress: setup.agent?.address ?? "", gasMist: amount }
+        : { amount }),
+      ...(mode === "withdraw" ? { recipient: ownerAddress } : {}),
+    };
+    const transaction = verifiedOwnerTransaction(built, expected);
+    const result = await wallet.signAndExecuteTransaction({ transaction });
+    if (result.$kind === "FailedTransaction") {
+      throw new Error(
+        "The wallet transaction did not complete. Check its receipt before retrying.",
+      );
+    }
+    const digest = result.Transaction.digest;
+    let freeUsd: number | null = null;
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      const read = await request<{ accounts: AccountCap[] }>(
+        `api/accounts?collateralCoinType=${encodeURIComponent(USDC)}`,
+      );
+      setAccounts(read.accounts);
+      freeUsd =
+        read.accounts.find((candidate) => candidate.accountId === accountId)
+          ?.availableCollateralUsd ?? null;
+      void refresh().catch(() => undefined);
+    } catch {
+      // A confirmed owner transaction stays complete even when a follow-up read fails.
+    }
+    setWalletBalances((current) =>
+      current
+        ? {
+            usdcUsd: Math.max(
+              0,
+              current.usdcUsd -
+                (mode === "deposit"
+                  ? Number(amountText)
+                  : mode === "withdraw"
+                    ? -Number(amountText)
+                    : 0),
+            ),
+            sui: Math.max(
+              0,
+              current.sui - (mode === "gas" ? Number(amountText) : 0),
+            ),
+          }
+        : current,
+    );
+    return { digest, freeUsd };
   }
 
   async function provision(accountId = selectedAccount) {
@@ -4735,6 +4883,26 @@ function DashboardBody() {
       equityUsd: owned.equityUsd,
       exposureUsd: owned.exposureUsd,
       unrealizedPnlUsd: owned.unrealizedPnlUsd,
+      freeUsd: owned.availableCollateralUsd,
+      withdrawableUsd:
+        owned.withdrawableCollateralUsd ?? owned.availableCollateralUsd,
+      authorized: Boolean(
+        setup.accounts.find((entry) => entry.accountId === owned.accountId)
+          ?.agentCapId,
+      ),
+      gasSui:
+        assignedBundle?.readiness?.stages[3].availableGasSui ?? agentGasSui,
+      requiredUsd:
+        assignedBundle?.readiness?.stages[4].accountId === owned.accountId
+          ? (assignedBundle.readiness.stages[4].requiredUsd ?? 0)
+          : 0,
+      shortfallUsd:
+        assignedBundle?.readiness?.stages[4].accountId === owned.accountId
+          ? (assignedBundle.readiness.stages[4].shortfallUsd ?? 0)
+          : 0,
+      bundleMode: assignedBundle?.mode ?? null,
+      bundleRunning: assignedBundle?.status === "running",
+      readiness: assignedBundle?.readiness ?? null,
       bundle: assignedBundle?.name ?? "Not in a bundle",
       role:
         assignedBundle?.makerAccountId === owned.accountId
@@ -4744,6 +4912,28 @@ function DashboardBody() {
             : ("Available" as const),
     };
   });
+  function openVenueFunding(
+    row: import("./views/venues").VenueAccountRow,
+    mode: FundingMode,
+  ) {
+    const gasStage = row.readiness?.stages[3];
+    setFundingTarget({
+      mode,
+      accountId: row.accountId,
+      bundleName: row.bundle,
+      role: row.role,
+      freeUsd: row.freeUsd,
+      equityUsd: row.equityUsd,
+      withdrawableUsd: row.withdrawableUsd,
+      requiredUsd: row.requiredUsd,
+      shortfallUsd: row.shortfallUsd,
+      bundleRunning: row.bundleRunning,
+      keyGasSui: row.gasSui ?? 0,
+      paperGasSui: gasStage?.requiredGasPaperSui ?? 0,
+      liveGasSui: gasStage?.requiredGasLiveSui ?? 0,
+    });
+  }
+
   const venueEquityUsd = accounts.reduce(
     (total, owned) => total + owned.equityUsd,
     0,
@@ -4904,6 +5094,13 @@ function DashboardBody() {
           return;
         }
         void bundleAction(bundleId, action);
+      }}
+      onFundBundle={(_bundleId, accountId) => {
+        const row = venueAccountRows.find(
+          (candidate) => candidate.accountId === accountId,
+        );
+        selectView("venues");
+        if (row) openVenueFunding(row, "deposit");
       }}
       canOperate={canOperate}
       serviceUnavailable={controlUnavailable}
@@ -7905,6 +8102,37 @@ function DashboardBody() {
         run={runState}
         onSelect={(bundleId) => void selectBundle(bundleId)}
         onArchive={(bundleId) => void bundleAction(bundleId, "archive")}
+        onStart={(bundleId) => {
+          if (configDirty) {
+            setNotice(
+              "Apply or discard strategy changes before starting a bundle.",
+              "warning",
+            );
+            return;
+          }
+          void bundleAction(bundleId, "start");
+        }}
+        onFixStage={(bundle, stage) => {
+          const detail = bundle.readiness?.stages.find(
+            (entry) => entry.id === stage,
+          );
+          if (stage === "strategy") {
+            document.getElementById(`bundle-attach-${bundle.id}`)?.focus();
+            return;
+          }
+          if (stage === "accounts" || stage === "tradingKeys") {
+            selectView("accounts");
+            if (detail?.accountId) setSelectedAccount(detail.accountId);
+            return;
+          }
+          const row = venueAccountRows.find(
+            (account) =>
+              account.accountId ===
+              (detail?.accountId ?? bundle.makerAccountId),
+          );
+          selectView("venues");
+          if (row) openVenueFunding(row, stage === "gas" ? "gas" : "deposit");
+        }}
         accounts={accounts.map((account) => ({
           accountId: account.accountId,
           label: account.label,
@@ -8726,6 +8954,53 @@ function DashboardBody() {
           unrealizedPnlUsd={venueUnrealizedPnlUsd}
           onManage={() => selectView("accounts")}
           onNewAccount={() => void createVenueAccount()}
+          walletAddress={identity.ownerAddress}
+          walletUsdcUsd={walletBalances?.usdcUsd ?? null}
+          walletSui={walletBalances?.sui ?? null}
+          onFund={(row, mode) => openVenueFunding(row, mode)}
+          onAuthorize={(accountId) => {
+            selectView("accounts");
+            setSelectedAccount(accountId);
+          }}
+          onOpenStrategy={() => {
+            const blocked = bundles.find(
+              (candidate) =>
+                candidate.status === "running" &&
+                candidate.readiness?.stages[4].status === "todo",
+            );
+            void (async () => {
+              if (
+                blocked?.strategyId &&
+                !(await selectStrategy(blocked.strategyId))
+              )
+                return;
+              setStrategyEditing(true);
+              setStrategyStep(2);
+              selectView("strategy");
+            })();
+          }}
+          blockedBundle={(() => {
+            const bundle = bundles.find(
+              (candidate) =>
+                candidate.status === "running" &&
+                candidate.readiness?.stages[4].status === "todo",
+            );
+            const stage = bundle?.readiness?.stages[4];
+            const config = strategies.find(
+              (strategy) => strategy.id === bundle?.strategyId,
+            )?.config;
+            return bundle && stage?.accountId && config
+              ? {
+                  name: bundle.name,
+                  accountId: stage.accountId,
+                  freeUsd: stage.availableUsd ?? 0,
+                  requiredUsd: stage.requiredUsd ?? 0,
+                  shortfallUsd: stage.shortfallUsd ?? 0,
+                  markets: bundle.marketIds.length,
+                  quoteSizeUsd: config.quoteSizeUsd,
+                }
+              : null;
+          })()}
           {...(activeMakerAccountId
             ? {
                 onRevoke: () => {
@@ -8734,6 +9009,34 @@ function DashboardBody() {
               }
             : {})}
         />
+        {fundingTarget && (
+          <VenueFundingSheet
+            key={`${fundingTarget.accountId}:${fundingTarget.mode}`}
+            target={fundingTarget}
+            walletAddress={identity.ownerAddress}
+            walletUsdcUsd={walletBalances?.usdcUsd ?? null}
+            walletSui={walletBalances?.sui ?? null}
+            onClose={() => setFundingTarget(null)}
+            onSubmit={submitVenueFunding}
+            onConnectWallet={() => walletPickerRef.current?.show()}
+            onPause={async (bundleName) => {
+              const bundle = bundles.find(
+                (candidate) =>
+                  candidate.name === bundleName && !candidate.archivedAt,
+              );
+              if (!bundle) return;
+              if (!(await bundleAction(bundle.id, "pause")))
+                throw new Error(
+                  "Pause was not confirmed. Check the bundle status before withdrawing.",
+                );
+              setFundingTarget((current) =>
+                current?.bundleName === bundleName
+                  ? { ...current, bundleRunning: false }
+                  : current,
+              );
+            }}
+          />
+        )}
 
         {identity.operator && (
           <section className="lower-grid lower-grid-venues">

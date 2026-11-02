@@ -51,6 +51,12 @@ const verifyMotion = process.argv.includes("--verify-motion");
 const showRunStatus = process.argv.includes("--run-status");
 const showWalletMenu = process.argv.includes("--wallet-menu");
 const focusSharedMarket = process.argv.includes("--focus-shared-market");
+const focusBundleStage = process.argv.includes("--focus-bundle-stage");
+const showDepositSheet = process.argv.includes("--deposit-sheet");
+const fundingSheet = option(
+  "--funding-sheet",
+  showDepositSheet ? "deposit" : null,
+);
 const verifyPaperBlocked = process.argv.includes("--verify-paper-blocked");
 const verifyLaneHeight = process.argv.includes("--verify-lane-height");
 const beginStop = process.argv.includes("--begin-stop");
@@ -1524,6 +1530,32 @@ async function capture(browser, stateName, captureConfig, view) {
       stateName === "paper-shared"
     ) {
       await page.locator(".market-shared-parent").scrollIntoViewIfNeeded();
+    }
+    if (focusBundleStage && view === "bundles" && stateName === "bundy-short")
+      await page.locator(".bundle-stage-list").first().scrollIntoViewIfNeeded();
+    if (fundingSheet && view === "venues" && stateName === "bundy-short") {
+      if (fundingSheet === "deposit") {
+        await page
+          .locator(".venue-blocked-banner")
+          .getByRole("button", { name: "Deposit $300.00" })
+          .click();
+      } else {
+        await page
+          .getByRole("button", { name: "More actions for account 1745" })
+          .click();
+        await page
+          .getByRole("group", { name: "Account 1745 actions" })
+          .getByRole("button", {
+            name: fundingSheet === "gas" ? "Add gas" : "Withdraw",
+          })
+          .click();
+      }
+      await page
+        .getByRole("dialog", {
+          name: /account 1745|trading key for account 1745/,
+        })
+        .waitFor();
+      await page.waitForTimeout(350); // Wait for the sheet entrance animation before visual evidence.
     }
     await page.screenshot({ path: file, fullPage: false });
     process.stdout.write(

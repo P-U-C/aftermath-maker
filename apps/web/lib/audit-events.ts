@@ -93,6 +93,11 @@ const copies: Record<string, AuditCopy> = {
     severity: "info",
     sentence: (detail) => `Trading key created${account(detail)}.`,
   },
+  "onboarding:agent.gas-transaction:prepared": {
+    severity: "info",
+    sentence: (detail) =>
+      `Trading key gas top-up${account(detail)} is ready in your wallet.`,
+  },
   "onboarding:agent.grant:confirmed": {
     severity: "info",
     sentence: (detail) => `Trading key approved${account(detail)}.`,
