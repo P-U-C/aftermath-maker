@@ -1257,9 +1257,14 @@ function DashboardBody() {
     accounts: BundleFundingAccount[];
   } | null>(null);
   const [walletBalances, setWalletBalances] = useState<{
-    usdcUsd: number;
-    sui: number;
+    usdcUsd: number | null;
+    sui: number | null;
   } | null>(null);
+  const [walletBalanceLoading, setWalletBalanceLoading] = useState({
+    usdc: false,
+    sui: false,
+  });
+  const [walletBalanceRetry, setWalletBalanceRetry] = useState(0);
   const [busy, setBusy] = useState("");
   const bundleCreateInFlight = useRef(false);
   const [flattenArmed, setFlattenArmed] = useState(false);
@@ -2119,27 +2124,70 @@ function DashboardBody() {
       account.address.toLowerCase() !== identity.ownerAddress.toLowerCase()
     ) {
       setWalletBalances(null);
+      setWalletBalanceLoading({ usdc: false, sui: false });
       return;
     }
     let active = true;
-    void Promise.all([
-      suiClient.getBalance({ owner: account.address, coinType: USDC }),
-      suiClient.getBalance({ owner: account.address }),
-    ])
-      .then(([usdc, gas]) => {
-        if (!active) return;
-        setWalletBalances({
-          usdcUsd: Number(usdc.balance.balance) / 1_000_000,
-          sui: Number(gas.balance.balance) / 1_000_000_000,
+    const pending = new Set<AbortController>();
+    setWalletBalances({ usdcUsd: null, sui: null });
+    setWalletBalanceLoading({ usdc: true, sui: true });
+    // Read each coin independently: a failed or stuck gas read cannot hide USDC.
+    const readBalance = (
+      key: "usdcUsd" | "sui",
+      coinType: string | undefined,
+      decimals: number,
+    ) => {
+      const controller = new AbortController();
+      pending.add(controller);
+      let timeout: number | null = null;
+      void Promise.race([
+        suiClient.getBalance({
+          owner: account.address,
+          ...(coinType ? { coinType } : {}),
+          signal: controller.signal,
+        }),
+        new Promise<never>((_, reject) => {
+          timeout = window.setTimeout(() => {
+            controller.abort();
+            reject(new Error("Wallet balance read timed out"));
+          }, 10_000);
+        }),
+      ])
+        .then((result) => {
+          if (!active) return;
+          const raw = Number(result.balance.balance);
+          setWalletBalances((current) => ({
+            usdcUsd: current?.usdcUsd ?? null,
+            sui: current?.sui ?? null,
+            [key]:
+              Number.isFinite(raw) && raw >= 0 ? raw / 10 ** decimals : null,
+          }));
+        })
+        .catch(() => {
+          if (!active) return;
+          setWalletBalances((current) => ({
+            usdcUsd: current?.usdcUsd ?? null,
+            sui: current?.sui ?? null,
+            [key]: null,
+          }));
+        })
+        .finally(() => {
+          if (timeout !== null) window.clearTimeout(timeout);
+          pending.delete(controller);
+          if (active)
+            setWalletBalanceLoading((current) => ({
+              ...current,
+              [key === "usdcUsd" ? "usdc" : "sui"]: false,
+            }));
         });
-      })
-      .catch(() => {
-        if (active) setWalletBalances(null);
-      });
+    };
+    readBalance("usdcUsd", USDC, 6);
+    readBalance("sui", undefined, 9);
     return () => {
       active = false;
+      for (const controller of pending) controller.abort();
     };
-  }, [activeView, identity, account?.address, suiClient]);
+  }, [activeView, identity, account?.address, suiClient, walletBalanceRetry]);
 
   useEffect(() => {
     if (!identity || walletSessionMismatch) return;
@@ -2721,19 +2769,25 @@ function DashboardBody() {
     setWalletBalances((current) =>
       current
         ? {
-            usdcUsd: Math.max(
-              0,
-              current.usdcUsd -
-                (mode === "deposit"
-                  ? Number(amountText)
-                  : mode === "withdraw"
-                    ? -Number(amountText)
-                    : 0),
-            ),
-            sui: Math.max(
-              0,
-              current.sui - (mode === "gas" ? Number(amountText) : 0),
-            ),
+            usdcUsd:
+              current.usdcUsd === null
+                ? null
+                : Math.max(
+                    0,
+                    current.usdcUsd -
+                      (mode === "deposit"
+                        ? Number(amountText)
+                        : mode === "withdraw"
+                          ? -Number(amountText)
+                          : 0),
+                  ),
+            sui:
+              current.sui === null
+                ? null
+                : Math.max(
+                    0,
+                    current.sui - (mode === "gas" ? Number(amountText) : 0),
+                  ),
           }
         : current,
     );
@@ -2802,7 +2856,13 @@ function DashboardBody() {
     );
     setWalletBalances((current) =>
       current
-        ? { ...current, usdcUsd: Math.max(0, current.usdcUsd - total) }
+        ? {
+            ...current,
+            usdcUsd:
+              current.usdcUsd === null
+                ? null
+                : Math.max(0, current.usdcUsd - total),
+          }
         : current,
     );
     return digest;
@@ -5504,7 +5564,7 @@ function DashboardBody() {
                     <div className="account-row-actions">
                       <div className="account-collateral-actions">
                         <Input
-                          label="USDC amount"
+                          label="Withdraw USDC amount"
                           type="number"
                           min="0.01"
                           step="0.01"
@@ -5516,21 +5576,29 @@ function DashboardBody() {
                               [owned.accountId]: event.target.value,
                             }))
                           }
-                          aria-label={`USDC amount for account ${owned.accountId}`}
+                          aria-label={`Withdraw USDC amount for account ${owned.accountId}`}
                         />
                         <Button
                           variant="secondary"
                           size="small"
-                          onClick={() =>
-                            void moveCollateral(owned.accountId, "deposit")
-                          }
+                          onClick={() => {
+                            const row = venueAccountRows.find(
+                              (item) => item.accountId === owned.accountId,
+                            );
+                            if (!row) {
+                              setNotice(
+                                "Account data is loading. Refresh Venues and try again.",
+                              );
+                              return;
+                            }
+                            selectView("venues");
+                            openVenueFunding(row, "deposit");
+                          }}
                           disabled={Boolean(busy)}
-                          title="Deposit owner-wallet USDC into this account"
+                          title="Open the deposit sheet in Venues"
                         >
                           <ArrowDownRight size={15} aria-hidden="true" />
-                          {busy === `deposit-${owned.accountId}`
-                            ? "Depositing…"
-                            : "Deposit"}
+                          Deposit
                         </Button>
                         <Button
                           variant="secondary"
@@ -9087,6 +9155,11 @@ function DashboardBody() {
           walletAddress={identity.ownerAddress}
           walletUsdcUsd={walletBalances?.usdcUsd ?? null}
           walletSui={walletBalances?.sui ?? null}
+          walletConnected={
+            account?.address?.toLowerCase() ===
+            identity.ownerAddress.toLowerCase()
+          }
+          walletBalanceLoading={walletBalanceLoading.usdc}
           onFund={(row, mode) => openVenueFunding(row, mode)}
           onFundBundle={(bundleName, groupedAccounts) => {
             const relevant = groupedAccounts.filter(
@@ -9164,6 +9237,12 @@ function DashboardBody() {
             accounts={bundleFunding.accounts}
             walletAddress={identity.ownerAddress}
             walletUsdcUsd={walletBalances?.usdcUsd ?? null}
+            walletConnected={
+              account?.address?.toLowerCase() ===
+              identity.ownerAddress.toLowerCase()
+            }
+            balanceLoading={walletBalanceLoading.usdc}
+            onRetryBalances={() => setWalletBalanceRetry((value) => value + 1)}
             onClose={() => setBundleFunding(null)}
             onConnectWallet={() => walletPickerRef.current?.show()}
             onSubmit={submitBundleFunding}
@@ -9176,6 +9255,16 @@ function DashboardBody() {
             walletAddress={identity.ownerAddress}
             walletUsdcUsd={walletBalances?.usdcUsd ?? null}
             walletSui={walletBalances?.sui ?? null}
+            walletConnected={
+              account?.address?.toLowerCase() ===
+              identity.ownerAddress.toLowerCase()
+            }
+            balanceLoading={
+              fundingTarget.mode === "gas"
+                ? walletBalanceLoading.sui
+                : walletBalanceLoading.usdc
+            }
+            onRetryBalances={() => setWalletBalanceRetry((value) => value + 1)}
             onClose={() => setFundingTarget(null)}
             onSubmit={submitVenueFunding}
             onConnectWallet={() => walletPickerRef.current?.show()}

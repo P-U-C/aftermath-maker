@@ -21,6 +21,9 @@ export function BundleFundingSheet({
   accounts,
   walletAddress,
   walletUsdcUsd,
+  walletConnected,
+  balanceLoading,
+  onRetryBalances,
   onClose,
   onConnectWallet,
   onSubmit,
@@ -29,6 +32,9 @@ export function BundleFundingSheet({
   accounts: BundleFundingAccount[];
   walletAddress: string;
   walletUsdcUsd: number | null;
+  walletConnected: boolean;
+  balanceLoading: boolean;
+  onRetryBalances: () => void;
   onClose: () => void;
   onConnectWallet: () => void;
   onSubmit: (
@@ -58,6 +64,7 @@ export function BundleFundingSheet({
     0,
   );
   const valid =
+    walletConnected &&
     walletUsdcUsd !== null &&
     total > 0 &&
     total <= walletUsdcUsd &&
@@ -67,6 +74,19 @@ export function BundleFundingSheet({
         Number.isFinite(entry.amount) &&
         entry.amount >= 0,
     );
+  const disabledReason = !walletConnected
+    ? "Connect the owner wallet to sign the deposit."
+    : balanceLoading
+      ? "Checking the owner wallet's USDC balance…"
+      : walletUsdcUsd === null
+        ? "Couldn't read the owner wallet's USDC balance. Retry the balance check."
+        : total > walletUsdcUsd
+          ? walletUsdcUsd === 0
+            ? "The owner wallet has no USDC. Add USDC to it before depositing."
+            : `The owner wallet has ${money(walletUsdcUsd)}. Lower one or both amounts; partial deposits are allowed.`
+          : total <= 0
+            ? "Enter a deposit above $0.00."
+            : null;
   const readyAfter = entries.every(
     (entry) => entry.freeUsd + entry.amount >= entry.requiredUsd,
   );
@@ -117,6 +137,7 @@ export function BundleFundingSheet({
             <Button
               variant="primary"
               disabled={!valid || busy}
+              title={!valid ? (disabledReason ?? undefined) : undefined}
               onClick={() => void submit()}
             >
               {busy ? (
@@ -182,16 +203,39 @@ export function BundleFundingSheet({
               </span>
             </label>
           ))}
-          {walletUsdcUsd === null ? (
-            <p>
-              Connect your wallet to see its USDC balance.{" "}
-              <Button variant="quiet" onClick={onConnectWallet}>
-                Connect wallet
-              </Button>
-            </p>
-          ) : (
-            <p>Your wallet has {money(walletUsdcUsd)} USDC.</p>
-          )}
+          <p role="status">
+            {!walletConnected ? (
+              <>
+                Connect the owner wallet to check its USDC balance.{" "}
+                <Button variant="quiet" onClick={onConnectWallet}>
+                  Connect wallet
+                </Button>
+              </>
+            ) : balanceLoading ? (
+              "Checking the owner wallet's USDC balance…"
+            ) : walletUsdcUsd === null ? (
+              <>
+                Couldn’t read the owner wallet’s USDC balance.{" "}
+                <Button
+                  variant="secondary"
+                  size="small"
+                  onClick={onRetryBalances}
+                >
+                  Retry balance check
+                </Button>
+              </>
+            ) : (
+              `Your wallet has ${money(walletUsdcUsd)} USDC.`
+            )}
+          </p>
+          {disabledReason &&
+            !balanceLoading &&
+            walletConnected &&
+            walletUsdcUsd !== null && (
+              <p className="venue-funding-help" role="status">
+                {disabledReason}
+              </p>
+            )}
           <div className="venue-funding-summary">
             <div>
               <span>Total from your wallet</span>
@@ -203,10 +247,14 @@ export function BundleFundingSheet({
                 {walletUsdcUsd === null ? "—" : money(walletUsdcUsd - total)}
               </strong>
             </div>
-            <p className={readyAfter ? "is-ready" : "is-short"}>
-              {readyAfter
-                ? `Enough collateral for ${bundleName}`
-                : `Still ${money(entries.reduce((sum, entry) => sum + Math.max(0, entry.requiredUsd - entry.freeUsd - entry.amount), 0))} short`}
+            <p className={valid && readyAfter ? "is-ready" : "is-short"}>
+              {!walletConnected || walletUsdcUsd === null
+                ? "Confirm the owner wallet balance before continuing"
+                : total > walletUsdcUsd
+                  ? "Lower the amounts to what the owner wallet holds"
+                  : readyAfter
+                    ? `Enough collateral for ${bundleName}`
+                    : `Still ${money(entries.reduce((sum, entry) => sum + Math.max(0, entry.requiredUsd - entry.freeUsd - entry.amount), 0))} short`}
             </p>
           </div>
           <p>

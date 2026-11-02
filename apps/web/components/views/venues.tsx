@@ -66,6 +66,8 @@ type VenueBoardProps = {
   walletAddress?: string;
   walletUsdcUsd?: number | null;
   walletSui?: number | null;
+  walletConnected?: boolean;
+  walletBalanceLoading?: boolean;
   onFund: (
     account: VenueAccountRow,
     mode: "deposit" | "withdraw" | "gas",
@@ -104,6 +106,8 @@ export function VenueBoard({
   walletAddress,
   walletUsdcUsd,
   walletSui,
+  walletConnected = false,
+  walletBalanceLoading = false,
   onFund,
   onFundBundle,
   onAuthorize,
@@ -177,12 +181,11 @@ export function VenueBoard({
                 {walletAddress.slice(-4)}
               </span>
               <strong>
-                {walletUsdcUsd === null ||
-                walletUsdcUsd === undefined ||
-                walletSui === null ||
-                walletSui === undefined
-                  ? "Connect your wallet to see balances"
-                  : `${formatMoney(walletUsdcUsd)} USDC and ${walletSui.toFixed(2)} SUI`}
+                {!walletConnected
+                  ? "Connect the owner wallet to see balances"
+                  : walletBalanceLoading
+                    ? "Checking wallet balances…"
+                    : `${walletUsdcUsd == null ? "USDC unavailable" : `${formatMoney(walletUsdcUsd)} USDC`} and ${walletSui == null ? "SUI unavailable" : `${walletSui.toFixed(2)} SUI`}`}
               </strong>
             </div>
           )

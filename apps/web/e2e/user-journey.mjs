@@ -845,6 +845,15 @@ async function capture(page, name) {
   });
 }
 
+async function assertFundingActionInViewport(page, button, viewport) {
+  await page.waitForTimeout(400); // Let the phone sheet finish entering.
+  const box = await button.boundingBox();
+  assert(
+    box && box.y >= 0 && box.y + box.height <= viewport.height,
+    "The deposit button must remain fully visible at phone width",
+  );
+}
+
 async function goToStrategyStep(page, target) {
   if (await page.locator(".strategy-summary:visible").count())
     await page
@@ -1091,7 +1100,7 @@ async function revokeWithoutWallet(browser) {
   }
 }
 
-async function mockWalletBalanceReads(page) {
+async function mockWalletBalanceReads(page, options = {}) {
   await page.route("https://fullnode.mainnet.sui.io/**", async (route) => {
     if (!route.request().url().includes("GetBalance"))
       return route.abort("blockedbyclient");
@@ -1102,7 +1111,11 @@ async function mockWalletBalanceReads(page) {
     const isSui = String(request.coinType ?? "")
       .toLowerCase()
       .includes("sui::sui");
-    const balance = isSui ? "4200000000" : "1250000000";
+    if ((isSui && options.failSui) || (!isSui && options.failUsdc))
+      return route.abort("failed");
+    const balance = isSui
+      ? (options.suiMist ?? "4200000000")
+      : (options.usdcBaseUnits ?? "1250000000");
     const encoded = Buffer.from(
       GetBalanceResponse.toBinary({
         balance: {
@@ -1356,6 +1369,205 @@ async function depositsWhilePaperBundleRuns(browser, viewport) {
       "Single deposit while the Paper bundle runs was not confirmed in its account row",
     );
     await capture(page, `r9-deposit-while-running-${viewport.width}.png`);
+  } finally {
+    await context.close();
+  }
+}
+
+async function depositButtonWithPartialBalanceReads(browser, viewport) {
+  const { context, page, state } = await newPage(browser, viewport);
+  try {
+    state.fixture = structuredClone(fixtureStates["bundy-short"]);
+    state.strategies = initialStrategies(state.fixture);
+    // A failed SUI read must not erase the successful USDC balance read.
+    const balances = {
+      failSui: true,
+      failUsdc: false,
+      usdcBaseUnits: "100000000",
+    };
+    await mockWalletBalanceReads(page, balances);
+    await goToDesk(page);
+    await page.getByRole("link", { name: "Venues", exact: true }).click();
+    await page
+      .locator(".venue-blocked-banner")
+      .getByRole("button", { name: "Deposit $300.00" })
+      .click();
+    const sheet = page.getByRole("dialog", { name: "Deposit to account 1745" });
+    await sheet.getByRole("button", { name: "Connect wallet" }).click();
+    await page
+      .locator("mysten-dapp-kit-connect-modal")
+      .getByText("Mock Sui Wallet", { exact: true })
+      .filter({ visible: true })
+      .click();
+    await sheet.getByText("Your wallet has $100.00 USDC.").waitFor();
+    await sheet
+      .getByText("Enter a smaller amount; a partial deposit is allowed.", {
+        exact: false,
+      })
+      .waitFor();
+    assert(
+      await sheet.getByRole("button", { name: "Deposit $300.00" }).isDisabled(),
+      "Deposit above the owner wallet balance must be disabled",
+    );
+    await assertFundingActionInViewport(
+      page,
+      sheet.getByRole("button", { name: "Deposit $300.00" }),
+      viewport,
+    );
+    await capture(page, `deposit-low-balance-${viewport.width}.png`);
+    await sheet.getByRole("textbox", { name: "Deposit amount" }).fill("50.00");
+    assert(
+      await sheet.getByRole("button", { name: "Deposit $50.00" }).isEnabled(),
+      "A partial deposit must remain possible when only the SUI read fails",
+    );
+    await sheet.getByRole("button", { name: "Deposit $50.00" }).click();
+    await sheet.getByRole("heading", { name: "Deposited $50.00" }).waitFor();
+    assert(
+      state.lastBatchIntent?.kind === "deposit" &&
+        state.fixture.accounts.accounts[0].availableCollateralUsd === 50,
+      "Partial deposit was not confirmed with the mock wallet",
+    );
+  } finally {
+    await context.close();
+  }
+}
+
+async function accountsDepositOpensGuidedSheet(browser) {
+  const { context, page, state } = await newPage(browser, {
+    width: 1440,
+    height: 900,
+  });
+  try {
+    state.fixture = structuredClone(fixtureStates["bundy-short"]);
+    state.strategies = initialStrategies(state.fixture);
+    await mockWalletBalanceReads(page);
+    await goToDesk(page);
+    await page.locator(".maker-wallet-menu summary").click();
+    await page
+      .locator(".maker-wallet-facts")
+      .getByRole("button", { name: /authorized/ })
+      .click();
+    await page
+      .locator("#account-1745")
+      .getByRole("button", { name: "Deposit" })
+      .click();
+    const sheet = page.getByRole("dialog", { name: "Deposit to account 1745" });
+    await sheet.waitFor();
+    assert(
+      await page
+        .locator('.maker-view[data-view="venues"]:not([hidden])')
+        .isVisible(),
+      "Accounts Deposit did not open the Venues funding sheet",
+    );
+    await sheet.getByRole("button", { name: "Connect wallet" }).click();
+    await page
+      .locator("mysten-dapp-kit-connect-modal")
+      .getByText("Mock Sui Wallet", { exact: true })
+      .filter({ visible: true })
+      .click();
+    await sheet.getByText("Your wallet has $1,250.00 USDC.").waitFor();
+    await sheet.getByRole("button", { name: "Deposit $300.00" }).click();
+    await sheet.getByRole("heading", { name: "Deposited $300.00" }).waitFor();
+    assert(
+      state.lastBatchIntent?.kind === "deposit",
+      "Accounts Deposit did not use the owner-verified transaction",
+    );
+  } finally {
+    await context.close();
+  }
+}
+
+async function bundleDepositWithLimitedWalletBalance(browser) {
+  const { context, page, state } = await newPage(browser, {
+    width: 390,
+    height: 844,
+  });
+  try {
+    state.fixture = structuredClone(fixtureStates["bundy-dual-short"]);
+    state.strategies = initialStrategies(state.fixture);
+    await mockWalletBalanceReads(page, {
+      failSui: true,
+      usdcBaseUnits: "100000000",
+    });
+    await goToDesk(page);
+    await page.getByRole("link", { name: "Venues", exact: true }).click();
+    await page.getByRole("button", { name: "Fund Bundy" }).click();
+    const sheet = page.getByRole("dialog", { name: "Fund Bundy" });
+    await sheet.getByRole("button", { name: "Connect wallet" }).click();
+    await page
+      .locator("mysten-dapp-kit-connect-modal")
+      .getByText("Mock Sui Wallet", { exact: true })
+      .filter({ visible: true })
+      .click();
+    await sheet.getByText("Your wallet has $100.00 USDC.").waitFor();
+    await sheet
+      .getByText("Lower one or both amounts; partial deposits are allowed.", {
+        exact: false,
+      })
+      .waitFor();
+    assert(
+      await sheet.getByRole("button", { name: "Deposit $400.85" }).isDisabled(),
+      "Batch deposit must show why its prefilled shortfall cannot be covered",
+    );
+    await assertFundingActionInViewport(
+      page,
+      sheet.getByRole("button", { name: "Deposit $400.85" }),
+      { width: 390, height: 844 },
+    );
+    await capture(page, "bundle-deposit-low-balance-390.png");
+    await sheet
+      .getByRole("textbox", { name: "Deposit to account 1745" })
+      .fill("50.00");
+    await sheet
+      .getByRole("textbox", { name: "Deposit to account 1746" })
+      .fill("0");
+    await sheet.getByRole("button", { name: "Deposit $50.00" }).click();
+    await sheet.getByRole("heading", { name: "Deposited $50.00" }).waitFor();
+    assert(
+      state.lastBatchIntent?.deposits.length === 1,
+      "A partial bundle deposit was not prepared",
+    );
+  } finally {
+    await context.close();
+  }
+}
+
+async function retryUnavailableDepositBalance(browser, viewport) {
+  const { context, page, state } = await newPage(browser, viewport);
+  try {
+    state.fixture = structuredClone(fixtureStates["bundy-short"]);
+    state.strategies = initialStrategies(state.fixture);
+    const balances = { failSui: false, failUsdc: true };
+    await mockWalletBalanceReads(page, balances);
+    await goToDesk(page);
+    await page.getByRole("link", { name: "Venues", exact: true }).click();
+    await page
+      .locator(".venue-blocked-banner")
+      .getByRole("button", { name: "Deposit $300.00" })
+      .click();
+    const sheet = page.getByRole("dialog", { name: "Deposit to account 1745" });
+    await sheet.getByRole("button", { name: "Connect wallet" }).click();
+    await page
+      .locator("mysten-dapp-kit-connect-modal")
+      .getByText("Mock Sui Wallet", { exact: true })
+      .filter({ visible: true })
+      .click();
+    await sheet.getByRole("button", { name: "Retry balance check" }).waitFor();
+    assert(
+      await sheet.getByRole("button", { name: "Deposit $300.00" }).isDisabled(),
+      "Unknown USDC balance must not permit a deposit",
+    );
+    await assertFundingActionInViewport(
+      page,
+      sheet.getByRole("button", { name: "Deposit $300.00" }),
+      viewport,
+    );
+    await capture(page, `deposit-read-failed-${viewport.width}.png`);
+    balances.failUsdc = false;
+    await sheet.getByRole("button", { name: "Retry balance check" }).click();
+    await sheet.getByText("Your wallet has $1,250.00 USDC.").waitFor();
+    await sheet.getByRole("button", { name: "Deposit $300.00" }).click();
+    await sheet.getByRole("heading", { name: "Deposited $300.00" }).waitFor();
   } finally {
     await context.close();
   }
@@ -3404,6 +3616,16 @@ try {
   } else if (process.argv.includes("--round10-rename-only")) {
     await renamesAccountInsideVenues(browser, { width: 1440, height: 900 });
     await renamesAccountInsideVenues(browser, { width: 390, height: 844 });
+  } else if (process.argv.includes("--deposit-balance-only")) {
+    for (const viewport of [
+      { width: 1440, height: 900 },
+      { width: 390, height: 844 },
+    ]) {
+      await depositButtonWithPartialBalanceReads(browser, viewport);
+      await retryUnavailableDepositBalance(browser, viewport);
+    }
+    await bundleDepositWithLimitedWalletBalance(browser);
+    await accountsDepositOpensGuidedSheet(browser);
   } else if (process.argv.includes("--round9-batch-only")) {
     await depositsToTwoAccountsWithOneOwnerSignature(browser);
     await depositsWhilePaperBundleRuns(browser, { width: 1440, height: 900 });
@@ -3455,6 +3677,24 @@ try {
       await depositsToTwoAccountsWithOneOwnerSignature(browser);
       await depositsWhilePaperBundleRuns(browser, { width: 1440, height: 900 });
       await depositsWhilePaperBundleRuns(browser, { width: 390, height: 844 });
+      await depositButtonWithPartialBalanceReads(browser, {
+        width: 1440,
+        height: 900,
+      });
+      await depositButtonWithPartialBalanceReads(browser, {
+        width: 390,
+        height: 844,
+      });
+      await retryUnavailableDepositBalance(browser, {
+        width: 1440,
+        height: 900,
+      });
+      await retryUnavailableDepositBalance(browser, {
+        width: 390,
+        height: 844,
+      });
+      await bundleDepositWithLimitedWalletBalance(browser);
+      await accountsDepositOpensGuidedSheet(browser);
       await topsUpTradingKeyWithOwnerWallet(browser, {
         width: 1440,
         height: 900,
