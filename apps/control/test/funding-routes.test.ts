@@ -81,7 +81,9 @@ describe("funding routes stay owner-signed and account-scoped", () => {
         tenant
           .listEvents(100)
           .filter(
-            (event) => event.category === "runtime" && event.action === "start",
+            (event) =>
+              event.category === "runtime" &&
+              ["start", "stop", "pause"].includes(event.action),
           ),
       ).toHaveLength(0);
     } finally {
