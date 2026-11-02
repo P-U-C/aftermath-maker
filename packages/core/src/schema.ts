@@ -293,6 +293,7 @@ export type RuntimeSnapshot = {
     accountId?: string;
     availableUsd?: number;
     requiredUsd?: number;
+    maxOrderUsd?: number;
     concurrentMarkets?: number;
     quoteSizeUsd?: number;
     leverage?: number;

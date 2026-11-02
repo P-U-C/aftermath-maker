@@ -12,6 +12,7 @@ import { Transaction } from "@mysten/sui/transactions";
 import {
   aggregatePortfolioQuoteRisk,
   requiredMakerCollateralUsd,
+  requiredHedgeCollateralUsd,
   makerConfigSchema,
   type MakerMarketOverrides,
 } from "@puc/core";
@@ -118,11 +119,14 @@ import {
 import {
   Button,
   Card,
+  Input,
   KitTable,
   MenuSelect,
   PageHeader,
   SegmentedTabs,
+  Select,
   Sheet,
+  Toggle,
 } from "./ui/primitives";
 import { NumericDraftInput } from "./ui/numeric-draft-input";
 import { SpreadMark } from "./spread-mark";
@@ -2471,6 +2475,32 @@ function DashboardBody() {
     } finally {
       setBusy("");
     }
+  }
+
+  async function renameVenueAccount(
+    accountId: string,
+    label: string,
+  ): Promise<void> {
+    const owned = accounts.find((account) => account.accountId === accountId);
+    if (!owned) throw new Error("This account is no longer in your wallet.");
+    const result = await request<{ metadata: AccountMetadata }>(
+      `api/accounts/${encodeURIComponent(accountId)}/metadata`,
+      {
+        method: "PUT",
+        body: JSON.stringify({ label, tags: owned.tags }),
+      },
+    );
+    setAccounts((current) =>
+      current.map((account) =>
+        account.accountId === accountId
+          ? {
+              ...account,
+              label: result.metadata.label,
+              tags: result.metadata.tags,
+            }
+          : account,
+      ),
+    );
   }
 
   function editAccountMetadata(owned: AccountCap) {
@@ -4973,16 +5003,23 @@ function DashboardBody() {
     const strategy = strategies.find(
       (item) => item.id === assignedBundle?.strategyId,
     );
+    const savedConfig = strategy
+      ? {
+          ...configWithStrategySettings(config, strategy.config),
+          markets: strategy.markets,
+        }
+      : null;
+    const hedgeRequirement = savedConfig
+      ? requiredHedgeCollateralUsd(savedConfig)
+      : 0;
+    const sharedAccount =
+      assignedBundle?.makerAccountId === assignedBundle?.takerAccountId;
     const requiredUsd =
-      assignedBundle?.makerAccountId === owned.accountId && strategy
-        ? requiredMakerCollateralUsd({
-            ...configWithStrategySettings(config, strategy.config),
-            markets: strategy.markets,
-          })
-        : assignedBundle?.takerAccountId === owned.accountId &&
-            strategy?.config.hedge.enabled &&
-            owned.availableCollateralUsd <= 0
-          ? 0.01
+      assignedBundle?.makerAccountId === owned.accountId && savedConfig
+        ? requiredMakerCollateralUsd(savedConfig) +
+          (sharedAccount ? hedgeRequirement : 0)
+        : assignedBundle?.takerAccountId === owned.accountId
+          ? hedgeRequirement
           : 0;
     return {
       accountId: owned.accountId,
@@ -5301,7 +5338,7 @@ function DashboardBody() {
                         leaving Maker.
                       </p>
                       <div className="inline-controls account-controls">
-                        <select
+                        <Select
                           value={selectedAccount}
                           onChange={(event) =>
                             setSelectedAccount(event.target.value)
@@ -5323,7 +5360,7 @@ function DashboardBody() {
                               {item.availableCollateralUsd.toFixed(2)} available
                             </option>
                           ))}
-                        </select>
+                        </Select>
                         <button
                           className="button secondary inverse"
                           onClick={() => void createVenueAccount()}
@@ -5466,88 +5503,91 @@ function DashboardBody() {
                     </div>
                     <div className="account-row-actions">
                       <div className="account-collateral-actions">
-                        <label>
-                          <span>USDC amount</span>
-                          <input
-                            type="number"
-                            min="0.01"
-                            step="0.01"
-                            inputMode="decimal"
-                            value={collateralAmounts[owned.accountId] ?? "10"}
-                            onChange={(event) =>
-                              setCollateralAmounts((current) => ({
-                                ...current,
-                                [owned.accountId]: event.target.value,
-                              }))
-                            }
-                            aria-label={`USDC amount for account ${owned.accountId}`}
-                          />
-                        </label>
-                        <button
-                          className="button secondary"
-                          type="button"
+                        <Input
+                          label="USDC amount"
+                          type="number"
+                          min="0.01"
+                          step="0.01"
+                          inputMode="decimal"
+                          value={collateralAmounts[owned.accountId] ?? "10"}
+                          onChange={(event) =>
+                            setCollateralAmounts((current) => ({
+                              ...current,
+                              [owned.accountId]: event.target.value,
+                            }))
+                          }
+                          aria-label={`USDC amount for account ${owned.accountId}`}
+                        />
+                        <Button
+                          variant="secondary"
+                          size="small"
                           onClick={() =>
                             void moveCollateral(owned.accountId, "deposit")
                           }
-                          disabled={Boolean(busy) || Boolean(snapshot?.running)}
+                          disabled={Boolean(busy)}
                           title="Deposit owner-wallet USDC into this account"
                         >
                           <ArrowDownRight size={15} aria-hidden="true" />
                           {busy === `deposit-${owned.accountId}`
-                            ? "Depositing..."
+                            ? "Depositing…"
                             : "Deposit"}
-                        </button>
-                        <button
-                          className="button secondary"
-                          type="button"
+                        </Button>
+                        <Button
+                          variant="secondary"
+                          size="small"
                           onClick={() =>
                             void moveCollateral(owned.accountId, "withdraw")
                           }
                           disabled={
                             Boolean(busy) ||
-                            Boolean(snapshot?.running) ||
-                            owned.availableCollateralUsd <= 0
+                            owned.availableCollateralUsd <= 0 ||
+                            bundles.some(
+                              (bundle) =>
+                                !bundle.archivedAt &&
+                                bundle.status === "running" &&
+                                (bundle.makerAccountId === owned.accountId ||
+                                  bundle.takerAccountId === owned.accountId),
+                            )
                           }
                           title="Withdraw available collateral to the owner wallet"
                         >
                           <ArrowUpRight size={15} aria-hidden="true" />
                           {busy === `withdraw-${owned.accountId}`
-                            ? "Withdrawing..."
+                            ? "Withdrawing…"
                             : "Withdraw"}
-                        </button>
+                        </Button>
                       </div>
                       <div className="account-role-actions">
                         {!managed ? (
-                          <button
-                            className="button secondary"
-                            type="button"
+                          <Button
+                            variant="secondary"
+                            size="small"
                             onClick={() => void provision(owned.accountId)}
                             disabled={Boolean(busy)}
                           >
                             <KeyRound size={15} aria-hidden="true" />
                             {busy === `provision-${owned.accountId}`
-                              ? "Adding..."
+                              ? "Adding…"
                               : "Add trading key"}
-                          </button>
+                          </Button>
                         ) : !managed.agentCapId ? (
-                          <button
-                            className="button primary"
-                            type="button"
+                          <Button
+                            variant="primary"
+                            size="small"
                             onClick={() => void authorizeAgent(owned.accountId)}
                             disabled={!builderCode || Boolean(busy)}
                           >
                             <ShieldCheck size={15} aria-hidden="true" />
                             {busy === `authorize-${owned.accountId}`
-                              ? "Authorizing..."
+                              ? "Authorizing…"
                               : "Authorize"}
-                          </button>
+                          </Button>
                         ) : (
                           <>
-                            <button
-                              className={
-                                isMaker ? "role-button selected" : "role-button"
-                              }
-                              type="button"
+                            <Button
+                              variant="secondary"
+                              size="small"
+                              aria-pressed={isMaker}
                               onClick={() =>
                                 setConfig((current) => ({
                                   ...current,
@@ -5564,12 +5604,11 @@ function DashboardBody() {
                               }
                             >
                               Maker
-                            </button>
-                            <button
-                              className={
-                                isHedge ? "role-button selected" : "role-button"
-                              }
-                              type="button"
+                            </Button>
+                            <Button
+                              variant="secondary"
+                              size="small"
+                              aria-pressed={isHedge}
                               disabled={isMaker}
                               onClick={() =>
                                 setConfig((current) => ({
@@ -5583,17 +5622,18 @@ function DashboardBody() {
                               }
                             >
                               Taker
-                            </button>
-                            <button
-                              className="icon-button revoke-agent"
-                              type="button"
+                            </Button>
+                            <Button
+                              variant="danger"
+                              size="icon"
+                              className="revoke-agent"
                               onClick={() => void revokeAgent(owned.accountId)}
                               disabled={Boolean(busy)}
                               aria-label={`Revoke trading key for account ${owned.accountId}`}
                               title="Revoke trading key and venue fee approval"
                             >
                               <ShieldOff size={15} aria-hidden="true" />
-                            </button>
+                            </Button>
                           </>
                         )}
                       </div>
@@ -5606,54 +5646,49 @@ function DashboardBody() {
                           void saveAccountMetadata(owned.accountId);
                         }}
                       >
-                        <label>
-                          <span>Name</span>
-                          <input
-                            autoFocus
-                            value={accountMetadataDraft.label}
-                            maxLength={40}
-                            onChange={(event) =>
-                              setAccountMetadataDraft((current) => ({
-                                ...current,
-                                label: event.target.value,
-                              }))
-                            }
-                            placeholder={`Account ${owned.accountId}`}
-                            aria-label={`Name for account ${owned.accountId}`}
-                          />
-                        </label>
-                        <label>
-                          <span>Tags</span>
-                          <input
-                            value={accountMetadataDraft.tags}
-                            onChange={(event) =>
-                              setAccountMetadataDraft((current) => ({
-                                ...current,
-                                tags: event.target.value,
-                              }))
-                            }
-                            placeholder="farming, profit, low-risk"
-                            aria-label={`Comma-separated tags for account ${owned.accountId}`}
-                          />
-                        </label>
+                        <Input
+                          label="Name"
+                          autoFocus
+                          value={accountMetadataDraft.label}
+                          maxLength={40}
+                          onChange={(event) =>
+                            setAccountMetadataDraft((current) => ({
+                              ...current,
+                              label: event.target.value,
+                            }))
+                          }
+                          placeholder={`Account ${owned.accountId}`}
+                          aria-label={`Name for account ${owned.accountId}`}
+                        />
+                        <Input
+                          label="Tags"
+                          value={accountMetadataDraft.tags}
+                          onChange={(event) =>
+                            setAccountMetadataDraft((current) => ({
+                              ...current,
+                              tags: event.target.value,
+                            }))
+                          }
+                          placeholder="farming, profit, low-risk"
+                          aria-label={`Comma-separated tags for account ${owned.accountId}`}
+                        />
                         <div className="account-metadata-actions">
-                          <button
-                            className="button secondary"
-                            type="button"
+                          <Button
+                            variant="secondary"
                             onClick={() => setEditingAccountId(null)}
                             disabled={Boolean(busy)}
                           >
                             Cancel
-                          </button>
-                          <button
-                            className="button primary"
+                          </Button>
+                          <Button
+                            variant="primary"
                             type="submit"
                             disabled={Boolean(busy)}
                           >
                             {busy === `metadata-${owned.accountId}`
-                              ? "Saving..."
+                              ? "Saving…"
                               : "Save details"}
-                          </button>
+                          </Button>
                         </div>
                       </form>
                     )}
@@ -5664,14 +5699,13 @@ function DashboardBody() {
             {configDirty && (
               <div className="account-save-bar">
                 <span>Account assignments have unsaved changes.</span>
-                <button
-                  className="button primary"
-                  type="button"
+                <Button
+                  variant="primary"
                   onClick={() => void saveAccountAssignments()}
                   disabled={Boolean(busy)}
                 >
-                  {busy === "save-accounts" ? "Saving..." : "Save assignments"}
-                </button>
+                  {busy === "save-accounts" ? "Saving…" : "Save assignments"}
+                </Button>
               </div>
             )}
           </section>
@@ -6157,14 +6191,14 @@ function DashboardBody() {
                 }
                 onSelect={selectStrategy}
               />
-              <button
+              <Button
+                variant="secondary"
                 className="strategy-new-button"
-                type="button"
                 onClick={() => void createStrategy()}
                 disabled={Boolean(busy)}
               >
                 New strategy
-              </button>
+              </Button>
             </div>
 
             <p className="strategy-intro">
@@ -6691,7 +6725,7 @@ function DashboardBody() {
               >
                 <label>
                   <span>Maker</span>
-                  <select
+                  <Select
                     value={activeMakerAccountId ?? ""}
                     onChange={(event) => {
                       const makerAccountId = event.target.value || null;
@@ -6715,11 +6749,11 @@ function DashboardBody() {
                         {accountReference(managed.accountId)}
                       </option>
                     ))}
-                  </select>
+                  </Select>
                 </label>
                 <label>
                   <span>Taker account</span>
-                  <select
+                  <Select
                     value={config.hedge.accountId ?? ""}
                     disabled={!config.hedge.enabled}
                     onChange={(event) =>
@@ -6745,7 +6779,7 @@ function DashboardBody() {
                           {accountReference(managed.accountId)}
                         </option>
                       ))}
-                  </select>
+                  </Select>
                 </label>
               </div>
               {selectedStrategy && (
@@ -6754,43 +6788,38 @@ function DashboardBody() {
                   below apply only where that bundle has compatible accounts.
                 </p>
               )}
-              <label className="switch-row">
-                <input
-                  type="checkbox"
-                  checked={config.hedge.enabled}
-                  disabled={
-                    !selectedStrategy &&
-                    (!activeMakerAccountId || authorizedAccounts.length < 2)
-                  }
-                  onChange={(event) => {
-                    const enabled = event.target.checked;
-                    if (!enabled)
-                      setInvalidNumeric((current) =>
-                        Object.fromEntries(
-                          Object.entries(current).filter(
-                            ([id]) =>
-                              !id.startsWith("strategy-hedge") &&
-                              id !== "strategy-rebalance-gross-exposure-usd",
-                          ),
+              <Toggle
+                className="strategy-kit-toggle"
+                label="Offset filled exposure · optional for new drafts"
+                checked={config.hedge.enabled}
+                disabled={
+                  !selectedStrategy &&
+                  (!activeMakerAccountId || authorizedAccounts.length < 2)
+                }
+                onChange={(event) => {
+                  const enabled = event.target.checked;
+                  if (!enabled)
+                    setInvalidNumeric((current) =>
+                      Object.fromEntries(
+                        Object.entries(current).filter(
+                          ([id]) =>
+                            !id.startsWith("strategy-hedge") &&
+                            id !== "strategy-rebalance-gross-exposure-usd",
                         ),
-                      );
-                    setConfig((current) => ({
-                      ...current,
-                      autoRebalanceEnabled: enabled
-                        ? current.autoRebalanceEnabled
-                        : false,
-                      hedge: {
-                        ...current.hedge,
-                        enabled,
-                      },
-                    }));
-                  }}
-                />
-                <span aria-hidden="true" />
-                <strong>
-                  Offset filled exposure · optional for new drafts
-                </strong>
-              </label>
+                      ),
+                    );
+                  setConfig((current) => ({
+                    ...current,
+                    autoRebalanceEnabled: enabled
+                      ? current.autoRebalanceEnabled
+                      : false,
+                    hedge: {
+                      ...current.hedge,
+                      enabled,
+                    },
+                  }));
+                }}
+              />
               {config.hedge.enabled && (
                 <>
                   <p className="strategy-section-copy">
@@ -6971,25 +7000,22 @@ function DashboardBody() {
                       </div>
                     </label>
                   </div>
-                  <label className="switch-row">
-                    <input
-                      type="checkbox"
-                      checked={config.autoRebalanceEnabled}
-                      onChange={(event) => {
-                        if (!event.target.checked)
-                          setNumericValidity(
-                            "strategy-rebalance-gross-exposure-usd",
-                            null,
-                          );
-                        setConfig((current) => ({
-                          ...current,
-                          autoRebalanceEnabled: event.target.checked,
-                        }));
-                      }}
-                    />
-                    <span aria-hidden="true" />
-                    <strong>Auto-rebalance dedicated accounts</strong>
-                  </label>
+                  <Toggle
+                    className="strategy-kit-toggle"
+                    label="Auto-rebalance dedicated accounts"
+                    checked={config.autoRebalanceEnabled}
+                    onChange={(event) => {
+                      if (!event.target.checked)
+                        setNumericValidity(
+                          "strategy-rebalance-gross-exposure-usd",
+                          null,
+                        );
+                      setConfig((current) => ({
+                        ...current,
+                        autoRebalanceEnabled: event.target.checked,
+                      }));
+                    }}
+                  />
                   {config.autoRebalanceEnabled && (
                     <label>
                       <span>Rebalance before gross exposure reaches</span>
@@ -9056,7 +9082,7 @@ function DashboardBody() {
           grossExposureUsd={venueGrossExposureUsd}
           grossExposureLimitUsd={walletLimits?.maxGrossExposureUsd ?? 0}
           unrealizedPnlUsd={venueUnrealizedPnlUsd}
-          onManage={() => selectView("accounts")}
+          onRename={renameVenueAccount}
           onNewAccount={() => void createVenueAccount()}
           walletAddress={identity.ownerAddress}
           walletUsdcUsd={walletBalances?.usdcUsd ?? null}

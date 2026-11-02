@@ -154,6 +154,36 @@ async function installStatefulControl(page, state) {
       });
 
     if (routePath === "api/auth/logout") return json(200, { ok: true });
+    if (
+      /^api\/accounts\/\d+\/metadata$/.test(routePath) &&
+      request.method() === "PUT"
+    ) {
+      const accountId = routePath.split("/")[2];
+      const account = state.fixture.accounts.accounts.find(
+        (entry) => entry.accountId === accountId,
+      );
+      if (!account)
+        return json(404, { error: "Choose an account owned by this wallet." });
+      if (state.renameFailures > 0) {
+        state.renameFailures -= 1;
+        return json(409, {
+          code: "account-name-taken",
+          error: "Choose a different account name.",
+        });
+      }
+      const body = JSON.parse(request.postData() ?? "{}");
+      account.label = body.label;
+      account.tags = body.tags ?? account.tags;
+      return json(200, {
+        metadata: {
+          accountId,
+          label: account.label,
+          tags: account.tags,
+          updatedAt: new Date().toISOString(),
+        },
+      });
+    }
+
     if (routePath === "api/auth/challenge" && request.method() === "POST")
       return json(200, {
         challengeId: "test-only",
@@ -779,6 +809,7 @@ async function newPage(
     strategyArchivePosts: 0,
     strategyArchiveDelayMs: 0,
     strategyReadFailures: 0,
+    renameFailures: 0,
     startFailures: [],
   };
   await page.addInitScript((address) => {
@@ -1101,6 +1132,102 @@ async function mockWalletBalanceReads(page) {
   });
 }
 
+async function captureRound10KitControls(browser) {
+  const { context, page, state } = await newPage(browser, {
+    width: 1440,
+    height: 900,
+  });
+  try {
+    state.fixture = structuredClone(fixtureStates.stopped);
+    state.strategies = initialStrategies(state.fixture);
+    await goToDesk(page);
+    await page.getByRole("link", { name: "Strategy", exact: true }).click();
+    await page.getByRole("button", { name: "Edit Hedging" }).click();
+    await page
+      .locator(".strategy-kit-toggle, .switch-row")
+      .first()
+      .scrollIntoViewIfNeeded();
+    await capture(page, "r10-strategy-toggle-desktop.png");
+    await page.getByRole("link", { name: "Bundles", exact: true }).click();
+    const rewards = page.locator(".bundle-card").filter({
+      has: page.getByRole("heading", { name: "Rewards", exact: true }),
+    });
+    await rewards.getByRole("button", { name: "Edit", exact: true }).click();
+    await page.getByRole("dialog", { name: "Edit Rewards" }).waitFor();
+    await page.waitForTimeout(400); // Capture after the sheet entrance animation.
+    await capture(page, "r10-bundle-select-desktop.png");
+    await page.keyboard.press("Escape");
+    await page
+      .getByRole("dialog", { name: "Edit Rewards" })
+      .waitFor({ state: "hidden" });
+    await page.getByRole("button", { name: "New bundle" }).click();
+    await page.getByRole("dialog", { name: "New Paper bundle" }).waitFor();
+    await page.waitForTimeout(400);
+    await capture(page, "r10-bundle-create-desktop.png");
+  } finally {
+    await context.close();
+  }
+}
+
+async function renamesAccountInsideVenues(browser, viewport) {
+  const { context, page, state } = await newPage(browser, viewport);
+  try {
+    await goToDesk(page);
+    await page.getByRole("link", { name: "Venues", exact: true }).click();
+    const originalUrl = page.url();
+    const menu = page.getByRole("button", {
+      name: "More actions for account 1745",
+    });
+    await menu.click();
+    await page
+      .getByRole("group", { name: "Account 1745 actions" })
+      .getByRole("button", { name: "Rename" })
+      .click();
+    const sheet = page.getByRole("dialog", { name: "Rename account 1745" });
+    await sheet.waitFor();
+    const name = sheet.getByRole("textbox", { name: "Name for account 1745" });
+    assert(
+      (await name.inputValue()) === "Core maker",
+      "Name was not prefilled",
+    );
+    await name.fill("Core maker blue");
+    if (viewport.width <= 390) {
+      await page.waitForTimeout(400); // Capture after the sheet entrance animation.
+      await capture(page, "r10-venues-rename-sheet-390.png");
+    }
+    state.renameFailures = 1;
+    await sheet.getByRole("button", { name: "Save", exact: true }).click();
+    await sheet
+      .getByRole("alert")
+      .getByText("Choose a different account name.")
+      .waitFor();
+    assert(page.url() === originalUrl, "Rename navigated away from Venues");
+    await sheet.getByRole("button", { name: "Save", exact: true }).click();
+    await sheet.waitFor({ state: "hidden" });
+    assert(
+      await menu.evaluate((element) => document.activeElement === element),
+      "Focus did not return to the account menu",
+    );
+    await page
+      .locator(".venue-kit-table")
+      .getByText("Core maker blue")
+      .waitFor();
+    assert(page.url() === originalUrl, "Rename navigated away from Venues");
+    await page.reload();
+    await page.getByRole("link", { name: "Venues", exact: true }).click();
+    const renamed = page
+      .locator(".venue-kit-table")
+      .getByText("Core maker blue");
+    await renamed.waitFor();
+    await renamed.evaluate((element) =>
+      element.scrollIntoView({ block: "center", behavior: "instant" }),
+    );
+    await capture(page, `r10-venues-rename-${viewport.width}.png`);
+  } finally {
+    await context.close();
+  }
+}
+
 async function withdrawsAfterItsBundlePauses(browser, viewport) {
   const { context, page, state } = await newPage(browser, viewport);
   try {
@@ -1257,8 +1384,8 @@ async function depositsToTwoAccountsWithOneOwnerSignature(browser) {
     assert(
       (await sheet
         .getByRole("textbox", { name: "Deposit to account 1746" })
-        .inputValue()) === "0.01",
-      "Hedge account was not prefilled with its $0.01 shortfall",
+        .inputValue()) === "100.85",
+      "Hedge account was not prefilled with its $100.85 shortfall",
     );
     await sheet.getByRole("button", { name: "Connect wallet" }).click();
     await page
@@ -1267,15 +1394,15 @@ async function depositsToTwoAccountsWithOneOwnerSignature(browser) {
       .filter({ visible: true })
       .click();
     await sheet.getByText("Your wallet has $1,250.00 USDC.").waitFor();
-    await sheet.getByRole("button", { name: "Deposit $300.01" }).click();
-    await sheet.getByRole("heading", { name: "Deposited $300.01" }).waitFor();
+    await sheet.getByRole("button", { name: "Deposit $400.85" }).click();
+    await sheet.getByRole("heading", { name: "Deposited $400.85" }).waitFor();
     assert(
       state.lastBatchIntent?.deposits.length === 2,
       "Bundle funding did not prepare one transaction with two owner accounts",
     );
     assert(
       state.fixture.accounts.accounts[0].availableCollateralUsd === 300 &&
-        state.fixture.accounts.accounts[1].availableCollateralUsd === 0.01,
+        state.fixture.accounts.accounts[1].availableCollateralUsd === 100.85,
       "Account rows did not refresh after the single mock wallet execution",
     );
     await capture(page, "r9-two-accounts-one-signature-desktop.png");
@@ -1291,6 +1418,9 @@ async function withdrawsToOwnerWallet(browser) {
   });
   try {
     state.fixture.status.snapshot.running = false;
+    state.fixture.bundles.bundles.forEach((bundle) => {
+      bundle.status = "stopped";
+    });
     state.fixture.status.bundles = state.fixture.status.bundles.map(
       (entry) => ({
         ...entry,
@@ -3269,7 +3399,12 @@ const browser = await chromium.launch({
 });
 
 try {
-  if (process.argv.includes("--round9-batch-only")) {
+  if (process.argv.includes("--round10-kit-only")) {
+    await captureRound10KitControls(browser);
+  } else if (process.argv.includes("--round10-rename-only")) {
+    await renamesAccountInsideVenues(browser, { width: 1440, height: 900 });
+    await renamesAccountInsideVenues(browser, { width: 390, height: 844 });
+  } else if (process.argv.includes("--round9-batch-only")) {
     await depositsToTwoAccountsWithOneOwnerSignature(browser);
     await depositsWhilePaperBundleRuns(browser, { width: 1440, height: 900 });
     await depositsWhilePaperBundleRuns(browser, { width: 390, height: 844 });
@@ -3333,6 +3468,8 @@ try {
         height: 900,
       });
       await withdrawsAfterItsBundlePauses(browser, { width: 390, height: 844 });
+      await renamesAccountInsideVenues(browser, { width: 1440, height: 900 });
+      await renamesAccountInsideVenues(browser, { width: 390, height: 844 });
       await serviceAndSessionFailures(browser);
       await createBundleWithFreeChoices(browser);
       await lowerWalletLimitsWhenCreating(browser);

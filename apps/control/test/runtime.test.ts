@@ -441,7 +441,7 @@ describe("runtime execution boundaries", () => {
     expect(runtime.snapshot.lastError).toBe(
       "Paper needs a trading key for account 42. Set it up in Accounts; Maker will keep reading the market.",
     );
-    expect(runtime.snapshot.lastSuccessfulCycleAt).not.toBeNull();
+    expect(runtime.snapshot.lastSuccessfulCycleAt).toBeNull();
     expect(onBundleError).not.toHaveBeenCalled();
     expect(harness.executionSequence).toEqual([]);
     expect(
@@ -507,7 +507,7 @@ describe("runtime execution boundaries", () => {
       requiredGasSui: 0.05,
       accountId: "42",
     });
-    expect(runtime.snapshot.lastSuccessfulCycleAt).not.toBeNull();
+    expect(runtime.snapshot.lastSuccessfulCycleAt).toBeNull();
     expect(onBundleError).not.toHaveBeenCalled();
     expect(harness.executionSequence).toEqual([]);
     await runtime.stop();

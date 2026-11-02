@@ -41,7 +41,7 @@ function withStore(run: (h: Harness) => void) {
 describe("typed preconditions on user-facing routes", () => {
   it("catalogues every converted server/store/runtime precondition as a safe 4xx with a stable code", () => {
     let converted = 0;
-    for (const file of ["server.ts", "store.ts", "runtime-manager.ts"]) {
+    for (const file of ["server-app.ts", "store.ts", "runtime-manager.ts"]) {
       const source = ts.createSourceFile(
         file,
         readFileSync(join(import.meta.dirname, "../src", file), "utf8"),

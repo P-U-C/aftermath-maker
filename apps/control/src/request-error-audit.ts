@@ -36,6 +36,9 @@ const routes: Record<string, string> = {
   "/api/setup/provision": "account-setup",
   "/api/setup/grant-transaction": "account-grant",
   "/api/setup/gas-transaction": "account-gas-top-up",
+  "/api/accounts/deposit-transaction": "account-deposit",
+  "/api/accounts/withdraw-transaction": "account-withdraw",
+  "/api/accounts/:accountId/metadata": "account-rename",
   "/api/setup/confirm": "account-confirm",
   "/api/setup/revoke-transaction": "account-revoke",
   "/api/runtime/paper-trial": "paper-trial",
@@ -53,7 +56,8 @@ function routeAction(path: string): string {
       /^\/api\/bundles\/(?!wallet-limits(?:\/|$))[^/]+/,
       "/api/bundles/:bundleId",
     )
-    .replace(/^\/api\/strategies\/[^/]+/, "/api/strategies/:strategyId");
+    .replace(/^\/api\/strategies\/[^/]+/, "/api/strategies/:strategyId")
+    .replace(/^\/api\/accounts\/\d+/, "/api/accounts/:accountId");
   return routes[normalized] ?? "other-request";
 }
 

@@ -780,38 +780,9 @@ button:disabled {
   gap: 5px;
 }
 
-.account-metadata-editor label > span {
-  color: var(--muted);
-  font-size: 12px;
-  font-weight: 700;
-}
-
-.account-metadata-editor input {
-  width: 100%;
-  height: 36px;
-  padding: 0 10px;
-  color: var(--ink);
-  background: var(--paper);
-  border: 1px solid var(--line-strong);
-  font:
-    600 12px/1 var(--font-mona),
-    Arial,
-    sans-serif;
-}
-
-.account-metadata-editor input:focus-visible {
-  border-color: var(--green);
-  outline: 2px solid var(--green-soft);
-  outline-offset: 1px;
-}
-
 .account-metadata-actions {
   display: flex;
   gap: 6px;
-}
-
-.account-metadata-actions .button {
-  min-height: 36px;
 }
 
 .account-row-actions {
@@ -834,17 +805,8 @@ button:disabled {
   gap: 3px;
 }
 
-.account-collateral-actions input {
-  width: 82px;
-  height: 32px;
-  padding: 0 8px;
-  color: var(--ink);
-  background: var(--paper);
-  border: 1px solid var(--line-strong);
-  font:
-    600 12px/1 var(--font-mona),
-    Arial,
-    sans-serif;
+.account-collateral-actions .ui-field {
+  min-width: 112px;
 }
 
 .account-collateral-actions .button,
@@ -852,31 +814,8 @@ button:disabled {
   min-height: 32px;
 }
 
-.role-button {
-  height: 32px;
-  padding: 0 10px;
-  color: var(--ink);
-  background: var(--surface);
-  border: 1px solid var(--line-strong);
-}
-
-.role-button.selected {
-  color: var(--ink);
-  background: var(--green-soft);
-  border-color: var(--tide);
-}
-
-.icon-button.revoke-agent {
-  width: 32px;
-  height: 32px;
-  color: var(--coral);
-  border-color: var(--ember);
-}
-
-.icon-button.revoke-agent:hover:not(:disabled) {
-  color: var(--on-stop);
-  background: var(--stop);
-  border-color: var(--stop);
+.account-role-actions .ui-button[aria-pressed="true"] {
+  box-shadow: inset 0 0 0 2px var(--ink);
 }
 
 .section-heading {
@@ -1094,56 +1033,8 @@ button:disabled {
   grid-template-columns: repeat(3, 1fr);
 }
 
-.switch-row {
-  min-height: 36px;
+.strategy-kit-toggle {
   margin-top: 10px;
-  display: grid !important;
-  grid-template-columns: 34px minmax(0, 1fr);
-  align-items: center;
-  gap: 8px !important;
-  cursor: pointer;
-}
-
-.switch-row input {
-  position: absolute;
-  opacity: 0;
-  pointer-events: none;
-}
-
-.switch-row > span {
-  width: 34px;
-  height: 18px;
-  padding: 2px;
-  display: block;
-  background: var(--line);
-  border-radius: 9px;
-}
-
-.switch-row > span::after {
-  content: "";
-  width: 14px;
-  height: 14px;
-  display: block;
-  background: var(--surface);
-  border-radius: 50%;
-  transition: transform 150ms ease;
-}
-
-.switch-row input:checked + span {
-  background: var(--green);
-}
-
-.switch-row input:checked + span::after {
-  transform: translateX(16px);
-}
-
-.switch-row input:focus-visible + span {
-  outline: 2px solid var(--green);
-  outline-offset: 2px;
-}
-
-.switch-row strong {
-  font-size: 12px;
 }
 
 .advanced-control:not(.visible) {
@@ -4330,6 +4221,34 @@ mysten-dapp-kit-connect-modal,
   box-shadow: none;
 }
 
+.ui-select {
+  width: 100%;
+  min-height: 40px;
+  padding: 0 12px;
+  border: 1px solid var(--hair);
+  border-radius: 10px;
+  background: var(--surface);
+  color: var(--ink);
+  font:
+    600 13.5px var(--font-mona),
+    Arial,
+    sans-serif;
+}
+.ui-select:focus-visible {
+  outline: 1px solid var(--tide-text);
+  outline-offset: 1px;
+  box-shadow: 0 0 0 3px var(--tide-soft);
+}
+.ui-select:disabled {
+  color: var(--ink-3);
+  background: var(--fill);
+}
+@media (max-width: 700px) {
+  .ui-select {
+    min-height: 44px;
+  }
+}
+
 .ui-field {
   min-width: 0;
   display: grid;
@@ -4359,8 +4278,8 @@ mysten-dapp-kit-connect-modal,
 }
 
 .ui-input-shell:focus-within {
-  border-color: var(--ink-2);
-  box-shadow: inset 0 0 0 1px var(--ink-2);
+  border-color: var(--tide-text);
+  box-shadow: 0 0 0 3px var(--tide-soft);
 }
 
 .ui-input-shell input {
@@ -5253,24 +5172,10 @@ mysten-dapp-kit-connect-modal,
 }
 
 .run-status-chip {
-  min-height: 32px;
-  padding: 0 10px;
   display: inline-flex;
   align-items: center;
   gap: 7px;
-  color: var(--ink-2);
-  background: var(--fill);
-  border: 0;
-  border-radius: 999px;
-  font: inherit;
-  font-size: 12.5px;
-  font-weight: 600;
   white-space: nowrap;
-  cursor: pointer;
-}
-
-.run-status-chip:hover {
-  background: var(--fill-2);
 }
 
 .bundle-lane-title {
@@ -5654,16 +5559,18 @@ mysten-dapp-kit-connect-modal,
   font-weight: 620;
 }
 
-.bundle-create-fields input,
-.bundle-create-fields select {
-  min-height: 42px;
+.bundle-create-fields input:not(.ui-input-shell input) {
+  min-height: 40px;
   width: 100%;
   padding: 0 11px;
   color: var(--ink);
-  background: var(--fill);
-  border: 1px solid var(--line);
-  border-radius: 9px;
-  font: inherit;
+  background: var(--surface);
+  border: 1px solid var(--hair);
+  border-radius: 10px;
+  font:
+    600 13.5px var(--font-mona),
+    Arial,
+    sans-serif;
 }
 
 .bundle-create-note {
@@ -8217,7 +8124,6 @@ mysten-dapp-kit-connect-modal,
 }
 
 .workspace-strategy .pair-search,
-.workspace-strategy select,
 .workspace-strategy input[type="number"],
 .workspace-strategy input[type="text"] {
   min-height: 44px;
@@ -8492,11 +8398,6 @@ mysten-dapp-kit-connect-modal,
   color: var(--ink-2);
   font-size: 13px;
   font-weight: 560;
-}
-
-.workspace-strategy .switch-row {
-  min-height: 52px;
-  padding: 0;
 }
 
 .glossary-term {
@@ -9315,7 +9216,6 @@ mysten-dapp-kit-connect-modal,
       .objective-segments small,
       .strategy-trial-heading span,
       .strategy-trial-heading strong,
-      .switch-row strong,
       .input-unit b,
       label > small,
       .strategy-mode-fieldset > small,
@@ -9814,7 +9714,6 @@ mysten-dapp-kit-connect-modal,
 
   .accounts-title .button,
   .account-row .button,
-  .account-row .role-button,
   .account-row input,
   .market-add-strategy {
     min-height: 44px;
@@ -9838,10 +9737,6 @@ mysten-dapp-kit-connect-modal,
     grid-column: 1 / -1;
   }
 
-  .account-collateral-actions input {
-    width: 100%;
-  }
-
   .account-role-actions {
     width: 100%;
     flex-wrap: wrap;
@@ -9851,27 +9746,14 @@ mysten-dapp-kit-connect-modal,
     grid-template-columns: 1fr;
   }
 
-  .account-metadata-editor input {
-    min-height: 44px;
-    font-size: 12px;
-  }
-
   .account-metadata-actions {
     display: grid;
     grid-template-columns: 1fr 1fr;
   }
 
-  .account-metadata-actions .button {
-    min-height: 44px;
-  }
-
   .account-save-bar {
     align-items: stretch;
     flex-direction: column;
-  }
-
-  .account-save-bar .button {
-    min-height: 44px;
   }
 
   .desk-event-list {
@@ -10532,13 +10414,7 @@ mysten-dapp-kit-connect-modal,
   margin: 8px;
 }
 .strategy-select-row .strategy-new-button {
-  min-height: 70px;
-  padding: 0 14px;
   flex: 0 0 auto;
-  color: var(--ink);
-  background: var(--surface);
-  border: 1px solid var(--line);
-  border-radius: 10px;
   white-space: nowrap;
 }
 @media (max-width: 350px) {
@@ -10547,9 +10423,6 @@ mysten-dapp-kit-connect-modal,
   }
   .strategy-picker {
     flex-basis: 100%;
-  }
-  .strategy-select-row .strategy-new-button {
-    min-height: 44px;
   }
 }
 
@@ -10598,25 +10471,6 @@ mysten-dapp-kit-connect-modal,
 .strategy-control-family .strategy-bundle-picker {
   border: 0;
   border-radius: 0;
-}
-
-.strategy-new-button {
-  padding: 0 12px;
-  color: var(--ink);
-  background: transparent;
-  border: 0;
-  border-left: 1px solid var(--line);
-  font:
-    650 12px/1 var(--font-mona),
-    Arial,
-    sans-serif;
-  cursor: pointer;
-}
-
-.strategy-new-button:hover,
-.strategy-new-button:focus-visible {
-  background: var(--surface);
-  outline: none;
 }
 
 .strategy-library {
@@ -10731,14 +10585,8 @@ mysten-dapp-kit-connect-modal,
   font-weight: 650;
 }
 
-.bundle-attach-strategy select {
-  min-height: 34px;
+.bundle-attach-strategy .ui-select {
   max-width: 180px;
-  padding: 0 8px;
-  color: var(--ink);
-  background: var(--fill);
-  border: 1px solid var(--line);
-  border-radius: 8px;
 }
 
 @media (max-width: 700px) {
@@ -11207,10 +11055,6 @@ mysten-dapp-kit-connect-modal,
   }
 }
 @media (max-width: 390px) {
-  .strategy-select-row .strategy-new-button {
-    padding-inline: 8px;
-    font-size: 12px;
-  }
   .maker-view[data-view="strategy"] .strategy-title {
     flex-direction: column;
     align-items: stretch;
@@ -11677,6 +11521,40 @@ mysten-dapp-kit-connect-modal,
 .market-clean-table tbody tr:last-child td {
   border-bottom: 0;
 }
+.ui-sheet-scrim.venue-rename-scrim {
+  top: 64px;
+  padding: 0;
+  align-items: stretch;
+  justify-items: end;
+  background: rgba(16, 18, 22, 0.14);
+  backdrop-filter: none;
+}
+.ui-sheet.venue-rename-sheet {
+  width: min(440px, 100vw);
+  max-height: calc(100dvh - 64px);
+  align-self: start;
+  border-radius: 18px 0 0 18px;
+}
+.venue-rename-sheet .ui-sheet-body {
+  padding: 16px 24px 28px;
+}
+.venue-rename-sheet .ui-sheet-header {
+  padding: 24px 24px 8px;
+}
+.venue-rename-sheet .ui-sheet-footer {
+  padding: 16px 24px 24px;
+}
+@media (max-width: 700px) {
+  .ui-sheet-scrim.venue-rename-scrim {
+    top: 0;
+  }
+  .ui-sheet.venue-rename-sheet {
+    width: 100vw;
+    min-height: 100dvh;
+    border-radius: 0;
+  }
+}
+
 /* Round 9: one owner-signed account funding workflow on Venues. */
 .ui-sheet-scrim.venue-funding-scrim {
   top: 64px;
@@ -13267,9 +13145,6 @@ mysten-dapp-kit-connect-modal,
     display: inline-flex;
     align-items: center;
   }
-  .strategy-select-row .strategy-new-button {
-    min-height: 44px;
-  }
 }
 .objective-goal-tag {
   margin-left: 8px;
@@ -13291,6 +13166,16 @@ mysten-dapp-kit-connect-modal,
 }
 .maker-view :is(input, select, textarea)[aria-invalid="true"] {
   border-color: var(--ember-text);
+}
+.maker-view .ui-input-shell input:focus-visible {
+  outline: 0;
+  box-shadow: none;
+}
+.maker-view .ui-field .ui-input-shell input {
+  font-size: 13.5px !important;
+}
+.maker-view .ui-field .ui-field-label {
+  font-size: 13px !important;
 }
 @media (max-width: 700px) {
   .maker-view-tabs a {

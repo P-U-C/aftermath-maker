@@ -10,6 +10,8 @@ import {
 import {
   aggregatePortfolioQuoteRisk,
   requiredMakerCollateralUsd,
+  requiredHedgeCollateralUsd,
+  lowestEffectiveHedgeLeverage,
   assertSafe,
   buildQuoteIntent,
   evaluateQuoteSafety,
@@ -25,6 +27,11 @@ import {
   type Setup,
 } from "@puc/core";
 import type { TenantStore } from "./store.js";
+import {
+  VENUE_READ_TIMEOUT_MS,
+  VenueReadTimeoutError,
+  withTimeout,
+} from "./venue-read.js";
 import { confirmedRestingMarketIds } from "./resting-quotes.js";
 import {
   buildStrategyTrialPlan,
@@ -343,6 +350,14 @@ function paperSimulationBlocker(inputs: {
   symbol: string;
   observedAt?: string;
   requiredGasSui: number;
+  hedgeCollateral?: {
+    accountId: string;
+    availableUsd: number;
+    requiredUsd: number;
+    maxOrderUsd: number;
+    leverage: number;
+    observedAt: string;
+  };
   collateral?: {
     availableUsd: number;
     requiredUsd: number;
@@ -375,6 +390,19 @@ function paperSimulationBlocker(inputs: {
       message: `Paper is waiting on gas. The trading key for ${accountLabel} needs ${formatSui(inputs.requiredGasSui)} SUI to simulate.`,
     };
   }
+  if (first.code === "hedge-collateral" && inputs.hedgeCollateral) {
+    const hedge = inputs.hedgeCollateral;
+    return {
+      code: "hedge-collateral",
+      accountId: hedge.accountId,
+      availableUsd: hedge.availableUsd,
+      requiredUsd: hedge.requiredUsd,
+      maxOrderUsd: hedge.maxOrderUsd,
+      leverage: hedge.leverage,
+      observedAt: hedge.observedAt,
+      message: `Hedge account ${hedge.accountId} needs $${hedge.requiredUsd.toFixed(2)} free collateral to place one hedge of up to $${hedge.maxOrderUsd.toFixed(2)} at ${hedge.leverage}x. It has $${hedge.availableUsd.toFixed(2)}.`,
+    };
+  }
   if (first.code === "collateral") {
     return {
       code: "collateral",
@@ -401,27 +429,6 @@ function paperSimulationBlocker(inputs: {
     code: first.code,
     message: `Paper skipped ${inputs.symbol}: ${first.label} needs attention (${first.detail}). Fix it in Strategy or Accounts; Maker will keep reading the market.`,
   };
-}
-
-async function withTimeout<T>(
-  task: Promise<T>,
-  milliseconds: number,
-  timeoutMessage: string,
-): Promise<T> {
-  let timer: NodeJS.Timeout | null = null;
-  try {
-    return await Promise.race([
-      task,
-      new Promise<never>((_, reject) => {
-        timer = setTimeout(
-          () => reject(new Error(timeoutMessage)),
-          milliseconds,
-        );
-      }),
-    ]);
-  } finally {
-    if (timer) clearTimeout(timer);
-  }
 }
 
 const hedgeFillKey = (order: PerformanceOrder) =>
@@ -498,6 +505,8 @@ export class MakerRuntime {
   private watchdogTimer: NodeJS.Timeout | null = null;
   private watchdogTripping = false;
   private generation = 0;
+  /** Invalidates late Paper reads without ending the running bundle generation. */
+  private cycleToken = 0;
   private cyclePromise: Promise<void> | null = null;
   private flattenPromise: Promise<FlattenResult> | null = null;
   private markets: MarketSummary[] = [];
@@ -638,8 +647,15 @@ export class MakerRuntime {
     this.snapshotValue.restingQuoteVerifiedAt = null;
   }
 
+  private venueRead<T>(task: Promise<T>, label: string): Promise<T> {
+    return withTimeout(task, VENUE_READ_TIMEOUT_MS, `${label} timed out`);
+  }
+
   async listMarkets(collateralCoinType: string): Promise<MarketSummary[]> {
-    this.markets = await this.gateway.listMarkets(collateralCoinType);
+    this.markets = await this.venueRead(
+      this.gateway.listMarkets(collateralCoinType),
+      "Market list read",
+    );
     const config = this.store.getConfig();
     if (config) this.syncMarketRows(config);
     return this.markets;
@@ -649,14 +665,18 @@ export class MakerRuntime {
     collateralCoinType: string,
     objective: MakerConfig["strategyObjective"],
   ) {
-    return this.gateway.getRewardDashboard({
-      accountIds: this.store
-        .listAccountSetups()
-        .map((account) => account.accountId),
-      collateralCoinType,
-      builderFeeBps: (this.options.builderCode()?.integratorFee ?? 0) * 10_000,
-      objective,
-    });
+    return this.venueRead(
+      this.gateway.getRewardDashboard({
+        accountIds: this.store
+          .listAccountSetups()
+          .map((account) => account.accountId),
+        collateralCoinType,
+        builderFeeBps:
+          (this.options.builderCode()?.integratorFee ?? 0) * 10_000,
+        objective,
+      }),
+      "Reward read",
+    );
   }
 
   private syncMarketRows(config: MakerConfig): void {
@@ -1209,13 +1229,16 @@ export class MakerRuntime {
       };
     }
 
-    const history = await this.gateway.getAccountPerformanceHistory({
-      setup,
-      agentAddress: agent.address,
-      limit: 200,
-      timeframe,
-      ...(sinceMs === undefined ? {} : { sinceMs }),
-    });
+    const history = await this.venueRead(
+      this.gateway.getAccountPerformanceHistory({
+        setup,
+        agentAddress: agent.address,
+        limit: 200,
+        timeframe,
+        ...(sinceMs === undefined ? {} : { sinceMs }),
+      }),
+      "Account fill history read",
+    );
     const trackedIds = new Set(
       this.store
         .listTrackedMakerOrders({ accountId: setup.accountId })
@@ -1359,13 +1382,16 @@ export class MakerRuntime {
       ? this.store.getAccountSetup(config.hedge.accountId)
       : null;
     if (hedgeSetup?.agentCapId && hedgeExecutions.length) {
-      const hedgeHistory = await this.gateway.getAccountPerformanceHistory({
-        setup: hedgeSetup,
-        agentAddress: agent.address,
-        limit: 200,
-        timeframe,
-        ...(sinceMs === undefined ? {} : { sinceMs }),
-      });
+      const hedgeHistory = await this.venueRead(
+        this.gateway.getAccountPerformanceHistory({
+          setup: hedgeSetup,
+          agentAddress: agent.address,
+          limit: 200,
+          timeframe,
+          ...(sinceMs === undefined ? {} : { sinceMs }),
+        }),
+        "Hedge fill history read",
+      );
       const executionDigests = new Set(
         hedgeExecutions.map((execution) => execution.digest),
       );
@@ -1442,11 +1468,14 @@ export class MakerRuntime {
         .map((order) => order.orderId),
     );
     if (!trackedOrderIds.size) return [];
-    const history = await this.gateway.getAccountPerformanceHistory({
-      setup: inputs.makerSetup,
-      agentAddress: inputs.agentAddress,
-      limit: 200,
-    });
+    const history = await this.venueRead(
+      this.gateway.getAccountPerformanceHistory({
+        setup: inputs.makerSetup,
+        agentAddress: inputs.agentAddress,
+        limit: 200,
+      }),
+      "Maker fill history read",
+    );
     return history.orders.filter(
       (order) =>
         order.maker &&
@@ -1561,11 +1590,14 @@ export class MakerRuntime {
       for (let attempt = 1; attempt <= 12; attempt += 1) {
         lastPortfolios = await Promise.all(
           accounts.map((setup) =>
-            this.gateway.getAgentPortfolioSnapshot({
-              setup,
-              agentAddress: inputs.agentAddress,
-              marketIds,
-            }),
+            this.venueRead(
+              this.gateway.getAgentPortfolioSnapshot({
+                setup,
+                agentAddress: inputs.agentAddress,
+                marketIds,
+              }),
+              "Rebalance account read",
+            ),
           ),
         );
         const flat = lastPortfolios.every((portfolio) =>
@@ -1685,11 +1717,14 @@ export class MakerRuntime {
       throw new Error("Maker and hedge accounts must be different");
     }
 
-    const hedgePortfolio = await this.gateway.getAgentPortfolioSnapshot({
-      setup: hedgeAccount,
-      agentAddress: inputs.agentAddress,
-      marketIds: [inputs.selected.marketId],
-    });
+    const hedgePortfolio = await this.venueRead(
+      this.gateway.getAgentPortfolioSnapshot({
+        setup: hedgeAccount,
+        agentAddress: inputs.agentAddress,
+        marketIds: [inputs.selected.marketId],
+      }),
+      "Hedge account read",
+    );
     const makerPosition = inputs.makerPortfolio.positions.find(
       (position) => position.marketId === inputs.selected.marketId,
     );
@@ -1704,11 +1739,14 @@ export class MakerRuntime {
       combinedDeltaUsd,
     };
 
-    const history = await this.gateway.getAccountPerformanceHistory({
-      setup: inputs.makerSetup,
-      agentAddress: inputs.agentAddress,
-      limit: 200,
-    });
+    const history = await this.venueRead(
+      this.gateway.getAccountPerformanceHistory({
+        setup: inputs.makerSetup,
+        agentAddress: inputs.agentAddress,
+        limit: 200,
+      }),
+      "Maker fill history read",
+    );
     const runStartedAt = Date.parse(this.snapshotValue.startedAt ?? "");
     const trackedOrderIds = new Set(
       this.store
@@ -1863,16 +1901,22 @@ export class MakerRuntime {
       null;
     for (let attempt = 1; attempt <= 10; attempt += 1) {
       const portfolios = await Promise.all([
-        this.gateway.getAgentPortfolioSnapshot({
-          setup: inputs.makerSetup,
-          agentAddress: inputs.agentAddress,
-          marketIds: [inputs.selected.marketId],
-        }),
-        this.gateway.getAgentPortfolioSnapshot({
-          setup: hedgeAccount,
-          agentAddress: inputs.agentAddress,
-          marketIds: [inputs.selected.marketId],
-        }),
+        this.venueRead(
+          this.gateway.getAgentPortfolioSnapshot({
+            setup: inputs.makerSetup,
+            agentAddress: inputs.agentAddress,
+            marketIds: [inputs.selected.marketId],
+          }),
+          "Maker account read",
+        ),
+        this.venueRead(
+          this.gateway.getAgentPortfolioSnapshot({
+            setup: hedgeAccount,
+            agentAddress: inputs.agentAddress,
+            marketIds: [inputs.selected.marketId],
+          }),
+          "Hedge account read",
+        ),
       ]);
       const makerPending = portfolios[0].positions[0]?.pendingOrderCount ?? 0;
       const hedgePending = portfolios[1].positions[0]?.pendingOrderCount ?? 0;
@@ -1952,16 +1996,22 @@ export class MakerRuntime {
     let hedgeStateObserved = false;
     for (let attempt = 1; attempt <= 10; attempt += 1) {
       const [makerAfterHedge, hedgeAfterHedge] = await Promise.all([
-        this.gateway.getAgentPortfolioSnapshot({
-          setup: inputs.makerSetup,
-          agentAddress: inputs.agentAddress,
-          marketIds: [inputs.selected.marketId],
-        }),
-        this.gateway.getAgentPortfolioSnapshot({
-          setup: hedgeAccount,
-          agentAddress: inputs.agentAddress,
-          marketIds: [inputs.selected.marketId],
-        }),
+        this.venueRead(
+          this.gateway.getAgentPortfolioSnapshot({
+            setup: inputs.makerSetup,
+            agentAddress: inputs.agentAddress,
+            marketIds: [inputs.selected.marketId],
+          }),
+          "Maker account read",
+        ),
+        this.venueRead(
+          this.gateway.getAgentPortfolioSnapshot({
+            setup: hedgeAccount,
+            agentAddress: inputs.agentAddress,
+            marketIds: [inputs.selected.marketId],
+          }),
+          "Hedge account read",
+        ),
       ]);
       actualCombinedDeltaUsd =
         (makerAfterHedge.positions[0]?.inventoryUsd ?? 0) +
@@ -2059,19 +2109,54 @@ export class MakerRuntime {
     if (this.cyclePromise) return this.cyclePromise;
 
     const generation = inputs.generation ?? this.generation;
+    const config = inputs.configOverride ?? this.store.getConfig();
+    const token = ++this.cycleToken;
     const task = this.runCycle({
       executeLive: inputs.executeLive ?? false,
       generation,
+      cycleToken: token,
       ...(inputs.configOverride
         ? { configOverride: inputs.configOverride }
         : {}),
       ...(inputs.paperTrialId ? { paperTrialId: inputs.paperTrialId } : {}),
     });
-    this.cyclePromise = task;
+    const runningPaper =
+      config?.mode === "paper" &&
+      this.snapshotValue.running &&
+      (inputs.executeLive ?? false);
+    const guarded = runningPaper
+      ? withTimeout(
+          task,
+          Math.max(3 * config.refreshMs, 60_000),
+          "Paper cycle passed its deadline",
+        ).catch((error) => {
+          if (
+            error instanceof VenueReadTimeoutError &&
+            token === this.cycleToken &&
+            generation === this.generation &&
+            this.snapshotValue.running
+          ) {
+            this.cycleToken += 1;
+            this.snapshotValue.lastError = error.message;
+            this.store.logEvent({
+              category: "runtime",
+              action: "cycle",
+              outcome: "timeout",
+              detail: {
+                error: error.message,
+                accountReadAt: this.snapshotValue.accountReadAt,
+              },
+            });
+            return;
+          }
+          throw error;
+        })
+      : task;
+    this.cyclePromise = guarded;
     try {
-      await task;
+      await guarded;
     } finally {
-      if (this.cyclePromise === task) this.cyclePromise = null;
+      if (this.cyclePromise === guarded) this.cyclePromise = null;
     }
   }
 
@@ -2085,7 +2170,7 @@ export class MakerRuntime {
     this.snapshotValue.lastError = blocker.message;
     this.snapshotValue.paperBlocker = blocker;
     this.snapshotValue.execution.lastDecision = "held";
-    this.snapshotValue.lastSuccessfulCycleAt = updatedAt;
+    // A blocked Paper simulation is an observed cycle, not a successful one.
     this.snapshotValue.markets = this.snapshotValue.markets.map((row) =>
       row.id === selected.marketId
         ? { ...row, status: "healthy", error: blocker.message, updatedAt }
@@ -2137,6 +2222,7 @@ export class MakerRuntime {
   private async runCycle(inputs: {
     executeLive: boolean;
     generation: number;
+    cycleToken: number;
     configOverride?: MakerConfig;
     paperTrialId?: string;
   }): Promise<void> {
@@ -2172,7 +2258,9 @@ export class MakerRuntime {
         : null;
       const agent = this.store.getAgent();
       const executionIsCurrent = () =>
-        this.snapshotValue.running && this.generation === inputs.generation;
+        this.snapshotValue.running &&
+        this.generation === inputs.generation &&
+        (config?.mode !== "paper" || this.cycleToken === inputs.cycleToken);
       const liveExecution = config.mode === "live" && inputs.executeLive;
 
       if (liveExecution) {
@@ -2198,9 +2286,12 @@ export class MakerRuntime {
         }
       }
 
-      const { market, orderbook } = await this.gateway.getOrderbook(
-        selected.marketId,
+      const { market, orderbook } = await withTimeout(
+        this.gateway.getOrderbook(selected.marketId),
+        VENUE_READ_TIMEOUT_MS,
+        "Venue orderbook read timed out",
       );
+      if (inputs.executeLive && !executionIsCurrent()) return;
       const bestBid = orderbook.bestBidPrice;
       const bestAsk = orderbook.bestAskPrice;
       if (bestBid === undefined || bestAsk === undefined) {
@@ -2244,22 +2335,32 @@ export class MakerRuntime {
         ? null
         : emptyPortfolio();
       if (setup && account?.agentCapId && agent) {
-        portfolio = await this.gateway.getAgentPortfolioSnapshot({
-          setup,
-          agentAddress: agent.address,
-          marketIds: config.markets.map((item) => item.marketId),
-        });
+        portfolio = await withTimeout(
+          this.gateway.getAgentPortfolioSnapshot({
+            setup,
+            agentAddress: agent.address,
+            marketIds: config.markets.map((item) => item.marketId),
+          }),
+          VENUE_READ_TIMEOUT_MS,
+          "Maker account read timed out",
+        );
+        if (inputs.executeLive && !executionIsCurrent()) return;
         this.snapshotValue.accountReadAt = portfolio.markedAt;
         if (config.hedge.enabled && config.hedge.accountId) {
           const hedgeAccount = this.store.getAccountSetup(
             config.hedge.accountId,
           );
           if (hedgeAccount?.agentCapId) {
-            hedgeRiskPortfolio = await this.gateway.getAgentPortfolioSnapshot({
-              setup: hedgeAccount,
-              agentAddress: agent.address,
-              marketIds: config.markets.map((item) => item.marketId),
-            });
+            hedgeRiskPortfolio = await withTimeout(
+              this.gateway.getAgentPortfolioSnapshot({
+                setup: hedgeAccount,
+                agentAddress: agent.address,
+                marketIds: config.markets.map((item) => item.marketId),
+              }),
+              VENUE_READ_TIMEOUT_MS,
+              "Hedge account read timed out",
+            );
+            if (inputs.executeLive && !executionIsCurrent()) return;
           }
         }
       }
@@ -2486,6 +2587,10 @@ export class MakerRuntime {
       const unselectedGrossExposureUsd = portfolio.positions
         .filter((item) => !configuredMarketIds.has(item.marketId))
         .reduce((sum, item) => sum + Math.abs(item.inventoryUsd), 0);
+      const hedgeCollateralRequirement = requiredHedgeCollateralUsd(config);
+      const hedgeSharesMakerAccount =
+        config.hedge.enabled &&
+        config.hedge.accountId === config.makerAccountId;
       const safety = evaluateQuoteSafety({
         config: marketConfig,
         quote,
@@ -2509,13 +2614,24 @@ export class MakerRuntime {
             ? Math.max(
                 portfolioQuoteRisk.requiredQuoteCollateralUsd,
                 requiredMakerCollateralUsd(config),
-              )
+              ) + (hedgeSharesMakerAccount ? hedgeCollateralRequirement : 0)
             : portfolioQuoteRisk.requiredQuoteCollateralUsd,
         agentGasSui: portfolio.gasSui,
         runDrawdownUsd,
       });
       safety.push(...accountRiskChecks("Maker", portfolio));
       if (config.hedge.enabled) {
+        if (config.mode === "paper" && !hedgeSharesMakerAccount) {
+          safety.push({
+            code: "hedge-collateral",
+            label: "Hedge collateral",
+            ok:
+              hedgeRiskPortfolio !== null &&
+              hedgeRiskPortfolio.availableCollateralUsd >=
+                hedgeCollateralRequirement,
+            detail: `Hedge account requires $${hedgeCollateralRequirement.toFixed(2)} free`,
+          });
+        }
         safety.push(...accountRiskChecks("Hedge", hedgeRiskPortfolio));
       }
       const summary = this.markets.find(
@@ -2662,6 +2778,7 @@ export class MakerRuntime {
         worstCaseUnrealizedLossDeltaUsd: quote.sizeUsd,
         worstCaseRunDrawdownDeltaUsd: quote.sizeUsd,
       });
+      if (inputs.executeLive && !executionIsCurrent()) return;
       if (admission && !admission.accepted) {
         this.store.logEvent({
           category: "risk",
@@ -2691,6 +2808,19 @@ export class MakerRuntime {
           symbol: market.metadata?.symbol ?? selected.symbol,
           requiredGasSui: config.maxGasMist / 1_000_000_000,
           observedAt: portfolio.markedAt,
+          ...(config.hedge.enabled && config.hedge.accountId
+            ? {
+                hedgeCollateral: {
+                  accountId: config.hedge.accountId,
+                  availableUsd: hedgeRiskPortfolio?.availableCollateralUsd ?? 0,
+                  requiredUsd: hedgeCollateralRequirement,
+                  maxOrderUsd: config.hedge.maxOrderUsd,
+                  leverage: lowestEffectiveHedgeLeverage(config),
+                  observedAt:
+                    hedgeRiskPortfolio?.markedAt ?? portfolio.markedAt,
+                },
+              }
+            : {}),
           collateral: {
             availableUsd: portfolio.availableCollateralUsd,
             requiredUsd: Math.max(
@@ -2716,15 +2846,20 @@ export class MakerRuntime {
 
         let receipt: { endpoint: string; gasUsedMist: number };
         try {
-          receipt = await this.gateway.simulateQuote({
-            setup: setup!,
-            config: marketConfig,
-            quote,
-            agentAddress: agent!.address,
-            builderCode: this.options.builderCode(),
-            shouldContinue: executionIsCurrent,
-          });
+          receipt = await withTimeout(
+            this.gateway.simulateQuote({
+              setup: setup!,
+              config: marketConfig,
+              quote,
+              agentAddress: agent!.address,
+              builderCode: this.options.builderCode(),
+              shouldContinue: executionIsCurrent,
+            }),
+            VENUE_READ_TIMEOUT_MS,
+            "Paper simulation read timed out",
+          );
         } catch (error) {
+          if (!executionIsCurrent()) return;
           const errorText = message(error);
           const gasRelated = /(?:gas|sui balance|insufficient funds)/i.test(
             errorText,
@@ -2932,7 +3067,26 @@ export class MakerRuntime {
       );
     } catch (error) {
       const errorText = message(error);
-      const cancelled = inputs.generation !== this.generation;
+      const cancelled =
+        inputs.generation !== this.generation ||
+        (config?.mode === "paper" && inputs.cycleToken !== this.cycleToken);
+      if (
+        !cancelled &&
+        error instanceof VenueReadTimeoutError &&
+        config?.mode === "paper"
+      ) {
+        this.snapshotValue.lastError = errorText;
+        this.store.logEvent({
+          category: "runtime",
+          action: "cycle",
+          outcome: "timeout",
+          detail: {
+            error: errorText,
+            accountReadAt: this.snapshotValue.accountReadAt,
+          },
+        });
+        return;
+      }
       const retryablePostOnlyRace =
         !cancelled &&
         config?.mode === "live" &&
@@ -3060,7 +3214,11 @@ export class MakerRuntime {
         }
       }
     } finally {
-      if (config?.markets.length && !usesDwellScheduler) {
+      if (
+        config?.markets.length &&
+        !usesDwellScheduler &&
+        (config.mode !== "paper" || inputs.cycleToken === this.cycleToken)
+      ) {
         this.marketIndex = (this.marketIndex + 1) % config.markets.length;
       }
     }
@@ -3099,11 +3257,14 @@ export class MakerRuntime {
       this.rewardDashboard(setup.collateralCoinType, "farming"),
       this.rewardDashboard(setup.collateralCoinType, "profit"),
       this.rewardDashboard(setup.collateralCoinType, "both"),
-      this.gateway.getAgentPortfolioSnapshot({
-        setup,
-        agentAddress: agent.address,
-        marketIds,
-      }),
+      this.venueRead(
+        this.gateway.getAgentPortfolioSnapshot({
+          setup,
+          agentAddress: agent.address,
+          marketIds,
+        }),
+        "Paper trial account read",
+      ),
     ]);
     const plan = buildStrategyTrialPlan({
       originalConfig,

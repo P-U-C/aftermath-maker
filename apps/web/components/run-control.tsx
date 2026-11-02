@@ -7,7 +7,7 @@ import { createPortal } from "react-dom";
 import type { RunBundle, RunPhase, RunState } from "../lib/run-state";
 import { formatPaperBlocker } from "../lib/paper-blocker";
 import { nextStage } from "../lib/bundle-readiness";
-import { Sheet } from "./ui/primitives";
+import { Button, Sheet } from "./ui/primitives";
 
 type BundleAction = "start" | "pause" | "resume";
 
@@ -257,15 +257,16 @@ export function RunStatusChip({
 }) {
   const state = statusWord(bundle.phase);
   return (
-    <button
+    <Button
+      variant="secondary"
+      size="small"
       className="run-status-chip"
-      type="button"
       onClick={onClick}
       aria-label={`${bundle.name}: ${state}. Open run status`}
     >
       <StateIndicator indicator={rowIndicator(bundle)} />
       {state}
-    </button>
+    </Button>
   );
 }
 

@@ -52,6 +52,7 @@ const CONTROL_EVENT_KINDS = [
   "runtime:cancel-maker-orders:confirmed",
   "runtime:cycle:cancelled",
   "runtime:cycle:error",
+  "runtime:cycle:timeout",
   "runtime:post-only-retry:retry",
   "runtime:start:success",
   "runtime:stop:success",

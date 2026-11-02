@@ -9,6 +9,7 @@ import {
   type ButtonHTMLAttributes,
   type HTMLAttributes,
   type InputHTMLAttributes,
+  type SelectHTMLAttributes,
   type ReactNode,
   type TableHTMLAttributes,
 } from "react";
@@ -161,6 +162,18 @@ export function SegmentedTabs<T extends string>({
   );
 }
 
+/** Unified native select: retains browser keyboard behavior and 44 px phone targets. */
+export const Select = forwardRef<
+  HTMLSelectElement,
+  SelectHTMLAttributes<HTMLSelectElement>
+>(function Select({ className, children, ...props }, ref) {
+  return (
+    <select ref={ref} className={classes("ui-select", className)} {...props}>
+      {children}
+    </select>
+  );
+});
+
 type InputProps = Omit<InputHTMLAttributes<HTMLInputElement>, "size"> & {
   label: string;
   unit?: string;
@@ -195,6 +208,7 @@ export const Input = forwardRef<HTMLInputElement, InputProps>(function Input(
         <span
           id={detailId}
           className={error ? "ui-field-error" : "ui-field-hint"}
+          role={error ? "alert" : undefined}
         >
           {error ?? hint}
         </span>

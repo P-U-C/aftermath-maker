@@ -1,4 +1,9 @@
-import { requiredMakerCollateralUsd, type MakerConfig } from "@puc/core";
+import {
+  requiredMakerCollateralUsd,
+  requiredHedgeCollateralUsd,
+  lowestEffectiveHedgeLeverage,
+  type MakerConfig,
+} from "@puc/core";
 import { requiredBundleGasMist } from "./bundle-supervisor.js";
 import { UserFacingError } from "./http-error.js";
 import type { StoredBundle } from "./store.js";
@@ -34,7 +39,7 @@ export function assertBundleReadyToStart(
   const kind = first.id === "strategy" ? "bundles" : "venues";
   const instruction =
     first.id === "collateral" && first.accountId
-      ? `Deposit $${first.shortfallUsd?.toFixed(2)} to account ${first.accountId} before starting ${bundle.name}.`
+      ? `${first.detail.startsWith("Hedge account") ? `${first.detail} ` : ""}Deposit $${first.shortfallUsd?.toFixed(2)} to account ${first.accountId} before starting ${bundle.name}.`
       : first.id === "gas"
         ? `Add gas to ${bundle.name}'s trading key before starting it.`
         : `${first.detail} before starting ${bundle.name}.`;
@@ -210,7 +215,14 @@ export function deriveBundleReadiness(inputs: {
             };
   gas.requiredGasPaperSui = requiredGasPaperSui;
   gas.requiredGasLiveSui = requiredGasLiveSui;
-  const requiredUsd = config ? requiredMakerCollateralUsd(config) : 0;
+  const makerRequirement = config ? requiredMakerCollateralUsd(config) : 0;
+  const hedgeRequirement = config ? requiredHedgeCollateralUsd(config) : 0;
+  const sharedAccount = Boolean(
+    config?.hedge.enabled &&
+    bundle.makerAccountId &&
+    bundle.makerAccountId === bundle.takerAccountId,
+  );
+  const requiredUsd = makerRequirement + (sharedAccount ? hedgeRequirement : 0);
   const maker = accounts?.find(
     (account) => account.accountId === bundle.makerAccountId,
   );
@@ -218,13 +230,15 @@ export function deriveBundleReadiness(inputs: {
     ? accounts?.find((account) => account.accountId === bundle.takerAccountId)
     : null;
   const free = maker?.availableCollateralUsd ?? 0;
-  // Proposal: any positive hedge collateral is enough until an owner agrees on
-  // a size-derived hedge reserve. Zero requires the smallest six-decimal top-up.
-  const hedgeShort =
-    config?.hedge.enabled && hedge && hedge.availableCollateralUsd <= 0
-      ? 0.01
-      : 0;
-  const shortfallUsd = Math.max(0, requiredUsd - free);
+  const makerShort = Math.max(0, requiredUsd - free);
+  const hedgeFree = hedge?.availableCollateralUsd ?? 0;
+  const hedgeShort = sharedAccount
+    ? 0
+    : Math.max(0, hedgeRequirement - hedgeFree);
+  const shortfallUsd = makerShort || hedgeShort;
+  const hedgeFirst = makerShort <= 0 && hedgeShort > 0;
+  const selectedRequirement = hedgeFirst ? hedgeRequirement : requiredUsd;
+  const selectedAvailable = hedgeFirst ? hedgeFree : free;
   const collateral: BundleStage =
     accountStage.status !== "done"
       ? {
@@ -233,17 +247,18 @@ export function deriveBundleReadiness(inputs: {
           detail: "After accounts are assigned",
           requiredUsd,
         }
-      : shortfallUsd > 0 || hedgeShort > 0
+      : shortfallUsd > 0
         ? {
             id: "collateral",
             status: "todo",
-            detail: `Needs $${(shortfallUsd || hedgeShort).toFixed(2)} collateral`,
-            requiredUsd: hedgeShort ? 0.01 : requiredUsd,
-            availableUsd: hedgeShort
-              ? (hedge?.availableCollateralUsd ?? 0)
-              : free,
-            shortfallUsd: shortfallUsd || hedgeShort,
-            accountId: hedgeShort
+            detail:
+              hedgeFirst && config
+                ? `Hedge account ${bundle.takerAccountId} needs $${hedgeRequirement.toFixed(2)} free collateral to place one hedge of up to $${config.hedge.maxOrderUsd.toFixed(2)} at ${lowestEffectiveHedgeLeverage(config)}x. It has $${hedgeFree.toFixed(2)}.`
+                : `Needs $${shortfallUsd.toFixed(2)} collateral`,
+            requiredUsd: selectedRequirement,
+            availableUsd: selectedAvailable,
+            shortfallUsd,
+            accountId: hedgeFirst
               ? bundle.takerAccountId!
               : bundle.makerAccountId!,
           }

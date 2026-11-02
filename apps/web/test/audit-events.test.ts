@@ -36,32 +36,56 @@ function stringLiterals(expression: string) {
 }
 
 function loggedEventKeys() {
-  return ["apps/control/src/server.ts", "apps/control/src/runtime.ts"].flatMap(
-    (file) => {
-      const source = fs.readFileSync(path.join(root, file), "utf8");
-      return eventObjects(source).flatMap((event) => {
-        const category = event.match(/category:\s*"([^"]+)"/)?.[1];
-        const action = event.match(/action:\s*([\s\S]*?),\s*outcome:/)?.[1];
-        const outcome = event.match(
-          /outcome:\s*([\s\S]*?)(?:,\s*detail:|\n\s*}\s*$)/,
-        )?.[1];
-        if (!category || !action || !outcome) {
-          throw new Error(`Could not catalogue a server audit event: ${event}`);
-        }
-        const actionValues = stringLiterals(
-          action.includes("?") ? action.slice(action.indexOf("?") + 1) : action,
-        );
-        return actionValues.flatMap((actionName) =>
-          stringLiterals(outcome).map(
-            (outcomeName) => `${category}:${actionName}:${outcomeName}`,
-          ),
-        );
-      });
-    },
-  );
+  return [
+    "apps/control/src/server.ts",
+    "apps/control/src/server-app.ts",
+    "apps/control/src/runtime.ts",
+  ].flatMap((file) => {
+    const source = fs.readFileSync(path.join(root, file), "utf8");
+    return eventObjects(source).flatMap((event) => {
+      const category = event.match(/category:\s*"([^"]+)"/)?.[1];
+      const action = event.match(/action:\s*([\s\S]*?),\s*outcome:/)?.[1];
+      const outcome = event.match(
+        /outcome:\s*([\s\S]*?)(?:,\s*detail:|\n\s*}\s*$)/,
+      )?.[1];
+      if (!category || !action || !outcome) {
+        throw new Error(`Could not catalogue a server audit event: ${event}`);
+      }
+      const actionValues = stringLiterals(
+        action.includes("?") ? action.slice(action.indexOf("?") + 1) : action,
+      );
+      return actionValues.flatMap((actionName) =>
+        stringLiterals(outcome).map(
+          (outcomeName) => `${category}:${actionName}:${outcomeName}`,
+        ),
+      );
+    });
+  });
 }
 
 describe("desk audit events", () => {
+  it("narrates a stalled account read with time and safe last error", () => {
+    const event = deskEvent(
+      {
+        id: 701,
+        occurredAt: "2026-10-31T01:12:55.000Z",
+        category: "runtime",
+        action: "cycle",
+        outcome: "timeout",
+        detail: {
+          accountReadAt: "2026-10-31T01:11:55.000Z",
+          error: "Maker account read timed out",
+        },
+      },
+      { bundleName: "Core" },
+    );
+    expect(event.severity).toBe("warning");
+    expect(event.sentence).toContain(
+      "Account reads stalled at 01:11. Last error: Maker account read timed out",
+    );
+    expect(event.sentence).toContain("Core");
+  });
+
   it("names the bundle when Paper resumes simulation and gives a blocked collateral event both fixes", () => {
     const cleared = deskEvent(
       {
