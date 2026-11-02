@@ -29,6 +29,9 @@ export function VenueFundingSheet({
   walletAddress,
   walletUsdcUsd,
   walletSui,
+  walletConnected,
+  balanceLoading,
+  onRetryBalances,
   onClose,
   onSubmit,
   onPause,
@@ -38,6 +41,9 @@ export function VenueFundingSheet({
   walletAddress: string;
   walletUsdcUsd: number | null;
   walletSui: number | null;
+  walletConnected: boolean;
+  balanceLoading: boolean;
+  onRetryBalances: () => void;
   onClose: () => void;
   onSubmit: (
     mode: FundingMode,
@@ -82,6 +88,7 @@ export function VenueFundingSheet({
       ? /^(0|[1-9]\d*)(?:\.\d{1,9})?$/.test(draft)
       : /^(0|[1-9]\d*)(?:\.\d{1,6})?$/.test(draft);
   const valid =
+    walletConnected &&
     validText &&
     Number.isFinite(amount) &&
     amount > 0 &&
@@ -90,6 +97,28 @@ export function VenueFundingSheet({
     !(target.mode === "withdraw" && target.bundleRunning) &&
     (target.mode !== "gas" || (amount >= 0.01 && amount <= 10));
   const money = (value: number) => formatMoney(value);
+  const balanceUnit = target.mode === "gas" ? "SUI" : "USDC";
+  const disabledReason = !walletConnected
+    ? "Connect the owner wallet to sign the transaction."
+    : target.mode === "withdraw" && target.bundleRunning
+      ? `Pause ${target.bundleName} before withdrawing.`
+      : !validText
+        ? `Enter an amount with up to ${target.mode === "gas" ? 9 : 6} decimals.`
+        : !Number.isFinite(amount) || amount <= 0
+          ? `Enter a ${balanceUnit} amount above zero.`
+          : target.mode === "gas" && (amount < 0.01 || amount > 10)
+            ? "Enter between 0.01 and 10 SUI."
+            : target.mode !== "withdraw" && balanceLoading
+              ? `Checking the owner wallet's ${balanceUnit} balance…`
+              : max === null
+                ? target.mode === "withdraw"
+                  ? "Checking withdrawable collateral…"
+                  : `Couldn't read the owner wallet's ${balanceUnit} balance. Retry the balance check.`
+                : amount > max
+                  ? max === 0
+                    ? `The owner wallet has no ${balanceUnit}. Add ${balanceUnit} to it before depositing.`
+                    : `The owner wallet has ${target.mode === "gas" ? `${max.toFixed(2)} SUI` : money(max)}. Enter a smaller amount; a partial deposit is allowed.`
+                  : null;
   const label =
     target.mode === "gas"
       ? "Add gas"
@@ -159,6 +188,7 @@ export function VenueFundingSheet({
             <Button
               variant="primary"
               disabled={!valid || busy}
+              title={!valid ? (disabledReason ?? undefined) : undefined}
               onClick={() => void submit()}
             >
               {busy ? (
@@ -253,29 +283,48 @@ export function VenueFundingSheet({
               <b>{unit}</b>
             </span>
           </label>
-          <small>
-            {target.mode === "gas" ? (
-              walletSui === null ? (
-                <>
-                  Connect your wallet to see its SUI balance.{" "}
-                  <Button variant="quiet" onClick={onConnectWallet}>
-                    Connect wallet
-                  </Button>
-                </>
-              ) : (
-                `Your wallet has ${walletSui.toFixed(2)} SUI.`
-              )
-            ) : walletUsdcUsd === null ? (
+          <small role="status">
+            {target.mode === "withdraw" && walletConnected ? (
+              "USDC returns to your connected owner wallet."
+            ) : !walletConnected ? (
               <>
-                Connect your wallet to see its USDC balance.{" "}
+                Connect the owner wallet to{" "}
+                {target.mode === "withdraw"
+                  ? "sign the withdrawal"
+                  : `check its ${balanceUnit} balance`}
+                .{" "}
                 <Button variant="quiet" onClick={onConnectWallet}>
                   Connect wallet
                 </Button>
               </>
+            ) : balanceLoading ? (
+              `Checking the owner wallet's ${balanceUnit} balance…`
+            ) : max === null ? (
+              <>
+                Couldn’t read the owner wallet’s {balanceUnit} balance.{" "}
+                <Button
+                  variant="secondary"
+                  size="small"
+                  onClick={onRetryBalances}
+                >
+                  Retry balance check
+                </Button>
+              </>
+            ) : target.mode === "gas" ? (
+              `Your wallet has ${walletSui!.toFixed(2)} SUI.`
             ) : (
-              `Your wallet has ${money(walletUsdcUsd)} USDC.`
+              `Your wallet has ${money(walletUsdcUsd!)} USDC.`
             )}
           </small>
+          {disabledReason &&
+            !balanceLoading &&
+            walletConnected &&
+            max !== null &&
+            target.mode !== "withdraw" && (
+              <p className="venue-funding-help" role="status">
+                {disabledReason}
+              </p>
+            )}
           <div className="venue-funding-picks">
             {picks.map((value, index) => (
               <button
@@ -350,15 +399,21 @@ export function VenueFundingSheet({
                   : money(target.requiredUsd)}
               </strong>
             </div>
-            <p className={remaining <= 0 ? "is-ready" : "is-short"}>
-              {remaining <= 0
-                ? target.mode === "gas"
-                  ? "Enough gas for Paper simulations"
-                  : target.mode === "deposit" &&
-                      target.keyGasSui < target.paperGasSui
-                    ? "Enough collateral; add gas before starting"
-                    : `Enough for ${target.bundleName} to quote`
-                : `Still ${target.mode === "gas" ? remaining.toFixed(2) + " SUI" : money(remaining)} short`}
+            <p className={valid && remaining <= 0 ? "is-ready" : "is-short"}>
+              {target.mode !== "withdraw" && !valid
+                ? !walletConnected || max === null
+                  ? "Confirm the owner wallet balance before continuing"
+                  : amount > max
+                    ? "Choose an amount the owner wallet can cover"
+                    : "Enter an amount to preview this deposit"
+                : remaining <= 0
+                  ? target.mode === "gas"
+                    ? "Enough gas for Paper simulations"
+                    : target.mode === "deposit" &&
+                        target.keyGasSui < target.paperGasSui
+                      ? "Enough collateral; add gas before starting"
+                      : `Enough for ${target.bundleName} to quote`
+                  : `Still ${target.mode === "gas" ? remaining.toFixed(2) + " SUI" : money(remaining)} short`}
             </p>
           </div>
           {target.mode === "withdraw" &&

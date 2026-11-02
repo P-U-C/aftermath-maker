@@ -11722,8 +11722,13 @@ mysten-dapp-kit-connect-modal,
   color: var(--tide-text);
 }
 .venue-funding-summary .is-short,
-.venue-funding-warning {
+.venue-funding-warning,
+.venue-funding-help {
   color: var(--amber-text);
+}
+.venue-funding-help {
+  font-size: 13.5px;
+  line-height: 1.45;
 }
 .venue-funding-warning {
   padding: 12px;
