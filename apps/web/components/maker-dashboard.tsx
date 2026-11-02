@@ -11,6 +11,7 @@ import type { DAppKitConnectModal } from "@mysten/dapp-kit-core/web";
 import { Transaction } from "@mysten/sui/transactions";
 import {
   aggregatePortfolioQuoteRisk,
+  requiredMakerCollateralUsd,
   makerConfigSchema,
   type MakerMarketOverrides,
 } from "@puc/core";
@@ -142,6 +143,10 @@ import { PerformanceView } from "./views/performance";
 import { GoLiveSheet, StrategyView } from "./views/strategy";
 import { VenueBoard, VenuesView } from "./views/venues";
 import {
+  BundleFundingSheet,
+  type BundleFundingAccount,
+} from "./bundle-funding-sheet";
+import {
   VenueFundingSheet,
   type FundingMode,
   type FundingTarget,
@@ -157,6 +162,7 @@ type ExpectedOwnerIntent = {
   sender: string;
   amount?: bigint;
   accountCapId?: string;
+  deposits?: Array<{ accountCapId: string; amount: bigint }>;
   recipient?: string;
   agentAddress?: string;
   gasMist?: bigint;
@@ -187,6 +193,21 @@ function verifiedOwnerTransaction(
   ) {
     throw new Error(
       "Prepared transaction account does not match the selected account",
+    );
+  }
+  if (
+    expected.deposits &&
+    (intent.kind !== "deposit-batch" ||
+      intent.deposits.length !== expected.deposits.length ||
+      intent.deposits.some(
+        (entry, index) =>
+          entry.accountCapId.toLowerCase() !==
+            expected.deposits![index]?.accountCapId.toLowerCase() ||
+          entry.amount !== expected.deposits![index]?.amount,
+      ))
+  ) {
+    throw new Error(
+      "Prepared deposits do not match both selected accounts and amounts",
     );
   }
   if (
@@ -1227,6 +1248,10 @@ function DashboardBody() {
   const [fundingTarget, setFundingTarget] = useState<FundingTarget | null>(
     null,
   );
+  const [bundleFunding, setBundleFunding] = useState<{
+    bundleName: string;
+    accounts: BundleFundingAccount[];
+  } | null>(null);
   const [walletBalances, setWalletBalances] = useState<{
     usdcUsd: number;
     sui: number;
@@ -2683,6 +2708,74 @@ function DashboardBody() {
         : current,
     );
     return { digest, freeUsd };
+  }
+
+  async function submitBundleFunding(
+    deposits: Array<{ accountId: string; amountUsdc: string }>,
+  ): Promise<string> {
+    const ownerAddress = requestOwnerWallet("fund both accounts");
+    if (!ownerAddress)
+      throw new Error(
+        "Connect the owner wallet before preparing a transaction.",
+      );
+    if (
+      deposits.length < 1 ||
+      deposits.length > 2 ||
+      new Set(deposits.map((deposit) => deposit.accountId)).size !==
+        deposits.length
+    )
+      throw new Error("Choose one or two different owned accounts.");
+    const expected = deposits.map((deposit) => {
+      const owned = accounts.find(
+        (account) => account.accountId === deposit.accountId,
+      );
+      if (!owned)
+        throw new Error(
+          "One of the accounts is no longer owned by your wallet.",
+        );
+      const amount = usdcBaseUnits(deposit.amountUsdc);
+      if (amount <= 0n)
+        throw new Error("Enter a positive deposit for each account.");
+      return { accountCapId: owned.accountCapId, amount };
+    });
+    const built = await request<PreparedOwnerTransactionResponse>(
+      "api/accounts/deposit-transaction",
+      {
+        method: "POST",
+        body: JSON.stringify({ deposits }),
+      },
+    );
+    const transaction = verifiedOwnerTransaction(built, {
+      kind: "deposit-batch",
+      sender: ownerAddress,
+      deposits: expected,
+    });
+    const result = await wallet.signAndExecuteTransaction({ transaction });
+    if (result.$kind === "FailedTransaction")
+      throw new Error(
+        "The wallet transaction did not complete. Check its receipt before retrying.",
+      );
+    const digest = result.Transaction.digest;
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      const read = await request<{ accounts: AccountCap[] }>(
+        `api/accounts?collateralCoinType=${encodeURIComponent(USDC)}`,
+      );
+      setAccounts(read.accounts);
+      void refresh().catch(() => undefined);
+    } catch {
+      // Never erase a confirmed transaction just because the next read failed.
+    }
+    const total = expected.reduce(
+      (sum, entry) => sum + Number(entry.amount) / 1_000_000,
+      0,
+    );
+    setWalletBalances((current) =>
+      current
+        ? { ...current, usdcUsd: Math.max(0, current.usdcUsd - total) }
+        : current,
+    );
+    return digest;
   }
 
   async function provision(accountId = selectedAccount) {
@@ -4877,6 +4970,20 @@ function DashboardBody() {
         (bundle.makerAccountId === owned.accountId ||
           bundle.takerAccountId === owned.accountId),
     );
+    const strategy = strategies.find(
+      (item) => item.id === assignedBundle?.strategyId,
+    );
+    const requiredUsd =
+      assignedBundle?.makerAccountId === owned.accountId && strategy
+        ? requiredMakerCollateralUsd({
+            ...configWithStrategySettings(config, strategy.config),
+            markets: strategy.markets,
+          })
+        : assignedBundle?.takerAccountId === owned.accountId &&
+            strategy?.config.hedge.enabled &&
+            owned.availableCollateralUsd <= 0
+          ? 0.01
+          : 0;
     return {
       accountId: owned.accountId,
       label: owned.label,
@@ -4892,14 +4999,10 @@ function DashboardBody() {
       ),
       gasSui:
         assignedBundle?.readiness?.stages[3].availableGasSui ?? agentGasSui,
-      requiredUsd:
-        assignedBundle?.readiness?.stages[4].accountId === owned.accountId
-          ? (assignedBundle.readiness.stages[4].requiredUsd ?? 0)
-          : 0,
-      shortfallUsd:
-        assignedBundle?.readiness?.stages[4].accountId === owned.accountId
-          ? (assignedBundle.readiness.stages[4].shortfallUsd ?? 0)
-          : 0,
+      requiredUsd,
+      shortfallUsd: assignedBundle?.readiness
+        ? Math.max(0, requiredUsd - owned.availableCollateralUsd)
+        : 0,
       bundleMode: assignedBundle?.mode ?? null,
       bundleRunning: assignedBundle?.status === "running",
       readiness: assignedBundle?.readiness ?? null,
@@ -4916,6 +5019,7 @@ function DashboardBody() {
     row: import("./views/venues").VenueAccountRow,
     mode: FundingMode,
   ) {
+    setBundleFunding(null);
     const gasStage = row.readiness?.stages[3];
     setFundingTarget({
       mode,
@@ -8958,6 +9062,24 @@ function DashboardBody() {
           walletUsdcUsd={walletBalances?.usdcUsd ?? null}
           walletSui={walletBalances?.sui ?? null}
           onFund={(row, mode) => openVenueFunding(row, mode)}
+          onFundBundle={(bundleName, groupedAccounts) => {
+            const relevant = groupedAccounts.filter(
+              (row) => row.role !== "Available",
+            );
+            if (!relevant.length || relevant.length > 2) return;
+            setFundingTarget(null);
+            setBundleFunding({
+              bundleName,
+              accounts: relevant.map((row) => ({
+                accountId: row.accountId,
+                label: row.label ?? `Account ${row.accountId}`,
+                role: row.role as "Maker" | "Taker",
+                freeUsd: row.freeUsd,
+                requiredUsd: row.requiredUsd,
+                shortfallUsd: row.shortfallUsd,
+              })),
+            });
+          }}
           onAuthorize={(accountId) => {
             selectView("accounts");
             setSelectedAccount(accountId);
@@ -9009,6 +9131,18 @@ function DashboardBody() {
               }
             : {})}
         />
+        {bundleFunding && (
+          <BundleFundingSheet
+            key={bundleFunding.bundleName}
+            bundleName={bundleFunding.bundleName}
+            accounts={bundleFunding.accounts}
+            walletAddress={identity.ownerAddress}
+            walletUsdcUsd={walletBalances?.usdcUsd ?? null}
+            onClose={() => setBundleFunding(null)}
+            onConnectWallet={() => walletPickerRef.current?.show()}
+            onSubmit={submitBundleFunding}
+          />
+        )}
         {fundingTarget && (
           <VenueFundingSheet
             key={`${fundingTarget.accountId}:${fundingTarget.mode}`}

@@ -62,6 +62,7 @@ type VenueBoardProps = {
     account: VenueAccountRow,
     mode: "deposit" | "withdraw" | "gas",
   ) => void;
+  onFundBundle: (bundleName: string, accounts: VenueAccountRow[]) => void;
   onAuthorize: (accountId: string) => void;
   onOpenStrategy: () => void;
   blockedBundle?: {
@@ -96,6 +97,7 @@ export function VenueBoard({
   walletUsdcUsd,
   walletSui,
   onFund,
+  onFundBundle,
   onAuthorize,
   onOpenStrategy,
   blockedBundle,
@@ -242,21 +244,16 @@ export function VenueBoard({
                                 ? "Ready"
                                 : "Checking readiness"}
                           </span>
-                          {shortAccounts.length === 1 && (
+                          {shortAccounts.length > 0 && (
                             <Button
                               size="small"
                               variant="secondary"
                               onClick={() =>
-                                onFund(shortAccounts[0]!, "deposit")
+                                onFundBundle(bundle, groupedAccounts)
                               }
                             >
                               Fund {bundle}
                             </Button>
-                          )}
-                          {shortAccounts.length > 1 && (
-                            <span className="venue-multi-fund-note">
-                              Fund each account below
-                            </span>
                           )}
                         </span>
                       </th>

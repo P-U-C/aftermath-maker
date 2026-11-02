@@ -57,6 +57,7 @@ const fundingSheet = option(
   "--funding-sheet",
   showDepositSheet ? "deposit" : null,
 );
+const showBundleFundingSheet = process.argv.includes("--bundle-funding-sheet");
 const verifyPaperBlocked = process.argv.includes("--verify-paper-blocked");
 const verifyLaneHeight = process.argv.includes("--verify-lane-height");
 const beginStop = process.argv.includes("--begin-stop");
@@ -1533,6 +1534,15 @@ async function capture(browser, stateName, captureConfig, view) {
     }
     if (focusBundleStage && view === "bundles" && stateName === "bundy-short")
       await page.locator(".bundle-stage-list").first().scrollIntoViewIfNeeded();
+    if (
+      showBundleFundingSheet &&
+      view === "venues" &&
+      stateName === "bundy-dual-short"
+    ) {
+      await page.getByRole("button", { name: "Fund Bundy" }).click();
+      await page.getByRole("dialog", { name: "Fund Bundy" }).waitFor();
+      await page.waitForTimeout(350);
+    }
     if (fundingSheet && view === "venues" && stateName === "bundy-short") {
       if (fundingSheet === "deposit") {
         await page

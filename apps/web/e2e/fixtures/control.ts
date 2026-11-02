@@ -1352,6 +1352,16 @@ bundyShort.status.bundles = (bundyShort.status.bundles ?? []).map((entry) =>
     : entry,
 );
 
+const bundyDualShort = structuredClone(bundyShort);
+bundyDualShort.accounts.accounts[1]!.availableCollateralUsd = 0;
+bundyDualShort.accounts.accounts[1]!.freeMarginUsd = 0;
+
+const bundyGasShort = structuredClone(bundyShort);
+const gasStage = bundyGasShort.bundles.bundles[0]!.readiness!.stages[3];
+gasStage.status = "todo";
+gasStage.detail = "Needs 0.05 SUI gas";
+gasStage.availableGasSui = 0;
+
 const attention = structuredClone(paperRunning);
 attention.bundles.bundles = attention.bundles.bundles.map((bundle) =>
   bundle.id === "rewards-fixture"
@@ -1398,6 +1408,8 @@ export const fixtureStates = {
   "paper-shared": paperShared,
   "paper-blocked": paperBlocked,
   "bundy-short": bundyShort,
+  "bundy-dual-short": bundyDualShort,
+  "bundy-gas-short": bundyGasShort,
   "paper-running-no-book": paperRunningNoBook,
   "live-running": liveRunning,
   "mixed-running": mixedRunning,

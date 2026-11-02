@@ -185,16 +185,24 @@ export function VenueFundingSheet({
               : `${target.mode === "withdraw" ? "Withdrew" : "Deposited"} ${pretty}`}
           </h3>
           <p>
-            Account {target.accountId} now has{" "}
-            {done.freeUsd === null
-              ? "an updated balance"
-              : money(done.freeUsd) + " free"}
-            .{" "}
-            {target.mode === "deposit" &&
-            done.freeUsd !== null &&
-            done.freeUsd >= target.requiredUsd
-              ? `${target.bundleName} can start.`
-              : ""}
+            {target.mode === "gas" ? (
+              `Trading key gas for account ${target.accountId} is being refreshed in Venues.`
+            ) : (
+              <>
+                Account {target.accountId} now has{" "}
+                {done.freeUsd === null
+                  ? "an updated balance"
+                  : money(done.freeUsd) + " free"}
+                .{" "}
+                {target.mode === "deposit" &&
+                done.freeUsd !== null &&
+                done.freeUsd >= target.requiredUsd
+                  ? target.keyGasSui >= target.paperGasSui
+                    ? `${target.bundleName} can start if its other stages remain ready.`
+                    : "Collateral is covered; check the gas stage."
+                  : ""}
+              </>
+            )}
           </p>
           <a
             href={primaryVenue.explorerTxUrl(done.digest)}

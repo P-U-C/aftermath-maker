@@ -11746,6 +11746,58 @@ mysten-dapp-kit-connect-modal,
   color: var(--ink-2);
   font-size: 13px;
 }
+.venue-bundle-fund-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 72px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--line);
+}
+.venue-bundle-fund-row > span:first-child {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+.venue-bundle-fund-row strong {
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 620;
+}
+.venue-bundle-fund-row small {
+  color: var(--ink-2);
+  font-size: 12.5px;
+}
+.venue-bundle-fund-field {
+  display: flex;
+  align-items: center;
+  width: 132px;
+  min-width: 110px;
+  height: 40px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  color: var(--ink-2);
+}
+.venue-bundle-fund-field input:focus-visible,
+.venue-funding-amount input:focus-visible {
+  outline: none;
+  box-shadow: none;
+}
+.venue-bundle-fund-field input {
+  min-width: 0;
+  width: 100%;
+  border: 0;
+  background: none;
+  text-align: right;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+.venue-bundle-fund-field:focus-within {
+  border-color: var(--tide-text);
+  box-shadow: 0 0 0 3px var(--tide-soft);
+}
 .venue-funding-picks {
   display: flex;
   flex-wrap: wrap;
