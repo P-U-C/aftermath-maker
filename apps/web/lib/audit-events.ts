@@ -1,4 +1,8 @@
-import { formatPaperBlocker, type PaperBlocker } from "./paper-blocker";
+import {
+  accountReadStallText,
+  formatPaperBlocker,
+  type PaperBlocker,
+} from "./paper-blocker";
 
 export type AuditEventInput = {
   id: number;
@@ -184,6 +188,14 @@ const copies: Record<string, AuditCopy> = {
     severity: "error",
     sentence: () => "Maker cycle failed.",
   },
+  "runtime:cycle:timeout": {
+    severity: "warning",
+    sentence: (detail) =>
+      accountReadStallText(
+        String(detail.accountReadAt ?? ""),
+        String(detail.error ?? "venue read timed out"),
+      ),
+  },
   "runtime:strategy-trial-start:success": {
     severity: "info",
     sentence: () => "Test run started.",
@@ -364,6 +376,21 @@ export function deskEvent(
             ? { label: "Open Venues", view: "venues" }
             : { label: "Open Bundles", view: "bundles" },
       ],
+    };
+  }
+  if (key === "runtime:cycle:timeout") {
+    const observedAt =
+      typeof event.detail.accountReadAt === "string"
+        ? event.detail.accountReadAt
+        : "";
+    const error =
+      typeof event.detail.error === "string" ? event.detail.error : null;
+    return {
+      id: event.id,
+      occurredAt: event.occurredAt,
+      severity: "warning",
+      sentence: `${context.bundleName ? `${context.bundleName}: ` : ""}${accountReadStallText(observedAt, error)}`,
+      fixes: [{ label: "Open Venues", view: "venues" }],
     };
   }
   if (key === "paper:simulation:cleared") {

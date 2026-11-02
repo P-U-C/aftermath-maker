@@ -16,11 +16,18 @@ import {
 } from "../../lib/bundle-readiness";
 import {
   formatPaperBlocker,
-  relativeAccountRead,
+  accountReadStallText,
 } from "../../lib/paper-blocker";
 import type { RunState } from "../../lib/run-state";
 import { parseNumericDraft } from "../../lib/numeric-draft";
-import { Button, Card, PageHeader, Sheet } from "../ui/primitives";
+import {
+  Button,
+  Card,
+  Input,
+  PageHeader,
+  Select,
+  Sheet,
+} from "../ui/primitives";
 import { useMakerRunControls } from "../maker-shell";
 import { RunStatusChip } from "../run-control";
 import { ViewFrame } from "./view-frame";
@@ -571,10 +578,12 @@ export function BundlesView({
                         (strategy) => strategy.id === bundle.strategyId,
                       )?.cycleIntervalMs ?? 5_000) && (
                     <p className="bundle-stale" role="status">
-                      Account data is stale, last read{" "}
-                      {relativeAccountRead(
+                      {accountReadStallText(
                         runBundle.snapshot.accountReadAt,
-                      )?.replace(/^Checked /, "")}
+                        runBundle.lastError ??
+                          runBundle.snapshot.lastError ??
+                          null,
+                      )}
                     </p>
                   )}
                 {bundle.readiness && (
@@ -596,7 +605,7 @@ export function BundlesView({
                   {runBundle?.needsStrategy ? (
                     <label className="bundle-attach-strategy">
                       <span>Attach strategy</span>
-                      <select
+                      <Select
                         id={`bundle-attach-${bundle.id}`}
                         value=""
                         disabled={busy || !strategies.length}
@@ -619,7 +628,7 @@ export function BundlesView({
                             {strategy.name}
                           </option>
                         ))}
-                      </select>
+                      </Select>
                     </label>
                   ) : runBundle && (editing || !bundle.readiness) ? (
                     <RunStatusChip
@@ -739,18 +748,16 @@ export function BundlesView({
             </p>
           )}
           <div className="bundle-create-fields">
-            <label>
-              <span>Name</span>
-              <input
-                value={name}
-                maxLength={80}
-                onChange={(event) => setName(event.target.value)}
-                placeholder="Rewards"
-              />
-            </label>
+            <Input
+              label="Name"
+              value={name}
+              maxLength={80}
+              onChange={(event) => setName(event.target.value)}
+              placeholder="Rewards"
+            />
             <label>
               <span>Maker account</span>
-              <select
+              <Select
                 value={makerAccountId}
                 onChange={(event) => {
                   const nextMakerAccountId = event.target.value;
@@ -766,7 +773,7 @@ export function BundlesView({
                     {account.label ?? `Account ${account.accountId}`}
                   </option>
                 ))}
-              </select>
+              </Select>
             </label>
             <label>
               <span>
@@ -775,7 +782,7 @@ export function BundlesView({
                   ? "(required for this strategy)"
                   : "(optional)"}
               </span>
-              <select
+              <Select
                 aria-label={
                   chosenCreateStrategy?.requiresHedge
                     ? "Taker account (required for this strategy)"
@@ -794,11 +801,11 @@ export function BundlesView({
                     {account.label ?? `Account ${account.accountId}`}
                   </option>
                 ))}
-              </select>
+              </Select>
             </label>
             <label>
               <span>Strategy</span>
-              <select
+              <Select
                 aria-label="Strategy"
                 value={strategyId}
                 onChange={(event) => setStrategyId(event.target.value)}
@@ -813,7 +820,7 @@ export function BundlesView({
                     {strategy.name}
                   </option>
                 ))}
-              </select>
+              </Select>
             </label>
           </div>
           {strategyId && !chosenCreateStrategy?.marketCount && (
@@ -877,7 +884,7 @@ export function BundlesView({
           <div className="bundle-create-fields">
             <label>
               <span>Maker account</span>
-              <select
+              <Select
                 aria-label="Maker account"
                 value={editMakerAccountId}
                 onChange={(event) => setEditMakerAccountId(event.target.value)}
@@ -888,11 +895,11 @@ export function BundlesView({
                     {account.label ?? `Account ${account.accountId}`}
                   </option>
                 ))}
-              </select>
+              </Select>
             </label>
             <label>
               <span>Taker account</span>
-              <select
+              <Select
                 aria-label="Taker account"
                 value={editTakerAccountId}
                 onChange={(event) => setEditTakerAccountId(event.target.value)}
@@ -905,11 +912,11 @@ export function BundlesView({
                       {account.label ?? `Account ${account.accountId}`}
                     </option>
                   ))}
-              </select>
+              </Select>
             </label>
             <label>
               <span>Strategy</span>
-              <select
+              <Select
                 aria-label="Strategy"
                 value={editStrategyId}
                 onChange={(event) => setEditStrategyId(event.target.value)}
@@ -920,7 +927,7 @@ export function BundlesView({
                     {strategy.name}
                   </option>
                 ))}
-              </select>
+              </Select>
             </label>
             {editingBundle?.strategyName && (
               <p className="bundle-create-note">

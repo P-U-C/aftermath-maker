@@ -1,9 +1,17 @@
-import { Fragment, useState, type ReactNode } from "react";
+import { Fragment, useRef, useState, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import { Check, MoreHorizontal } from "lucide-react";
 
 import { formatMoney } from "../../lib/format";
 import type { VenueDescriptor } from "../../lib/venues";
-import { Button, Card, KitTable, PageHeader, Sheet } from "../ui/primitives";
+import {
+  Button,
+  Card,
+  Input,
+  KitTable,
+  PageHeader,
+  Sheet,
+} from "../ui/primitives";
 import { ViewFrame } from "./view-frame";
 
 export function VenuesView({
@@ -53,7 +61,7 @@ type VenueBoardProps = {
   grossExposureUsd: number;
   grossExposureLimitUsd: number;
   unrealizedPnlUsd: number;
-  onManage: () => void;
+  onRename: (accountId: string, label: string) => Promise<void>;
   onNewAccount: () => void;
   walletAddress?: string;
   walletUsdcUsd?: number | null;
@@ -91,7 +99,7 @@ export function VenueBoard({
   grossExposureUsd,
   grossExposureLimitUsd,
   unrealizedPnlUsd,
-  onManage,
+  onRename,
   onNewAccount,
   walletAddress,
   walletUsdcUsd,
@@ -104,6 +112,43 @@ export function VenueBoard({
   onRevoke,
 }: VenueBoardProps) {
   const [accountMenu, setAccountMenu] = useState<string | null>(null);
+  const [renaming, setRenaming] = useState<VenueAccountRow | null>(null);
+  const [nameDraft, setNameDraft] = useState("");
+  const [nameError, setNameError] = useState<string | null>(null);
+  const [nameBusy, setNameBusy] = useState(false);
+  const renamePending = useRef(false);
+  const menuButtons = useRef(new Map<string, HTMLButtonElement>());
+  const closeRename = () => {
+    if (renamePending.current) return;
+    const accountId = renaming?.accountId;
+    setRenaming(null);
+    if (accountId)
+      requestAnimationFrame(() => menuButtons.current.get(accountId)?.focus());
+  };
+  const saveName = async () => {
+    if (!renaming || renamePending.current) return;
+    const name = nameDraft.trim();
+    if (!name || name.length > 40) {
+      setNameError("Enter a name between 1 and 40 characters.");
+      return;
+    }
+    renamePending.current = true;
+    setNameBusy(true);
+    setNameError(null);
+    try {
+      await onRename(renaming.accountId, name);
+      const accountId = renaming.accountId;
+      setRenaming(null);
+      requestAnimationFrame(() => menuButtons.current.get(accountId)?.focus());
+    } catch (failure) {
+      setNameError(
+        failure instanceof Error ? failure.message : String(failure),
+      );
+    } finally {
+      renamePending.current = false;
+      setNameBusy(false);
+    }
+  };
   const [revokeConfirm, setRevokeConfirm] = useState(false);
   const accountsByBundle = Array.from(
     accounts.reduce((groups, account) => {
@@ -334,6 +379,13 @@ export function VenueBoard({
                                 variant="secondary"
                                 size="small"
                                 aria-label={`More actions for account ${account.accountId}`}
+                                ref={(element) => {
+                                  if (element)
+                                    menuButtons.current.set(
+                                      account.accountId,
+                                      element,
+                                    );
+                                }}
                                 aria-expanded={
                                   accountMenu === account.accountId
                                 }
@@ -374,7 +426,12 @@ export function VenueBoard({
                                     type="button"
                                     onClick={() => {
                                       setAccountMenu(null);
-                                      onManage();
+                                      setNameDraft(
+                                        account.label ??
+                                          `Account ${account.accountId}`,
+                                      );
+                                      setNameError(null);
+                                      setRenaming(account);
                                     }}
                                   >
                                     Rename
@@ -441,6 +498,50 @@ export function VenueBoard({
           </Button>
         )}
       </Card>
+
+      {renaming &&
+        typeof document !== "undefined" &&
+        createPortal(
+          <Sheet
+            open
+            className="venue-rename"
+            title={`Rename account ${renaming.accountId}`}
+            description="Change the name shown for this Aftermath account. No transaction is needed."
+            initialFocusSelector="input"
+            onClose={closeRename}
+            footer={
+              <>
+                <Button
+                  variant="secondary"
+                  disabled={nameBusy}
+                  onClick={closeRename}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  variant="primary"
+                  disabled={nameBusy}
+                  onClick={() => void saveName()}
+                >
+                  {nameBusy ? "Saving…" : "Save"}
+                </Button>
+              </>
+            }
+          >
+            <Input
+              label="Name"
+              value={nameDraft}
+              maxLength={40}
+              onChange={(event) => {
+                setNameDraft(event.target.value);
+                setNameError(null);
+              }}
+              {...(nameError ? { error: nameError } : {})}
+              aria-label={`Name for account ${renaming.accountId}`}
+            />
+          </Sheet>,
+          document.body,
+        )}
 
       <Sheet
         open={revokeConfirm}

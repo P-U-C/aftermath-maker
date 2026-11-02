@@ -1322,6 +1322,7 @@ bundyShort.config.config = {
   maxGrossExposureUsd: 400,
   maxQuoteAgeMs: 250_000,
   rotationMode: "portfolio",
+  hedge: { ...bundyShort.config.config!.hedge, enabled: false },
   markets: [...bundyShort.config.config!.markets, ...syntheticMarkets],
 };
 bundyShort.bundles.walletLimits.maxGrossExposureUsd = 500;
@@ -1353,6 +1354,8 @@ bundyShort.status.bundles = (bundyShort.status.bundles ?? []).map((entry) =>
 );
 
 const bundyDualShort = structuredClone(bundyShort);
+bundyDualShort.config.config!.hedge.enabled = true;
+bundyDualShort.config.config!.hedge.maxOrderUsd = 100;
 bundyDualShort.accounts.accounts[1]!.availableCollateralUsd = 0;
 bundyDualShort.accounts.accounts[1]!.freeMarginUsd = 0;
 
