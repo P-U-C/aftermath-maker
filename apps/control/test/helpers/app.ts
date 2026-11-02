@@ -70,6 +70,8 @@ export class FakeGateway {
     options: {
       openMakerOrderCount?: number;
       withdrawableCollateralUsd?: number;
+      availableCollateral?: number;
+      collateralPrice?: number;
     } = {},
   ) {
     const summary: OwnerAccountSummary = {
@@ -78,6 +80,8 @@ export class FakeGateway {
       collateralCoinType: USDC_COIN_TYPE,
       equityUsd: freeUsd,
       availableCollateralUsd: freeUsd,
+      availableCollateral: options.availableCollateral,
+      collateralPrice: options.collateralPrice,
       allocatedCollateralUsd: 0,
       freeMarginUsd: freeUsd,
       positionCount: 0,

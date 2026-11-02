@@ -111,6 +111,7 @@ export function evaluateQuoteSafety(inputs: {
       code: "setup",
       label: "Owner setup",
       ok: setupComplete,
+      scope: "bundle",
       detail: setupComplete
         ? "Account is linked"
         : "Owner account is not linked",
@@ -119,6 +120,7 @@ export function evaluateQuoteSafety(inputs: {
       code: "signer",
       label: "Agent signer",
       ok: hasAgentKey,
+      scope: "bundle",
       detail: hasAgentKey
         ? "Encrypted signer is available"
         : "No encrypted agent signer",
@@ -127,6 +129,7 @@ export function evaluateQuoteSafety(inputs: {
       code: "live-gate",
       label: "Mainnet gate",
       ok: config.mode !== "live" || (liveEnabled && mainnetAllowed),
+      scope: "bundle",
       detail:
         config.mode !== "live"
           ? "Not required outside live mode"
@@ -143,6 +146,7 @@ export function evaluateQuoteSafety(inputs: {
         code: "quote",
         label: "Fresh quote",
         ok: false,
+        scope: "market",
         detail: "No quote has been calculated",
       },
     ];
@@ -175,6 +179,7 @@ export function evaluateQuoteSafety(inputs: {
       code: "freshness",
       label: "Book freshness",
       ok: ageMs >= 0 && ageMs <= config.staleBookMs,
+      scope: "market",
       detail: `${Math.max(0, ageMs)} ms old; limit ${config.staleBookMs} ms`,
     },
     {
@@ -184,42 +189,49 @@ export function evaluateQuoteSafety(inputs: {
         quote.bidPrice < quote.askPrice &&
         quote.bidPrice < quote.bestAsk &&
         quote.askPrice > quote.bestBid,
+      scope: "market",
       detail: `bid ${quote.bidPrice}; ask ${quote.askPrice}`,
     },
     {
       code: "fair-value",
       label: "Book / index divergence",
       ok: bookDivergenceBps <= fairValueDivergenceLimitBps,
+      scope: "market",
       detail: `${bookDivergenceBps.toFixed(1)} bps; limit ${fairValueDivergenceLimitBps.toFixed(1)} bps (no wider than half-spread)`,
     },
     {
       code: "notional",
       label: "Quote notional",
       ok: quote.sizeUsd <= config.quoteSizeUsd,
+      scope: "market",
       detail: `$${quote.sizeUsd.toFixed(2)} of $${config.quoteSizeUsd.toFixed(2)}`,
     },
     {
       code: "inventory",
       label: "Worst post-fill inventory",
       ok: worstMarketInventoryUsd <= config.maxInventoryUsd,
+      scope: "market",
       detail: `$${worstMarketInventoryUsd.toFixed(2)} after one fill; limit $${config.maxInventoryUsd.toFixed(2)}`,
     },
     {
       code: "gross-exposure",
       label: "Worst post-fill gross exposure",
       ok: projectedGrossExposureUsd <= config.maxGrossExposureUsd,
+      scope: "bundle",
       detail: `$${projectedGrossExposureUsd.toFixed(2)} after one fill; limit $${config.maxGrossExposureUsd.toFixed(2)}`,
     },
     {
       code: "collateral",
       label: "Two-sided quote collateral",
       ok: portfolioAvailableCollateralUsd >= requiredQuoteCollateralUsd,
+      scope: "bundle",
       detail: `$${portfolioAvailableCollateralUsd.toFixed(2)} available; $${requiredQuoteCollateralUsd.toFixed(2)} conservative requirement`,
     },
     {
       code: "gas",
       label: "Agent gas",
       ok: agentGasSui >= requiredGasSui,
+      scope: "bundle",
       detail:
         config.mode === "paper"
           ? `${agentGasSui.toFixed(4)} SUI available; ${requiredGasSui.toFixed(4)} SUI needed for one Paper simulation`
@@ -229,12 +241,14 @@ export function evaluateQuoteSafety(inputs: {
       code: "unrealized-loss",
       label: "Unrealized loss limit",
       ok: quote.unrealizedPnlUsd >= -config.maxUnrealizedLossUsd,
+      scope: "bundle",
       detail: `$${quote.unrealizedPnlUsd.toFixed(2)}; floor -$${config.maxUnrealizedLossUsd.toFixed(2)}`,
     },
     {
       code: "run-drawdown",
       label: "Run equity drawdown",
       ok: runDrawdownUsd <= config.maxRunDrawdownUsd,
+      scope: "bundle",
       detail: `$${runDrawdownUsd.toFixed(2)} from the run high; limit $${config.maxRunDrawdownUsd.toFixed(2)}`,
     },
   );

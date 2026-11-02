@@ -94,6 +94,39 @@ describe("five ordered bundle readiness stages", () => {
       requiredUsd: 300,
       shortfallUsd: 300,
       accountId: "42",
+      suggestedDepositUsdc: 300.1,
+    });
+  });
+  it("adds USDC price-aware headroom and rounds a sub-cent shortfall up", () => {
+    const wide = makerConfigSchema.parse({
+      ...config,
+      maxQuoteAgeMs: 200_000,
+      markets: Array.from({ length: 15 }, (_, index) => ({
+        marketId: `0x${(index + 1).toString(16)}`,
+        symbol: `M${index + 1}`,
+      })),
+    });
+    expect(
+      deriveBundleReadiness({
+        ...base,
+        config: wide,
+        accounts: [
+          {
+            accountId: "42",
+            availableCollateralUsd: 0,
+            collateralPrice: 0.9997,
+          },
+        ],
+      }).stages[4].suggestedDepositUsdc,
+    ).toBe(300.2);
+    const fractional = deriveBundleReadiness({
+      ...base,
+      config,
+      accounts: [{ accountId: "42", availableCollateralUsd: 99.996 }],
+    });
+    expect(fractional.stages[4]).toMatchObject({
+      detail: "Needs $0.01 collateral",
+      suggestedDepositUsdc: 0.11,
     });
   });
   it("shows a missing strategy before dependent stages", () => {

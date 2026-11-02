@@ -250,6 +250,7 @@ export type SafetyCheck = {
   label: string;
   ok: boolean;
   detail: string;
+  scope: "market" | "bundle";
 };
 
 export type RuntimeMarketSnapshot = {
@@ -275,6 +276,7 @@ export type RuntimeMarketSnapshot = {
   lastTransactionDigest: string | null;
   updatedAt: string | null;
   error: string | null;
+  skip: { code: string; message: string; since: string } | null;
 };
 
 export type RuntimeSnapshot = {

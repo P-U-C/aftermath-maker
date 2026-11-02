@@ -18,6 +18,7 @@ export type FundingTarget = {
   withdrawableUsd: number;
   requiredUsd: number;
   shortfallUsd: number;
+  suggestedDepositUsdc?: number | undefined;
   bundleRunning: boolean;
   keyGasSui: number;
   paperGasSui: number;
@@ -56,7 +57,7 @@ export function VenueFundingSheet({
   const [draft, setDraft] = useState(
     target.mode === "deposit"
       ? target.shortfallUsd > 0
-        ? target.shortfallUsd.toFixed(2)
+        ? (target.suggestedDepositUsdc ?? target.shortfallUsd).toFixed(2)
         : ""
       : target.mode === "gas"
         ? "0.25"
@@ -66,7 +67,7 @@ export function VenueFundingSheet({
     target.mode === "gas"
       ? "0.25-0"
       : target.mode === "deposit" && target.shortfallUsd > 0
-        ? `${target.shortfallUsd.toFixed(2)}-0`
+        ? `${(target.suggestedDepositUsdc ?? target.shortfallUsd).toFixed(2)}-0`
         : "",
   );
   const [busy, setBusy] = useState(false);
@@ -144,7 +145,11 @@ export function VenueFundingSheet({
       : target.mode === "deposit"
         ? [
             ...(target.shortfallUsd > 0
-              ? [target.shortfallUsd.toFixed(2)]
+              ? [
+                  (target.suggestedDepositUsdc ?? target.shortfallUsd).toFixed(
+                    2,
+                  ),
+                ]
               : []),
             "100.00",
             "500.00",
@@ -344,7 +349,7 @@ export function VenueFundingSheet({
                 {target.mode === "deposit" &&
                 target.shortfallUsd > 0 &&
                 index === 0
-                  ? `Cover ${target.bundleName} (${money(target.shortfallUsd)})`
+                  ? `Cover ${target.bundleName} (${money(target.suggestedDepositUsdc ?? target.shortfallUsd)})`
                   : target.mode !== "gas" && index === picks.length - 1
                     ? "Max"
                     : target.mode === "gas"
@@ -428,6 +433,11 @@ export function VenueFundingSheet({
             <p>
               Your wallet signs one transaction and pays a small SUI gas fee.
               Deposits are allowed while bundles run.
+            </p>
+          )}
+          {target.mode === "deposit" && target.suggestedDepositUsdc && (
+            <p className="venue-funding-help">
+              Includes $0.10 headroom so price moves don't leave you short.
             </p>
           )}
           {busy && (

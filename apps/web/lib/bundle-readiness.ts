@@ -8,6 +8,7 @@ export type BundleStage = {
   requiredUsd?: number;
   availableUsd?: number;
   shortfallUsd?: number;
+  suggestedDepositUsdc?: number;
   requiredGasSui?: number;
   requiredGasPaperSui?: number;
   requiredGasLiveSui?: number;

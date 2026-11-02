@@ -8,7 +8,25 @@ import { requiredBundleGasMist } from "./bundle-supervisor.js";
 import { UserFacingError } from "./http-error.js";
 import type { StoredBundle } from "./store.js";
 
-type AccountRead = { accountId: string; availableCollateralUsd: number };
+type AccountRead = {
+  accountId: string;
+  availableCollateralUsd: number;
+  availableCollateral?: number;
+  collateralPrice?: number;
+};
+export const DEPOSIT_HEADROOM_USDC = 0.1;
+const ceilToCent = (value: number) => Math.ceil(value * 100 - 1e-9) / 100;
+const displayedUsd = (value: number) => ceilToCent(value).toFixed(2);
+const suggestedDepositUsdc = (shortfallUsd: number, account?: AccountRead) => {
+  const inferred =
+    account?.availableCollateral && account.availableCollateral > 0
+      ? account.availableCollateralUsd / account.availableCollateral
+      : account?.collateralPrice;
+  return ceilToCent(
+    ceilToCent(shortfallUsd / (inferred && inferred > 0 ? inferred : 1)) +
+      DEPOSIT_HEADROOM_USDC,
+  );
+};
 export type BundleStageId =
   "strategy" | "accounts" | "tradingKeys" | "gas" | "collateral";
 export type BundleStage = {
@@ -18,6 +36,7 @@ export type BundleStage = {
   requiredUsd?: number;
   availableUsd?: number;
   shortfallUsd?: number;
+  suggestedDepositUsdc?: number;
   requiredGasSui?: number;
   requiredGasPaperSui?: number;
   requiredGasLiveSui?: number;
@@ -39,7 +58,7 @@ export function assertBundleReadyToStart(
   const kind = first.id === "strategy" ? "bundles" : "venues";
   const instruction =
     first.id === "collateral" && first.accountId
-      ? `${first.detail.startsWith("Hedge account") ? `${first.detail} ` : ""}Deposit $${first.shortfallUsd?.toFixed(2)} to account ${first.accountId} before starting ${bundle.name}.`
+      ? `${first.detail.startsWith("Hedge account") ? `${first.detail} ` : ""}Deposit $${displayedUsd(first.shortfallUsd ?? 0)} to account ${first.accountId} before starting ${bundle.name}.`
       : first.id === "gas"
         ? `Add gas to ${bundle.name}'s trading key before starting it.`
         : `${first.detail} before starting ${bundle.name}.`;
@@ -254,10 +273,14 @@ export function deriveBundleReadiness(inputs: {
             detail:
               hedgeFirst && config
                 ? `Hedge account ${bundle.takerAccountId} needs $${hedgeRequirement.toFixed(2)} free collateral to place one hedge of up to $${config.hedge.maxOrderUsd.toFixed(2)} at ${lowestEffectiveHedgeLeverage(config)}x. It has $${hedgeFree.toFixed(2)}.`
-                : `Needs $${shortfallUsd.toFixed(2)} collateral`,
+                : `Needs $${displayedUsd(shortfallUsd)} collateral`,
             requiredUsd: selectedRequirement,
             availableUsd: selectedAvailable,
             shortfallUsd,
+            suggestedDepositUsdc: suggestedDepositUsdc(
+              shortfallUsd,
+              hedgeFirst ? (hedge ?? undefined) : maker,
+            ),
             accountId: hedgeFirst
               ? bundle.takerAccountId!
               : bundle.makerAccountId!,

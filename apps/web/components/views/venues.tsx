@@ -42,6 +42,7 @@ export type VenueAccountRow = {
   withdrawableUsd: number;
   requiredUsd: number;
   shortfallUsd: number;
+  suggestedDepositUsdc?: number | undefined;
   authorized: boolean;
   gasSui: number | null;
   readiness: import("../../lib/bundle-readiness").BundleReadiness | null;
@@ -81,6 +82,7 @@ type VenueBoardProps = {
     freeUsd: number;
     requiredUsd: number;
     shortfallUsd: number;
+    suggestedDepositUsdc?: number | undefined;
     markets: number;
     quoteSizeUsd: number;
   } | null;
@@ -217,7 +219,10 @@ export function VenueBoard({
               if (account) onFund(account, "deposit");
             }}
           >
-            Deposit {formatMoney(blockedBundle.shortfallUsd)}
+            Deposit{" "}
+            {formatMoney(
+              blockedBundle.suggestedDepositUsdc ?? blockedBundle.shortfallUsd,
+            )}
           </Button>
         </Card>
       )}

@@ -198,6 +198,7 @@ const emptyRuntimeMarket = (
     lastTransactionDigest: null,
     updatedAt: null,
     error: null,
+    skip: null,
   };
 };
 
@@ -380,6 +381,12 @@ function paperSimulationBlocker(inputs: {
   const failed = inputs.safety.filter((check) => !check.ok);
   if (!failed.length) return null;
   const first = failed[0]!;
+  if (
+    first.code === "maker-margin" &&
+    first.detail.startsWith("Aftermath didn't report")
+  ) {
+    return { code: first.code, message: first.detail };
+  }
   if (first.code === "gas") {
     return {
       code: "gas",
@@ -448,22 +455,46 @@ const signedFillNotional = (order: PerformanceOrder) =>
 const MIN_ACCOUNT_MARGIN_RATIO = 0.12;
 const MIN_LIQUIDATION_DISTANCE_BPS = 1_000;
 
-function accountRiskChecks(label: string, portfolio: PortfolioSnapshot | null) {
+const finitePercent = (value: number | null | undefined): string | null =>
+  typeof value === "number" && Number.isFinite(value)
+    ? `${(value * 100).toFixed(1)}%`
+    : null;
+
+function accountRiskChecks(
+  label: string,
+  portfolio: PortfolioSnapshot | null,
+  symbols: ReadonlyMap<string, string>,
+): SafetyCheck[] {
   const positions = portfolio?.positions.filter(
-    (position) => position.hasPosition,
+    (position) => position.hasPosition && !position.simulated,
+  );
+  const simulated = portfolio?.positions.some(
+    (position) => position.hasPosition && position.simulated,
+  );
+  const missingMargin = positions?.find(
+    (position) => !Number.isFinite(position.marginRatio),
+  );
+  const missingLiquidation = positions?.find(
+    (position) => !Number.isFinite(position.liquidationDistanceBps),
   );
   const marginRatios =
-    positions?.map((position) => position.marginRatio ?? Number.NaN) ?? [];
-  const liquidationDistances =
-    positions?.map(
-      (position) => position.liquidationDistanceBps ?? Number.NaN,
+    positions?.flatMap((position) =>
+      Number.isFinite(position.marginRatio) ? [position.marginRatio!] : [],
     ) ?? [];
+  const liquidationDistances =
+    positions?.flatMap((position) =>
+      Number.isFinite(position.liquidationDistanceBps)
+        ? [position.liquidationDistanceBps!]
+        : [],
+    ) ?? [];
+  const name = (marketId: string) => symbols.get(marketId) ?? marketId;
   return [
     {
       code: `${label.toLowerCase()}-margin`,
       label: `${label} margin`,
       ok:
         portfolio !== null &&
+        !missingMargin &&
         marginRatios.every(
           (ratio) =>
             Number.isFinite(ratio) && ratio >= MIN_ACCOUNT_MARGIN_RATIO,
@@ -471,17 +502,21 @@ function accountRiskChecks(label: string, portfolio: PortfolioSnapshot | null) {
       detail:
         portfolio === null
           ? `${label} account risk is unavailable`
-          : positions?.length === 0
-            ? "No open positions"
-            : `Minimum ${label.toLowerCase()} margin ratio ${(
-                Math.min(...marginRatios) * 100
-              ).toFixed(1)}%; 12.0% required`,
+          : missingMargin
+            ? `Aftermath didn't report a margin ratio for ${name(missingMargin.marketId)}. Maker won't quote until it does.`
+            : positions?.length === 0
+              ? simulated
+                ? "Simulated positions only; inventory and exposure limits apply"
+                : "No open positions"
+              : `Minimum ${label.toLowerCase()} margin ratio ${finitePercent(Math.min(...marginRatios)) ?? "unavailable"}; 12.0% required`,
+      scope: "bundle",
     },
     {
       code: `${label.toLowerCase()}-liquidation`,
       label: `${label} liquidation distance`,
       ok:
         portfolio !== null &&
+        !missingLiquidation &&
         liquidationDistances.every(
           (distance) =>
             Number.isFinite(distance) &&
@@ -490,11 +525,14 @@ function accountRiskChecks(label: string, portfolio: PortfolioSnapshot | null) {
       detail:
         portfolio === null
           ? `${label} account risk is unavailable`
-          : positions?.length === 0
-            ? "No open positions"
-            : `Nearest liquidation ${(
-                Math.min(...liquidationDistances) / 100
-              ).toFixed(1)}% away; 10.0% required`,
+          : missingLiquidation
+            ? `Aftermath didn't report a liquidation distance for ${name(missingLiquidation.marketId)}. Maker won't quote until it does.`
+            : positions?.length === 0
+              ? simulated
+                ? "Simulated positions only; inventory and exposure limits apply"
+                : "No open positions"
+              : `Nearest liquidation ${finitePercent(Math.min(...liquidationDistances) / 10_000) ?? "unavailable"} away; 10.0% required`,
+      scope: "bundle",
     },
   ];
 }
@@ -527,6 +565,9 @@ export class MakerRuntime {
   private paperTrialId: string | null = null;
   private paperSimulationBlockerKey: string | null = null;
   private paperSimulationBlockerLastLoggedAt = 0;
+  private paperMarketSkips = new Map<string, { code: string; since: number }>();
+  private paperAllSkippedSince: number | null = null;
+  private paperAllSkippedWarningLogged = false;
 
   constructor(
     private readonly store: TenantStore,
@@ -732,6 +773,9 @@ export class MakerRuntime {
     this.snapshotValue.accountReadAt = null;
     this.paperSimulationBlockerKey = null;
     this.paperSimulationBlockerLastLoggedAt = 0;
+    this.paperMarketSkips.clear();
+    this.paperAllSkippedSince = null;
+    this.paperAllSkippedWarningLogged = false;
     this.runPeakEquityUsd = null;
     this.clearActiveQuoteState();
     this.marketSelectedAt = null;
@@ -2219,6 +2263,134 @@ export class MakerRuntime {
     });
   }
 
+  private recordPaperMarketSkip(inputs: {
+    selected: MakerMarket;
+    failed: SafetyCheck;
+    config: MakerConfig;
+  }): void {
+    const { selected, failed, config } = inputs;
+    const key = `${selected.marketId}:${failed.code}`;
+    const maxFairValue = Math.min(
+      config.maxBookDivergenceBps,
+      config.spreadBps / 2,
+    );
+    const limitName =
+      config.maxBookDivergenceBps < config.spreadBps / 2
+        ? "the book / index divergence setting"
+        : `half its ${config.spreadBps.toFixed(0)} bps spread`;
+    const bundleName = this.store.bundleId
+      ? (this.store.getStoredBundle(this.store.bundleId)?.name ?? "Maker")
+      : "Core";
+    const message =
+      failed.code === "fair-value"
+        ? `${bundleName}: ${selected.symbol} paused. Its book is ${failed.detail.split(";")[0]} from the index price, and ${bundleName} quotes only within ${maxFairValue.toFixed(1)} bps (${limitName}). Quoting resumes when the book comes back, or widen the spread in Strategy.`
+        : `${bundleName}: ${selected.symbol} paused. ${failed.detail}. Quoting resumes when this market is safe again.`;
+    const previous = this.paperMarketSkips.get(selected.marketId);
+    this.snapshotValue.markets = this.snapshotValue.markets.map((row) =>
+      row.id === selected.marketId
+        ? {
+            ...row,
+            error: message,
+            skip: {
+              code: failed.code,
+              message,
+              since: new Date(previous?.since ?? Date.now()).toISOString(),
+            },
+          }
+        : row,
+    );
+    if (previous?.code === failed.code) {
+      this.maybeWarnAllPaperMarketsSkipped(config, bundleName);
+      return;
+    }
+    if (previous) this.logPaperMarketResumed(selected, bundleName);
+    this.paperMarketSkips.set(selected.marketId, {
+      code: failed.code,
+      since: Date.now(),
+    });
+    this.store.logEvent({
+      category: "paper",
+      action: "market-skip",
+      outcome: "paused",
+      detail: {
+        marketId: selected.marketId,
+        symbol: selected.symbol,
+        code: failed.code,
+        message,
+      },
+    });
+    this.maybeWarnAllPaperMarketsSkipped(config, bundleName);
+  }
+
+  private clearPaperMarketSkip(selected: MakerMarket): void {
+    if (!this.paperMarketSkips.delete(selected.marketId)) return;
+    const bundleName = this.store.bundleId
+      ? (this.store.getStoredBundle(this.store.bundleId)?.name ?? "Maker")
+      : "Core";
+    this.snapshotValue.markets = this.snapshotValue.markets.map((row) =>
+      row.id === selected.marketId ? { ...row, error: null, skip: null } : row,
+    );
+    this.logPaperMarketResumed(selected, bundleName);
+    if (this.paperMarketSkips.size === 0) this.paperAllSkippedSince = null;
+  }
+
+  private logPaperMarketResumed(
+    selected: MakerMarket,
+    bundleName: string,
+  ): void {
+    this.store.logEvent({
+      category: "paper",
+      action: "market-skip",
+      outcome: "resumed",
+      detail: {
+        marketId: selected.marketId,
+        symbol: selected.symbol,
+        message: `${bundleName}: ${selected.symbol} is quoting again.`,
+      },
+    });
+  }
+
+  private maybeWarnAllPaperMarketsSkipped(
+    config: MakerConfig,
+    bundleName: string,
+  ): void {
+    if (this.paperMarketSkips.size !== config.markets.length) {
+      this.paperAllSkippedSince = null;
+      return;
+    }
+    const now = Date.now();
+    this.paperAllSkippedSince ??= now;
+    if (
+      this.paperAllSkippedWarningLogged ||
+      now - this.paperAllSkippedSince < 15 * 60_000
+    )
+      return;
+    const counts = new Map<string, number>();
+    for (const skip of this.paperMarketSkips.values()) {
+      counts.set(skip.code, (counts.get(skip.code) ?? 0) + 1);
+    }
+    const labels: Record<string, string> = {
+      "fair-value": "markets outside the fair-value limit",
+      freshness: "with stale books",
+      spread: "with crossed quotes",
+      notional: "outside the notional limit",
+      inventory: "at the inventory limit",
+    };
+    const reasons = [...counts.entries()]
+      .map(
+        ([code, count]) => `${count} ${labels[code] ?? `blocked by ${code}`}`,
+      )
+      .join(", ");
+    const message = `${bundleName}: Paper hasn't quoted for 15 min: ${reasons}.`;
+    this.store.logEvent({
+      category: "paper",
+      action: "market-skip",
+      outcome: "all-paused",
+      detail: { message },
+    });
+    this.paperAllSkippedWarningLogged = true;
+  }
+
   private async runCycle(inputs: {
     executeLive: boolean;
     generation: number;
@@ -2323,6 +2495,12 @@ export class MakerRuntime {
               marketId: selected.marketId,
               fills: estimatedFills.length,
               hedges: config.hedge.enabled ? estimatedFills.length : 0,
+              estimatedFills: estimatedFills.map((fill) => ({
+                symbol: fill.symbol,
+                side: fill.side,
+                price: fill.price,
+                sizeUsd: fill.sizeUsd,
+              })),
             },
           });
         }
@@ -2378,6 +2556,10 @@ export class MakerRuntime {
                 position.role === role &&
                 position.marketId === configuredMarket.marketId,
             );
+            // A synthetic Paper fill replaces venue inventory only for the
+            // same market. Otherwise retain a real venue position (and its
+            // margin/liquidation fields) exactly as reported.
+            if (!estimated && existing) return existing;
             return {
               ...(existing ?? {
                 marketId: configuredMarket.marketId,
@@ -2395,6 +2577,7 @@ export class MakerRuntime {
               pendingOrderCount: 0,
               makerOrderIds: [],
               hasPosition: Boolean(estimated),
+              simulated: Boolean(estimated),
             };
           });
           return {
@@ -2619,7 +2802,13 @@ export class MakerRuntime {
         agentGasSui: portfolio.gasSui,
         runDrawdownUsd,
       });
-      safety.push(...accountRiskChecks("Maker", portfolio));
+      const marketSymbols = new Map(
+        config.markets.map((configuredMarket) => [
+          configuredMarket.marketId,
+          configuredMarket.symbol,
+        ]),
+      );
+      safety.push(...accountRiskChecks("Maker", portfolio, marketSymbols));
       if (config.hedge.enabled) {
         if (config.mode === "paper" && !hedgeSharesMakerAccount) {
           safety.push({
@@ -2629,10 +2818,13 @@ export class MakerRuntime {
               hedgeRiskPortfolio !== null &&
               hedgeRiskPortfolio.availableCollateralUsd >=
                 hedgeCollateralRequirement,
+            scope: "bundle",
             detail: `Hedge account requires $${hedgeCollateralRequirement.toFixed(2)} free`,
           });
         }
-        safety.push(...accountRiskChecks("Hedge", hedgeRiskPortfolio));
+        safety.push(
+          ...accountRiskChecks("Hedge", hedgeRiskPortfolio, marketSymbols),
+        );
       }
       const summary = this.markets.find(
         (item) => item.id === selected!.marketId,
@@ -2771,6 +2963,21 @@ export class MakerRuntime {
         return;
       }
 
+      const failedMarketSafety = safety.filter(
+        (check) => !check.ok && check.scope === "market",
+      );
+      if (config.mode === "paper" && failedMarketSafety.length) {
+        this.recordPaperMarketSkip({
+          selected,
+          failed: failedMarketSafety[0]!,
+          config,
+        });
+        this.snapshotValue.execution.lastDecision = "held";
+        this.snapshotValue.lastSuccessfulCycleAt = updatedAt;
+        return;
+      }
+      if (config.mode === "paper") this.clearPaperMarketSkip(selected);
+
       const admission = await this.options.admitBundleProposal?.({
         worstCaseGrossExposureDeltaUsd:
           quote.sizeUsd * marketConfig.maxLeverage,
@@ -2804,7 +3011,7 @@ export class MakerRuntime {
           setup,
           account,
           agent,
-          safety,
+          safety: safety.filter((check) => check.scope === "bundle"),
           symbol: market.metadata?.symbol ?? selected.symbol,
           requiredGasSui: config.maxGasMist / 1_000_000_000,
           observedAt: portfolio.markedAt,
@@ -2894,6 +3101,8 @@ export class MakerRuntime {
           askPrice: quote.askPrice,
           sizeUsd: quote.sizeUsd,
         });
+        this.paperAllSkippedSince = null;
+        this.paperAllSkippedWarningLogged = false;
         this.store.logExecution({
           mode: "paper",
           marketId: selected.marketId,
