@@ -14,6 +14,7 @@ export type BundleFundingAccount = {
   freeUsd: number;
   requiredUsd: number;
   shortfallUsd: number;
+  suggestedDepositUsdc?: number | undefined;
 };
 
 export function BundleFundingSheet({
@@ -45,7 +46,9 @@ export function BundleFundingSheet({
     Object.fromEntries(
       accounts.map((account) => [
         account.accountId,
-        account.shortfallUsd > 0 ? account.shortfallUsd.toFixed(2) : "0",
+        account.shortfallUsd > 0
+          ? (account.suggestedDepositUsdc ?? account.shortfallUsd).toFixed(2)
+          : "0",
       ]),
     ),
   );
@@ -261,6 +264,12 @@ export function BundleFundingSheet({
             Your wallet signs one transaction and pays a small SUI gas fee.
             Deposits are allowed while bundles run.
           </p>
+          {accounts.some((account) => account.suggestedDepositUsdc) && (
+            <p className="venue-funding-help">
+              Includes $0.10 headroom per account so price moves don't leave you
+              short.
+            </p>
+          )}
           {busy && (
             <p role="status">
               Approve the deposit in your wallet. {money(total)} from{" "}

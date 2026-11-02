@@ -45,8 +45,15 @@ const bundle = (detail: Record<string, unknown>) =>
     ? ` ${detail.name.trim()}`
     : "";
 
+const shortMarketId = (value: string) =>
+  value.length > 12 ? `${value.slice(0, 6)}…${value.slice(-5)}` : value;
+
 const market = (detail: Record<string, unknown>) =>
-  typeof detail.marketId === "string" ? ` for market ${detail.marketId}` : "";
+  typeof detail.symbol === "string" && detail.symbol.trim()
+    ? detail.symbol.trim()
+    : typeof detail.marketId === "string"
+      ? shortMarketId(detail.marketId)
+      : "this market";
 
 const copies: Record<string, AuditCopy> = {
   "access:membership-revoked-stop:completed": {
@@ -210,12 +217,57 @@ const copies: Record<string, AuditCopy> = {
   },
   "paper:estimated-fill:estimated": {
     severity: "info",
-    sentence: (detail) =>
-      `Estimated Paper fill${market(detail)}. No order was sent.`,
+    sentence: (detail) => {
+      const fills = Array.isArray(detail.estimatedFills)
+        ? detail.estimatedFills
+            .filter(
+              (fill): fill is Record<string, unknown> =>
+                Boolean(fill) && typeof fill === "object",
+            )
+            .slice(0, 2)
+        : [];
+      const format = (fill: Record<string, unknown>) => {
+        const side = fill.side === "bid" ? "bought" : "sold";
+        const size =
+          typeof fill.sizeUsd === "number" && Number.isFinite(fill.sizeUsd)
+            ? fill.sizeUsd.toFixed(2)
+            : "an unknown amount";
+        const symbol =
+          typeof fill.symbol === "string" ? fill.symbol : market(detail);
+        const price =
+          typeof fill.price === "number" && Number.isFinite(fill.price)
+            ? fill.price.toFixed(4)
+            : "an unknown price";
+        return `${side} $${size} of ${symbol} at ${price}`;
+      };
+      const fillCount = Number(detail.fills ?? 0);
+      const extra = Number.isFinite(fillCount)
+        ? Math.max(0, fillCount - fills.length)
+        : 0;
+      return `Paper would have ${fills.length ? fills.map(format).join(", then ") : `filled ${market(detail)}`}${extra ? `, +${extra} more` : ""}. No order was sent.`;
+    },
   },
   "paper:simulation:cleared": {
     severity: "info",
     sentence: () => "Paper is simulating again.",
+  },
+  "paper:market-skip:paused": {
+    severity: "info",
+    sentence: (detail) =>
+      typeof detail.message === "string"
+        ? detail.message
+        : `${market(detail)} is paused.`,
+  },
+  "paper:market-skip:resumed": {
+    severity: "info",
+    sentence: (detail) => `${market(detail)} is quoting again.`,
+  },
+  "paper:market-skip:all-paused": {
+    severity: "warning",
+    sentence: (detail) =>
+      typeof detail.message === "string"
+        ? detail.message
+        : "Paper has not quoted for 15 minutes.",
   },
   "paper:simulation:blocked": {
     severity: "warning",
@@ -398,7 +450,7 @@ export function deskEvent(
       id: event.id,
       occurredAt: event.occurredAt,
       severity: "info",
-      sentence: `Paper${context.bundleName ? ` on ${context.bundleName}` : ""} is simulating again.`,
+      sentence: `${context.bundleName ?? "Maker"}: Paper is simulating again.`,
     };
   }
   if (

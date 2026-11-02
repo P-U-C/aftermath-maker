@@ -506,7 +506,7 @@ export function BundlesView({
                     {bundle.readiness.stages.map((stage) => {
                       const fixLabel =
                         stage.id === "collateral"
-                          ? `Deposit ${formatMoney(stage.shortfallUsd ?? 0)}`
+                          ? `Deposit ${formatMoney(stage.suggestedDepositUsdc ?? stage.shortfallUsd ?? 0)}`
                           : stage.id === "gas"
                             ? "Add gas"
                             : stage.id === "tradingKeys"

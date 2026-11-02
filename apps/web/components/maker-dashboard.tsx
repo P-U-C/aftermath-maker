@@ -1126,6 +1126,7 @@ function DashboardBody() {
     useState<StrategyMarketRule>({ kind: "quick-pick", pick: "balanced" });
   const [strategyNameDraft, setStrategyNameDraft] = useState("");
   const createStrategyInFlight = useRef(false);
+  const pendingStrategyCreateIds = useRef(new Set<string>());
   const [newStrategySource, setNewStrategySource] = useState<{
     id: string;
     name: string;
@@ -1182,6 +1183,7 @@ function DashboardBody() {
     agent: null,
   });
   const [accounts, setAccounts] = useState<AccountCap[]>([]);
+  const ownerRef = useRef<string | null>(null);
   const [accountsLoaded, setAccountsLoaded] = useState(false);
   useEffect(() => {
     if (activeView !== "accounts" || !accountFocusId) return;
@@ -1345,6 +1347,7 @@ function DashboardBody() {
   }
 
   const refresh = useCallback(async () => {
+    const requestOwner = identity?.ownerAddress.toLowerCase() ?? null;
     const [
       statusResult,
       configResult,
@@ -1370,6 +1373,7 @@ function DashboardBody() {
       }>("api/bundles"),
       request<{ strategies: MakerStrategy[] }>("api/strategies"),
     ]);
+    if (!requestOwner || ownerRef.current !== requestOwner) return;
     setControlBuild(
       statusResult.commit
         ? {
@@ -1390,8 +1394,15 @@ function DashboardBody() {
     setBundleSnapshots(statusResult.bundles ?? []);
     setBundles(bundleResult.bundles);
     setStrategies((current) =>
-      mergeStrategyReads(current, strategyResult.strategies),
+      mergeStrategyReads(
+        current,
+        strategyResult.strategies,
+        pendingStrategyCreateIds.current,
+      ),
     );
+    for (const strategy of strategyResult.strategies) {
+      pendingStrategyCreateIds.current.delete(strategy.id);
+    }
     setSelectedStrategyId((current) => {
       const next = current ?? strategyResult.strategies[0]?.id ?? null;
       if (next !== current) {
@@ -1445,7 +1456,7 @@ function DashboardBody() {
         setSavedConfig(null);
       }
     }
-  }, []);
+  }, [identity?.ownerAddress]);
 
   const loadPerformance = useCallback(async () => {
     if (performancePeriod === "EPOCH" && !rewards?.epoch.startedAt) return;
@@ -1676,6 +1687,7 @@ function DashboardBody() {
           throw new Error(
             "No unused strategy name was available. Rename an archived strategy before trying again.",
           );
+        pendingStrategyCreateIds.current.add(result.strategy.id);
         setStrategies((current) => [result.strategy, ...current]);
         if (!(await selectStrategy(result.strategy.id))) return;
         createdId = result.strategy.id;
@@ -2362,8 +2374,30 @@ function DashboardBody() {
     setSnapshot(null);
     setBundleSnapshots([]);
     setBundles([]);
+    setStrategies([]);
+    pendingStrategyCreateIds.current.clear();
+    setSelectedStrategyId(null);
+    setStrategyMarketRule({ kind: "quick-pick", pick: "balanced" });
+    setAcknowledgedStrategies({});
+    setAccounts([]);
+    setEvents([]);
+    setProblemEvents([]);
+    setPerformance(null);
+    setMarkets([]);
+    setSelectedAccount("");
+    setFundingTarget(null);
+    setBundleFunding(null);
+    selectedBundleIdRef.current = null;
+    setSelectedBundleId(null);
+    setPerformanceBundle("all");
+    setMarketQuery("");
+    setNotice(null);
     setControlUnavailable(false);
   }
+
+  useEffect(() => {
+    ownerRef.current = identity?.ownerAddress.toLowerCase() ?? null;
+  }, [identity?.ownerAddress]);
 
   function handlePollingFailure(error: unknown) {
     if (error instanceof RequestError && error.status === 401) {
@@ -5100,6 +5134,10 @@ function DashboardBody() {
       shortfallUsd: assignedBundle?.readiness
         ? Math.max(0, requiredUsd - owned.availableCollateralUsd)
         : 0,
+      suggestedDepositUsdc:
+        assignedBundle?.readiness?.stages[4].accountId === owned.accountId
+          ? assignedBundle.readiness.stages[4].suggestedDepositUsdc
+          : undefined,
       bundleMode: assignedBundle?.mode ?? null,
       bundleRunning: assignedBundle?.status === "running",
       readiness: assignedBundle?.readiness ?? null,
@@ -5128,6 +5166,7 @@ function DashboardBody() {
       withdrawableUsd: row.withdrawableUsd,
       requiredUsd: row.requiredUsd,
       shortfallUsd: row.shortfallUsd,
+      suggestedDepositUsdc: row.suggestedDepositUsdc,
       bundleRunning: row.bundleRunning,
       keyGasSui: row.gasSui ?? 0,
       paperGasSui: gasStage?.requiredGasPaperSui ?? 0,
@@ -5331,24 +5370,24 @@ function DashboardBody() {
             </p>
           </div>
           {strategyReturn && (
-            <button
-              className="button secondary"
+            <Button
+              variant="secondary"
               type="button"
               onClick={returnToStrategy}
             >
               Back to Strategy
-            </button>
+            </Button>
           )}
           {onboardingComplete && (
-            <button
-              className="button secondary"
+            <Button
+              variant="secondary"
               onClick={() => void createVenueAccount()}
               disabled={!account?.address || Boolean(busy)}
               type="button"
             >
               <UserPlus size={16} aria-hidden="true" />
               {busy === "create-account" ? "Check wallet..." : "New account"}
-            </button>
+            </Button>
           )}
         </header>
         {!onboardingComplete && (
@@ -5421,8 +5460,8 @@ function DashboardBody() {
                             </option>
                           ))}
                         </Select>
-                        <button
-                          className="button secondary inverse"
+                        <Button
+                          variant="secondary"
                           onClick={() => void createVenueAccount()}
                           disabled={Boolean(busy)}
                           type="button"
@@ -5430,9 +5469,9 @@ function DashboardBody() {
                           {busy === "create-account"
                             ? "Check wallet..."
                             : "New account"}
-                        </button>
-                        <button
-                          className="button primary"
+                        </Button>
+                        <Button
+                          variant="primary"
                           onClick={() => void provision()}
                           disabled={!selectedCap || Boolean(busy)}
                           type="button"
@@ -5440,7 +5479,7 @@ function DashboardBody() {
                           {busy === `provision-${selectedAccount}`
                             ? "Creating..."
                             : "Create trading key"}
-                        </button>
+                        </Button>
                       </div>
                     </>
                   ) : (
@@ -5461,8 +5500,8 @@ function DashboardBody() {
                           <> Venue fee registration must finish first.</>
                         )}
                       </p>
-                      <button
-                        className="button primary"
+                      <Button
+                        variant="primary"
                         onClick={() =>
                           void authorizeAgent(
                             setup.setup?.accountId ?? selectedAccount,
@@ -5477,7 +5516,7 @@ function DashboardBody() {
                           : builderCode
                             ? "Authorize trading key"
                             : "Venue fee setup pending"}
-                      </button>
+                      </Button>
                     </>
                   )}
                 </div>
@@ -5804,14 +5843,14 @@ function DashboardBody() {
                   >
                     View trading-key permission <ExternalLink size={13} />
                   </a>
-                  <button
-                    className="button secondary"
+                  <Button
+                    variant="secondary"
                     type="button"
                     onClick={() => void revokeAgent(managed.accountId)}
                     disabled={Boolean(busy)}
                   >
                     Revoke this key
-                  </button>
+                  </Button>
                 </article>
               ))}
           </div>
@@ -6227,14 +6266,14 @@ function DashboardBody() {
                 </p>
               </section>
               <footer className="strategy-summary-footer">
-                <button
+                <Button
+                  variant="secondary"
                   type="button"
-                  className="button secondary"
                   onClick={openStrategyDelete}
                   disabled={Boolean(busy) || selectedStrategy.usedBy.length > 0}
                 >
                   Delete strategy
-                </button>
+                </Button>
                 {selectedStrategy.usedBy.length > 0 && (
                   <span>Detach it from its bundles before deleting.</span>
                 )}
@@ -6338,14 +6377,15 @@ function DashboardBody() {
                 )}
               </div>
               {newStrategySource?.id === selectedStrategyId && (
-                <button
-                  className="button secondary strategy-delete-button"
+                <Button
+                  variant="secondary"
+                  className="strategy-delete-button"
                   type="button"
                   onClick={openStrategyDelete}
                   disabled={Boolean(busy)}
                 >
                   Discard
-                </button>
+                </Button>
               )}
             </header>
 
@@ -6406,9 +6446,8 @@ function DashboardBody() {
                             fields below before accepting a new base version;
                             your draft is unchanged.
                           </p>
-                          <button
-                            type="button"
-                            className="button secondary"
+                          <Button
+                            variant="secondary"
                             onClick={() => {
                               if (
                                 persistStrategyDraft(selectedStrategy.version)
@@ -6422,7 +6461,7 @@ function DashboardBody() {
                             }}
                           >
                             Rebase draft after review
-                          </button>
+                          </Button>
                         </div>
                       )}
                     <ul>
@@ -6462,19 +6501,17 @@ function DashboardBody() {
                   </div>
                 )}
                 <div className="strategy-step-nav">
-                  <button
-                    type="button"
-                    className="button secondary"
+                  <Button
+                    variant="secondary"
                     onClick={() =>
                       setStrategyStep((step) => Math.max(0, step - 1))
                     }
                     disabled={strategyStep === 0}
                   >
                     Back
-                  </button>
-                  <button
-                    type="button"
-                    className="button primary"
+                  </Button>
+                  <Button
+                    variant="primary"
                     onClick={() => {
                       if (strategyStep === 4) {
                         if (strategyComplete) setStrategyEditing(false);
@@ -6488,7 +6525,7 @@ function DashboardBody() {
                         ? "Saving…"
                         : "Save and finish"
                       : `Save and continue to ${strategySteps[strategyStep + 1]?.label ?? "Review"}`}
-                  </button>
+                  </Button>
                 </div>
                 {strategySaveBlocker &&
                   strategySaveBlocker.step <= strategyStep && (
@@ -6557,15 +6594,15 @@ function DashboardBody() {
                             {bundle?.mode === "live" ? "Live" : "Paper"} ·{" "}
                             {bundle?.status ?? "status unknown"}
                           </span>
-                          <button
-                            className="button secondary"
+                          <Button
+                            variant="secondary"
                             type="button"
                             onClick={() =>
                               openBundleEditorFromStrategy("edit", usage.id)
                             }
                           >
                             Edit {usage.name} bundle
-                          </button>
+                          </Button>
                         </div>
                       );
                     })
@@ -6580,8 +6617,8 @@ function DashboardBody() {
                     </p>
                   )}
                   {unattachedBundles.length > 0 && (
-                    <button
-                      className="button secondary"
+                    <Button
+                      variant="secondary"
                       type="button"
                       disabled={!reviewCanAttach}
                       onClick={() =>
@@ -6592,10 +6629,10 @@ function DashboardBody() {
                       }
                     >
                       Attach to {unattachedBundles[0]!.name}
-                    </button>
+                    </Button>
                   )}
-                  <button
-                    className="button secondary"
+                  <Button
+                    variant="secondary"
                     type="button"
                     disabled={!reviewCanAttach || activeBundleCount >= 4}
                     onClick={() => openBundleEditorFromStrategy("create")}
@@ -6603,7 +6640,7 @@ function DashboardBody() {
                     {selectedStrategy.usedBy.length || unattachedBundles.length
                       ? "Create another Paper bundle"
                       : "Create bundle"}
-                  </button>
+                  </Button>
                   {activeBundleCount >= 4 && (
                     <small>
                       Archive or edit an existing bundle before creating
@@ -6727,9 +6764,8 @@ function DashboardBody() {
                 <strong>Farming / profit / both · estimated</strong>
               </div>
               <div className="strategy-trial-actions">
-                <button
-                  type="button"
-                  className="button secondary"
+                <Button
+                  variant="secondary"
                   onClick={() => void runPaperTrial()}
                   disabled={Boolean(trialBlocker)}
                 >
@@ -6737,7 +6773,7 @@ function DashboardBody() {
                   {busy === "paper-trial"
                     ? "Running..."
                     : "Paper test run: 3 cycles"}
-                </button>
+                </Button>
               </div>
               {trialBlocker && (
                 <p className="trial-blocker" role="status">
@@ -6936,14 +6972,13 @@ function DashboardBody() {
                   </p>
                   {selectedStrategy && (
                     <div className="hedge-suggestion">
-                      <button
-                        type="button"
-                        className="button secondary"
+                      <Button
+                        variant="secondary"
                         disabled={"blocker" in hedgeSizing}
                         onClick={() => setHedgeSuggestionOpen(true)}
                       >
                         Preview hedge sizing from effective quote settings
-                      </button>
+                      </Button>
                       {"blocker" in hedgeSizing ? (
                         <p role="status">
                           {hedgeSizing.blocker} Existing settings remain
@@ -6968,9 +7003,8 @@ function DashboardBody() {
                             {config.hedge.maxSlippageBps} bps. This does not
                             apply to running bundles until Apply strategy.
                           </span>
-                          <button
-                            className="button secondary"
-                            type="button"
+                          <Button
+                            variant="secondary"
                             onClick={() => {
                               setConfig((current) => ({
                                 ...current,
@@ -6984,14 +7018,13 @@ function DashboardBody() {
                             }}
                           >
                             Accept amounts in draft
-                          </button>
-                          <button
-                            className="button secondary"
-                            type="button"
+                          </Button>
+                          <Button
+                            variant="secondary"
                             onClick={() => setHedgeSuggestionOpen(false)}
                           >
                             Dismiss
-                          </button>
+                          </Button>
                         </div>
                       )}
                     </div>
@@ -7266,9 +7299,9 @@ function DashboardBody() {
                     </label>
                   </div>
                   <div className="strategy-suggestion-actions">
-                    <button
-                      className="button reward-stage"
-                      type="button"
+                    <Button
+                      variant="secondary"
+                      className="reward-stage"
                       onClick={stageRewardRotation}
                       disabled={
                         Boolean(suggestionCountError) ||
@@ -7276,10 +7309,9 @@ function DashboardBody() {
                       }
                     >
                       Preview selection
-                    </button>
-                    <button
-                      className="button secondary"
-                      type="button"
+                    </Button>
+                    <Button
+                      variant="secondary"
                       onClick={() =>
                         void loadRewards(config.strategyObjective).catch(
                           (error) =>
@@ -7292,7 +7324,7 @@ function DashboardBody() {
                       }
                     >
                       Refresh suggestions
-                    </button>
+                    </Button>
                   </div>
                 </div>
                 <p className="strategy-suggestion-hint" role="status">
@@ -7369,25 +7401,20 @@ function DashboardBody() {
                       .join(", ") || "none"}
                     . Retained markets keep their overrides.
                   </span>
-                  <button
-                    type="button"
-                    className="button secondary"
-                    onClick={acceptMarketSuggestion}
-                  >
+                  <Button variant="secondary" onClick={acceptMarketSuggestion}>
                     Use these markets
-                  </button>
-                  <button
-                    type="button"
-                    className="button secondary"
+                  </Button>
+                  <Button
+                    variant="secondary"
                     onClick={() => setPendingMarketSuggestion(null)}
                   >
                     Dismiss
-                  </button>
+                  </Button>
                 </div>
               )}
-              <button
-                type="button"
-                className="button secondary strategy-clear-selection"
+              <Button
+                variant="secondary"
+                className="strategy-clear-selection"
                 onClick={() => {
                   setConfig((current) => ({ ...current, markets: [] }));
                   setStrategyMarketRule({
@@ -7398,7 +7425,7 @@ function DashboardBody() {
                 }}
               >
                 Clear selected markets
-              </button>
+              </Button>
               <details className="strategy-market-legend">
                 <summary>What the market evidence means</summary>
                 <p>
@@ -8241,9 +8268,8 @@ function DashboardBody() {
               <div className="strategy-save-bar" role="status">
                 <span>Unsaved changes, review and save</span>
                 <div>
-                  <button
-                    type="button"
-                    className="button secondary"
+                  <Button
+                    variant="secondary"
                     onClick={() =>
                       setConfig(
                         savedConfig ?? {
@@ -8255,14 +8281,14 @@ function DashboardBody() {
                     disabled={Boolean(busy)}
                   >
                     Discard
-                  </button>
-                  <button
+                  </Button>
+                  <Button
+                    variant="primary"
                     type="submit"
-                    className="button primary"
                     disabled={Boolean(strategySaveBlocker) || Boolean(busy)}
                   >
                     {busy === "save" ? "Saving..." : "Save strategy"}
-                  </button>
+                  </Button>
                 </div>
                 <small>
                   {strategySaveBlocker ? (
@@ -9176,6 +9202,7 @@ function DashboardBody() {
                 freeUsd: row.freeUsd,
                 requiredUsd: row.requiredUsd,
                 shortfallUsd: row.shortfallUsd,
+                suggestedDepositUsdc: row.suggestedDepositUsdc,
               })),
             });
           }}
@@ -9217,6 +9244,7 @@ function DashboardBody() {
                   freeUsd: stage.availableUsd ?? 0,
                   requiredUsd: stage.requiredUsd ?? 0,
                   shortfallUsd: stage.shortfallUsd ?? 0,
+                  suggestedDepositUsdc: stage.suggestedDepositUsdc,
                   markets: bundle.marketIds.length,
                   quoteSizeUsd: config.quoteSizeUsd,
                 }
@@ -9318,12 +9346,12 @@ function DashboardBody() {
                   value={integratorId}
                   onChange={(event) => setIntegratorId(event.target.value)}
                 />
-                <button
-                  className="button secondary"
+                <Button
+                  variant="secondary"
                   disabled={!setup.setup || !integratorId || Boolean(busy)}
                 >
                   Inspect
-                </button>
+                </Button>
               </form>
               {inspection && (
                 <div
@@ -9365,13 +9393,13 @@ function DashboardBody() {
                   </p>
                 </div>
                 {!operatorStatus?.registryObjectId && (
-                  <button
-                    className="button primary"
+                  <Button
+                    variant="primary"
                     onClick={() => void deployWhitelist()}
                     disabled={Boolean(busy)}
                   >
                     Deploy
-                  </button>
+                  </Button>
                 )}
               </div>
 
@@ -9388,13 +9416,13 @@ function DashboardBody() {
                   </p>
                 </div>
                 {!operatorStatus?.builderCode && (
-                  <button
-                    className="button secondary"
+                  <Button
+                    variant="secondary"
                     onClick={() => void registerBuilderCode()}
                     disabled={Boolean(busy)}
                   >
                     Register
-                  </button>
+                  </Button>
                 )}
               </div>
 
@@ -9415,8 +9443,8 @@ function DashboardBody() {
                   />
                 </div>
                 <div className="member-buttons">
-                  <button
-                    className="button primary"
+                  <Button
+                    variant="primary"
                     onClick={() => void updateMember("add")}
                     disabled={
                       !operatorStatus?.registryObjectId ||
@@ -9425,9 +9453,9 @@ function DashboardBody() {
                     }
                   >
                     Add
-                  </button>
-                  <button
-                    className="button secondary"
+                  </Button>
+                  <Button
+                    variant="secondary"
                     onClick={() => void updateMember("remove")}
                     disabled={
                       !operatorStatus?.registryObjectId ||
@@ -9436,7 +9464,7 @@ function DashboardBody() {
                     }
                   >
                     Remove
-                  </button>
+                  </Button>
                 </div>
               </div>
 

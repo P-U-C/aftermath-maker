@@ -64,6 +64,46 @@ function loggedEventKeys() {
 }
 
 describe("desk audit events", () => {
+  it("narrates estimated Paper fills with symbols and a safe market fallback", () => {
+    const base = {
+      id: 7,
+      occurredAt: "2026-11-02T00:00:00Z",
+      category: "paper",
+      action: "estimated-fill",
+      outcome: "estimated",
+    };
+    expect(
+      deskEvent({
+        ...base,
+        detail: {
+          fills: 1,
+          estimatedFills: [
+            { symbol: "NEAR", side: "bid", price: 2.3141, sizeUsd: 10 },
+          ],
+        },
+      }).sentence,
+    ).toBe(
+      "Paper would have bought $10.00 of NEAR at 2.3141. No order was sent.",
+    );
+    expect(
+      deskEvent({
+        ...base,
+        detail: {
+          fills: 5,
+          estimatedFills: [
+            { symbol: "NEAR", side: "bid", price: 2.3141, sizeUsd: 10 },
+            { symbol: "SUI", side: "ask", price: 3.5, sizeUsd: 12 },
+          ],
+        },
+      }).sentence,
+    ).toContain(", +3 more. No order was sent.");
+    expect(
+      deskEvent({
+        ...base,
+        detail: { marketId: "0x1b1ce8f5e226fe33b91a", fills: 0 },
+      }).sentence,
+    ).toContain("0x1b1c…3b91a");
+  });
   it("narrates a stalled account read with time and safe last error", () => {
     const event = deskEvent(
       {
@@ -98,7 +138,7 @@ describe("desk audit events", () => {
       },
       { bundleName: "Core" },
     );
-    expect(cleared.sentence).toBe("Paper on Core is simulating again.");
+    expect(cleared.sentence).toBe("Core: Paper is simulating again.");
     const blocked = deskEvent(
       {
         id: 2,

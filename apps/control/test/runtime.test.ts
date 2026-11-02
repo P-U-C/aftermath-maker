@@ -1720,6 +1720,51 @@ describe("runtime execution boundaries", () => {
     harness.store.close();
   });
 
+  it("fails closed with venue copy when a real position has no reported margin ratio", async () => {
+    const harness = createHarness();
+    harness.tenant.setConfig(
+      makerConfigSchema.parse({
+        ...harness.tenant.getConfig()!,
+        mode: "paper",
+        markets: [{ marketId: "0x5678", symbol: "SUI" }],
+      }),
+    );
+    harness.setPortfolioResolver((inputs) => ({
+      equityUsd: 100,
+      availableCollateralUsd: 80,
+      allocatedCollateralUsd: 20,
+      freeMarginUsd: 70,
+      withdrawableCollateralUsd: 75,
+      grossExposureUsd: 10,
+      unrealizedPnlUsd: 0,
+      gasSui: 1,
+      positions: inputs.marketIds.map((marketId) => ({
+        marketId,
+        baseAssetAmount: 1,
+        pendingOrderCount: 0,
+        inventoryUsd: 10,
+        unrealizedPnlUsd: 0,
+        collateralUsd: 20,
+        freeMarginUsd: 70,
+        marginRatio: null,
+        liquidationDistanceBps: null,
+        makerOrderIds: [],
+        hasPosition: true,
+      })),
+    }));
+    harness.runtime.start();
+    await harness.runtime.cycle();
+    expect(harness.runtime.snapshot.paperBlocker?.message).toBe(
+      "Aftermath didn't report a margin ratio for SUI. Maker won't quote until it does.",
+    );
+    const runtimeText = JSON.stringify({
+      snapshot: harness.runtime.snapshot,
+      events: harness.tenant.listEvents(),
+    });
+    expect(runtimeText).not.toMatch(/NaN|undefined|Infinity/);
+    harness.store.close();
+  });
+
   it("automatically flattens both dedicated accounts before the gross limit", async () => {
     const harness = createHarness();
     const hedgeSetup = setupSchema.parse({

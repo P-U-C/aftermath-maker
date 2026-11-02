@@ -1585,11 +1585,6 @@ input[type="range"] {
   border-color: var(--primary);
 }
 
-.button.inverse {
-  color: var(--on-primary);
-  border-color: var(--hair);
-}
-
 .account-controls {
   flex-wrap: wrap;
 }

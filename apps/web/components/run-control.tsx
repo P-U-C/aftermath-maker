@@ -179,7 +179,7 @@ function rowDetail(
       return {
         text:
           stage.id === "collateral"
-            ? `Deposit $${(stage.shortfallUsd ?? 0).toFixed(2)} to start`
+            ? `Deposit $${(stage.suggestedDepositUsdc ?? stage.shortfallUsd ?? 0).toFixed(2)} to start`
             : `${stage.detail} to start`,
         tone: "amber",
         destination: stage.id === "strategy" ? "strategy" : "venues",
@@ -417,7 +417,9 @@ function RunStatusContent({
                       >
                         Deposit $
                         {(
-                          nextStage(bundle.readiness)?.shortfallUsd ?? 0
+                          nextStage(bundle.readiness)?.suggestedDepositUsdc ??
+                          nextStage(bundle.readiness)?.shortfallUsd ??
+                          0
                         ).toFixed(2)}
                       </button>
                     )}

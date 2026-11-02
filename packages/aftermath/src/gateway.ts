@@ -118,12 +118,17 @@ export type PositionSnapshot = {
   liquidationDistanceBps?: number | null;
   makerOrderIds: bigint[];
   hasPosition: boolean;
+  /** Synthetic Paper inventory has no venue margin or liquidation data. */
+  simulated?: boolean;
 };
 
 export type PortfolioSnapshot = {
   markedAt: string;
   equityUsd: number;
   availableCollateralUsd: number;
+  /** Native collateral units; USD is venue-marked and may differ from USDC. */
+  availableCollateral?: number;
+  collateralPrice?: number;
   allocatedCollateralUsd: number;
   freeMarginUsd: number;
   withdrawableCollateralUsd: number;
@@ -1255,6 +1260,15 @@ export class AftermathGateway {
           collateralCoinType: cap.collateralCoinType,
           equityUsd: account.account.totalEquityUsd,
           availableCollateralUsd: account.account.availableCollateralUsd,
+          availableCollateral: Number(
+            (account.account as unknown as { availableCollateral?: number })
+              .availableCollateral ?? 0,
+          ),
+          collateralPrice:
+            Number(
+              (account.account as unknown as { collateralPrice?: number })
+                .collateralPrice ?? 0,
+            ) || undefined,
           allocatedCollateralUsd,
           freeMarginUsd,
           positionCount: openPositions.length,
@@ -1463,7 +1477,12 @@ export class AftermathGateway {
       BigInt(
         Math.max(
           0,
-          Math.round(account.account.availableCollateralUsd * 1_000_000),
+          Math.round(
+            Number(
+              (account.account as unknown as { availableCollateral?: number })
+                .availableCollateral ?? account.account.availableCollateralUsd,
+            ) * 1_000_000,
+          ),
         ),
       )
     ) {
