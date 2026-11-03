@@ -2841,6 +2841,37 @@ export class MakerRuntime {
           context: agent.encryptionContext,
           encryptedSecret: agent.encryptedSecret,
         });
+        if (
+          config.strategyObjective === "volume" &&
+          config.flattenOnRotate
+        ) {
+          // Never submit a taker close against an owner's resting Maker
+          // order.  Confirm the cancel first, then reuse the paired
+          // reduce-only flattener with this one market as its scope.
+          const cancelled = await this.cancelOpenOrders(config, {
+            attempts: 3,
+            retryDelayMs: 750,
+            marketIds: [switchFromMarketId],
+          });
+          if (!cancelled) {
+            throw new Error("Volume rotation could not confirm Maker cancellation");
+          }
+          this.clearActiveQuoteState();
+          await this.autoRebalanceIfNeeded({
+            config: {
+              ...config,
+              markets: [priorMarket],
+              autoRebalanceEnabled: true,
+              rebalanceGrossExposureUsd: 0,
+            },
+            makerSetup: setup,
+            agentAddress: agent.address,
+            signer,
+            makerPortfolio: portfolio,
+            hedgePortfolio: hedgeRiskPortfolio,
+          });
+          switchFromMarketId = null;
+        }
         const hedgeReady = await this.reconcileHedge({
           config,
           marketConfig: resolveMarketConfig(config, priorMarket),
