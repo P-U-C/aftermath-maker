@@ -6,17 +6,16 @@ import {
   timingSafeEqual,
 } from "node:crypto";
 import { verifyPersonalMessageSignature } from "@mysten/sui/verify";
+import { normalizeSuiAddress } from "@mysten/sui/utils";
 import type { SuiGrpcClient } from "@mysten/sui/grpc";
 import type { OnchainAllowlist } from "./allowlist.js";
 import { UserFacingError } from "./http-error.js";
 import type { Store } from "./store.js";
 
-const SUI_ADDRESS = /^0x[0-9a-fA-F]{64}$/;
-
-function normalizeAddress(address: string): string {
-  if (!SUI_ADDRESS.test(address))
+export function normalizeAddress(address: string): string {
+  if (!/^(0x)?[0-9a-fA-F]{1,64}$/.test(address))
     throw new AuthError(400, "Invalid Sui address");
-  return address.toLowerCase();
+  return normalizeSuiAddress(address);
 }
 
 function hashToken(token: string): string {
@@ -355,6 +354,7 @@ export class WalletAuth {
   }
 
   isOperator(address: string): boolean {
-    return this.store.getOperatorAddress() === normalizeAddress(address);
+    const operator = this.store.getOperatorAddress();
+    return operator !== null && normalizeAddress(operator) === normalizeAddress(address);
   }
 }

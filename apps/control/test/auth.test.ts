@@ -60,6 +60,17 @@ function zkLoginFixture() {
 }
 
 describe("wallet authentication", () => {
+  it("normalizes mixed-case, unpadded and zkLogin addresses before checking operator status", () => {
+    const { store, auth } = harness();
+    store.setSystemSetting("operator_address", "0xAbC");
+    expect(auth.isOperator("0xabc")).toBe(true);
+    expect(auth.isOperator(`0x${"0".repeat(61)}AbC`)).toBe(true);
+    const { address } = zkLoginFixture();
+    store.setSystemSetting("operator_address", `0x${address.slice(2).replace(/^0+/, "")}`);
+    expect(auth.isOperator(`0x${address.slice(2).toUpperCase()}`)).toBe(true);
+    store.close();
+  });
+
   it("keeps Ed25519 sign-in offline even when a verification client is present", async () => {
     const chainCheck = vi.fn();
     const { store, auth } = harness({

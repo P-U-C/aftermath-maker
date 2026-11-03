@@ -45,6 +45,7 @@ const CONTROL_EVENT_KINDS = [
   "paper:trial:error",
   "paper:volume-close:estimated",
   "paper:volume-fee-budget:warning",
+  "rewards:share.settings.update:success",
   "risk:automatic-paired-rebalance:confirmed",
   "risk:automatic-paired-rebalance:retry",
   "risk:flatten-cycle-wait:timeout",

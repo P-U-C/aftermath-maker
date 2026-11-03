@@ -36,6 +36,7 @@ const baseUrl = option(
 );
 const showFlattenSheet = process.argv.includes("--flatten-sheet");
 const showLiveSheet = process.argv.includes("--live-sheet");
+const showRewardShare = process.argv.includes("--reward-share");
 const showAccountEditor = process.argv.includes("--account-editor");
 const verifyConfigSave = process.argv.includes("--verify-config-save");
 const verifyStrategyBuilder = process.argv.includes(
@@ -787,39 +788,31 @@ async function capture(browser, stateName, captureConfig, view) {
     if (
       showLiveSheet &&
       stateName === "stopped" &&
-      (view === null || view === "strategy")
+      (view === null || view === "bundles")
     ) {
-      if (view === null) {
-        await page.getByRole("link", { name: "Strategy" }).click();
+      if (view === null) await page.getByRole("link", { name: "Bundles" }).click();
+      await page.getByRole("button", { name: "Go live…" }).click();
+      await page.getByRole("dialog", { name: "Switch Core to Live?" }).waitFor();
+      if (await page.getByRole("button", { name: "Switch Core to Live" }).isEnabled()) {
+        throw new Error("Live mode was selectable while deployment gates were off");
       }
-      await page
-        .locator(".strategy-builder")
-        .getByRole("button", { name: /Review/ })
-        .click();
-      const reviewLive = page.getByRole("button", {
-        name: "Review live setup",
-      });
-      if (await reviewLive.count()) {
-        await reviewLive.click();
-        await page.getByRole("dialog", { name: "Use Live mode?" }).waitFor();
-        if (
-          await page.getByRole("button", { name: "Use Live mode" }).isEnabled()
-        ) {
-          throw new Error(
-            "Live mode was selectable while deployment gates were off",
-          );
-        }
-      } else {
-        const liveTrial = page.getByRole("button", {
-          name: "Live",
-          exact: true,
-        });
-        if ((await liveTrial.count()) && (await liveTrial.isEnabled())) {
-          throw new Error(
-            "Live mode was selectable while deployment gates were off",
-          );
-        }
-      }
+    }
+    if (showRewardShare && stateName === "stopped" && view === "strategy") {
+      await page.getByRole("button", { name: "Edit strategy" }).click();
+      await page.getByRole("button", { name: /Markets/ }).first().click();
+      await page.getByRole("button", { name: "Reward share" }).click();
+      await page.getByText("Scenario", { exact: true }).waitFor();
+      await page.getByRole("button", { name: "Cross-market" }).click();
+      await page.getByRole("button", { name: "Expand costs" }).first().click();
+      await page.getByText(/Estimated execution cost/).first().waitFor();
+      await page.locator("#strategy-top-count").fill("2");
+      await page.getByLabel("Volume budget (optional)").fill("64000");
+      await page.getByRole("button", { name: "Model budget" }).click();
+      await page.getByText(/Unallocated modeled volume/).waitFor();
+      await page.getByRole("button", { name: "Preview selection" }).click();
+      await page.getByRole("button", { name: "Use these markets" }).click();
+      await page.getByText(/Accepted draft selection \(2\/64\)/).waitFor();
+      process.stdout.write(`${stateName}/${view}/${captureConfig.name}: Reward share scenario, costs, budget allocation, and two-market draft rendered\n`);
     }
     if (
       verifyConfigSave &&
@@ -1483,7 +1476,7 @@ async function capture(browser, stateName, captureConfig, view) {
     }
     const file = path.join(
       outputDirectory,
-      `${stateName}${view ? `-${view}` : ""}${learnChapter ? `-${learnChapter}` : ""}${showFlattenSheet ? "-flatten" : ""}${showLiveSheet ? "-live" : ""}${showRunStatus ? "-run-status" : ""}${beginStop ? "-stopping" : ""}${waitForStopTimeout ? "-timeout" : ""}-${captureConfig.name}.png`,
+      `${stateName}${view ? `-${view}` : ""}${learnChapter ? `-${learnChapter}` : ""}${showFlattenSheet ? "-flatten" : ""}${showLiveSheet ? "-live" : ""}${showRewardShare ? "-reward-share" : ""}${showRunStatus ? "-run-status" : ""}${beginStop ? "-stopping" : ""}${waitForStopTimeout ? "-timeout" : ""}-${captureConfig.name}.png`,
     );
     if (
       verifyPaperBlocked &&
@@ -1603,7 +1596,8 @@ async function capture(browser, stateName, captureConfig, view) {
         const fieldBox = fields.getBoundingClientRect();
         const actionBox = actions.getBoundingClientRect();
         return {
-          sameRow: Math.abs(fieldBox.top - actionBox.top) < 2,
+          sameRow:
+            fieldBox.top < actionBox.bottom && actionBox.top < fieldBox.bottom,
           fieldsTop: fieldBox.top,
           actionsTop: actionBox.top,
         };
@@ -1708,7 +1702,8 @@ async function capture(browser, stateName, captureConfig, view) {
     if (
       captureConfig.name === "phone-light" &&
       view === "strategy" &&
-      stateName !== "onboarding"
+      stateName !== "onboarding" &&
+      !showRewardShare
     ) {
       await page.getByRole("button", { name: "Close strategy" }).click();
       await page.locator('[data-view="desk"]:not([hidden])').waitFor();

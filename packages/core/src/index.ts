@@ -1,4 +1,5 @@
 export * from "./rewards.js";
+export * from "./reward-share.js";
 export * from "./risk.js";
 export * from "./schema.js";
 export * from "./strategy.js";

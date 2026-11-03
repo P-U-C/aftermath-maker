@@ -180,6 +180,19 @@ export function apiResponse(fixture, url, method = "GET") {
   if (routePath === "api/rewards") {
     return { status: 200, body: fixture.rewards };
   }
+  if (routePath === "api/rewards/share") {
+    const scenario = url.searchParams.get("scenario");
+    return {
+      status: 200,
+      body: {
+        ...fixture.rewardShare,
+        settings: {
+          ...fixture.rewardShare.settings,
+          ...(scenario ? { scenario } : {}),
+        },
+      },
+    };
+  }
   if (routePath === "api/markets") {
     return { status: 200, body: fixture.markets };
   }

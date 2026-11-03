@@ -1614,6 +1614,66 @@ describe("runtime execution boundaries", () => {
     harness.store.close();
   });
 
+  it("keeps Paper reducing filled markets when a $200 bundle limit reserves $230 of quote risk", async () => {
+    const harness = createHarness();
+    const markets = Array.from({ length: 15 }, (_, index) => ({
+      marketId: `0x${(index + 1).toString(16).padStart(4, "0")}`,
+      symbol: `M${index}`,
+    }));
+    harness.tenant.setConfig(
+      makerConfigSchema.parse({
+        ...harness.tenant.getConfig()!,
+        mode: "paper",
+        rotationMode: "portfolio",
+        hedge: { enabled: false, accountId: null, thresholdUsd: 25, maxOrderUsd: 100, maxSlippageBps: 75 },
+        markets,
+        quoteSizeUsd: 10,
+        maxLeverage: 10,
+        maxInventoryUsd: 100,
+        maxGrossExposureUsd: 200,
+        maxQuoteAgeMs: 128_000,
+      }),
+    );
+
+    // Eight prior simulated bid fills contribute $160 of inventory. With the
+    // seven remaining flat markets reserved at $10 each, a two-sided refresh
+    // has $230 worst-case exposure. The selected filled market must still
+    // place its ask-only reducing quote instead of stalling Paper.
+    for (const market of markets.slice(0, 8)) {
+      harness.tenant.recordPaperQuote({
+        trialId: "runtime",
+        marketId: market.marketId,
+        symbol: market.symbol,
+        bidPrice: 10,
+        askPrice: 10.1,
+        sizeUsd: 10,
+        sides: "bid",
+      });
+      harness.tenant.matchPaperOrders({
+        trialId: "runtime",
+        marketId: market.marketId,
+        bestBid: 9.99,
+        bestAsk: 9.99,
+      });
+    }
+
+    harness.runtime.start();
+    await harness.runtime.cycle({ executeLive: true });
+
+    expect(harness.runtime.snapshot.paperBlocker).toMatchObject({
+      code: "gross-exposure",
+      requiredUsd: 230,
+    });
+    expect(harness.runtime.snapshot.quote).toMatchObject({
+      sides: "ask",
+      sizeUsd: 10,
+    });
+    expect(harness.executionSequence).toContain("paper-dry-run");
+    expect(harness.runtime.snapshot.execution.lastDecision).toBe("quoted");
+    await harness.runtime.stop();
+    harness.store.close();
+  });
+
   it("keeps deselected positions inside the account-wide gross exposure gate", async () => {
     const harness = createHarness();
     harness.tenant.setConfig(

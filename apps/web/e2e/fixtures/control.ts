@@ -445,12 +445,32 @@ export type FixtureState = {
       maxOpenInterestBase: number;
       fundingRate: number;
       makerFee: number;
+      takerFee: number;
       volume24hUsd: number | null;
       priceChange24hPct: number | null;
     }>;
   };
   performance: { performance: Performance };
   rewards: { rewards: RewardDashboard };
+  rewardShare: {
+    settings: {
+      selectedAccountIds: string[];
+      scenario: "per-market" | "cross-market";
+      poolUsd: number;
+      volumeRewardFraction: number;
+      incrementUsd: number;
+      fillSizeUsd: number | null;
+      forecast: "recent" | "none";
+      rewardMarketCount: number | null;
+      extraCostBps: number;
+      fixedCostUsd: number;
+    };
+    snapshot: { asOf: string; rewardMarketCount: number; flags: string[] };
+    rankings: Array<{ marketId: string; symbol: string; currentMarketShare: number; proposedAdditionalVolumeUsd: number; modeledAdditionalRewardUsd: number; estimatedExecutionCostUsd: number; modeledBenefitUsd: number; benefitPerDollar: number; flags: string[] }>;
+    reconciliation: { takerRewardsUsd: number | null; scenarios: Array<{ scenario: string; modeledIncrementalRewardUsd: number }> };
+    allocation?: { allocations: Array<{ marketId: string; volumeUsd: number }>; unallocatedVolumeUsd: number };
+    incomplete: boolean;
+  };
   events: { events: AuditEvent[] };
   operator: OperatorStatus;
 };
@@ -496,7 +516,8 @@ const marketRows: FixtureState["markets"]["markets"] = [
     openInterestUtilizationPct: 13.58,
     maxOpenInterestBase: 10_000_000,
     fundingRate: 0.000012,
-    makerFee: -0.00005,
+      makerFee: -0.00005,
+      takerFee: 0.0002,
     volume24hUsd: 86_214.72,
     priceChange24hPct: 2.17,
   },
@@ -513,7 +534,8 @@ const marketRows: FixtureState["markets"]["markets"] = [
     openInterestUtilizationPct: 8.93,
     maxOpenInterestBase: 100_000,
     fundingRate: -0.000021,
-    makerFee: -0.00005,
+      makerFee: -0.00005,
+      takerFee: 0.0002,
     volume24hUsd: 61_201.18,
     priceChange24hPct: -0.84,
   },
@@ -530,7 +552,8 @@ const marketRows: FixtureState["markets"]["markets"] = [
     openInterestUtilizationPct: 41.29,
     maxOpenInterestBase: 10_000,
     fundingRate: 0.000008,
-    makerFee: -0.00005,
+      makerFee: -0.00005,
+      takerFee: 0.0002,
     volume24hUsd: 18_410_119.44,
     priceChange24hPct: 1.21,
   },
@@ -547,7 +570,8 @@ const marketRows: FixtureState["markets"]["markets"] = [
     openInterestUtilizationPct: 37.8,
     maxOpenInterestBase: 1_000,
     fundingRate: 0.000013,
-    makerFee: -0.00005,
+      makerFee: -0.00005,
+      takerFee: 0.0002,
     volume24hUsd: 41_923_114.91,
     priceChange24hPct: 0.72,
   },
@@ -564,7 +588,8 @@ const marketRows: FixtureState["markets"]["markets"] = [
     openInterestUtilizationPct: 22.05,
     maxOpenInterestBase: 400_000,
     fundingRate: -0.000004,
-    makerFee: -0.00005,
+      makerFee: -0.00005,
+      takerFee: 0.0002,
     volume24hUsd: 7_482_113.82,
     priceChange24hPct: -1.43,
   },
@@ -984,6 +1009,39 @@ const rewards: RewardDashboard = {
   },
 };
 
+const rewardShare: FixtureState["rewardShare"] = {
+  settings: {
+    selectedAccountIds: ["1745", "1746"],
+    scenario: "per-market",
+    poolUsd: 70_000,
+    volumeRewardFraction: 1,
+    incrementUsd: 32_000,
+    fillSizeUsd: 10,
+    forecast: "recent",
+    rewardMarketCount: 65,
+    extraCostBps: 0,
+    fixedCostUsd: 0,
+  },
+  snapshot: { asOf: fixedNow, rewardMarketCount: 65, flags: [] },
+  rankings: marketRows.slice(0, 3).map((market, index) => ({
+    marketId: market.id,
+    symbol: market.symbol,
+    currentMarketShare: index / 100,
+    proposedAdditionalVolumeUsd: 32_000,
+    modeledAdditionalRewardUsd: 28 - index * 4,
+    estimatedExecutionCostUsd: 9 + index,
+    modeledBenefitUsd: 19 - index * 5,
+    benefitPerDollar: (19 - index * 5) / 32_000,
+    flags: index === 2 ? ["under 72h observed"] : [],
+  })),
+  reconciliation: { takerRewardsUsd: 12, scenarios: [{ scenario: "per-market", modeledIncrementalRewardUsd: 60 }, { scenario: "cross-market", modeledIncrementalRewardUsd: 28 }] },
+  allocation: {
+    allocations: marketRows.slice(0, 2).map((market) => ({ marketId: market.id, volumeUsd: 32_000 })),
+    unallocatedVolumeUsd: 0,
+  },
+  incomplete: false,
+};
+
 const fixtureEventKinds = [
   ["paper", "estimated-fill", "estimated"],
   ["runtime", "cancel-maker-orders", "clear"],
@@ -1045,6 +1103,7 @@ const base: Omit<FixtureState, "auth" | "status" | "config" | "setup"> = {
   markets: { markets: marketRows },
   performance: { performance },
   rewards: { rewards },
+  rewardShare,
   events: { events },
   bundles: {
     bundles: [

@@ -30,6 +30,7 @@ import {
   PriorityMutationQueue,
   rankRewardMarkets,
   rewardEpochWindow,
+  type RewardShareSnapshot,
   type BuilderFeePolicy,
   type MakerConfig,
   type QuoteIntent,
@@ -55,6 +56,7 @@ export type MarketSummary = {
   maxOpenInterestBase: number;
   fundingRate: number;
   makerFee: number;
+  takerFee: number;
   maxLeverage: number;
   maintenanceMarginRatio: number;
   category: string | null;
@@ -103,6 +105,16 @@ export type RewardDashboard = {
     methodology: string;
     depthBandBps: 50;
     opportunities: RewardMarketOpportunity[];
+  };
+};
+
+export type RewardShareGatewaySnapshot = RewardShareSnapshot & {
+  flags: string[];
+  incomplete: boolean;
+  reconciliation: {
+    takerRewardsUsd: number | null;
+    refundRate: number | null;
+    error: string | null;
   };
 };
 
@@ -934,6 +946,7 @@ export class AftermathGateway {
         maxOpenInterestBase,
         fundingRate: market.estimatedFundingRate(),
         makerFee: market.marketParams.makerFee,
+        takerFee: market.marketParams.takerFee,
         maxLeverage: market.maxLeverage(),
         maintenanceMarginRatio: market.marketParams.marginRatioMaintenance,
         category: metadata?.category ?? null,
@@ -1170,6 +1183,151 @@ export class AftermathGateway {
           objective: inputs.objective,
         }),
       },
+    };
+  }
+
+  /**
+   * Read-only inputs for the experimental taker reward-share model.  The SDK
+   * does not expose a typed hourly-candle method in every release, so a
+   * missing history capability is deliberately surfaced as incomplete rather
+   * than silently manufacturing a forecast.
+   */
+  async getRewardShareSnapshot(inputs: {
+    walletAddress: string;
+    accountIds: string[];
+    collateralCoinType: string;
+    poolUsd: number;
+    rewardMarketCount?: number;
+    asOf?: Date;
+  }): Promise<RewardShareGatewaySnapshot> {
+    const asOfDate = inputs.asOf ?? new Date();
+    const asOf = new Date(
+      Date.UTC(
+        asOfDate.getUTCFullYear(),
+        asOfDate.getUTCMonth(),
+        asOfDate.getUTCDate(),
+        asOfDate.getUTCHours(),
+      ),
+    );
+    const epoch = rewardEpochWindow(asOf);
+    const startedAt = Date.parse(epoch.startedAt);
+    const summaries = await this.listMarkets(inputs.collateralCoinType);
+    const allowed = await this.getOwnedAccountCaps({
+      walletAddress: inputs.walletAddress,
+      collateralCoinType: inputs.collateralCoinType,
+    });
+    const caps = allowed.filter(
+      (cap) =>
+        !cap.isAgent && inputs.accountIds.includes(cap.accountId.toString()),
+    );
+    if (caps.length !== new Set(inputs.accountIds).size) {
+      throw new Error("Selected account is not owned by the connected wallet");
+    }
+    const ownByMarket = new Map<string, number>();
+    const liquidationsByMarket = new Map<string, string>();
+    let historyComplete = true;
+    for (const cap of caps) {
+      const { account } = await this.sdk.Perpetuals().getAccount({ accountCap: cap });
+      const history = await this.accountFillHistory.get({
+        accountKey: `reward-share:${inputs.walletAddress.toLowerCase()}:${cap.accountId}`,
+        pageSize: 200,
+        sinceMs: startedAt,
+        orderKey: (event) =>
+          [
+            event.txDigest ?? "",
+            event.orderId ?? "",
+            event.eventType,
+            event.timestamp,
+            event.marketId,
+            event.side ?? "",
+            event.price ?? "",
+            event.size ?? "",
+          ].join(":"),
+        fetchPage: (page) =>
+          account.getOrderHistory({
+            limit: page.limit,
+            eventTypes: ["FilledTakerOrder", "LiquidatedPosition"],
+            ...(page.beforeTimestampCursor === undefined
+              ? {}
+              : { beforeTimestampCursor: page.beforeTimestampCursor }),
+          }),
+      });
+      historyComplete &&= history.historyComplete;
+      for (const event of history.orders) {
+        if (timestampMs(event.timestamp) < startedAt || timestampMs(event.timestamp) >= asOf.getTime()) continue;
+        if (event.eventType === "FilledTakerOrder") {
+          ownByMarket.set(event.marketId, (ownByMarket.get(event.marketId) ?? 0) + Math.abs((event.price ?? 0) * (event.size ?? 0)));
+        }
+        if (event.eventType === "LiquidatedPosition") {
+          liquidationsByMarket.set(event.marketId, new Date(timestampMs(event.timestamp)).toISOString());
+        }
+      }
+    }
+    const dayStart = Date.UTC(
+      new Date(epoch.startedAt).getUTCFullYear(),
+      new Date(epoch.startedAt).getUTCMonth(),
+      new Date(epoch.startedAt).getUTCDate(),
+    );
+    const dailyChunks = Array.from(
+      { length: Math.ceil(summaries.length / 50) },
+      (_, index) => summaries.slice(index * 50, index * 50 + 50),
+    );
+    const daily = (
+      await Promise.all(
+        dailyChunks.map((markets) =>
+          this.getMarketsDailyVolume({
+            fromTimestamp: dayStart,
+            toTimestamp: asOf.getTime(),
+            marketIds: markets.map((market) => market.id),
+          }),
+        ),
+      )
+    ).flat();
+    const dailyByMarket = new Map(daily.map((row) => [row.marketId, row.volumeUsd]));
+    const flags = [
+      "Hourly candle history is unavailable in this SDK build; forecast and source cross-check are incomplete.",
+      ...(historyComplete ? [] : ["Own history incomplete"]),
+    ];
+    const distribution = caps.length
+      ? await this.sdk.Rewards().getDistribution({
+          accountIds: caps.map((cap) => cap.accountId),
+          totalMakerRewards: 0,
+          totalTakerRewards: inputs.poolUsd,
+          calculationVariables: {
+            qScoreCoefficient: 1,
+            uptimeCoefficient: 1,
+            mmVolumeCoefficient: 1,
+            takerVolumeCoefficient: 1,
+            takerOiCoefficient: 0,
+          },
+        }).then((value) => ({ value, error: null as string | null })).catch((error) => ({ value: null, error: errorMessage(error) }))
+      : { value: null, error: null };
+    const takerRewardsUsd = distribution.value?.rewards.reduce(
+      (total, row) => total + Number((row as unknown as { taker?: { rewards?: number } }).taker?.rewards ?? 0),
+      0,
+    ) ?? null;
+    return {
+      asOf: asOf.toISOString(),
+      epochEnd: epoch.cutoffAt,
+      poolUsd: inputs.poolUsd,
+      rewardMarketCount: inputs.rewardMarketCount ?? summaries.length,
+      markets: summaries.map((market) => ({
+        marketId: market.id,
+        symbol: market.symbol,
+        totalVolumeUsd: dailyByMarket.get(market.id) ?? 0,
+        ownTakerVolumeUsd: ownByMarket.get(market.id) ?? 0,
+        last24h: { externalVolumeUsd: 0, observedHours: 0 },
+        previous48h: { externalVolumeUsd: 0, observedHours: 0 },
+        cost: { takerFeeBps: market.takerFee * 10_000 },
+        flags: [
+          "market volume incomplete",
+          ...(liquidationsByMarket.has(market.id) ? [`prior liquidation: ${liquidationsByMarket.get(market.id)}`] : []),
+          ...(historyComplete ? [] : ["own history incomplete"]),
+        ],
+      })),
+      flags,
+      incomplete: true,
+      reconciliation: { takerRewardsUsd, refundRate: null, error: distribution.error },
     };
   }
 

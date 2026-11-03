@@ -13,6 +13,19 @@ import {
   type Setup,
 } from "@puc/core";
 
+export type RewardShareSettings = {
+  selectedAccountIds: string[];
+  poolUsd: number;
+  volumeRewardFraction: number;
+  incrementUsd: number;
+  fillSizeUsd: number | null;
+  forecast: "recent" | "none";
+  scenario: "per-market" | "cross-market";
+  rewardMarketCount: number | null;
+  extraCostBps: number;
+  fixedCostUsd: number;
+};
+
 const BIGINT_TAG = "__maker_bigint__";
 
 const stringify = (value: unknown) =>
@@ -904,6 +917,7 @@ export class Store {
           strategy_id TEXT NOT NULL,
           market_id TEXT NOT NULL,
           symbol TEXT NOT NULL,
+          market_max_leverage REAL,
           overrides TEXT,
           position INTEGER NOT NULL CHECK (position >= 0),
           PRIMARY KEY (strategy_id, market_id),
@@ -1034,6 +1048,11 @@ export class Store {
         "owner_address TEXT NOT NULL DEFAULT ''",
       );
       ensureColumn("bundle_markets", "overrides", "overrides TEXT");
+      ensureColumn(
+        "strategy_markets",
+        "market_max_leverage",
+        "market_max_leverage REAL",
+      );
       ensureColumn(
         "bundles",
         "strategy_id",
@@ -2394,6 +2413,14 @@ export class TenantStore {
       .run(this.ownerAddress, key, stringify(value), new Date().toISOString());
   }
 
+  getRewardShareSettings(): RewardShareSettings | null {
+    return this.getSetting<RewardShareSettings>("reward_share_settings");
+  }
+
+  setRewardShareSettings(settings: RewardShareSettings): void {
+    this.setSetting("reward_share_settings", settings);
+  }
+
   private getCoreRow(): BundleRow | null {
     const row = this.db
       .prepare(
@@ -2482,7 +2509,7 @@ export class TenantStore {
   private getStrategyMarkets(strategyId: string): MakerConfig["markets"] {
     const rows = this.db
       .prepare(
-        `SELECT market_id, symbol, overrides
+        `SELECT market_id, symbol, market_max_leverage, overrides
          FROM strategy_markets
          WHERE strategy_id = ?
          ORDER BY position ASC, market_id ASC`,
@@ -2490,11 +2517,15 @@ export class TenantStore {
       .all(strategyId) as Array<{
       market_id: string;
       symbol: string;
+      market_max_leverage: number | null;
       overrides: string | null;
     }>;
     return rows.map((market) => ({
       marketId: market.market_id,
       symbol: market.symbol,
+      ...(market.market_max_leverage === null
+        ? {}
+        : { marketMaxLeverage: market.market_max_leverage }),
       ...(market.overrides
         ? {
             overrides: parse<MakerConfig["markets"][number]["overrides"]>(
@@ -2514,14 +2545,15 @@ export class TenantStore {
       .run(strategyId);
     const insert = this.db.prepare(
       `INSERT INTO strategy_markets
-        (strategy_id, market_id, symbol, overrides, position)
-       VALUES (?, ?, ?, ?, ?)`,
+        (strategy_id, market_id, symbol, market_max_leverage, overrides, position)
+       VALUES (?, ?, ?, ?, ?, ?)`,
     );
     for (const [position, market] of markets.entries()) {
       insert.run(
         strategyId,
         market.marketId,
         market.symbol,
+        market.marketMaxLeverage ?? null,
         market.overrides ? stringify(market.overrides) : null,
         position,
       );
