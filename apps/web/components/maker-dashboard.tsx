@@ -107,6 +107,10 @@ import {
   type AdvancedFieldTipId,
 } from "../lib/strategy-field-tips";
 import { primaryVenue } from "../lib/venues";
+import {
+  quoteExposureUsed,
+  suggestedGrossExposureLimit,
+} from "../lib/strategy-limits";
 import { AccessScreen, type AccessRequestInput } from "./access-screen";
 import { GlossaryTerm } from "./ui/glossary-term";
 import {
@@ -4032,13 +4036,15 @@ function DashboardBody() {
     config.maxGrossExposureUsd < config.maxInventoryUsd
       ? "Gross exposure must cover at least one market's inventory limit."
       : null;
-  const quotedGrossExposureUsd = config.markets.reduce(
-    (total, market) =>
-      total + (market.overrides?.quoteSizeUsd ?? config.quoteSizeUsd),
-    0,
+  const quotedGrossExposureUsd = quoteExposureUsed(
+    config.markets,
+    config.quoteSizeUsd,
   );
-  const suggestedGrossExposureUsd =
-    quotedGrossExposureUsd + config.maxInventoryUsd;
+  const suggestedGrossExposureUsd = suggestedGrossExposureLimit(
+    config.markets,
+    config.quoteSizeUsd,
+    config.maxInventoryUsd,
+  );
   const quoteUsesMostGrossLimit =
     config.maxGrossExposureUsd > 0 &&
     quotedGrossExposureUsd / config.maxGrossExposureUsd > 0.8;
