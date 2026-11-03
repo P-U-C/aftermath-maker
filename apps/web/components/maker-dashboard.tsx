@@ -681,7 +681,10 @@ type Performance = {
     takerFills: number;
     realizedPnlUsd: number;
     feesUsd: number;
+    marketVolumeUsd: number | null;
+    marketVolumeError: string | null;
   }>;
+  marketVolumeLabel: string | null;
   fills: MakerFill[];
   note: string;
 };
@@ -4459,12 +4462,29 @@ function DashboardBody() {
         takerFills: 0,
         realizedPnlUsd: fill.realizedPnlUsd,
         feesUsd: fill.protocolFeesUsd + fill.estimatedBuilderFeeUsd,
+        marketVolumeUsd: null,
+        marketVolumeError:
+          "Market daily volume is not available for this fill.",
       });
     }
     return [...rows.values()].sort((left, right) =>
       left.symbol.localeCompare(right.symbol),
     );
   })();
+  const performanceMarketTotals = performanceVolumeByMarket.reduce(
+    (totals, row) => ({
+      ourVolume: totals.ourVolume + row.makerNotionalUsd + row.takerNotionalUsd,
+      marketVolume:
+        totals.marketVolume +
+        (row.marketVolumeUsd && row.marketVolumeUsd > 0
+          ? row.marketVolumeUsd
+          : 0),
+      marketRows:
+        totals.marketRows +
+        (row.marketVolumeUsd && row.marketVolumeUsd > 0 ? 1 : 0),
+    }),
+    { ourVolume: 0, marketVolume: 0, marketRows: 0 },
+  );
   const visibleMarkets = markets.filter((market) => {
     const query = marketQuery.trim().toLowerCase();
     return (
@@ -8575,6 +8595,36 @@ function DashboardBody() {
                 )}
                 {marketTableGroups.available.map(renderMarketRow)}
               </tbody>
+              {performanceVolumeByMarket.length > 0 && (
+                <tfoot>
+                  <tr>
+                    <th>Total</th>
+                    <td>{money(performanceMarketTotals.ourVolume)}</td>
+                    <td>—</td>
+                    <td
+                      title={
+                        performanceMarketTotals.marketRows ===
+                        performanceVolumeByMarket.length
+                          ? (performance?.marketVolumeLabel ?? undefined)
+                          : "Market volume is not available for every traded market."
+                      }
+                    >
+                      {performanceMarketTotals.marketRows ===
+                        performanceVolumeByMarket.length &&
+                      performanceMarketTotals.marketVolume > 0
+                        ? percent(
+                            (performanceMarketTotals.ourVolume /
+                              performanceMarketTotals.marketVolume) *
+                              100,
+                            3,
+                          )
+                        : "Not available"}
+                    </td>
+                    <td>100.0%</td>
+                    <td>—</td>
+                  </tr>
+                </tfoot>
+              )}
             </KitTable>
           </div>
         </section>
@@ -9125,7 +9175,10 @@ function DashboardBody() {
                   <th>Market</th>
                   <th>Maker volume / fills</th>
                   <th>Taker volume / fills</th>
-                  <th>Share of volume</th>
+                  <th title={performance?.marketVolumeLabel ?? undefined}>
+                    Share of market volume
+                  </th>
+                  <th>Mix</th>
                   <th>Net</th>
                 </tr>
               </thead>
@@ -9140,6 +9193,10 @@ function DashboardBody() {
                       ) || 1;
                     const rowVolume =
                       row.makerNotionalUsd + row.takerNotionalUsd;
+                    const marketShare =
+                      row.marketVolumeUsd && row.marketVolumeUsd > 0
+                        ? (rowVolume / row.marketVolumeUsd) * 100
+                        : null;
                     const expanded = expandedPerformanceMarket === row.marketId;
                     return (
                       <Fragment key={row.marketId}>
@@ -9164,12 +9221,17 @@ function DashboardBody() {
                           <td>
                             {money(row.takerNotionalUsd)} / {row.takerFills}
                           </td>
+                          <td title={row.marketVolumeError ?? undefined}>
+                            {marketShare === null
+                              ? "Not available"
+                              : percent(marketShare, 3)}
+                          </td>
                           <td>{percent((rowVolume / totalVolume) * 100, 1)}</td>
                           <td>{money(row.realizedPnlUsd - row.feesUsd)}</td>
                         </tr>
                         {expanded && (
                           <tr className="performance-market-fills">
-                            <td colSpan={5}>
+                            <td colSpan={6}>
                               {(performance?.fills ?? [])
                                 .filter(
                                   (fill) => fill.marketId === row.marketId,
@@ -9202,7 +9264,7 @@ function DashboardBody() {
                   })
                 ) : (
                   <tr>
-                    <td colSpan={5}>
+                    <td colSpan={6}>
                       Taker volume is shown in the account total until market
                       history is available.
                     </td>

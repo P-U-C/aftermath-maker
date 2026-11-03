@@ -176,6 +176,11 @@ export type AccountPerformanceHistory = {
   historyComplete?: boolean;
 };
 
+export type MarketDailyVolume = {
+  marketId: string;
+  volumeUsd: number;
+};
+
 export type AccountSnapshot = PositionSnapshot & {
   equityUsd: number;
   openOrderIds: bigint[];
@@ -790,6 +795,10 @@ export class AftermathGateway {
     | undefined;
   private readonly accountFillHistory =
     new AccountFillHistoryCache<PerpetualsAccountOrderHistoryData>();
+  private readonly dailyVolumeCache = new Map<
+    string,
+    { expiresAt: number; value: MarketDailyVolume[] }
+  >();
   private readonly mutationQueues = new Map<string, PriorityMutationQueue>();
 
   private mutationQueue(address: string): PriorityMutationQueue {
@@ -1719,6 +1728,50 @@ export class AftermathGateway {
       equityUsd: portfolio.equityUsd,
       openOrderIds: position.makerOrderIds,
     };
+  }
+
+  /**
+   * Market-wide daily volume is taker-side and therefore counts each trade
+   * once.  Completed UTC days are immutable; today's partial day is refreshed
+   * at most every five minutes.
+   */
+  async getMarketsDailyVolume(inputs: {
+    fromTimestamp: number;
+    toTimestamp: number;
+    marketIds: string[];
+  }): Promise<MarketDailyVolume[]> {
+    const marketIds = [...new Set(inputs.marketIds)];
+    if (marketIds.length > 50)
+      throw new Error("Daily market stats support at most 50 market IDs");
+    const key = [
+      inputs.fromTimestamp,
+      inputs.toTimestamp,
+      ...marketIds.slice().sort(),
+    ].join(":");
+    const cached = this.dailyVolumeCache.get(key);
+    if (cached && cached.expiresAt > Date.now()) return cached.value;
+    const response = await this.sdk.Perpetuals().getMarketsDailyStats({
+      fromTimestamp: inputs.fromTimestamp,
+      toTimestamp: inputs.toTimestamp,
+      marketIds,
+    });
+    const value = response.stats.map((market) => ({
+      marketId: market.marketId,
+      volumeUsd: market.stats.reduce((total, day) => total + day.volumeUsd, 0),
+    }));
+    const today = Date.UTC(
+      new Date().getUTCFullYear(),
+      new Date().getUTCMonth(),
+      new Date().getUTCDate(),
+    );
+    this.dailyVolumeCache.set(key, {
+      expiresAt:
+        inputs.toTimestamp <= today
+          ? Number.MAX_SAFE_INTEGER
+          : Date.now() + 5 * 60_000,
+      value,
+    });
+    return value;
   }
 
   async getAccountPerformanceHistory(inputs: {

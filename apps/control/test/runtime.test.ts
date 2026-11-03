@@ -131,6 +131,7 @@ function createHarness(options: { configured?: boolean } = {}) {
     orders: [],
     marginHistory: [],
   };
+  let marketDailyVolumes: Array<{ marketId: string; volumeUsd: number }> = [];
   let orderbook: {
     bestBidPrice: number;
     bestAskPrice: number;
@@ -238,6 +239,7 @@ function createHarness(options: { configured?: boolean } = {}) {
       performanceRequests.push(inputs);
       return performanceHistory;
     },
+    getMarketsDailyVolume: async () => marketDailyVolumes,
     getRewardDashboard: async (inputs: { objective: StrategyObjective }) =>
       rewardDashboard(inputs.objective),
     executeHedge: async (inputs: {
@@ -315,6 +317,11 @@ function createHarness(options: { configured?: boolean } = {}) {
     },
     setPerformanceHistory: (value: AccountPerformanceHistory) => {
       performanceHistory = value;
+    },
+    setMarketDailyVolumes: (
+      value: Array<{ marketId: string; volumeUsd: number }>,
+    ) => {
+      marketDailyVolumes = value;
     },
     setOrderbook: (value: typeof orderbook) => {
       orderbook = value;
@@ -1019,6 +1026,7 @@ describe("runtime execution boundaries", () => {
       ],
       marginHistory: [],
     });
+    harness.setMarketDailyVolumes([{ marketId: "0x5678", volumeUsd: 24_000 }]);
 
     const performance = await harness.runtime.performance();
 
@@ -1041,8 +1049,13 @@ describe("runtime execution boundaries", () => {
         takerFills: 0,
         realizedPnlUsd: 100,
         feesUsd: 0.02,
+        marketVolumeUsd: 24_000,
+        marketVolumeError: null,
       },
     ]);
+    expect(performance.marketVolumeLabel).toMatch(
+      /^Today, since [A-Z][a-z]{2} \d{1,2} 00:00 UTC$/,
+    );
     expect(performance).toMatchObject({
       period: "1D",
       historyComplete: true,

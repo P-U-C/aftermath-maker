@@ -4,6 +4,7 @@ import {
   loadAgentKeypair,
   type EndpointHealth,
   type MarketSummary,
+  type MarketDailyVolume,
   type PerformanceOrder,
   type PortfolioSnapshot,
 } from "@puc/aftermath";
@@ -17,6 +18,7 @@ import {
   evaluateQuoteSafety,
   makerConfigSchema,
   marketRiskThresholds,
+  rewardEpochDailyStatsWindow,
   reduceOnlyQuoteIntent,
   resolveMarketConfig,
   type BuilderFeePolicy,
@@ -167,7 +169,10 @@ export type PerformanceSnapshot = {
     takerFills: number;
     realizedPnlUsd: number;
     feesUsd: number;
+    marketVolumeUsd: number | null;
+    marketVolumeError: string | null;
   }>;
+  marketVolumeLabel: string | null;
   fills: MakerFill[];
   note: string;
 };
@@ -1283,6 +1288,7 @@ export class MakerRuntime {
           notionalUsd: 0,
         },
         volumeByMarket: [],
+        marketVolumeLabel: null,
         fills: [],
         note: "Authorize an agent to begin account and fill reconciliation.",
       };
@@ -1320,6 +1326,8 @@ export class MakerRuntime {
         takerFills: 0,
         realizedPnlUsd: 0,
         feesUsd: 0,
+        marketVolumeUsd: null,
+        marketVolumeError: null,
       };
       const notionalUsd = Math.abs(order.size * order.price);
       if (order.maker) {
@@ -1478,9 +1486,48 @@ export class MakerRuntime {
     }
     const makerNetAfterKnownCostsUsd =
       realizedPnlUsd - protocolFeesUsd - estimatedBuilderFeesUsd;
+    const now = new Date();
+    const marketIds = [...volumeByMarket.keys()];
+    let marketVolumeLabel: string | null = null;
+    let marketVolumes = new Map<string, number>();
+    let marketVolumeError: string | null = null;
+    if (marketIds.length && period !== "ALL") {
+      const window =
+        period === "EPOCH"
+          ? rewardEpochDailyStatsWindow(now)
+          : {
+              fromTimestamp: Date.UTC(
+                now.getUTCFullYear(),
+                now.getUTCMonth(),
+                now.getUTCDate(),
+              ),
+              toTimestamp: now.getTime(),
+              label: `Today, since ${new Intl.DateTimeFormat("en-US", {
+                month: "short",
+                day: "numeric",
+                timeZone: "UTC",
+              }).format(now)} 00:00 UTC`,
+            };
+      marketVolumeLabel = window.label;
+      try {
+        const dailyVolumes: MarketDailyVolume[] = await this.venueRead(
+          this.gateway.getMarketsDailyVolume({
+            fromTimestamp: window.fromTimestamp,
+            toTimestamp: window.toTimestamp,
+            marketIds,
+          }),
+          "Market daily volume read",
+        );
+        marketVolumes = new Map(
+          dailyVolumes.map((entry) => [entry.marketId, entry.volumeUsd]),
+        );
+      } catch (error) {
+        marketVolumeError = message(error);
+      }
+    }
 
     return {
-      asOf: new Date().toISOString(),
+      asOf: now.toISOString(),
       period,
       periodStartedAt,
       historyComplete: history.historyComplete ?? true,
@@ -1506,9 +1553,14 @@ export class MakerRuntime {
         hedgeFills: paperRows.filter((fill) => fill.role === "hedge").length,
         notionalUsd: paperRows.reduce((total, fill) => total + fill.sizeUsd, 0),
       },
-      volumeByMarket: [...volumeByMarket.values()].sort((left, right) =>
-        left.symbol.localeCompare(right.symbol),
-      ),
+      volumeByMarket: [...volumeByMarket.values()]
+        .map((row) => ({
+          ...row,
+          marketVolumeUsd: marketVolumes.get(row.marketId) ?? null,
+          marketVolumeError,
+        }))
+        .sort((left, right) => left.symbol.localeCompare(right.symbol)),
+      marketVolumeLabel,
       fills,
       note: `Maker attribution uses recorded order IDs. Hedge attribution uses confirmed hedge transaction digests. Builder fees are deterministic estimates from filled notional; account metrics come from Aftermath's ${period === "1D" ? "24-hour" : period === "EPOCH" ? "current-epoch" : "all-time"} history.${paperRows.length ? " Paper fills are book-crossing estimates, not exchange executions." : ""}`,
     };

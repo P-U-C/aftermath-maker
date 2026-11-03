@@ -481,3 +481,31 @@ export function rewardEpochWindow(now = new Date()): {
     cutoffAt: new Date(startedAt + EPOCH_LENGTH_MS).toISOString(),
   };
 }
+
+/** Daily venue statistics are UTC-day buckets, while reward epochs begin at
+ * 05:00 UTC.  Start the comparable market-volume window at midnight on the
+ * first UTC day of the active epoch. */
+export function rewardEpochDailyStatsWindow(now = new Date()): {
+  epoch: number;
+  fromTimestamp: number;
+  toTimestamp: number;
+  label: string;
+} {
+  const epoch = rewardEpochWindow(now);
+  const started = new Date(epoch.startedAt);
+  const fromTimestamp = Date.UTC(
+    started.getUTCFullYear(),
+    started.getUTCMonth(),
+    started.getUTCDate(),
+  );
+  return {
+    epoch: epoch.epoch,
+    fromTimestamp,
+    toTimestamp: now.getTime(),
+    label: `Epoch ${epoch.epoch}, since ${new Intl.DateTimeFormat("en-US", {
+      month: "short",
+      day: "numeric",
+      timeZone: "UTC",
+    }).format(new Date(fromTimestamp))} 00:00 UTC`,
+  };
+}
