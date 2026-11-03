@@ -138,7 +138,7 @@ function objectiveScore(
   objective: StrategyObjective,
   scores: { farming: number; profit: number; both: number },
 ): number {
-  return scores[objective];
+  return scores[objective === "volume" ? "both" : objective];
 }
 
 export function rankRewardMarkets(inputs: {
@@ -376,26 +376,34 @@ export function rankRewardMarkets(inputs: {
       const makerRebateBps = Math.max(0, -market.makerFee * 10_000);
       const referenceSpread = spreadBps ?? 30;
       const suggestedSpreadBps = Math.round(
-        objective === "farming"
-          ? clamp(Math.max(8, referenceSpread * 0.75), 8, 80)
-          : objective === "profit"
-            ? clamp(
-                Math.max(8, referenceSpread * 1.05, knownCostBps * 2 + 8),
-                8,
-                120,
-              )
-            : clamp(
-                Math.max(8, referenceSpread * 0.9, knownCostBps * 2 + 6),
-                8,
-                100,
-              ),
+        objective === "volume"
+          ? 8
+          : objective === "farming"
+            ? clamp(Math.max(8, referenceSpread * 0.75), 8, 80)
+            : objective === "profit"
+              ? clamp(
+                  Math.max(8, referenceSpread * 1.05, knownCostBps * 2 + 8),
+                  8,
+                  120,
+                )
+              : clamp(
+                  Math.max(8, referenceSpread * 0.9, knownCostBps * 2 + 6),
+                  8,
+                  100,
+                ),
       );
       const baseQuoteSizeUsd = Math.min(
         Math.sqrt(Math.max(0, balancedDepth50BpsUsd)) * 1.5,
         balancedDepth50BpsUsd * 0.05,
       );
       const sizeMultiplier =
-        objective === "farming" ? 1 : objective === "profit" ? 0.6 : 0.75;
+        objective === "volume"
+          ? 0.6
+          : objective === "farming"
+            ? 1
+            : objective === "profit"
+              ? 0.6
+              : 0.75;
       const minimumQuoteSizeUsd = minimumLiveQuoteSizeUsd({
         indexPrice: market.indexPrice,
         minOrderUsdValue: market.minOrderUsdValue,

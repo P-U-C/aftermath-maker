@@ -6,7 +6,12 @@ export const USDC_COIN_TYPE =
 export const runtimeModeSchema = z.enum(["observe", "paper", "live"]);
 export type RuntimeMode = z.infer<typeof runtimeModeSchema>;
 
-export const strategyObjectiveSchema = z.enum(["farming", "profit", "both"]);
+export const strategyObjectiveSchema = z.enum([
+  "farming",
+  "profit",
+  "both",
+  "volume",
+]);
 export type StrategyObjective = z.infer<typeof strategyObjectiveSchema>;
 
 export const rotationModeSchema = z.enum(["portfolio", "single-slot"]);
@@ -74,6 +79,8 @@ export const makerConfigSchema = z
     spreadBps: z.number().min(8).max(500).default(30),
     refreshMs: z.number().int().min(2_000).max(300_000).default(8_000),
     marketDwellMs: z.number().int().min(2_000).max(3_600_000).default(60_000),
+    flattenOnRotate: z.boolean().default(false),
+    dailyFeeBudgetUsd: z.number().positive().max(100_000).default(5),
     requoteThresholdBps: z.number().min(0).max(500).default(5),
     maxRestingMs: z.number().int().min(5_000).max(3_600_000).default(60_000),
     autoRebalanceEnabled: z.boolean().default(false),

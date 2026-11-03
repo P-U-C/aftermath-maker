@@ -135,7 +135,7 @@ export type MakerConfig = {
   collateralCoinType: string;
   mode: Mode;
   rotationMode: "portfolio" | "single-slot";
-  strategyObjective: "farming" | "profit" | "both";
+  strategyObjective: "farming" | "profit" | "both" | "volume";
   strategyProfile: "cautious" | "balanced" | "active";
   makerAccountId: string | null;
   hedge: {
@@ -149,6 +149,8 @@ export type MakerConfig = {
   spreadBps: number;
   refreshMs: number;
   marketDwellMs: number;
+  flattenOnRotate: boolean;
+  dailyFeeBudgetUsd: number;
   requoteThresholdBps: number;
   maxRestingMs: number;
   autoRebalanceEnabled: boolean;
@@ -599,6 +601,8 @@ const config: MakerConfig = {
   spreadBps: 42,
   refreshMs: 8_000,
   marketDwellMs: 15_000,
+  flattenOnRotate: false,
+  dailyFeeBudgetUsd: 5,
   requoteThresholdBps: 5,
   maxRestingMs: 15_000,
   autoRebalanceEnabled: true,

@@ -119,7 +119,7 @@ const strategyConfigSchema = z
   .object({
     collateralCoinType: z.string().min(8),
     rotationMode: z.enum(["portfolio", "single-slot"]),
-    strategyObjective: z.enum(["farming", "profit", "both"]),
+    strategyObjective: z.enum(["farming", "profit", "both", "volume"]),
     strategyProfile: z.enum(["cautious", "balanced", "active"]),
     hedge: z
       .object({
@@ -133,6 +133,8 @@ const strategyConfigSchema = z
     spreadBps: z.number().min(8).max(500),
     refreshMs: z.number().int().min(2_000).max(300_000),
     marketDwellMs: z.number().int().min(2_000).max(3_600_000),
+    flattenOnRotate: z.boolean(),
+    dailyFeeBudgetUsd: z.number().positive().max(100_000),
     requoteThresholdBps: z.number().min(0).max(500),
     maxRestingMs: z.number().int().min(5_000).max(3_600_000),
     autoRebalanceEnabled: z.boolean(),
@@ -144,7 +146,7 @@ const strategyConfigSchema = z
     maxUnrealizedLossUsd: z.number().positive().max(10_000),
     maxRunDrawdownUsd: z.number().positive().max(10_000),
     maxBookDivergenceBps: z.number().positive().max(5_000),
-    maxLeverage: z.number().min(1).max(3),
+    maxLeverage: z.number().min(1).max(100),
     maxGasMist: z.number().int().positive().max(500_000_000),
     staleBookMs: z.number().int().min(3_000).max(120_000),
     inventorySkewBps: z.number().min(0).max(250),

@@ -1260,7 +1260,9 @@ export async function buildServer({
     const query = z
       .object({
         collateralCoinType: z.string().default(USDC_COIN_TYPE),
-        objective: z.enum(["farming", "profit", "both"]).default("both"),
+        objective: z
+          .enum(["farming", "profit", "both", "volume"])
+          .default("both"),
       })
       .parse(request.query);
     return {

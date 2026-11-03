@@ -262,7 +262,7 @@ function usdcBaseUnits(value: string): bigint {
 }
 
 type Mode = "observe" | "paper" | "live";
-type StrategyObjective = "farming" | "profit" | "both";
+type StrategyObjective = "farming" | "profit" | "both" | "volume";
 
 type SafetyCheck = {
   code: string;
@@ -449,6 +449,8 @@ type MakerConfig = {
   spreadBps: number;
   refreshMs: number;
   marketDwellMs: number;
+  flattenOnRotate: boolean;
+  dailyFeeBudgetUsd: number;
   requoteThresholdBps: number;
   maxRestingMs: number;
   autoRebalanceEnabled: boolean;
@@ -857,6 +859,12 @@ const strategyObjectives = [
     measure: "Positive on both tests",
     icon: Target,
   },
+  {
+    value: "volume",
+    label: "Volume",
+    measure: "Volume per $1 of cost",
+    icon: Gauge,
+  },
 ] as const;
 
 const strategyProfiles = [
@@ -911,6 +919,8 @@ const defaultConfig: MakerConfig = {
   spreadBps: 30,
   refreshMs: 8_000,
   marketDwellMs: 60_000,
+  flattenOnRotate: false,
+  dailyFeeBudgetUsd: 5,
   requoteThresholdBps: 5,
   maxRestingMs: 60_000,
   autoRebalanceEnabled: false,
@@ -6749,6 +6759,19 @@ function DashboardBody() {
                         setConfig((current) => ({
                           ...current,
                           strategyObjective: objective.value,
+                          ...(objective.value === "volume"
+                            ? {
+                                rotationMode: "single-slot" as const,
+                                marketDwellMs: 5 * 60_000,
+                                spreadBps: 8,
+                                flattenOnRotate: true,
+                                hedge: {
+                                  ...current.hedge,
+                                  enabled: true,
+                                  thresholdUsd: current.quoteSizeUsd,
+                                },
+                              }
+                            : {}),
                         }));
                       }}
                     >
@@ -6762,6 +6785,47 @@ function DashboardBody() {
                 })}
               </div>
             </fieldset>
+            {config.strategyObjective === "volume" && (
+              <div className="field-pair strategy-step strategy-step-goal">
+                <label>
+                  <span>Time in each market</span>
+                  <NumericDraftInput
+                    id="strategy-volume-dwell"
+                    label="Time in each market"
+                    unit="minutes"
+                    value={config.marketDwellMs / 60_000}
+                    min={1}
+                    max={60}
+                    integer
+                    onValidity={setNumericValidity}
+                    onValue={(value) =>
+                      setConfig((current) => ({
+                        ...current,
+                        marketDwellMs: value * 60_000,
+                      }))
+                    }
+                  />
+                </label>
+                <label>
+                  <span>Daily fee budget</span>
+                  <NumericDraftInput
+                    id="strategy-volume-fee-budget"
+                    label="Daily fee budget"
+                    unit="USD"
+                    value={config.dailyFeeBudgetUsd}
+                    min={0.01}
+                    max={100000}
+                    onValidity={setNumericValidity}
+                    onValue={(value) =>
+                      setConfig((current) => ({
+                        ...current,
+                        dailyFeeBudgetUsd: value,
+                      }))
+                    }
+                  />
+                </label>
+              </div>
+            )}
 
             <div
               className="strategy-trial strategy-step strategy-step-review"

@@ -3611,7 +3611,7 @@ export class MakerRuntime {
     ]);
     const plan = buildStrategyTrialPlan({
       originalConfig,
-      dashboards: { farming, profit, both },
+      dashboards: { farming, profit, both, volume: both },
       availableCollateralUsd: makerPortfolio.availableCollateralUsd,
       mode: "paper",
       cadenceMs: inputs.cadenceMs,
