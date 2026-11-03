@@ -371,6 +371,64 @@ describe("Paper cycle freshness under a stalled venue read", () => {
     }
   });
 
+  it("rotates a Volume loop only after simulated maker and hedge accounts are flat", async () => {
+    const h = await paperRuntime({ hedge: true, makerFreeUsd: 300 });
+    h.gateway.balance("1802", 300);
+    h.tenant.setConfig(
+      makerConfigSchema.parse({
+        ...h.tenant.getConfig()!,
+        strategyObjective: "volume",
+        rotationMode: "single-slot",
+        marketDwellMs: 5 * 60_000,
+        flattenOnRotate: true,
+        quoteSizeUsd: 10,
+        maxGrossExposureUsd: 400,
+        hedge: {
+          enabled: true,
+          accountId: "1802",
+          thresholdUsd: 10,
+          maxOrderUsd: 10,
+          maxSlippageBps: 75,
+        },
+        markets: [
+          { marketId: "0x1", symbol: "ONE" },
+          { marketId: "0x2", symbol: "TWO" },
+          { marketId: "0x3", symbol: "THREE" },
+        ],
+      }),
+    );
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-10-31T01:11:55.000Z"));
+    try {
+      h.runtime.start();
+      await vi.advanceTimersByTimeAsync(1);
+      const [makerFill] = h.tenant.matchPaperOrders({
+        trialId: "runtime",
+        marketId: "0x1",
+        bestBid: 9.9,
+        bestAsk: 9.8,
+      });
+      h.tenant.recordPaperHedge({ trialId: "runtime", makerFill: makerFill! });
+      // The next cycle records the immediate hedge; the dwell transition
+      // cancels, closes both roles at touch, verifies flat, then quotes TWO.
+      await vi.advanceTimersByTimeAsync(5_000);
+      await vi.advanceTimersByTimeAsync(5 * 60_000);
+      const state = h.tenant.getPaperState("runtime");
+      expect(state.positions).toEqual([]);
+      expect(h.tenant.listPaperFills({ trialId: "runtime" })).toHaveLength(4);
+      expect(h.runtime.snapshot.market.id).toBe("0x2");
+      expect(
+        h.tenant
+          .listEvents(100)
+          .some((event) => event.action === "volume-close"),
+      ).toBe(true);
+    } finally {
+      await h.runtime.stop();
+      vi.useRealTimers();
+      await h.close();
+    }
+  });
+
   it("Paper uses the same $100.85 hedge floor as Start and clears when funded", async () => {
     const h = await paperRuntime({ hedge: true, makerFreeUsd: 20 });
     vi.useFakeTimers();
