@@ -5,7 +5,7 @@ export function selectDraftMarkets<
 >(
   ids: readonly string[],
   draft: readonly T[],
-  catalog: readonly { id: string; symbol: string }[],
+  catalog: readonly { id: string; symbol: string; maxLeverage?: number }[],
 ): T[] {
   const current = new Map(draft.map((market) => [market.marketId, market]));
   const available = new Map(catalog.map((market) => [market.id, market]));
@@ -13,7 +13,17 @@ export function selectDraftMarkets<
     const existing = current.get(id);
     if (existing) return [existing];
     const market = available.get(id);
-    return market ? [{ marketId: id, symbol: market.symbol } as T] : [];
+    return market
+      ? [
+          {
+            marketId: id,
+            symbol: market.symbol,
+            ...(market.maxLeverage === undefined
+              ? {}
+              : { marketMaxLeverage: market.maxLeverage }),
+          } as T,
+        ]
+      : [];
   });
 }
 

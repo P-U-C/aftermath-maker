@@ -30,4 +30,12 @@ describe("strategy market selection", () => {
       saved[1],
     ]);
   });
+
+  it("retains a newly selected market's venue leverage ceiling", () => {
+    expect(
+      selectDraftMarkets(["0xd"], saved, [
+        { id: "0xd", symbol: "D", maxLeverage: 20 },
+      ]),
+    ).toEqual([{ marketId: "0xd", symbol: "D", marketMaxLeverage: 20 }]);
+  });
 });
