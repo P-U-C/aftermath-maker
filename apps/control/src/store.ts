@@ -4805,6 +4805,67 @@ export class TenantStore {
     this.pruneTable("tenant_paper_fills", RETENTION_LIMITS.paperFills);
   }
 
+  /**
+   * Paper-only reduce-only close used by the Volume rotation.  We keep the
+   * existing maker/hedge roles so the simulated account inventories remain
+   * independently auditable, while the `close:` key makes the lifecycle
+   * explicit to performance and tests.
+   */
+  closePaperMarket(inputs: {
+    trialId: string;
+    marketId: string;
+    bestBid: number;
+    bestAsk: number;
+  }): PaperFill[] {
+    const bundleId = this.paperBundleId();
+    const positions = this.getPaperState(inputs.trialId).positions.filter(
+      (position) => position.marketId === inputs.marketId,
+    );
+    if (!positions.length) return [];
+    const now = new Date().toISOString();
+    const inserted: PaperFill[] = [];
+    const write = this.db.transaction(() => {
+      const insert = this.db.prepare(
+        `INSERT OR IGNORE INTO tenant_paper_fills
+          (owner_address, bundle_id, trial_id, order_key, role, market_id,
+           symbol, side, price, size_usd, occurred_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      );
+      for (const position of positions) {
+        const side: "bid" | "ask" =
+          position.inventoryUsd > 0 ? "ask" : "bid";
+        const price = side === "ask" ? inputs.bestBid : inputs.bestAsk;
+        const fill: PaperFill = {
+          orderKey: `close:${position.role}:${inputs.marketId}:${now}`,
+          role: position.role,
+          marketId: position.marketId,
+          symbol: position.symbol,
+          side,
+          price,
+          sizeUsd: Math.abs(position.inventoryUsd),
+          occurredAt: now,
+        };
+        insert.run(
+          this.ownerAddress,
+          bundleId,
+          inputs.trialId,
+          fill.orderKey,
+          fill.role,
+          fill.marketId,
+          fill.symbol,
+          fill.side,
+          fill.price,
+          fill.sizeUsd,
+          fill.occurredAt,
+        );
+        inserted.push(fill);
+      }
+    });
+    write();
+    this.pruneTable("tenant_paper_fills", RETENTION_LIMITS.paperFills);
+    return inserted;
+  }
+
   getPaperState(trialId: string): {
     openOrders: number;
     fills: number;
@@ -4908,14 +4969,15 @@ export class TenantStore {
     }));
   }
 
-  cancelPaperOrders(trialId?: string): void {
+  cancelPaperOrders(trialId?: string, marketId?: string): void {
     const bundleId = this.paperBundleId();
     this.db
       .prepare(
         `UPDATE tenant_paper_orders
          SET status = 'cancelled', updated_at = ?
          WHERE owner_address = ? AND bundle_id = ? AND status = 'open'
-           AND (? IS NULL OR trial_id = ?)`,
+           AND (? IS NULL OR trial_id = ?)
+           AND (? IS NULL OR market_id = ?)`,
       )
       .run(
         new Date().toISOString(),
@@ -4923,6 +4985,8 @@ export class TenantStore {
         bundleId,
         trialId ?? null,
         trialId ?? null,
+        marketId ?? null,
+        marketId ?? null,
       );
   }
 

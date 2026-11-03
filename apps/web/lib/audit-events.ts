@@ -253,6 +253,16 @@ const copies: Record<string, AuditCopy> = {
       return `Paper would have ${fills.length ? fills.map(format).join(", then ") : `filled ${market(detail)}`}${extra ? `, +${extra} more` : ""}. No order was sent.`;
     },
   },
+  "paper:volume-close:estimated": {
+    severity: "info",
+    sentence: (detail) =>
+      `Paper closed both simulated accounts in ${market(detail)} before rotating. No order was sent.`,
+  },
+  "paper:volume-fee-budget:warning": {
+    severity: "warning",
+    sentence: (detail) =>
+      `Volume reached its daily estimated fee budget${typeof detail.dailyFeeBudgetUsd === "number" ? ` ($${detail.dailyFeeBudgetUsd.toFixed(2)})` : ""}. Maker will finish the current close and resume at 00:00 UTC.`,
+  },
   "paper:simulation:cleared": {
     severity: "info",
     sentence: () => "Paper is simulating again.",

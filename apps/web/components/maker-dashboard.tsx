@@ -398,6 +398,8 @@ type Market = {
   maxOpenInterestBase: number;
   fundingRate: number;
   makerFee: number;
+  maxLeverage: number;
+  maintenanceMarginRatio: number;
   volume24hUsd: number | null;
   priceChange24hPct: number | null;
 };
@@ -430,6 +432,7 @@ type MakerConfig = {
   markets: Array<{
     marketId: string;
     symbol: string;
+    marketMaxLeverage?: number;
     overrides?: MarketOverrides;
   }>;
   collateralCoinType: string;
@@ -1541,7 +1544,13 @@ function DashboardBody() {
         ? current
         : {
             ...current,
-            markets: [{ marketId: ranked[0].id, symbol: ranked[0].symbol }],
+            markets: [
+              {
+                marketId: ranked[0].id,
+                symbol: ranked[0].symbol,
+                marketMaxLeverage: ranked[0].maxLeverage,
+              },
+            ],
           },
     );
   }, []);
@@ -3072,7 +3081,14 @@ function DashboardBody() {
       ? config.markets.filter((item) => item.marketId !== market.id)
       : config.markets.length >= MAX_SELECTED_MARKETS
         ? config.markets
-        : [...config.markets, { marketId: market.id, symbol: market.symbol }];
+        : [
+            ...config.markets,
+            {
+              marketId: market.id,
+              symbol: market.symbol,
+              marketMaxLeverage: market.maxLeverage,
+            },
+          ];
     setStrategyMarketRule({
       kind: "preferred-list",
       marketIds: nextMarkets.map((item) => item.marketId),
@@ -4096,6 +4112,25 @@ function DashboardBody() {
     restingQuoteSizeUsd: market.overrides?.quoteSizeUsd ?? config.quoteSizeUsd,
     maxLeverage: market.overrides?.maxLeverage ?? config.maxLeverage,
   }));
+  const strategyMarketMaxLeverage = Math.max(
+    1,
+    ...config.markets.map(
+      (configured) =>
+        markets.find((listed) => listed.id === configured.marketId)
+          ?.maxLeverage ?? configured.marketMaxLeverage ?? 1,
+    ),
+  );
+  const volumeLoopNotionalUsd = config.quoteSizeUsd * 4;
+  const volumeLoopEstimatedFeeUsd =
+    volumeLoopNotionalUsd *
+    (config.markets.reduce(
+      (total, configured) =>
+        total +
+        (markets.find((listed) => listed.id === configured.marketId)
+          ?.makerFee ?? 0),
+      0,
+    ) /
+      Math.max(1, config.markets.length));
   const quoteOnlyCollateralUsd =
     config.rotationMode === "portfolio"
       ? aggregatePortfolioQuoteRisk(quoteRiskInputs).requiredQuoteCollateralUsd
@@ -6770,6 +6805,21 @@ function DashboardBody() {
                   <dd>{money(config.maxRunDrawdownUsd)} drawdown</dd>
                 </div>
               </dl>
+              {config.strategyObjective === "volume" && (
+                <p className="strategy-section-copy">
+                  Each filled loop trades about {money(volumeLoopNotionalUsd)}
+                  {" "}(maker fill, hedge, two closes) and costs about{" "}
+                  {money(volumeLoopEstimatedFeeUsd)} at current fees and
+                  spreads, about {money(
+                    volumeLoopNotionalUsd > 0
+                      ? (volumeLoopEstimatedFeeUsd / volumeLoopNotionalUsd) *
+                          1_000
+                      : 0,
+                  )}{" "}
+                  per $1,000 of volume. Daily fee budget{" "}
+                  {money(config.dailyFeeBudgetUsd)}.
+                </p>
+              )}
             </section>
 
             <fieldset className="objective-control strategy-step strategy-step-goal">
@@ -8245,7 +8295,7 @@ function DashboardBody() {
                       unit="x"
                       value={config.maxLeverage}
                       min={1}
-                      max={3}
+                      max={strategyMarketMaxLeverage}
                       onValidity={setNumericValidity}
                       onValue={(value) =>
                         setConfig((current) => ({
@@ -8255,6 +8305,18 @@ function DashboardBody() {
                       }
                     />
                     <b>x</b>
+                    <button
+                      type="button"
+                      className="input-action"
+                      onClick={() =>
+                        setConfig((current) => ({
+                          ...current,
+                          maxLeverage: strategyMarketMaxLeverage,
+                        }))
+                      }
+                    >
+                      Max
+                    </button>
                   </div>
                 </label>
               </div>
@@ -8595,36 +8657,6 @@ function DashboardBody() {
                 )}
                 {marketTableGroups.available.map(renderMarketRow)}
               </tbody>
-              {performanceVolumeByMarket.length > 0 && (
-                <tfoot>
-                  <tr>
-                    <th>Total</th>
-                    <td>{money(performanceMarketTotals.ourVolume)}</td>
-                    <td>—</td>
-                    <td
-                      title={
-                        performanceMarketTotals.marketRows ===
-                        performanceVolumeByMarket.length
-                          ? (performance?.marketVolumeLabel ?? undefined)
-                          : "Market volume is not available for every traded market."
-                      }
-                    >
-                      {performanceMarketTotals.marketRows ===
-                        performanceVolumeByMarket.length &&
-                      performanceMarketTotals.marketVolume > 0
-                        ? percent(
-                            (performanceMarketTotals.ourVolume /
-                              performanceMarketTotals.marketVolume) *
-                              100,
-                            3,
-                          )
-                        : "Not available"}
-                    </td>
-                    <td>100.0%</td>
-                    <td>—</td>
-                  </tr>
-                </tfoot>
-              )}
             </KitTable>
           </div>
         </section>
@@ -8641,6 +8673,10 @@ function DashboardBody() {
             policyMarket.overrides,
             policyStrategy.config,
           )}
+          maxLeverage={
+            markets.find((market) => market.id === policyMarket.marketId)
+              ?.maxLeverage ?? policyMarket.marketMaxLeverage ?? 1
+          }
           blocked={policyBlocked}
           onClose={() => setPolicyEditorTarget(null)}
           onOpenStrategy={() => {
@@ -9271,6 +9307,29 @@ function DashboardBody() {
                   </tr>
                 )}
               </tbody>
+              {performanceVolumeByMarket.length > 0 && (
+                <tfoot>
+                  <tr>
+                    <th>Total</th>
+                    <td>{money(performanceMarketTotals.ourVolume)}</td>
+                    <td>—</td>
+                    <td title={performance?.marketVolumeLabel ?? undefined}>
+                      {performanceMarketTotals.marketRows ===
+                        performanceVolumeByMarket.length &&
+                      performanceMarketTotals.marketVolume > 0
+                        ? percent(
+                            (performanceMarketTotals.ourVolume /
+                              performanceMarketTotals.marketVolume) *
+                              100,
+                            3,
+                          )
+                        : "Not available"}
+                    </td>
+                    <td>100.0%</td>
+                    <td>—</td>
+                  </tr>
+                </tfoot>
+              )}
             </KitTable>
           </div>
         </Card>
@@ -9787,6 +9846,8 @@ function DashboardBody() {
       <GoLiveSheet
         open={liveSheetOpen}
         available={Boolean(liveReadiness?.ready)}
+        liveReadiness={liveReadiness}
+        operator={identity.operator}
         venue={primaryVenue}
         marketCount={config.markets.length}
         rotationMode={config.rotationMode}

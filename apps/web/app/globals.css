@@ -3917,6 +3917,43 @@ mysten-dapp-kit-connect-modal,
   border-radius: 16px;
 }
 
+.go-live-checklist {
+  margin: 0 0 16px;
+}
+
+.go-live-checklist h3 {
+  margin: 0 0 8px;
+  font-size: 14px;
+}
+
+.go-live-checklist ul {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.go-live-checklist li {
+  display: grid;
+  gap: 2px;
+  padding: 10px 12px;
+  border: 1px solid var(--hair);
+  border-left: 3px solid var(--amber);
+  border-radius: 10px;
+  background: var(--fill);
+}
+
+.go-live-checklist li[data-ready="true"] {
+  border-left-color: var(--green);
+}
+
+.go-live-checklist li span,
+.go-live-checklist > p {
+  color: var(--ink-2);
+  font-size: 13px;
+}
+
 .go-live-summary > div {
   min-height: 46px;
   display: grid;
@@ -6739,7 +6776,7 @@ mysten-dapp-kit-connect-modal,
 
 .performance-volume-table-wrap table {
   width: 100%;
-  min-width: 720px;
+  min-width: 800px;
   border-collapse: collapse;
 }
 
@@ -6750,6 +6787,8 @@ mysten-dapp-kit-connect-modal,
   color: var(--ink-2);
   font-size: 13px;
   text-align: right;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .performance-volume-table-wrap th {
@@ -11494,7 +11533,7 @@ mysten-dapp-kit-connect-modal,
   justify-content: flex-start;
 }
 .market-clean-table thead button span {
-  color: var(--ink-3);
+  color: var(--ink);
   font-size: 14px;
 }
 .market-clean-table tbody td:nth-child(-n + 4) {

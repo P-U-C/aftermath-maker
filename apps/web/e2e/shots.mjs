@@ -1589,6 +1589,31 @@ async function capture(browser, stateName, captureConfig, view) {
         `${stateName}/${view ?? "root"}/${captureConfig.name} has overflowing button labels: ${JSON.stringify(overflowingButtons)}`,
       );
     }
+    if (
+      view === "strategy" &&
+      captureConfig.viewport.width >= 1024
+    ) {
+      const suggestionRow = await page.evaluate(() => {
+        const stage = document.querySelector(
+          ".strategy-suggestion-panel .strategy-rotation-stage",
+        );
+        const fields = stage?.querySelector(".strategy-suggestion-fields");
+        const actions = stage?.querySelector(".strategy-suggestion-actions");
+        if (!stage || !fields || !actions) return null;
+        const fieldBox = fields.getBoundingClientRect();
+        const actionBox = actions.getBoundingClientRect();
+        return {
+          sameRow: Math.abs(fieldBox.top - actionBox.top) < 2,
+          fieldsTop: fieldBox.top,
+          actionsTop: actionBox.top,
+        };
+      });
+      if (suggestionRow && !suggestionRow.sameRow) {
+        throw new Error(
+          `${stateName}/strategy/${captureConfig.name} stacks suggestion fields and actions at desktop: ${JSON.stringify(suggestionRow)}`,
+        );
+      }
+    }
     await page.screenshot({ path: file, fullPage: false });
     process.stdout.write(
       `${stateName}${view ? `/${view}` : ""}/${captureConfig.name}: ${file} (${dimensions.scrollWidth}px wide)\n`,

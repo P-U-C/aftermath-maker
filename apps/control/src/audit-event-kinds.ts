@@ -43,6 +43,8 @@ const CONTROL_EVENT_KINDS = [
   "paper:trial.complete:success",
   "paper:trial.start:success",
   "paper:trial:error",
+  "paper:volume-close:estimated",
+  "paper:volume-fee-budget:warning",
   "risk:automatic-paired-rebalance:confirmed",
   "risk:automatic-paired-rebalance:retry",
   "risk:flatten-cycle-wait:timeout",

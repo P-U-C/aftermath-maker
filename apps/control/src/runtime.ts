@@ -588,6 +588,8 @@ export class MakerRuntime {
   private paperMarketSkips = new Map<string, { code: string; since: number }>();
   private paperAllSkippedSince: number | null = null;
   private paperAllSkippedWarningLogged = false;
+  private paperVolumeFees: { utcDate: string; usd: number; warned: boolean } | null =
+    null;
 
   constructor(
     private readonly store: TenantStore,
@@ -1377,7 +1379,10 @@ export class MakerRuntime {
             )
         : [];
     const paperMakerFills = paperRows
-      .filter((fill) => fill.role === "maker")
+      .filter(
+        (fill) =>
+          fill.role === "maker" || config?.strategyObjective === "volume",
+      )
       .map<MakerFill>((fill) => ({
         occurredAt: fill.occurredAt,
         txDigest: `paper:${fill.orderKey}`,
@@ -2466,6 +2471,7 @@ export class MakerRuntime {
     let config: MakerConfig | null = null;
     let hedgeReconciliationCompleted = false;
     let switchFromMarketId: string | null = null;
+    let volumeRotateFromMarketId: string | null = null;
     let usesDwellScheduler = false;
     const paperTrialId = inputs.paperTrialId ?? "runtime";
     try {
@@ -2482,8 +2488,16 @@ export class MakerRuntime {
         if (this.marketSelectedAt === null) {
           this.marketSelectedAt = now;
         } else if (now - this.marketSelectedAt >= config.marketDwellMs) {
+          const prior = config.markets[this.marketIndex % config.markets.length];
           this.marketIndex = (this.marketIndex + 1) % config.markets.length;
           this.marketSelectedAt = now;
+          if (
+            config.mode === "paper" &&
+            config.strategyObjective === "volume" &&
+            config.flattenOnRotate
+          ) {
+            volumeRotateFromMarketId = prior?.marketId ?? null;
+          }
         }
       }
       selected = config.markets[this.marketIndex % config.markets.length]!;
@@ -2535,6 +2549,59 @@ export class MakerRuntime {
       }
 
       if (config.mode === "paper") {
+        if (volumeRotateFromMarketId) {
+          // Volume is deliberately sequential: cancel first, then close the
+          // prior maker and hedge inventories at touch before opening the next
+          // market.  These are simulator records only; no live order path is
+          // reachable from this branch.
+          this.store.cancelPaperOrders(paperTrialId, volumeRotateFromMarketId);
+          const priorBook = await withTimeout(
+            this.gateway.getOrderbook(volumeRotateFromMarketId),
+            VENUE_READ_TIMEOUT_MS,
+            "Volume close orderbook read timed out",
+          );
+          const priorBid = priorBook.orderbook.bestBidPrice;
+          const priorAsk = priorBook.orderbook.bestAskPrice;
+          if (priorBid === undefined || priorAsk === undefined) {
+            throw new Error("Volume close orderbook has no two-sided price");
+          }
+          const closes = this.store.closePaperMarket({
+            trialId: paperTrialId,
+            marketId: volumeRotateFromMarketId,
+            bestBid: priorBid,
+            bestAsk: priorAsk,
+          });
+          if (closes.length) {
+            const utcDate = new Date().toISOString().slice(0, 10);
+            if (this.paperVolumeFees?.utcDate !== utcDate) {
+              this.paperVolumeFees = { utcDate, usd: 0, warned: false };
+            }
+            const priorFee =
+              this.markets.find((item) => item.id === volumeRotateFromMarketId)
+                ?.makerFee ?? 0;
+            this.paperVolumeFees!.usd +=
+              closes.reduce((total, fill) => total + fill.sizeUsd, 0) * priorFee;
+            const state = this.store.getPaperState(paperTrialId);
+            if (
+              state.positions.some(
+                (position) => position.marketId === volumeRotateFromMarketId,
+              )
+            ) {
+              throw new Error("Volume close did not leave both accounts flat");
+            }
+            this.store.logEvent({
+              category: "paper",
+              action: "volume-close",
+              outcome: "estimated",
+              detail: {
+                trialId: paperTrialId,
+                marketId: volumeRotateFromMarketId,
+                closes: closes.length,
+                volumeUsd: closes.reduce((total, fill) => total + fill.sizeUsd, 0),
+              },
+            });
+          }
+        }
         const estimatedFills = this.store.matchPaperOrders({
           trialId: paperTrialId,
           marketId: selected.marketId,
@@ -2550,6 +2617,20 @@ export class MakerRuntime {
           }
         }
         if (estimatedFills.length) {
+          if (config.strategyObjective === "volume") {
+            const utcDate = new Date().toISOString().slice(0, 10);
+            if (this.paperVolumeFees?.utcDate !== utcDate) {
+              this.paperVolumeFees = { utcDate, usd: 0, warned: false };
+            }
+            // The Paper estimate has no account-history fee rows.  Apply the
+            // venue maker rate to the maker fill and its immediate hedge; the
+            // two reduce-only closes are added when the dwell interval ends.
+            this.paperVolumeFees!.usd +=
+              estimatedFills.reduce((total, fill) => total + fill.sizeUsd, 0) *
+              (this.markets.find((item) => item.id === selected!.marketId)
+                ?.makerFee ?? 0) *
+              2;
+          }
           this.store.logEvent({
             category: "paper",
             action: "estimated-fill",
@@ -3128,6 +3209,49 @@ export class MakerRuntime {
             trialId: paperTrialId,
           });
         }
+        this.snapshotValue.execution.lastDecision = "held";
+        this.snapshotValue.lastSuccessfulCycleAt = updatedAt;
+        return;
+      }
+      if (
+        config.mode === "paper" &&
+        config.strategyObjective === "volume" &&
+        this.paperVolumeFees?.utcDate !== new Date().toISOString().slice(0, 10)
+      ) {
+        this.paperVolumeFees = {
+          utcDate: new Date().toISOString().slice(0, 10),
+          usd: 0,
+          warned: false,
+        };
+      }
+      if (
+        config.mode === "paper" &&
+        config.strategyObjective === "volume" &&
+        this.paperVolumeFees?.usd !== undefined &&
+        this.paperVolumeFees.usd >= config.dailyFeeBudgetUsd
+      ) {
+        if (!this.paperVolumeFees.warned) {
+          this.store.logEvent({
+            category: "paper",
+            action: "volume-fee-budget",
+            outcome: "warning",
+            detail: {
+              trialId: paperTrialId,
+              estimatedFeesUsd: this.paperVolumeFees.usd,
+              dailyFeeBudgetUsd: config.dailyFeeBudgetUsd,
+              resumesAt: "00:00 UTC",
+            },
+          });
+          this.paperVolumeFees.warned = true;
+        }
+        this.snapshotValue.markets = this.snapshotValue.markets.map((row) =>
+          row.id === selected!.marketId
+            ? {
+                ...row,
+                error: "Volume paused: daily fee budget reached; resumes at 00:00 UTC.",
+              }
+            : row,
+        );
         this.snapshotValue.execution.lastDecision = "held";
         this.snapshotValue.lastSuccessfulCycleAt = updatedAt;
         return;
