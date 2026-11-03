@@ -355,6 +355,7 @@ export async function appHarness(
     allowlistConfigured?: boolean;
     allowlistRead?: () => Promise<boolean>;
     verificationClient?: import("@mysten/sui/grpc").SuiGrpcClient;
+    env?: Record<string, string>;
   } = {},
 ) {
   const store = tempStore();
@@ -384,6 +385,7 @@ export async function appHarness(
   const env = envSchema.parse({
     NODE_ENV: "test",
     CONTROL_TOKEN: CONTROL_TEST_TOKEN,
+    ...options.env,
   });
   const app = await buildServer({
     env,

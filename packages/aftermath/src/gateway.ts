@@ -55,6 +55,8 @@ export type MarketSummary = {
   maxOpenInterestBase: number;
   fundingRate: number;
   makerFee: number;
+  maxLeverage: number;
+  maintenanceMarginRatio: number;
   category: string | null;
   sessionOpen: boolean | null;
   sessionNextTransitionAt: number | null;
@@ -172,6 +174,11 @@ export type AccountPerformanceHistory = {
   orders: PerformanceOrder[];
   marginHistory: PerpetualsAccountMarginHistoryData[];
   historyComplete?: boolean;
+};
+
+export type MarketDailyVolume = {
+  marketId: string;
+  volumeUsd: number;
 };
 
 export type AccountSnapshot = PositionSnapshot & {
@@ -373,6 +380,7 @@ export function buildQuoteReplacementRequest(inputs: {
   size: bigint;
   leverage: number;
   hasPosition: boolean;
+  sides?: "both" | "bid" | "ask";
   activeMakerOrderIds?: bigint[];
   activeMakerClientOrderIds?: bigint[];
   clientOrderIds?: { bid: bigint; ask: bigint };
@@ -390,18 +398,26 @@ export function buildQuoteReplacementRequest(inputs: {
       MAKER_ASK_CLIENT_ORDER_ID,
     ],
     ordersToPlace: [
-      {
-        side: PerpetualsOrderSide.Bid,
-        price: inputs.bidPrice,
-        size: inputs.size,
-        clientOrderId: clientOrderIds.bid,
-      },
-      {
-        side: PerpetualsOrderSide.Ask,
-        price: inputs.askPrice,
-        size: inputs.size,
-        clientOrderId: clientOrderIds.ask,
-      },
+      ...(inputs.sides === "ask"
+        ? []
+        : [
+            {
+              side: PerpetualsOrderSide.Bid,
+              price: inputs.bidPrice,
+              size: inputs.size,
+              clientOrderId: clientOrderIds.bid,
+            },
+          ]),
+      ...(inputs.sides === "bid"
+        ? []
+        : [
+            {
+              side: PerpetualsOrderSide.Ask,
+              price: inputs.askPrice,
+              size: inputs.size,
+              clientOrderId: clientOrderIds.ask,
+            },
+          ]),
     ],
     orderType: PerpetualsOrderType.PostOnly,
     reduceOnly: false,
@@ -779,6 +795,10 @@ export class AftermathGateway {
     | undefined;
   private readonly accountFillHistory =
     new AccountFillHistoryCache<PerpetualsAccountOrderHistoryData>();
+  private readonly dailyVolumeCache = new Map<
+    string,
+    { expiresAt: number; value: MarketDailyVolume[] }
+  >();
   private readonly mutationQueues = new Map<string, PriorityMutationQueue>();
 
   private mutationQueue(address: string): PriorityMutationQueue {
@@ -914,6 +934,8 @@ export class AftermathGateway {
         maxOpenInterestBase,
         fundingRate: market.estimatedFundingRate(),
         makerFee: market.marketParams.makerFee,
+        maxLeverage: market.maxLeverage(),
+        maintenanceMarginRatio: market.marketParams.marginRatioMaintenance,
         category: metadata?.category ?? null,
         sessionOpen:
           typeof metadata?.session?.isOpen === "boolean"
@@ -1221,6 +1243,38 @@ export class AftermathGateway {
   }): Promise<OwnerAccountSummary[]> {
     const caps = await this.getOwnedAccountCaps(inputs);
     const adminCaps = caps.filter((cap) => !cap.isAgent);
+    if (!adminCaps.length) return [];
+    // Account data has native available collateral but not the USD price used
+    // to value it. Read that price from a market instead, including for an
+    // empty account with no positions.
+    const collateralCoinTypes = [
+      ...new Set(
+        inputs.collateralCoinType
+          ? [inputs.collateralCoinType]
+          : adminCaps.map((cap) => cap.collateralCoinType),
+      ),
+    ];
+    const marketLists = await Promise.all(
+      collateralCoinTypes.map((collateralCoinType) =>
+        this.sdk.Perpetuals().getAllMarkets({ collateralCoinType }),
+      ),
+    );
+    const marketIds = marketLists.flatMap(({ markets }) =>
+      markets.map((market) => market.marketId),
+    );
+    const collateralMarkets = marketIds.length
+      ? (
+          await this.sdk.Perpetuals().getMarkets({
+            marketIds,
+          })
+        ).markets
+      : [];
+    const collateralPriceByCoinType = new Map(
+      collateralMarkets.map((market) => [
+        market.collateralCoinType,
+        market.collateralPrice,
+      ]),
+    );
     return Promise.all(
       adminCaps.map(async (cap) => {
         const { account } = await this.sdk.Perpetuals().getAccount({
@@ -1260,15 +1314,9 @@ export class AftermathGateway {
           collateralCoinType: cap.collateralCoinType,
           equityUsd: account.account.totalEquityUsd,
           availableCollateralUsd: account.account.availableCollateralUsd,
-          availableCollateral: Number(
-            (account.account as unknown as { availableCollateral?: number })
-              .availableCollateral ?? 0,
-          ),
+          availableCollateral: account.account.availableCollateral,
           collateralPrice:
-            Number(
-              (account.account as unknown as { collateralPrice?: number })
-                .collateralPrice ?? 0,
-            ) || undefined,
+            collateralPriceByCoinType.get(cap.collateralCoinType) ?? undefined,
           allocatedCollateralUsd,
           freeMarginUsd,
           positionCount: openPositions.length,
@@ -1680,6 +1728,50 @@ export class AftermathGateway {
       equityUsd: portfolio.equityUsd,
       openOrderIds: position.makerOrderIds,
     };
+  }
+
+  /**
+   * Market-wide daily volume is taker-side and therefore counts each trade
+   * once.  Completed UTC days are immutable; today's partial day is refreshed
+   * at most every five minutes.
+   */
+  async getMarketsDailyVolume(inputs: {
+    fromTimestamp: number;
+    toTimestamp: number;
+    marketIds: string[];
+  }): Promise<MarketDailyVolume[]> {
+    const marketIds = [...new Set(inputs.marketIds)];
+    if (marketIds.length > 50)
+      throw new Error("Daily market stats support at most 50 market IDs");
+    const key = [
+      inputs.fromTimestamp,
+      inputs.toTimestamp,
+      ...marketIds.slice().sort(),
+    ].join(":");
+    const cached = this.dailyVolumeCache.get(key);
+    if (cached && cached.expiresAt > Date.now()) return cached.value;
+    const response = await this.sdk.Perpetuals().getMarketsDailyStats({
+      fromTimestamp: inputs.fromTimestamp,
+      toTimestamp: inputs.toTimestamp,
+      marketIds,
+    });
+    const value = response.stats.map((market) => ({
+      marketId: market.marketId,
+      volumeUsd: market.stats.reduce((total, day) => total + day.volumeUsd, 0),
+    }));
+    const today = Date.UTC(
+      new Date().getUTCFullYear(),
+      new Date().getUTCMonth(),
+      new Date().getUTCDate(),
+    );
+    this.dailyVolumeCache.set(key, {
+      expiresAt:
+        inputs.toTimestamp <= today
+          ? Number.MAX_SAFE_INTEGER
+          : Date.now() + 5 * 60_000,
+      value,
+    });
+    return value;
   }
 
   async getAccountPerformanceHistory(inputs: {
@@ -2683,6 +2775,7 @@ export class AftermathGateway {
       size,
       leverage: inputs.config.maxLeverage,
       hasPosition: Boolean(position),
+      sides: inputs.quote.sides,
       activeMakerOrderIds,
       activeMakerClientOrderIds,
       clientOrderIds,
@@ -2742,6 +2835,7 @@ export class AftermathGateway {
           askPrice,
           bidClientOrderId: clientOrderIds.bid,
           askClientOrderId: clientOrderIds.ask,
+          sides: inputs.quote.sides,
           orderIdsByMarket,
         },
       });

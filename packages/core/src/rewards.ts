@@ -138,7 +138,7 @@ function objectiveScore(
   objective: StrategyObjective,
   scores: { farming: number; profit: number; both: number },
 ): number {
-  return scores[objective];
+  return scores[objective === "volume" ? "both" : objective];
 }
 
 export function rankRewardMarkets(inputs: {
@@ -376,26 +376,34 @@ export function rankRewardMarkets(inputs: {
       const makerRebateBps = Math.max(0, -market.makerFee * 10_000);
       const referenceSpread = spreadBps ?? 30;
       const suggestedSpreadBps = Math.round(
-        objective === "farming"
-          ? clamp(Math.max(8, referenceSpread * 0.75), 8, 80)
-          : objective === "profit"
-            ? clamp(
-                Math.max(8, referenceSpread * 1.05, knownCostBps * 2 + 8),
-                8,
-                120,
-              )
-            : clamp(
-                Math.max(8, referenceSpread * 0.9, knownCostBps * 2 + 6),
-                8,
-                100,
-              ),
+        objective === "volume"
+          ? 8
+          : objective === "farming"
+            ? clamp(Math.max(8, referenceSpread * 0.75), 8, 80)
+            : objective === "profit"
+              ? clamp(
+                  Math.max(8, referenceSpread * 1.05, knownCostBps * 2 + 8),
+                  8,
+                  120,
+                )
+              : clamp(
+                  Math.max(8, referenceSpread * 0.9, knownCostBps * 2 + 6),
+                  8,
+                  100,
+                ),
       );
       const baseQuoteSizeUsd = Math.min(
         Math.sqrt(Math.max(0, balancedDepth50BpsUsd)) * 1.5,
         balancedDepth50BpsUsd * 0.05,
       );
       const sizeMultiplier =
-        objective === "farming" ? 1 : objective === "profit" ? 0.6 : 0.75;
+        objective === "volume"
+          ? 0.6
+          : objective === "farming"
+            ? 1
+            : objective === "profit"
+              ? 0.6
+              : 0.75;
       const minimumQuoteSizeUsd = minimumLiveQuoteSizeUsd({
         indexPrice: market.indexPrice,
         minOrderUsdValue: market.minOrderUsdValue,
@@ -471,5 +479,33 @@ export function rewardEpochWindow(now = new Date()): {
     epoch,
     startedAt: new Date(startedAt).toISOString(),
     cutoffAt: new Date(startedAt + EPOCH_LENGTH_MS).toISOString(),
+  };
+}
+
+/** Daily venue statistics are UTC-day buckets, while reward epochs begin at
+ * 05:00 UTC.  Start the comparable market-volume window at midnight on the
+ * first UTC day of the active epoch. */
+export function rewardEpochDailyStatsWindow(now = new Date()): {
+  epoch: number;
+  fromTimestamp: number;
+  toTimestamp: number;
+  label: string;
+} {
+  const epoch = rewardEpochWindow(now);
+  const started = new Date(epoch.startedAt);
+  const fromTimestamp = Date.UTC(
+    started.getUTCFullYear(),
+    started.getUTCMonth(),
+    started.getUTCDate(),
+  );
+  return {
+    epoch: epoch.epoch,
+    fromTimestamp,
+    toTimestamp: now.getTime(),
+    label: `Epoch ${epoch.epoch}, since ${new Intl.DateTimeFormat("en-US", {
+      month: "short",
+      day: "numeric",
+      timeZone: "UTC",
+    }).format(new Date(fromTimestamp))} 00:00 UTC`,
   };
 }

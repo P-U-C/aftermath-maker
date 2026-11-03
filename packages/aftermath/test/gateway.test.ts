@@ -44,6 +44,31 @@ const result = {
 };
 
 describe("gateway execution evidence", () => {
+  it("sums fake daily market stats once per taker-side market volume", async () => {
+    const gateway = {
+      dailyVolumeCache: new Map(),
+      sdk: {
+        Perpetuals: () => ({
+          getMarketsDailyStats: async () => ({
+            stats: [
+              {
+                marketId: "0x1",
+                stats: [{ volumeUsd: 12 }, { volumeUsd: 8 }],
+              },
+            ],
+          }),
+        }),
+      },
+    };
+    await expect(
+      AftermathGateway.prototype.getMarketsDailyVolume.call(gateway, {
+        fromTimestamp: Date.UTC(2026, 9, 26),
+        toTimestamp: Date.UTC(2026, 9, 27),
+        marketIds: ["0x1"],
+      }),
+    ).resolves.toEqual([{ marketId: "0x1", volumeUsd: 20 }]);
+  });
+
   it("composes exactly two owner deposits in one guarded transaction", async () => {
     const owner = `0x${"11".repeat(32)}`;
     const pkg = `0x${"44".repeat(32)}`;
@@ -187,11 +212,19 @@ describe("gateway execution evidence", () => {
           ],
           totalEquityUsd: 10,
           availableCollateralUsd: 9,
+          availableCollateral: 0,
         },
       },
     });
     const readMarkets = async () => ({
-      markets: [{ marketId: "0x1", indexPrice: 10 }],
+      markets: [
+        {
+          marketId: "0x1",
+          indexPrice: 10,
+          collateralCoinType: "USDC",
+          collateralPrice: 0.9997,
+        },
+      ],
     });
     const gateway = {
       getOwnedAccountCaps: async () => [
@@ -205,6 +238,7 @@ describe("gateway execution evidence", () => {
       sdk: {
         Perpetuals: () => ({
           getAccount: readAccount,
+          getAllMarkets: async () => ({ markets: [{ marketId: "0x1" }] }),
           getMarkets: readMarkets,
         }),
       },
@@ -217,6 +251,8 @@ describe("gateway execution evidence", () => {
       accountId: "1757",
       exposureUsd: 20,
       positionCount: 1,
+      availableCollateral: 0,
+      collateralPrice: 0.9997,
     });
     expect(account?.unrealizedPnlUsd).toBeCloseTo(-0.009, 6);
   });

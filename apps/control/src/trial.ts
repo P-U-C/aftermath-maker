@@ -31,10 +31,11 @@ export type StrategyTrialPlan = {
   rounds: StrategyTrialPlanRound[];
 };
 
-type Dashboards = Record<StrategyObjective, RewardDashboard>;
+type TrialObjective = (typeof STRATEGY_TRIAL_OBJECTIVES)[number];
+type Dashboards = Record<TrialObjective, RewardDashboard>;
 
 const profiles: Record<
-  StrategyObjective,
+  TrialObjective,
   {
     profile: MakerConfig["strategyProfile"];
     inventorySkewBps: number;

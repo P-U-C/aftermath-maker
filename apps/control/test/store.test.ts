@@ -138,6 +138,47 @@ describe("persistent control store", () => {
     databaseStore.close();
   });
 
+  it("closes both simulated accounts reduce-only at the end of a Volume market", () => {
+    const directory = join(
+      process.env.TMPDIR ?? "/tmp",
+      `aftermath-maker-${randomBytes(8).toString("hex")}`,
+    );
+    mkdirSync(directory, { recursive: true });
+    const databaseStore = new Store(join(directory, "maker.db"));
+    const tenant = databaseStore.forTenant(`0x${"a".repeat(64)}`);
+    tenant.recordPaperQuote({
+      trialId: "volume",
+      marketId: "0x9002",
+      symbol: "VOLUME",
+      bidPrice: 10,
+      askPrice: 11,
+      sizeUsd: 10,
+      sides: "bid",
+    });
+    const [makerFill] = tenant.matchPaperOrders({
+      trialId: "volume",
+      marketId: "0x9002",
+      bestBid: 9.9,
+      bestAsk: 9.8,
+    });
+    tenant.recordPaperHedge({ trialId: "volume", makerFill: makerFill! });
+
+    const closes = tenant.closePaperMarket({
+      trialId: "volume",
+      marketId: "0x9002",
+      bestBid: 9.7,
+      bestAsk: 9.9,
+    });
+
+    expect(closes).toHaveLength(2);
+    expect(closes.map((fill) => fill.side).sort()).toEqual(["ask", "bid"]);
+    expect(closes.every((fill) => fill.orderKey.startsWith("close:"))).toBe(
+      true,
+    );
+    expect(tenant.getPaperState("volume").positions).toEqual([]);
+    databaseStore.close();
+  });
+
   it("does not coerce user strings that look like legacy bigint values", () => {
     const directory = join(
       process.env.TMPDIR ?? "/tmp",

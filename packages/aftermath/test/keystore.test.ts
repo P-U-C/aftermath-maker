@@ -1,4 +1,5 @@
 import { randomBytes } from "node:crypto";
+import { PerpetualsOrderSide } from "aftermath-ts-sdk";
 import { describe, expect, it } from "vitest";
 import {
   agentEncryptionContext,
@@ -59,6 +60,23 @@ describe("maker order isolation", () => {
       MAKER_ASK_CLIENT_ORDER_ID,
     ]);
     expect(request.builderCode).toBeUndefined();
+  });
+
+  it("builds a single reducing bid or ask placement", () => {
+    const common = {
+      marketId: "0x1234",
+      bidPrice: 990n,
+      askPrice: 1_010n,
+      size: 5n,
+      leverage: 1,
+      hasPosition: true,
+    };
+    expect(
+      buildQuoteReplacementRequest({ ...common, sides: "bid" }).ordersToPlace,
+    ).toMatchObject([{ side: PerpetualsOrderSide.Bid }]);
+    expect(
+      buildQuoteReplacementRequest({ ...common, sides: "ask" }).ordersToPlace,
+    ).toMatchObject([{ side: PerpetualsOrderSide.Ask }]);
   });
 
   it("rotates client IDs within the Maker-owned namespace", () => {

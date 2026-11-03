@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   minimumLiveQuoteSizeUsd,
   rankRewardMarkets,
+  rewardEpochDailyStatsWindow,
   rewardEpochWindow,
   type RewardMarketEvidence,
 } from "../src/index.js";
@@ -331,5 +332,16 @@ describe("reward epoch schedule", () => {
       cutoffAt: "2026-03-16T05:00:00.000Z",
     });
     expect(rewardEpochWindow(new Date("2026-03-16T05:00:00Z")).epoch).toBe(1);
+  });
+
+  it("aligns market daily stats to the epoch's first UTC day", () => {
+    expect(
+      rewardEpochDailyStatsWindow(new Date("2026-03-16T06:30:00Z")),
+    ).toMatchObject({
+      epoch: 1,
+      fromTimestamp: Date.UTC(2026, 2, 16, 0, 0, 0),
+      toTimestamp: Date.parse("2026-03-16T06:30:00Z"),
+      label: "Epoch 1, since Mar 16 00:00 UTC",
+    });
   });
 });

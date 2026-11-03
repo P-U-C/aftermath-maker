@@ -131,6 +131,7 @@ function createHarness(options: { configured?: boolean } = {}) {
     orders: [],
     marginHistory: [],
   };
+  let marketDailyVolumes: Array<{ marketId: string; volumeUsd: number }> = [];
   let orderbook: {
     bestBidPrice: number;
     bestAskPrice: number;
@@ -238,6 +239,7 @@ function createHarness(options: { configured?: boolean } = {}) {
       performanceRequests.push(inputs);
       return performanceHistory;
     },
+    getMarketsDailyVolume: async () => marketDailyVolumes,
     getRewardDashboard: async (inputs: { objective: StrategyObjective }) =>
       rewardDashboard(inputs.objective),
     executeHedge: async (inputs: {
@@ -315,6 +317,11 @@ function createHarness(options: { configured?: boolean } = {}) {
     },
     setPerformanceHistory: (value: AccountPerformanceHistory) => {
       performanceHistory = value;
+    },
+    setMarketDailyVolumes: (
+      value: Array<{ marketId: string; volumeUsd: number }>,
+    ) => {
+      marketDailyVolumes = value;
     },
     setOrderbook: (value: typeof orderbook) => {
       orderbook = value;
@@ -576,7 +583,7 @@ describe("runtime execution boundaries", () => {
     );
     expect(runtime.snapshot.markets[0]).toMatchObject({
       status: "healthy",
-      error: runtime.snapshot.lastError,
+      error: null,
     });
     expect(onBundleError).not.toHaveBeenCalled();
     expect(harness.executionSequence).toEqual([]);
@@ -1019,6 +1026,7 @@ describe("runtime execution boundaries", () => {
       ],
       marginHistory: [],
     });
+    harness.setMarketDailyVolumes([{ marketId: "0x5678", volumeUsd: 24_000 }]);
 
     const performance = await harness.runtime.performance();
 
@@ -1041,8 +1049,13 @@ describe("runtime execution boundaries", () => {
         takerFills: 0,
         realizedPnlUsd: 100,
         feesUsd: 0.02,
+        marketVolumeUsd: 24_000,
+        marketVolumeError: null,
       },
     ]);
+    expect(performance.marketVolumeLabel).toMatch(
+      /^Today, since [A-Z][a-z]{2} \d{1,2} 00:00 UTC$/,
+    );
     expect(performance).toMatchObject({
       period: "1D",
       historyComplete: true,
@@ -1595,9 +1608,9 @@ describe("runtime execution boundaries", () => {
     harness.runtime.start();
     await harness.runtime.cycle();
 
-    expect(harness.executions()).toBe(0);
-    expect(harness.runtime.snapshot.running).toBe(false);
-    expect(harness.runtime.snapshot.lastError).toContain("gross-exposure");
+    expect(harness.executions()).toBe(1);
+    expect(harness.runtime.snapshot.running).toBe(true);
+    expect(harness.runtime.snapshot.quote).toMatchObject({ sides: "ask" });
     harness.store.close();
   });
 
@@ -1651,7 +1664,8 @@ describe("runtime execution boundaries", () => {
     await harness.runtime.cycle();
 
     expect(harness.executions()).toBe(0);
-    expect(harness.runtime.snapshot.lastError).toContain("gross-exposure");
+    expect(harness.runtime.snapshot.running).toBe(true);
+    expect(harness.runtime.snapshot.execution.lastDecision).toBe("held");
     harness.store.close();
   });
 
@@ -2199,14 +2213,14 @@ describe("runtime execution boundaries", () => {
     await harness.runtime.cycle();
 
     expect(harness.hedgeExecutions()).toBe(1);
-    expect(harness.executions()).toBe(0);
+    expect(harness.executions()).toBe(1);
     expect(harness.executionSequence.slice(0, 3)).toEqual([
       "cancel",
       "cancel",
       "hedge",
     ]);
-    expect(harness.runtime.snapshot.running).toBe(false);
-    expect(harness.runtime.snapshot.lastError).toContain("inventory");
+    expect(harness.runtime.snapshot.running).toBe(true);
+    expect(harness.runtime.snapshot.quote).toMatchObject({ sides: "ask" });
     expect(harness.runtime.snapshot.hedge).toMatchObject({
       state: "ready",
       lastDigest: "hedge-digest-1",

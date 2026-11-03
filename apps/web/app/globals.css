@@ -2141,7 +2141,7 @@ input[type="range"] {
 .reward-leader span,
 .reward-focus > span,
 .reward-count span {
-  color: #adb5b0;
+  color: var(--ink-2);
   font-size: 12px;
 }
 
@@ -2170,14 +2170,14 @@ input[type="range"] {
   display: grid;
   grid-template-columns: 1fr 1fr;
   padding: 3px;
-  background: #252a27;
-  border: 1px solid var(--hair);
+  background: var(--fill-2);
+  border: 1px solid var(--line);
 }
 
 .reward-focus button {
   min-width: 76px;
   padding: 0 9px;
-  color: #d2d7d3;
+  color: var(--ink-2);
   background: transparent;
   border: 0;
   font-size: 12px;
@@ -2185,13 +2185,13 @@ input[type="range"] {
 }
 
 .reward-focus button.selected {
-  color: var(--black);
-  background: var(--paper);
+  color: var(--on-primary);
+  background: var(--tide-text);
   font-weight: 700;
 }
 
 .reward-focus button:focus-visible {
-  outline: 2px solid var(--amber);
+  outline: 2px solid var(--tide);
   outline-offset: 1px;
 }
 
@@ -2203,9 +2203,9 @@ input[type="range"] {
 .reward-count input {
   width: 82px;
   height: 34px;
-  color: var(--paper);
-  background: #252a27;
-  border-color: var(--hair);
+  color: var(--ink);
+  background: var(--surface);
+  border-color: var(--line);
 }
 
 .button.reward-stage {
@@ -3915,6 +3915,43 @@ mysten-dapp-kit-connect-modal,
   padding: 2px 16px;
   background: var(--fill);
   border-radius: 16px;
+}
+
+.go-live-checklist {
+  margin: 0 0 16px;
+}
+
+.go-live-checklist h3 {
+  margin: 0 0 8px;
+  font-size: 14px;
+}
+
+.go-live-checklist ul {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.go-live-checklist li {
+  display: grid;
+  gap: 2px;
+  padding: 10px 12px;
+  border: 1px solid var(--hair);
+  border-left: 3px solid var(--amber);
+  border-radius: 10px;
+  background: var(--fill);
+}
+
+.go-live-checklist li[data-ready="true"] {
+  border-left-color: var(--green);
+}
+
+.go-live-checklist li span,
+.go-live-checklist > p {
+  color: var(--ink-2);
+  font-size: 13px;
 }
 
 .go-live-summary > div {
@@ -6739,7 +6776,7 @@ mysten-dapp-kit-connect-modal,
 
 .performance-volume-table-wrap table {
   width: 100%;
-  min-width: 720px;
+  min-width: 800px;
   border-collapse: collapse;
 }
 
@@ -6750,6 +6787,8 @@ mysten-dapp-kit-connect-modal,
   color: var(--ink-2);
   font-size: 13px;
   text-align: right;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .performance-volume-table-wrap th {
@@ -10965,16 +11004,18 @@ mysten-dapp-kit-connect-modal,
   cursor: default;
 }
 .strategy-suggestion-panel .strategy-rotation-stage {
-  display: grid;
-  justify-items: end;
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  flex-wrap: wrap;
 }
 .strategy-suggestion-fields {
   display: flex;
-  justify-content: flex-end;
+  justify-content: flex-start;
   align-items: stretch;
   flex-wrap: wrap;
   gap: 10px;
-  width: 100%;
+  width: auto;
 }
 .strategy-suggestion-fields .reward-focus,
 .strategy-suggestion-fields .reward-count {
@@ -11492,7 +11533,7 @@ mysten-dapp-kit-connect-modal,
   justify-content: flex-start;
 }
 .market-clean-table thead button span {
-  color: var(--ink-3);
+  color: var(--ink);
   font-size: 14px;
 }
 .market-clean-table tbody td:nth-child(-n + 4) {
@@ -12244,10 +12285,13 @@ mysten-dapp-kit-connect-modal,
 }
 .ui-table thead th {
   height: 40px;
-  color: var(--ink-2);
-  background: transparent;
+  color: var(--ink);
+  background: var(--fill-2);
   font-size: 12.5px;
   font-weight: 600;
+}
+.ui-table :is(.market-group-heading, .venue-account-group) > :is(th, td) {
+  background: var(--fill);
 }
 .ui-table tbody td {
   min-height: 52px;

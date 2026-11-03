@@ -122,6 +122,11 @@ export function formatPrice(
   tickSize: number | null,
 ): string {
   if (value === null || !Number.isFinite(value)) return "—";
+  if (tickSize === null || tickSize <= 0) {
+    return new Intl.NumberFormat("en-US", {
+      maximumSignificantDigits: 6,
+    }).format(normalized(value));
+  }
   const digits = Math.min(12, decimalPlaces(tickSize ?? 0.01));
   return new Intl.NumberFormat("en-US", {
     minimumFractionDigits: digits,

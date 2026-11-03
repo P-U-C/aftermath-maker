@@ -4,6 +4,7 @@ import {
   loadAgentKeypair,
   type EndpointHealth,
   type MarketSummary,
+  type MarketDailyVolume,
   type PerformanceOrder,
   type PortfolioSnapshot,
 } from "@puc/aftermath";
@@ -16,6 +17,9 @@ import {
   buildQuoteIntent,
   evaluateQuoteSafety,
   makerConfigSchema,
+  marketRiskThresholds,
+  rewardEpochDailyStatsWindow,
+  reduceOnlyQuoteIntent,
   resolveMarketConfig,
   type BuilderFeePolicy,
   type MakerConfig,
@@ -165,7 +169,10 @@ export type PerformanceSnapshot = {
     takerFills: number;
     realizedPnlUsd: number;
     feesUsd: number;
+    marketVolumeUsd: number | null;
+    marketVolumeError: string | null;
   }>;
+  marketVolumeLabel: string | null;
   fills: MakerFill[];
   note: string;
 };
@@ -452,9 +459,6 @@ const hedgeFillKey = (order: PerformanceOrder) =>
 const signedFillNotional = (order: PerformanceOrder) =>
   Math.abs(order.price * order.size) * (order.side === "bid" ? 1 : -1);
 
-const MIN_ACCOUNT_MARGIN_RATIO = 0.12;
-const MIN_LIQUIDATION_DISTANCE_BPS = 1_000;
-
 const finitePercent = (value: number | null | undefined): string | null =>
   typeof value === "number" && Number.isFinite(value)
     ? `${(value * 100).toFixed(1)}%`
@@ -464,6 +468,10 @@ function accountRiskChecks(
   label: string,
   portfolio: PortfolioSnapshot | null,
   symbols: ReadonlyMap<string, string>,
+  thresholdForMarket: (marketId: string) => {
+    minMarginRatio: number;
+    minLiquidationDistanceBps: number;
+  },
 ): SafetyCheck[] {
   const positions = portfolio?.positions.filter(
     (position) => position.hasPosition && !position.simulated,
@@ -479,12 +487,25 @@ function accountRiskChecks(
   );
   const marginRatios =
     positions?.flatMap((position) =>
-      Number.isFinite(position.marginRatio) ? [position.marginRatio!] : [],
+      Number.isFinite(position.marginRatio)
+        ? [
+            {
+              actual: position.marginRatio!,
+              threshold: thresholdForMarket(position.marketId).minMarginRatio,
+            },
+          ]
+        : [],
     ) ?? [];
   const liquidationDistances =
     positions?.flatMap((position) =>
       Number.isFinite(position.liquidationDistanceBps)
-        ? [position.liquidationDistanceBps!]
+        ? [
+            {
+              actual: position.liquidationDistanceBps!,
+              threshold: thresholdForMarket(position.marketId)
+                .minLiquidationDistanceBps,
+            },
+          ]
         : [],
     ) ?? [];
   const name = (marketId: string) => symbols.get(marketId) ?? marketId;
@@ -496,8 +517,8 @@ function accountRiskChecks(
         portfolio !== null &&
         !missingMargin &&
         marginRatios.every(
-          (ratio) =>
-            Number.isFinite(ratio) && ratio >= MIN_ACCOUNT_MARGIN_RATIO,
+          ({ actual, threshold }) =>
+            Number.isFinite(actual) && actual >= threshold,
         ),
       detail:
         portfolio === null
@@ -508,7 +529,7 @@ function accountRiskChecks(
               ? simulated
                 ? "Simulated positions only; inventory and exposure limits apply"
                 : "No open positions"
-              : `Minimum ${label.toLowerCase()} margin ratio ${finitePercent(Math.min(...marginRatios)) ?? "unavailable"}; 12.0% required`,
+              : `Minimum ${label.toLowerCase()} margin ratio ${finitePercent(Math.min(...marginRatios.map(({ actual }) => actual))) ?? "unavailable"}; required threshold is market-specific`,
       scope: "bundle",
     },
     {
@@ -518,9 +539,8 @@ function accountRiskChecks(
         portfolio !== null &&
         !missingLiquidation &&
         liquidationDistances.every(
-          (distance) =>
-            Number.isFinite(distance) &&
-            distance >= MIN_LIQUIDATION_DISTANCE_BPS,
+          ({ actual, threshold }) =>
+            Number.isFinite(actual) && actual >= threshold,
         ),
       detail:
         portfolio === null
@@ -531,7 +551,7 @@ function accountRiskChecks(
               ? simulated
                 ? "Simulated positions only; inventory and exposure limits apply"
                 : "No open positions"
-              : `Nearest liquidation ${finitePercent(Math.min(...liquidationDistances) / 10_000) ?? "unavailable"} away; 10.0% required`,
+              : `Nearest liquidation ${finitePercent(Math.min(...liquidationDistances.map(({ actual }) => actual)) / 10_000) ?? "unavailable"} away; required threshold is market-specific`,
       scope: "bundle",
     },
   ];
@@ -568,6 +588,8 @@ export class MakerRuntime {
   private paperMarketSkips = new Map<string, { code: string; since: number }>();
   private paperAllSkippedSince: number | null = null;
   private paperAllSkippedWarningLogged = false;
+  private paperVolumeFees: { utcDate: string; usd: number; warned: boolean } | null =
+    null;
 
   constructor(
     private readonly store: TenantStore,
@@ -1268,6 +1290,7 @@ export class MakerRuntime {
           notionalUsd: 0,
         },
         volumeByMarket: [],
+        marketVolumeLabel: null,
         fills: [],
         note: "Authorize an agent to begin account and fill reconciliation.",
       };
@@ -1305,6 +1328,8 @@ export class MakerRuntime {
         takerFills: 0,
         realizedPnlUsd: 0,
         feesUsd: 0,
+        marketVolumeUsd: null,
+        marketVolumeError: null,
       };
       const notionalUsd = Math.abs(order.size * order.price);
       if (order.maker) {
@@ -1354,7 +1379,10 @@ export class MakerRuntime {
             )
         : [];
     const paperMakerFills = paperRows
-      .filter((fill) => fill.role === "maker")
+      .filter(
+        (fill) =>
+          fill.role === "maker" || config?.strategyObjective === "volume",
+      )
       .map<MakerFill>((fill) => ({
         occurredAt: fill.occurredAt,
         txDigest: `paper:${fill.orderKey}`,
@@ -1463,9 +1491,48 @@ export class MakerRuntime {
     }
     const makerNetAfterKnownCostsUsd =
       realizedPnlUsd - protocolFeesUsd - estimatedBuilderFeesUsd;
+    const now = new Date();
+    const marketIds = [...volumeByMarket.keys()];
+    let marketVolumeLabel: string | null = null;
+    let marketVolumes = new Map<string, number>();
+    let marketVolumeError: string | null = null;
+    if (marketIds.length && period !== "ALL") {
+      const window =
+        period === "EPOCH"
+          ? rewardEpochDailyStatsWindow(now)
+          : {
+              fromTimestamp: Date.UTC(
+                now.getUTCFullYear(),
+                now.getUTCMonth(),
+                now.getUTCDate(),
+              ),
+              toTimestamp: now.getTime(),
+              label: `Today, since ${new Intl.DateTimeFormat("en-US", {
+                month: "short",
+                day: "numeric",
+                timeZone: "UTC",
+              }).format(now)} 00:00 UTC`,
+            };
+      marketVolumeLabel = window.label;
+      try {
+        const dailyVolumes: MarketDailyVolume[] = await this.venueRead(
+          this.gateway.getMarketsDailyVolume({
+            fromTimestamp: window.fromTimestamp,
+            toTimestamp: window.toTimestamp,
+            marketIds,
+          }),
+          "Market daily volume read",
+        );
+        marketVolumes = new Map(
+          dailyVolumes.map((entry) => [entry.marketId, entry.volumeUsd]),
+        );
+      } catch (error) {
+        marketVolumeError = message(error);
+      }
+    }
 
     return {
-      asOf: new Date().toISOString(),
+      asOf: now.toISOString(),
       period,
       periodStartedAt,
       historyComplete: history.historyComplete ?? true,
@@ -1491,9 +1558,14 @@ export class MakerRuntime {
         hedgeFills: paperRows.filter((fill) => fill.role === "hedge").length,
         notionalUsd: paperRows.reduce((total, fill) => total + fill.sizeUsd, 0),
       },
-      volumeByMarket: [...volumeByMarket.values()].sort((left, right) =>
-        left.symbol.localeCompare(right.symbol),
-      ),
+      volumeByMarket: [...volumeByMarket.values()]
+        .map((row) => ({
+          ...row,
+          marketVolumeUsd: marketVolumes.get(row.marketId) ?? null,
+          marketVolumeError,
+        }))
+        .sort((left, right) => left.symbol.localeCompare(right.symbol)),
+      marketVolumeLabel,
       fills,
       note: `Maker attribution uses recorded order IDs. Hedge attribution uses confirmed hedge transaction digests. Builder fees are deterministic estimates from filled notional; account metrics come from Aftermath's ${period === "1D" ? "24-hour" : period === "EPOCH" ? "current-epoch" : "all-time"} history.${paperRows.length ? " Paper fills are book-crossing estimates, not exchange executions." : ""}`,
     };
@@ -2214,13 +2286,10 @@ export class MakerRuntime {
     this.snapshotValue.lastError = blocker.message;
     this.snapshotValue.paperBlocker = blocker;
     this.snapshotValue.execution.lastDecision = "held";
-    // A blocked Paper simulation is an observed cycle, not a successful one.
-    this.snapshotValue.markets = this.snapshotValue.markets.map((row) =>
-      row.id === selected.marketId
-        ? { ...row, status: "healthy", error: blocker.message, updatedAt }
-        : row,
-    );
-    const key = `${trialId}:${selected.marketId}:${blocker.code}:${Math.round((blocker.requiredUsd ?? blocker.requiredGasSui ?? 0) * 100)}`;
+    // A bundle blocker must not overwrite an independent market skip. Both
+    // states are useful: the card can offer the bundle-level fix while the
+    // affected market row explains why that market itself is waiting.
+    const key = `${trialId}:${blocker.code}:${Math.round((blocker.requiredUsd ?? blocker.requiredGasSui ?? 0) * 100)}`;
     const now = Date.now();
     if (
       this.paperSimulationBlockerKey !== key ||
@@ -2232,7 +2301,9 @@ export class MakerRuntime {
         outcome: "blocked",
         detail: {
           ...blocker,
-          marketId: selected.marketId,
+          ...(blocker.code === "gross-exposure"
+            ? {}
+            : { marketId: selected.marketId }),
           accountId: this.snapshotValue.accountId,
           agentAddress: this.snapshotValue.agentAddress,
         },
@@ -2243,18 +2314,16 @@ export class MakerRuntime {
   }
 
   private clearPaperSimulationBlocker(): void {
-    if (!this.snapshotValue.paperBlocker) return;
+    if (!this.snapshotValue.paperBlocker && !this.paperSimulationBlockerKey)
+      return;
     if (
+      this.snapshotValue.paperBlocker &&
       this.snapshotValue.lastError === this.snapshotValue.paperBlocker.message
     )
       this.snapshotValue.lastError = null;
     this.snapshotValue.paperBlocker = null;
     this.paperSimulationBlockerKey = null;
     this.paperSimulationBlockerLastLoggedAt = 0;
-    this.snapshotValue.markets = this.snapshotValue.markets.map((row) => ({
-      ...row,
-      error: null,
-    }));
     this.store.logEvent({
       category: "paper",
       action: "simulation",
@@ -2402,6 +2471,7 @@ export class MakerRuntime {
     let config: MakerConfig | null = null;
     let hedgeReconciliationCompleted = false;
     let switchFromMarketId: string | null = null;
+    let volumeRotateFromMarketId: string | null = null;
     let usesDwellScheduler = false;
     const paperTrialId = inputs.paperTrialId ?? "runtime";
     try {
@@ -2418,8 +2488,16 @@ export class MakerRuntime {
         if (this.marketSelectedAt === null) {
           this.marketSelectedAt = now;
         } else if (now - this.marketSelectedAt >= config.marketDwellMs) {
+          const prior = config.markets[this.marketIndex % config.markets.length];
           this.marketIndex = (this.marketIndex + 1) % config.markets.length;
           this.marketSelectedAt = now;
+          if (
+            config.mode === "paper" &&
+            config.strategyObjective === "volume" &&
+            config.flattenOnRotate
+          ) {
+            volumeRotateFromMarketId = prior?.marketId ?? null;
+          }
         }
       }
       selected = config.markets[this.marketIndex % config.markets.length]!;
@@ -2471,6 +2549,59 @@ export class MakerRuntime {
       }
 
       if (config.mode === "paper") {
+        if (volumeRotateFromMarketId) {
+          // Volume is deliberately sequential: cancel first, then close the
+          // prior maker and hedge inventories at touch before opening the next
+          // market.  These are simulator records only; no live order path is
+          // reachable from this branch.
+          this.store.cancelPaperOrders(paperTrialId, volumeRotateFromMarketId);
+          const priorBook = await withTimeout(
+            this.gateway.getOrderbook(volumeRotateFromMarketId),
+            VENUE_READ_TIMEOUT_MS,
+            "Volume close orderbook read timed out",
+          );
+          const priorBid = priorBook.orderbook.bestBidPrice;
+          const priorAsk = priorBook.orderbook.bestAskPrice;
+          if (priorBid === undefined || priorAsk === undefined) {
+            throw new Error("Volume close orderbook has no two-sided price");
+          }
+          const closes = this.store.closePaperMarket({
+            trialId: paperTrialId,
+            marketId: volumeRotateFromMarketId,
+            bestBid: priorBid,
+            bestAsk: priorAsk,
+          });
+          if (closes.length) {
+            const utcDate = new Date().toISOString().slice(0, 10);
+            if (this.paperVolumeFees?.utcDate !== utcDate) {
+              this.paperVolumeFees = { utcDate, usd: 0, warned: false };
+            }
+            const priorFee =
+              this.markets.find((item) => item.id === volumeRotateFromMarketId)
+                ?.makerFee ?? 0;
+            this.paperVolumeFees!.usd +=
+              closes.reduce((total, fill) => total + fill.sizeUsd, 0) * priorFee;
+            const state = this.store.getPaperState(paperTrialId);
+            if (
+              state.positions.some(
+                (position) => position.marketId === volumeRotateFromMarketId,
+              )
+            ) {
+              throw new Error("Volume close did not leave both accounts flat");
+            }
+            this.store.logEvent({
+              category: "paper",
+              action: "volume-close",
+              outcome: "estimated",
+              detail: {
+                trialId: paperTrialId,
+                marketId: volumeRotateFromMarketId,
+                closes: closes.length,
+                volumeUsd: closes.reduce((total, fill) => total + fill.sizeUsd, 0),
+              },
+            });
+          }
+        }
         const estimatedFills = this.store.matchPaperOrders({
           trialId: paperTrialId,
           marketId: selected.marketId,
@@ -2486,6 +2617,20 @@ export class MakerRuntime {
           }
         }
         if (estimatedFills.length) {
+          if (config.strategyObjective === "volume") {
+            const utcDate = new Date().toISOString().slice(0, 10);
+            if (this.paperVolumeFees?.utcDate !== utcDate) {
+              this.paperVolumeFees = { utcDate, usd: 0, warned: false };
+            }
+            // The Paper estimate has no account-history fee rows.  Apply the
+            // venue maker rate to the maker fill and its immediate hedge; the
+            // two reduce-only closes are added when the dwell interval ends.
+            this.paperVolumeFees!.usd +=
+              estimatedFills.reduce((total, fill) => total + fill.sizeUsd, 0) *
+              (this.markets.find((item) => item.id === selected!.marketId)
+                ?.makerFee ?? 0) *
+              2;
+          }
           this.store.logEvent({
             category: "paper",
             action: "estimated-fill",
@@ -2696,6 +2841,37 @@ export class MakerRuntime {
           context: agent.encryptionContext,
           encryptedSecret: agent.encryptedSecret,
         });
+        if (
+          config.strategyObjective === "volume" &&
+          config.flattenOnRotate
+        ) {
+          // Never submit a taker close against an owner's resting Maker
+          // order.  Confirm the cancel first, then reuse the paired
+          // reduce-only flattener with this one market as its scope.
+          const cancelled = await this.cancelOpenOrders(config, {
+            attempts: 3,
+            retryDelayMs: 750,
+            marketIds: [switchFromMarketId],
+          });
+          if (!cancelled) {
+            throw new Error("Volume rotation could not confirm Maker cancellation");
+          }
+          this.clearActiveQuoteState();
+          await this.autoRebalanceIfNeeded({
+            config: {
+              ...config,
+              markets: [priorMarket],
+              autoRebalanceEnabled: true,
+              rebalanceGrossExposureUsd: 0,
+            },
+            makerSetup: setup,
+            agentAddress: agent.address,
+            signer,
+            makerPortfolio: portfolio,
+            hedgePortfolio: hedgeRiskPortfolio,
+          });
+          switchFromMarketId = null;
+        }
         const hedgeReady = await this.reconcileHedge({
           config,
           marketConfig: resolveMarketConfig(config, priorMarket),
@@ -2729,7 +2905,7 @@ export class MakerRuntime {
               observedAt: updatedAt,
             }
           : null;
-      const quote = buildQuoteIntent({
+      const twoSidedQuote = buildQuoteIntent({
         config: marketConfig,
         observation: {
           marketId: selected.marketId,
@@ -2742,73 +2918,135 @@ export class MakerRuntime {
         inventoryUsd,
         unrealizedPnlUsd: combinedUnrealizedPnlUsd,
       });
+      let quote = twoSidedQuote;
+      let reducingOnly = false;
+      let holdNewExposure = false;
       const activeConfig = config;
-      const portfolioQuoteRisk = aggregatePortfolioQuoteRisk(
-        activeConfig.markets.map((configuredMarket) => {
-          const configuredPosition = portfolio.positions.find(
-            (item) => item.marketId === configuredMarket.marketId,
-          );
-          const effective = resolveMarketConfig(activeConfig, configuredMarket);
-          return {
-            inventoryUsd: configuredPosition?.inventoryUsd ?? 0,
-            restingQuoteSizeUsd:
-              configuredMarket.marketId === selected!.marketId ||
-              activeConfig.rotationMode === "portfolio"
-                ? configuredMarket.marketId === selected!.marketId
-                  ? quote.sizeUsd
-                  : effective.quoteSizeUsd
-                : configuredPosition?.makerOrderIds.length
-                  ? effective.quoteSizeUsd
-                  : 0,
-            maxLeverage: effective.maxLeverage,
-          };
-        }),
-      );
+      const portfolioRiskFor = (intent: QuoteIntent) =>
+        aggregatePortfolioQuoteRisk(
+          activeConfig.markets.map((configuredMarket) => {
+            const configuredPosition = portfolio.positions.find(
+              (item) => item.marketId === configuredMarket.marketId,
+            );
+            const effective = resolveMarketConfig(
+              activeConfig,
+              configuredMarket,
+            );
+            return {
+              inventoryUsd: configuredPosition?.inventoryUsd ?? 0,
+              restingQuoteSizeUsd:
+                configuredMarket.marketId === selected!.marketId ||
+                activeConfig.rotationMode === "portfolio"
+                  ? configuredMarket.marketId === selected!.marketId
+                    ? intent.sizeUsd
+                    : effective.quoteSizeUsd
+                  : configuredPosition?.makerOrderIds.length
+                    ? effective.quoteSizeUsd
+                    : 0,
+              maxLeverage: effective.maxLeverage,
+              ...(configuredMarket.marketId === selected!.marketId
+                ? { restingQuoteSides: intent.sides }
+                : {}),
+            };
+          }),
+        );
       const configuredMarketIds = new Set(
         activeConfig.markets.map((market) => market.marketId),
       );
       const unselectedGrossExposureUsd = portfolio.positions
         .filter((item) => !configuredMarketIds.has(item.marketId))
         .reduce((sum, item) => sum + Math.abs(item.inventoryUsd), 0);
-      const hedgeCollateralRequirement = requiredHedgeCollateralUsd(config);
+      const hedgeCollateralRequirement =
+        requiredHedgeCollateralUsd(activeConfig);
       const hedgeSharesMakerAccount =
-        config.hedge.enabled &&
-        config.hedge.accountId === config.makerAccountId;
-      const safety = evaluateQuoteSafety({
-        config: marketConfig,
-        quote,
-        now: new Date(),
-        setupComplete: Boolean(setup && account?.agentCapId && agent),
-        // Paper needs the authorized agent address to build and dry-run the
-        // transaction, not its private signing material.
-        hasAgentKey: Boolean(
-          agent && (config.mode === "paper" || this.options.masterKey),
-        ),
-        liveEnabled: this.options.liveEnabled,
-        mainnetAllowed: this.options.mainnetAllowed,
-        portfolioGrossExposureUsd: combinedGrossExposureUsd,
-        portfolioWorstCaseExposureUsd:
-          portfolioQuoteRisk.worstCaseGrossExposureUsd +
-          unselectedGrossExposureUsd +
-          (hedgeRiskPortfolio?.grossExposureUsd ?? 0),
-        portfolioAvailableCollateralUsd: portfolio.availableCollateralUsd,
-        portfolioRequiredQuoteCollateralUsd:
-          config.mode === "paper"
-            ? Math.max(
-                portfolioQuoteRisk.requiredQuoteCollateralUsd,
-                requiredMakerCollateralUsd(config),
-              ) + (hedgeSharesMakerAccount ? hedgeCollateralRequirement : 0)
-            : portfolioQuoteRisk.requiredQuoteCollateralUsd,
-        agentGasSui: portfolio.gasSui,
-        runDrawdownUsd,
-      });
+        activeConfig.hedge.enabled &&
+        activeConfig.hedge.accountId === activeConfig.makerAccountId;
+      const safetyFor = (intent: QuoteIntent) =>
+        evaluateQuoteSafety({
+          config: marketConfig,
+          quote: intent,
+          now: new Date(),
+          setupComplete: Boolean(setup && account?.agentCapId && agent),
+          // Paper needs the authorized agent address to build and dry-run the
+          // transaction, not its private signing material.
+          hasAgentKey: Boolean(
+            agent && (activeConfig.mode === "paper" || this.options.masterKey),
+          ),
+          liveEnabled: this.options.liveEnabled,
+          mainnetAllowed: this.options.mainnetAllowed,
+          portfolioGrossExposureUsd: combinedGrossExposureUsd,
+          portfolioWorstCaseExposureUsd:
+            portfolioRiskFor(intent).worstCaseGrossExposureUsd +
+            unselectedGrossExposureUsd +
+            (hedgeRiskPortfolio?.grossExposureUsd ?? 0),
+          portfolioAvailableCollateralUsd: portfolio.availableCollateralUsd,
+          portfolioRequiredQuoteCollateralUsd:
+            activeConfig.mode === "paper"
+              ? Math.max(
+                  portfolioRiskFor(intent).requiredQuoteCollateralUsd,
+                  requiredMakerCollateralUsd(activeConfig),
+                ) + (hedgeSharesMakerAccount ? hedgeCollateralRequirement : 0)
+              : portfolioRiskFor(intent).requiredQuoteCollateralUsd,
+          agentGasSui: portfolio.gasSui,
+          runDrawdownUsd,
+        });
+      let safety = safetyFor(quote);
+      const originalGrossCheck = safety.find(
+        (check) => check.code === "gross-exposure",
+      );
+      const reduceOnlyRequired = safety.some(
+        (check) =>
+          !check.ok &&
+          (check.code === "inventory" || check.code === "gross-exposure"),
+      );
+      if (reduceOnlyRequired) {
+        const reduceOnly = reduceOnlyQuoteIntent({
+          quote,
+          inventoryUsd,
+          targetUsd: marketConfig.inventoryTargetUsd,
+        });
+        if (reduceOnly) {
+          quote = reduceOnly;
+          reducingOnly = true;
+          safety = safetyFor(quote).map((check) =>
+            check.code === "inventory" || check.code === "gross-exposure"
+              ? { ...check, ok: true, detail: `${check.detail}; reducing only` }
+              : check,
+          );
+        } else {
+          // A flat market cannot reduce bundle risk. Do not post a new quote
+          // while another market is bringing the bundle back below its cap.
+          holdNewExposure = true;
+        }
+      }
+      const portfolioQuoteRisk = portfolioRiskFor(quote);
       const marketSymbols = new Map(
         config.markets.map((configuredMarket) => [
           configuredMarket.marketId,
           configuredMarket.symbol,
         ]),
       );
-      safety.push(...accountRiskChecks("Maker", portfolio, marketSymbols));
+      const thresholdForMarket = (marketId: string) => {
+        const configuredMarket = activeConfig.markets.find(
+          (candidate) => candidate.marketId === marketId,
+        );
+        const summary = this.markets.find((item) => item.id === marketId);
+        const effective = configuredMarket
+          ? resolveMarketConfig(activeConfig, configuredMarket)
+          : activeConfig;
+        return marketRiskThresholds({
+          effectiveLeverage: effective.maxLeverage,
+          maintenanceMarginRatio: summary?.maintenanceMarginRatio ?? 0,
+        });
+      };
+      safety.push(
+        ...accountRiskChecks(
+          "Maker",
+          portfolio,
+          marketSymbols,
+          thresholdForMarket,
+        ),
+      );
       if (config.hedge.enabled) {
         if (config.mode === "paper" && !hedgeSharesMakerAccount) {
           safety.push({
@@ -2823,7 +3061,12 @@ export class MakerRuntime {
           });
         }
         safety.push(
-          ...accountRiskChecks("Hedge", hedgeRiskPortfolio, marketSymbols),
+          ...accountRiskChecks(
+            "Hedge",
+            hedgeRiskPortfolio,
+            marketSymbols,
+            thresholdForMarket,
+          ),
         );
       }
       const summary = this.markets.find(
@@ -2907,7 +3150,11 @@ export class MakerRuntime {
             bidPrice: quote.bidPrice,
             askPrice: quote.askPrice,
             updatedAt,
-            error: null,
+            error: reducingOnly
+              ? `Reducing: quoting the ${quote.sides} to bring inventory from $${inventoryUsd.toFixed(2)} back to $${marketConfig.inventoryTargetUsd.toFixed(2)}.`
+              : holdNewExposure
+                ? "Paused new exposure until bundle inventory is reduced."
+                : null,
           };
         }),
         portfolio: {
@@ -2966,18 +3213,80 @@ export class MakerRuntime {
       const failedMarketSafety = safety.filter(
         (check) => !check.ok && check.scope === "market",
       );
-      if (config.mode === "paper" && failedMarketSafety.length) {
-        this.recordPaperMarketSkip({
-          selected,
-          failed: failedMarketSafety[0]!,
-          config,
-        });
+      const exposureBlocker =
+        originalGrossCheck && !originalGrossCheck.ok
+          ? {
+              code: "gross-exposure",
+              requiredUsd: Number(
+                originalGrossCheck.detail.match(/^\$(\d+(?:\.\d+)?)/)?.[1] ?? 0,
+              ),
+              message: `${this.store.bundleId ? (this.store.getStoredBundle(this.store.bundleId)?.name ?? "Maker") : "Core"}: Paper paused new exposure. One more fill could take gross exposure to $${Number(originalGrossCheck.detail.match(/^\$(\d+(?:\.\d+)?)/)?.[1] ?? 0).toFixed(2)}, over the $${marketConfig.maxGrossExposureUsd.toFixed(2)} limit. Maker quotes only the sides that reduce inventory until it's back under. Raise the limit in Strategy, or quote fewer markets.`,
+            }
+          : null;
+      if (
+        config.mode === "paper" &&
+        inputs.executeLive &&
+        !exposureBlocker &&
+        this.paperSimulationBlockerKey?.includes(":gross-exposure:")
+      ) {
+        this.clearPaperSimulationBlocker();
+      }
+      if (holdNewExposure) {
+        if (config.mode === "paper" && inputs.executeLive && exposureBlocker) {
+          this.recordPaperSimulationBlocker({
+            blocker: exposureBlocker,
+            selected,
+            updatedAt,
+            trialId: paperTrialId,
+          });
+        }
         this.snapshotValue.execution.lastDecision = "held";
         this.snapshotValue.lastSuccessfulCycleAt = updatedAt;
         return;
       }
-      if (config.mode === "paper") this.clearPaperMarketSkip(selected);
-
+      if (
+        config.mode === "paper" &&
+        config.strategyObjective === "volume" &&
+        this.paperVolumeFees?.utcDate !== new Date().toISOString().slice(0, 10)
+      ) {
+        this.paperVolumeFees = {
+          utcDate: new Date().toISOString().slice(0, 10),
+          usd: 0,
+          warned: false,
+        };
+      }
+      if (
+        config.mode === "paper" &&
+        config.strategyObjective === "volume" &&
+        this.paperVolumeFees?.usd !== undefined &&
+        this.paperVolumeFees.usd >= config.dailyFeeBudgetUsd
+      ) {
+        if (!this.paperVolumeFees.warned) {
+          this.store.logEvent({
+            category: "paper",
+            action: "volume-fee-budget",
+            outcome: "warning",
+            detail: {
+              trialId: paperTrialId,
+              estimatedFeesUsd: this.paperVolumeFees.usd,
+              dailyFeeBudgetUsd: config.dailyFeeBudgetUsd,
+              resumesAt: "00:00 UTC",
+            },
+          });
+          this.paperVolumeFees.warned = true;
+        }
+        this.snapshotValue.markets = this.snapshotValue.markets.map((row) =>
+          row.id === selected!.marketId
+            ? {
+                ...row,
+                error: "Volume paused: daily fee budget reached; resumes at 00:00 UTC.",
+              }
+            : row,
+        );
+        this.snapshotValue.execution.lastDecision = "held";
+        this.snapshotValue.lastSuccessfulCycleAt = updatedAt;
+        return;
+      }
       const admission = await this.options.admitBundleProposal?.({
         worstCaseGrossExposureDeltaUsd:
           quote.sizeUsd * marketConfig.maxLeverage,
@@ -3003,6 +3312,15 @@ export class MakerRuntime {
           return;
         }
         if (!executionIsCurrent()) return;
+
+        if (exposureBlocker) {
+          this.recordPaperSimulationBlocker({
+            blocker: exposureBlocker,
+            selected,
+            updatedAt,
+            trialId: paperTrialId,
+          });
+        }
 
         // Paper continues to read the market when it cannot dry-run a quote.
         // A missing key, gas, or safety condition is useful setup feedback, not
@@ -3042,6 +3360,16 @@ export class MakerRuntime {
           },
         });
         if (blocker) {
+          // Bundle readiness is evaluated before a market-local safety skip.
+          // A fair-value pause must never hide a missing collateral, key, or
+          // gas fix from the Paper card.
+          if (failedMarketSafety.length) {
+            this.recordPaperMarketSkip({
+              selected,
+              failed: failedMarketSafety[0]!,
+              config,
+            });
+          }
           this.recordPaperSimulationBlocker({
             blocker,
             selected,
@@ -3050,6 +3378,18 @@ export class MakerRuntime {
           });
           return;
         }
+
+        if (failedMarketSafety.length) {
+          this.recordPaperMarketSkip({
+            selected,
+            failed: failedMarketSafety[0]!,
+            config,
+          });
+          this.snapshotValue.execution.lastDecision = "held";
+          this.snapshotValue.lastSuccessfulCycleAt = updatedAt;
+          return;
+        }
+        this.clearPaperMarketSkip(selected);
 
         let receipt: { endpoint: string; gasUsedMist: number };
         try {
@@ -3100,6 +3440,7 @@ export class MakerRuntime {
           bidPrice: quote.bidPrice,
           askPrice: quote.askPrice,
           sizeUsd: quote.sizeUsd,
+          sides: quote.sides,
         });
         this.paperAllSkippedSince = null;
         this.paperAllSkippedWarningLogged = false;
@@ -3113,7 +3454,7 @@ export class MakerRuntime {
           outcome: "dry-run",
           gasUsedMist: receipt.gasUsedMist,
         });
-        this.clearPaperSimulationBlocker();
+        if (!exposureBlocker) this.clearPaperSimulationBlocker();
         this.snapshotValue.execution.lastDecision = "quoted";
         this.snapshotValue.lastSuccessfulCycleAt = updatedAt;
         return;

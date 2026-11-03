@@ -3,6 +3,7 @@ import {
   formatPaperBlocker,
   type PaperBlocker,
 } from "./paper-blocker";
+import { formatPrice } from "./format";
 
 export type AuditEventInput = {
   id: number;
@@ -75,6 +76,11 @@ const copies: Record<string, AuditCopy> = {
   "bundles:allocation.update:success": {
     severity: "info",
     sentence: (detail) => `Bundle${bundle(detail)} allocation saved.`,
+  },
+  "bundles:mode.update:success": {
+    severity: "info",
+    sentence: (detail) =>
+      `Bundle${bundle(detail)} switched to ${detail.to === "live" ? "Live" : "Paper"}.`,
   },
   "strategies:create:success": {
     severity: "info",
@@ -236,7 +242,7 @@ const copies: Record<string, AuditCopy> = {
           typeof fill.symbol === "string" ? fill.symbol : market(detail);
         const price =
           typeof fill.price === "number" && Number.isFinite(fill.price)
-            ? fill.price.toFixed(4)
+            ? formatPrice(fill.price, null)
             : "an unknown price";
         return `${side} $${size} of ${symbol} at ${price}`;
       };
@@ -246,6 +252,16 @@ const copies: Record<string, AuditCopy> = {
         : 0;
       return `Paper would have ${fills.length ? fills.map(format).join(", then ") : `filled ${market(detail)}`}${extra ? `, +${extra} more` : ""}. No order was sent.`;
     },
+  },
+  "paper:volume-close:estimated": {
+    severity: "info",
+    sentence: (detail) =>
+      `Paper closed both simulated accounts in ${market(detail)} before rotating. No order was sent.`,
+  },
+  "paper:volume-fee-budget:warning": {
+    severity: "warning",
+    sentence: (detail) =>
+      `Volume reached its daily estimated fee budget${typeof detail.dailyFeeBudgetUsd === "number" ? ` ($${detail.dailyFeeBudgetUsd.toFixed(2)})` : ""}. Maker will finish the current close and resume at 00:00 UTC.`,
   },
   "paper:simulation:cleared": {
     severity: "info",

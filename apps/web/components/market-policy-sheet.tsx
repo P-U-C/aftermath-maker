@@ -81,6 +81,7 @@ export function MarketPolicySheet({
   bundleNames,
   defaults,
   current,
+  maxLeverage,
   blocked,
   onClose,
   onOpenStrategy,
@@ -91,6 +92,7 @@ export function MarketPolicySheet({
   bundleNames: string[];
   defaults: Record<FieldKey, number>;
   current: MakerMarketOverrides;
+  maxLeverage: number;
   blocked: boolean;
   onClose: () => void;
   onOpenStrategy: () => void;
@@ -114,16 +116,17 @@ export function MarketPolicySheet({
     const text = draft[field.key].trim();
     if (!text) continue;
     const value = Number(text);
+    const maximum = field.key === "maxLeverage" ? maxLeverage : field.max;
     if (
       !/^[+-]?(?:\d+\.?\d*|\.\d+)$/.test(text) ||
       !Number.isFinite(value) ||
       (field.exclusiveMin ? value <= field.min : value < field.min) ||
-      value > field.max ||
+      value > maximum ||
       (field.key === "maxLeverage" && !Number.isInteger(value))
     ) {
       errors[field.key] = field.exclusiveMin
-        ? `${field.label} must be greater than 0 and at most ${field.max} USD.`
-        : `${field.label} must be between ${field.min} and ${field.max} ${field.unit === "$" ? "USD" : field.unit === "×" ? "×" : "bps"}.`;
+        ? `${field.label} must be greater than 0 and at most ${maximum} USD.`
+        : `${field.label} must be between ${field.min} and ${maximum} ${field.unit === "$" ? "USD" : field.unit === "×" ? "×" : "bps"}.`;
       continue;
     }
     parsed[field.key] = value;
@@ -267,7 +270,9 @@ export function MarketPolicySheet({
                   {error ??
                     (custom
                       ? `Custom. Strategy uses ${display(inherited, field.unit)}`
-                      : "Strategy value")}
+                      : field.key === "maxLeverage"
+                        ? `Strategy value · ${maxLeverage}× market maximum`
+                        : "Strategy value")}
                 </small>
               </div>
             );

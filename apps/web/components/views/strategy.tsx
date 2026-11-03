@@ -2,6 +2,7 @@ import { useState, type ReactNode } from "react";
 import { CircleHelp, X } from "lucide-react";
 
 import { formatMoney } from "../../lib/format";
+import type { BundleReadiness } from "../../lib/bundle-readiness";
 import type { RunState } from "../../lib/run-state";
 import type { VenueDescriptor } from "../../lib/venues";
 import { RunControl } from "../run-control";
@@ -81,6 +82,14 @@ export function StrategyView({
 type GoLiveSheetProps = {
   open: boolean;
   available: boolean;
+  liveReadiness: {
+    serverEnabled: boolean;
+    signerReady: boolean;
+    core: boolean;
+    stopped: boolean;
+    readiness: BundleReadiness | null;
+  } | null;
+  operator: boolean;
   venue: VenueDescriptor;
   marketCount: number;
   rotationMode: "portfolio" | "single-slot";
@@ -88,6 +97,7 @@ type GoLiveSheetProps = {
   maxGrossExposureUsd: number;
   maxRunDrawdownUsd: number;
   hedgeAccountId: string | null;
+  makerAccountId: string | null;
   hedgeSlippageBps: number;
   onClose: () => void;
   onConfirm: () => void;
@@ -96,6 +106,8 @@ type GoLiveSheetProps = {
 export function GoLiveSheet({
   open,
   available,
+  liveReadiness,
+  operator,
   venue,
   marketCount,
   rotationMode,
@@ -103,10 +115,12 @@ export function GoLiveSheet({
   maxGrossExposureUsd,
   maxRunDrawdownUsd,
   hedgeAccountId,
+  makerAccountId,
   hedgeSlippageBps,
   onClose,
   onConfirm,
 }: GoLiveSheetProps) {
+  const [confirmed, setConfirmed] = useState(false);
   return (
     <Sheet
       open={open}
@@ -118,12 +132,53 @@ export function GoLiveSheet({
           <Button variant="quiet" onClick={onClose}>
             Cancel
           </Button>
-          <Button variant="primary" onClick={onConfirm} disabled={!available}>
-            Use Live mode
+          <Button
+            variant="primary"
+            onClick={onConfirm}
+            disabled={!available || !confirmed}
+          >
+            Switch Core to Live
           </Button>
         </>
       }
     >
+      <section className="go-live-checklist" aria-label="Live checklist">
+        <h3>Before switching Core to Live</h3>
+        <ul>
+          <li data-ready={liveReadiness?.serverEnabled ? "true" : "false"}>
+            <strong>Live is on for this server</strong>
+            <span>
+              {liveReadiness?.serverEnabled
+                ? "Done"
+                : operator
+                  ? "Set LIVE_TRADING_ENABLED=true and ALLOW_MAINNET=true in control's .env, then recreate control: docker compose up -d --no-build --force-recreate control."
+                  : "Live is off on this server. Ask the operator."}
+            </span>
+          </li>
+          <li data-ready={liveReadiness?.signerReady ? "true" : "false"}>
+            <strong>Signing key is available on control</strong>
+            <span>{liveReadiness?.signerReady ? "Done" : "Add the control signing key, then refresh."}</span>
+          </li>
+          <li data-ready={liveReadiness?.core ? "true" : "false"}>
+            <strong>This bundle is Core</strong>
+            <span>{liveReadiness?.core ? "Done" : "Live runs on Core today. To run this strategy live, attach it to Core in Bundles."}</span>
+          </li>
+          <li data-ready={liveReadiness?.stopped ? "true" : "false"}>
+            <strong>Core is stopped</strong>
+            <span>{liveReadiness?.stopped ? "Done" : "Stop Core before switching its mode."}</span>
+          </li>
+          {(liveReadiness?.readiness?.stages ?? []).map((stage) => (
+            <li
+              key={stage.id}
+              data-ready={stage.status === "done" ? "true" : "false"}
+            >
+              <strong>{stage.id === "tradingKeys" ? "Live trading key" : stage.id === "gas" ? "Live gas reserve" : stage.id === "collateral" ? "Collateral" : stage.id}</strong>
+              <span>{stage.status === "done" ? "Done" : stage.detail}</span>
+            </li>
+          ))}
+        </ul>
+        <p>Last Paper run is informational; switching mode never starts Core.</p>
+      </section>
       <dl className="go-live-summary">
         <div>
           <dt>Venues</dt>
@@ -171,9 +226,18 @@ export function GoLiveSheet({
           <dd>Stop cancels Maker orders; Flatten closes positions at market</dd>
         </div>
       </dl>
+      <label className="go-live-confirmation">
+        <input
+          type="checkbox"
+          checked={confirmed}
+          onChange={(event) => setConfirmed(event.target.checked)}
+        />
+        Maker will trade real funds on account {makerAccountId ?? "—"}
+      </label>
       {!available && (
         <p className="go-live-blocked" role="status">
-          Live trading is off on this server
+          Live is not ready on this server. Check the server gates, signing key,
+          Core readiness, gas reserve, and collateral in Bundles.
         </p>
       )}
     </Sheet>

@@ -119,7 +119,7 @@ const strategyConfigSchema = z
   .object({
     collateralCoinType: z.string().min(8),
     rotationMode: z.enum(["portfolio", "single-slot"]),
-    strategyObjective: z.enum(["farming", "profit", "both"]),
+    strategyObjective: z.enum(["farming", "profit", "both", "volume"]),
     strategyProfile: z.enum(["cautious", "balanced", "active"]),
     hedge: z
       .object({
@@ -133,6 +133,8 @@ const strategyConfigSchema = z
     spreadBps: z.number().min(8).max(500),
     refreshMs: z.number().int().min(2_000).max(300_000),
     marketDwellMs: z.number().int().min(2_000).max(3_600_000),
+    flattenOnRotate: z.boolean().default(false),
+    dailyFeeBudgetUsd: z.number().positive().max(100_000).default(5),
     requoteThresholdBps: z.number().min(0).max(500),
     maxRestingMs: z.number().int().min(5_000).max(3_600_000),
     autoRebalanceEnabled: z.boolean(),
@@ -144,7 +146,7 @@ const strategyConfigSchema = z
     maxUnrealizedLossUsd: z.number().positive().max(10_000),
     maxRunDrawdownUsd: z.number().positive().max(10_000),
     maxBookDivergenceBps: z.number().positive().max(5_000),
-    maxLeverage: z.number().min(1).max(3),
+    maxLeverage: z.number().min(1).max(100),
     maxGasMist: z.number().int().positive().max(500_000_000),
     staleBookMs: z.number().int().min(3_000).max(120_000),
     inventorySkewBps: z.number().min(0).max(250),
@@ -3215,6 +3217,45 @@ export class TenantStore {
     return this.getStoredBundle(inputs.bundleId)!;
   }
 
+  /** Change only a stopped bundle's operating mode.  Account and strategy
+   * assignments deliberately remain untouched. */
+  updateBundleMode(inputs: {
+    bundleId: string;
+    mode: Extract<MakerConfig["mode"], "paper" | "live">;
+  }): StoredBundle {
+    const bundle = this.getStoredBundle(inputs.bundleId);
+    if (!bundle || bundle.archivedAt) {
+      throw new UserFacingError(
+        "bundle-not-found",
+        "This bundle is no longer available. Refresh Bundles and select an active bundle.",
+        { kind: "bundles" },
+        404,
+      );
+    }
+    if (bundle.status !== "stopped") {
+      throw new UserFacingError(
+        "mode-requires-stopped",
+        "Stop this bundle before changing its mode.",
+        { kind: "bundles" },
+        409,
+      );
+    }
+    if (inputs.mode === "live" && bundle.name !== "Core") {
+      throw new UserFacingError(
+        "live-core-only",
+        "Only Core can use Live mode. Switch this bundle to Paper.",
+        { kind: "bundles" },
+        409,
+      );
+    }
+    const config = this.getBundleConfig(bundle.id);
+    if (!config) throw new Error("Bundle configuration was not found");
+    const next = makerConfigSchema.parse({ ...config, mode: inputs.mode });
+    if (bundle.name === "Core") this.writeCoreConfig(next);
+    else this.writeBundleConfig(bundle.id, next);
+    return this.getStoredBundle(bundle.id)!;
+  }
+
   listBundles(): StoredBundle[] {
     const rows = this.db
       .prepare(
@@ -4595,6 +4636,7 @@ export class TenantStore {
     bidPrice: number;
     askPrice: number;
     sizeUsd: number;
+    sides?: "both" | "bid" | "ask";
   }): void {
     const bundleId = this.paperBundleId();
     const now = new Date().toISOString();
@@ -4614,32 +4656,36 @@ export class TenantStore {
            side, price, size_usd, status, created_at, updated_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?)`,
       );
-      insert.run(
-        this.ownerAddress,
-        bundleId,
-        inputs.trialId,
-        `${quoteKey}:bid`,
-        inputs.marketId,
-        inputs.symbol,
-        "bid",
-        inputs.bidPrice,
-        inputs.sizeUsd,
-        now,
-        now,
-      );
-      insert.run(
-        this.ownerAddress,
-        bundleId,
-        inputs.trialId,
-        `${quoteKey}:ask`,
-        inputs.marketId,
-        inputs.symbol,
-        "ask",
-        inputs.askPrice,
-        inputs.sizeUsd,
-        now,
-        now,
-      );
+      if (inputs.sides !== "ask") {
+        insert.run(
+          this.ownerAddress,
+          bundleId,
+          inputs.trialId,
+          `${quoteKey}:bid`,
+          inputs.marketId,
+          inputs.symbol,
+          "bid",
+          inputs.bidPrice,
+          inputs.sizeUsd,
+          now,
+          now,
+        );
+      }
+      if (inputs.sides !== "bid") {
+        insert.run(
+          this.ownerAddress,
+          bundleId,
+          inputs.trialId,
+          `${quoteKey}:ask`,
+          inputs.marketId,
+          inputs.symbol,
+          "ask",
+          inputs.askPrice,
+          inputs.sizeUsd,
+          now,
+          now,
+        );
+      }
     });
     write();
     this.pruneTable("tenant_paper_orders", RETENTION_LIMITS.paperOrders);
@@ -4759,6 +4805,67 @@ export class TenantStore {
     this.pruneTable("tenant_paper_fills", RETENTION_LIMITS.paperFills);
   }
 
+  /**
+   * Paper-only reduce-only close used by the Volume rotation.  We keep the
+   * existing maker/hedge roles so the simulated account inventories remain
+   * independently auditable, while the `close:` key makes the lifecycle
+   * explicit to performance and tests.
+   */
+  closePaperMarket(inputs: {
+    trialId: string;
+    marketId: string;
+    bestBid: number;
+    bestAsk: number;
+  }): PaperFill[] {
+    const bundleId = this.paperBundleId();
+    const positions = this.getPaperState(inputs.trialId).positions.filter(
+      (position) => position.marketId === inputs.marketId,
+    );
+    if (!positions.length) return [];
+    const now = new Date().toISOString();
+    const inserted: PaperFill[] = [];
+    const write = this.db.transaction(() => {
+      const insert = this.db.prepare(
+        `INSERT OR IGNORE INTO tenant_paper_fills
+          (owner_address, bundle_id, trial_id, order_key, role, market_id,
+           symbol, side, price, size_usd, occurred_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      );
+      for (const position of positions) {
+        const side: "bid" | "ask" =
+          position.inventoryUsd > 0 ? "ask" : "bid";
+        const price = side === "ask" ? inputs.bestBid : inputs.bestAsk;
+        const fill: PaperFill = {
+          orderKey: `close:${position.role}:${inputs.marketId}:${now}`,
+          role: position.role,
+          marketId: position.marketId,
+          symbol: position.symbol,
+          side,
+          price,
+          sizeUsd: Math.abs(position.inventoryUsd),
+          occurredAt: now,
+        };
+        insert.run(
+          this.ownerAddress,
+          bundleId,
+          inputs.trialId,
+          fill.orderKey,
+          fill.role,
+          fill.marketId,
+          fill.symbol,
+          fill.side,
+          fill.price,
+          fill.sizeUsd,
+          fill.occurredAt,
+        );
+        inserted.push(fill);
+      }
+    });
+    write();
+    this.pruneTable("tenant_paper_fills", RETENTION_LIMITS.paperFills);
+    return inserted;
+  }
+
   getPaperState(trialId: string): {
     openOrders: number;
     fills: number;
@@ -4862,14 +4969,15 @@ export class TenantStore {
     }));
   }
 
-  cancelPaperOrders(trialId?: string): void {
+  cancelPaperOrders(trialId?: string, marketId?: string): void {
     const bundleId = this.paperBundleId();
     this.db
       .prepare(
         `UPDATE tenant_paper_orders
          SET status = 'cancelled', updated_at = ?
          WHERE owner_address = ? AND bundle_id = ? AND status = 'open'
-           AND (? IS NULL OR trial_id = ?)`,
+           AND (? IS NULL OR trial_id = ?)
+           AND (? IS NULL OR market_id = ?)`,
       )
       .run(
         new Date().toISOString(),
@@ -4877,6 +4985,8 @@ export class TenantStore {
         bundleId,
         trialId ?? null,
         trialId ?? null,
+        marketId ?? null,
+        marketId ?? null,
       );
   }
 

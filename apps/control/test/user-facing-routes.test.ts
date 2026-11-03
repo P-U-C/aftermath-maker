@@ -294,6 +294,50 @@ const cases: Case[] = [
     }),
   },
   {
+    code: "live-confirmation-required",
+    status: 409,
+    copy: "Confirm that Maker will trade real funds before switching to Live.",
+    prepare: (h) => {
+      const { core } = seed(h);
+      return {
+        method: "POST",
+        url: `/api/bundles/${core.id}/mode`,
+        payload: { mode: "live", confirmed: false },
+      };
+    },
+  },
+  {
+    code: "live-signer-missing",
+    status: 409,
+    copy: "The control signing key is unavailable.",
+    harness: () =>
+      appHarness({
+        env: { LIVE_TRADING_ENABLED: "true", ALLOW_MAINNET: "true" },
+      }),
+    prepare: (h) => {
+      const { core } = seed(h);
+      return {
+        method: "POST",
+        url: `/api/bundles/${core.id}/mode`,
+        payload: { mode: "live", confirmed: true },
+      };
+    },
+  },
+  {
+    code: "mode-requires-stopped",
+    status: 409,
+    copy: "Stop this bundle before changing its mode.",
+    prepare: (h) => {
+      const { tenant, core } = seed(h);
+      tenant.setBundleStatus(core.id, "running");
+      return {
+        method: "POST",
+        url: `/api/bundles/${core.id}/mode`,
+        payload: { mode: "paper", confirmed: true },
+      };
+    },
+  },
+  {
     code: "mode-required",
     status: 400,
     copy: "Choose Paper or Live mode before saving.",
@@ -985,6 +1029,49 @@ describe("owner-facing error responses and audit records at real HTTP routes", (
       }
     },
   );
+});
+
+describe("bundle mode route", () => {
+  it("switches a ready stopped Core to Live without starting or signing", async () => {
+    const h = await appHarness({
+      env: {
+        LIVE_TRADING_ENABLED: "true",
+        ALLOW_MAINNET: "true",
+        MAKER_MASTER_KEY: "test-only-not-a-production-key",
+      },
+    });
+    try {
+      const { tenant } = seed(h);
+      h.gateway.account("1796", 100);
+      authorize(h);
+      tenant.setConfig({ ...config, makerAccountId: "1796" });
+      const core = tenant.listBundles()[0]!;
+      const response = await h.app.inject({
+        method: "POST",
+        url: `/api/bundles/${core.id}/mode`,
+        payload: { mode: "live", confirmed: true },
+        headers: h.signedInAs(),
+      });
+      expect(response.statusCode).toBe(200);
+      expect(response.json().bundle.mode).toBe("live");
+      expect(tenant.getStoredBundle(core.id)?.status).toBe("stopped");
+      expect(
+        tenant
+          .listEvents(20)
+          .some(
+            (event) =>
+              event.category === "bundles" &&
+              event.action === "mode.update" &&
+              event.outcome === "success",
+          ),
+      ).toBe(true);
+      expect(
+        h.gateway.calls.some((call) => call.method.includes("place")),
+      ).toBe(false);
+    } finally {
+      await h.close();
+    }
+  });
 });
 
 // The complete AST guard is filled from every runtime/controller source file.

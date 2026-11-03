@@ -135,7 +135,7 @@ export type MakerConfig = {
   collateralCoinType: string;
   mode: Mode;
   rotationMode: "portfolio" | "single-slot";
-  strategyObjective: "farming" | "profit" | "both";
+  strategyObjective: "farming" | "profit" | "both" | "volume";
   strategyProfile: "cautious" | "balanced" | "active";
   makerAccountId: string | null;
   hedge: {
@@ -149,6 +149,8 @@ export type MakerConfig = {
   spreadBps: number;
   refreshMs: number;
   marketDwellMs: number;
+  flattenOnRotate: boolean;
+  dailyFeeBudgetUsd: number;
   requoteThresholdBps: number;
   maxRestingMs: number;
   autoRebalanceEnabled: boolean;
@@ -239,7 +241,10 @@ export type Performance = {
     takerFills: number;
     realizedPnlUsd: number;
     feesUsd: number;
+    marketVolumeUsd: number | null;
+    marketVolumeError: string | null;
   }>;
+  marketVolumeLabel: string | null;
   fills: Array<{
     occurredAt: string;
     txDigest: string;
@@ -599,6 +604,8 @@ const config: MakerConfig = {
   spreadBps: 42,
   refreshMs: 8_000,
   marketDwellMs: 15_000,
+  flattenOnRotate: false,
+  dailyFeeBudgetUsd: 5,
   requoteThresholdBps: 5,
   maxRestingMs: 15_000,
   autoRebalanceEnabled: true,
@@ -872,8 +879,11 @@ const performance: Performance = {
       takerFills: 4,
       realizedPnlUsd: -0.0062,
       feesUsd: -0.00072,
+      marketVolumeUsd: 12_340,
+      marketVolumeError: null,
     },
   ],
+  marketVolumeLabel: "Today, since Oct 27 00:00 UTC",
   fills: [
     {
       occurredAt: "2026-10-27T17:08:20.000Z",

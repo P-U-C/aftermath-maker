@@ -11,6 +11,8 @@ import {
   makerConfigSchema,
   MutationLock,
   PriorityMutationQueue,
+  marketRiskThresholds,
+  reduceOnlyQuoteIntent,
   resolveMarketConfig,
 } from "../src/index.js";
 
@@ -74,6 +76,27 @@ describe("hedge collateral floor", () => {
 });
 
 describe("quote strategy", () => {
+  it("uses one non-flipping side to reduce inventory", () => {
+    const quote = buildQuoteIntent({
+      config,
+      observation: {
+        marketId: config.markets[0]!.marketId,
+        bestBid: 9.99,
+        bestAsk: 10.01,
+        indexPrice: 10,
+        tickSize: 0.01,
+        observedAt: new Date("2026-10-26T12:00:00Z"),
+      },
+      inventoryUsd: 20,
+      unrealizedPnlUsd: 0,
+    });
+    expect(
+      reduceOnlyQuoteIntent({ quote, inventoryUsd: 20, targetUsd: 0 }),
+    ).toMatchObject({ sides: "ask", sizeUsd: 10 });
+    expect(
+      reduceOnlyQuoteIntent({ quote, inventoryUsd: -4, targetUsd: 0 }),
+    ).toMatchObject({ sides: "bid", sizeUsd: 4 });
+  });
   it("stays post-only and skews away from a long inventory", () => {
     const neutral = buildQuoteIntent({
       config,
@@ -170,6 +193,57 @@ describe("quote strategy", () => {
 });
 
 describe("risk gates", () => {
+  it("caps effective leverage and scales risk thresholds above 3x", () => {
+    expect(
+      resolveMarketConfig(
+        { ...config, maxLeverage: 20 },
+        {
+          marketId: "0x1234",
+          symbol: "SUI-PERP",
+          marketMaxLeverage: 10,
+        },
+      ).maxLeverage,
+    ).toBe(10);
+    expect(
+      marketRiskThresholds({
+        effectiveLeverage: 1,
+        maintenanceMarginRatio: 0.05,
+      }),
+    ).toEqual({ minMarginRatio: 0.12, minLiquidationDistanceBps: 1_000 });
+    expect(
+      marketRiskThresholds({
+        effectiveLeverage: 3,
+        maintenanceMarginRatio: 0.05,
+      }),
+    ).toEqual({ minMarginRatio: 0.12, minLiquidationDistanceBps: 1_000 });
+    expect(
+      marketRiskThresholds({
+        effectiveLeverage: 10,
+        maintenanceMarginRatio: 0.05,
+      }),
+    ).toEqual({ minMarginRatio: 0.075, minLiquidationDistanceBps: 250 });
+    expect(
+      marketRiskThresholds({
+        effectiveLeverage: 20,
+        maintenanceMarginRatio: 0.03,
+      }),
+    ).toEqual({ minMarginRatio: 0.04, minLiquidationDistanceBps: 100 });
+  });
+  it("counts one-sided quotes without inventing the opposite exposure", () => {
+    expect(
+      aggregatePortfolioQuoteRisk([
+        {
+          inventoryUsd: 10,
+          restingQuoteSizeUsd: 10,
+          restingQuoteSides: "ask",
+          maxLeverage: 1,
+        },
+      ]),
+    ).toMatchObject({
+      worstCaseGrossExposureUsd: 10,
+      requiredQuoteCollateralUsd: 10,
+    });
+  });
   it("requires both independent live switches", () => {
     const quote = buildQuoteIntent({
       config: { ...config, mode: "live" },

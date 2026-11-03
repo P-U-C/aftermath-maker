@@ -107,6 +107,10 @@ import {
   type AdvancedFieldTipId,
 } from "../lib/strategy-field-tips";
 import { primaryVenue } from "../lib/venues";
+import {
+  quoteExposureUsed,
+  suggestedGrossExposureLimit,
+} from "../lib/strategy-limits";
 import { AccessScreen, type AccessRequestInput } from "./access-screen";
 import { GlossaryTerm } from "./ui/glossary-term";
 import {
@@ -262,7 +266,7 @@ function usdcBaseUnits(value: string): bigint {
 }
 
 type Mode = "observe" | "paper" | "live";
-type StrategyObjective = "farming" | "profit" | "both";
+type StrategyObjective = "farming" | "profit" | "both" | "volume";
 
 type SafetyCheck = {
   code: string;
@@ -398,6 +402,8 @@ type Market = {
   maxOpenInterestBase: number;
   fundingRate: number;
   makerFee: number;
+  maxLeverage: number;
+  maintenanceMarginRatio: number;
   volume24hUsd: number | null;
   priceChange24hPct: number | null;
 };
@@ -430,6 +436,7 @@ type MakerConfig = {
   markets: Array<{
     marketId: string;
     symbol: string;
+    marketMaxLeverage?: number;
     overrides?: MarketOverrides;
   }>;
   collateralCoinType: string;
@@ -449,6 +456,8 @@ type MakerConfig = {
   spreadBps: number;
   refreshMs: number;
   marketDwellMs: number;
+  flattenOnRotate: boolean;
+  dailyFeeBudgetUsd: number;
   requoteThresholdBps: number;
   maxRestingMs: number;
   autoRebalanceEnabled: boolean;
@@ -679,7 +688,10 @@ type Performance = {
     takerFills: number;
     realizedPnlUsd: number;
     feesUsd: number;
+    marketVolumeUsd: number | null;
+    marketVolumeError: string | null;
   }>;
+  marketVolumeLabel: string | null;
   fills: MakerFill[];
   note: string;
 };
@@ -746,6 +758,16 @@ type RewardDashboard = {
 type LiveGates = {
   liveTradingEnabled: boolean;
   mainnetAllowed: boolean;
+};
+
+type LiveReadiness = {
+  bundleId: string;
+  serverEnabled: boolean;
+  signerReady: boolean;
+  core: boolean;
+  stopped: boolean;
+  readiness: BundleReadiness | null;
+  ready: boolean;
 };
 
 type StrategyTrialResult = {
@@ -857,6 +879,12 @@ const strategyObjectives = [
     measure: "Positive on both tests",
     icon: Target,
   },
+  {
+    value: "volume",
+    label: "Volume",
+    measure: "Volume per $1 of cost",
+    icon: Gauge,
+  },
 ] as const;
 
 const strategyProfiles = [
@@ -911,6 +939,8 @@ const defaultConfig: MakerConfig = {
   spreadBps: 30,
   refreshMs: 8_000,
   marketDwellMs: 60_000,
+  flattenOnRotate: false,
+  dailyFeeBudgetUsd: 5,
   requoteThresholdBps: 5,
   maxRestingMs: 60_000,
   autoRebalanceEnabled: false,
@@ -1209,6 +1239,9 @@ function DashboardBody() {
     liveTradingEnabled: false,
     mainnetAllowed: false,
   });
+  const [liveReadiness, setLiveReadiness] = useState<LiveReadiness | null>(
+    null,
+  );
   const [strategyStep, setStrategyStep] = useState(0);
   const [strategyEditing, setStrategyEditing] = useState(false);
   const [draftBaseVersion, setDraftBaseVersion] = useState<number | null>(null);
@@ -1370,6 +1403,7 @@ function DashboardBody() {
       request<{
         bundles: MakerBundle[];
         walletLimits: BundleWalletLimits | null;
+        liveReadiness: LiveReadiness | null;
       }>("api/bundles"),
       request<{ strategies: MakerStrategy[] }>("api/strategies"),
     ]);
@@ -1414,6 +1448,7 @@ function DashboardBody() {
       return next;
     });
     setWalletLimits(bundleResult.walletLimits);
+    setLiveReadiness(bundleResult.liveReadiness);
     const previousBundleId = selectedBundleIdRef.current;
     const nextBundleId = selectedActiveBundleId(
       bundleResult.bundles,
@@ -1460,6 +1495,8 @@ function DashboardBody() {
 
   const loadPerformance = useCallback(async () => {
     if (performancePeriod === "EPOCH" && !rewards?.epoch.startedAt) return;
+    const requestOwner = identity?.ownerAddress.toLowerCase() ?? null;
+    if (!requestOwner) return;
     const params = new URLSearchParams({ period: performancePeriod });
     if (performancePeriod === "EPOCH" && rewards?.epoch.startedAt) {
       params.set("since", rewards.epoch.startedAt);
@@ -1468,8 +1505,14 @@ function DashboardBody() {
     const result = await request<{ performance: Performance | null }>(
       `api/performance?${params.toString()}`,
     );
+    if (ownerRef.current !== requestOwner) return;
     setPerformance(result.performance);
-  }, [performancePeriod, performanceBundle, rewards?.epoch.startedAt]);
+  }, [
+    identity?.ownerAddress,
+    performancePeriod,
+    performanceBundle,
+    rewards?.epoch.startedAt,
+  ]);
 
   useEffect(() => {
     if (performanceBundle === "all" || performanceBundle === "before") return;
@@ -1505,7 +1548,13 @@ function DashboardBody() {
         ? current
         : {
             ...current,
-            markets: [{ marketId: ranked[0].id, symbol: ranked[0].symbol }],
+            markets: [
+              {
+                marketId: ranked[0].id,
+                symbol: ranked[0].symbol,
+                marketMaxLeverage: ranked[0].maxLeverage,
+              },
+            ],
           },
     );
   }, []);
@@ -1844,6 +1893,25 @@ function DashboardBody() {
         setBundlePending((current) => ({ ...current, [bundleId]: undefined }));
       }
     }
+  }
+
+  async function switchBundleMode(
+    bundle: Pick<MakerBundle, "id" | "name">,
+    mode: "paper" | "live",
+  ) {
+    await mutate(`bundle-mode-${bundle.id}`, async () => {
+      await request(`api/bundles/${encodeURIComponent(bundle.id)}/mode`, {
+        method: "POST",
+        body: JSON.stringify({ mode, confirmed: true }),
+      });
+      await refresh();
+      setNotice(
+        mode === "live"
+          ? "Core is set to Live. Starting is still a separate action."
+          : "Core is set to Paper.",
+        "success",
+      );
+    });
   }
 
   async function createBundle(draft: {
@@ -3017,7 +3085,14 @@ function DashboardBody() {
       ? config.markets.filter((item) => item.marketId !== market.id)
       : config.markets.length >= MAX_SELECTED_MARKETS
         ? config.markets
-        : [...config.markets, { marketId: market.id, symbol: market.symbol }];
+        : [
+            ...config.markets,
+            {
+              marketId: market.id,
+              symbol: market.symbol,
+              marketMaxLeverage: market.maxLeverage,
+            },
+          ];
     setStrategyMarketRule({
       kind: "preferred-list",
       marketIds: nextMarkets.map((item) => item.marketId),
@@ -3961,6 +4036,18 @@ function DashboardBody() {
     config.maxGrossExposureUsd < config.maxInventoryUsd
       ? "Gross exposure must cover at least one market's inventory limit."
       : null;
+  const quotedGrossExposureUsd = quoteExposureUsed(
+    config.markets,
+    config.quoteSizeUsd,
+  );
+  const suggestedGrossExposureUsd = suggestedGrossExposureLimit(
+    config.markets,
+    config.quoteSizeUsd,
+    config.maxInventoryUsd,
+  );
+  const quoteUsesMostGrossLimit =
+    config.maxGrossExposureUsd > 0 &&
+    quotedGrossExposureUsd / config.maxGrossExposureUsd > 0.8;
   const strategyValid = !quoteSizeError && !grossExposureError;
   const selectedMarketIds = new Set(
     config.markets.map((market) => market.marketId),
@@ -4031,6 +4118,25 @@ function DashboardBody() {
     restingQuoteSizeUsd: market.overrides?.quoteSizeUsd ?? config.quoteSizeUsd,
     maxLeverage: market.overrides?.maxLeverage ?? config.maxLeverage,
   }));
+  const strategyMarketMaxLeverage = Math.max(
+    1,
+    ...config.markets.map(
+      (configured) =>
+        markets.find((listed) => listed.id === configured.marketId)
+          ?.maxLeverage ?? configured.marketMaxLeverage ?? 1,
+    ),
+  );
+  const volumeLoopNotionalUsd = config.quoteSizeUsd * 4;
+  const volumeLoopEstimatedFeeUsd =
+    volumeLoopNotionalUsd *
+    (config.markets.reduce(
+      (total, configured) =>
+        total +
+        (markets.find((listed) => listed.id === configured.marketId)
+          ?.makerFee ?? 0),
+      0,
+    ) /
+      Math.max(1, config.markets.length));
   const quoteOnlyCollateralUsd =
     config.rotationMode === "portfolio"
       ? aggregatePortfolioQuoteRisk(quoteRiskInputs).requiredQuoteCollateralUsd
@@ -4397,12 +4503,29 @@ function DashboardBody() {
         takerFills: 0,
         realizedPnlUsd: fill.realizedPnlUsd,
         feesUsd: fill.protocolFeesUsd + fill.estimatedBuilderFeeUsd,
+        marketVolumeUsd: null,
+        marketVolumeError:
+          "Market daily volume is not available for this fill.",
       });
     }
     return [...rows.values()].sort((left, right) =>
       left.symbol.localeCompare(right.symbol),
     );
   })();
+  const performanceMarketTotals = performanceVolumeByMarket.reduce(
+    (totals, row) => ({
+      ourVolume: totals.ourVolume + row.makerNotionalUsd + row.takerNotionalUsd,
+      marketVolume:
+        totals.marketVolume +
+        (row.marketVolumeUsd && row.marketVolumeUsd > 0
+          ? row.marketVolumeUsd
+          : 0),
+      marketRows:
+        totals.marketRows +
+        (row.marketVolumeUsd && row.marketVolumeUsd > 0 ? 1 : 0),
+    }),
+    { ourVolume: 0, marketVolume: 0, marketRows: 0 },
+  );
   const visibleMarkets = markets.filter((market) => {
     const query = marketQuery.trim().toLowerCase();
     return (
@@ -5259,9 +5382,6 @@ function DashboardBody() {
             ? ""
             : `, ${snapshot.execution.gasRunwayTransactions} transactions after reserve`
         }`;
-  const liveAvailable =
-    liveGates.liveTradingEnabled && liveGates.mainnetAllowed;
-
   const bundleCards = bundles.map((bundle) => {
     const runtime = bundleSnapshots.find(
       (candidate) => candidate.bundle.id === bundle.id,
@@ -6100,6 +6220,13 @@ function DashboardBody() {
                       </dd>
                     </div>
                   </dl>
+                  <p className="strategy-section-copy">
+                    Quoting {config.markets.length} market
+                    {config.markets.length === 1 ? "" : "s"} at{" "}
+                    {money(config.quoteSizeUsd)} a side uses{" "}
+                    {money(quotedGrossExposureUsd)} of your{" "}
+                    {money(config.maxGrossExposureUsd)} gross limit.
+                  </p>
                 </section>
                 <section>
                   <header>
@@ -6524,7 +6651,7 @@ function DashboardBody() {
                       ? busy === "save"
                         ? "Saving…"
                         : "Save and finish"
-                      : `Save and continue to ${strategySteps[strategyStep + 1]?.label ?? "Review"}`}
+                      : `Next: ${strategySteps[strategyStep + 1]?.label ?? "Review"}`}
                   </Button>
                 </div>
                 {strategySaveBlocker &&
@@ -6649,50 +6776,21 @@ function DashboardBody() {
                   )}
                 </div>
               )}
-              <fieldset
-                className={
-                  selectedStrategy
-                    ? "strategy-mode-fieldset strategy-allocation-owned"
-                    : "strategy-mode-fieldset"
-                }
-              >
-                <legend>Mode</legend>
-                <div className="segments">
-                  {(["paper", "live"] as const).map((mode) => (
-                    <button
-                      key={mode}
-                      type="button"
-                      className={config.mode === mode ? "selected" : ""}
-                      aria-pressed={config.mode === mode}
-                      disabled={mode === "live" && !liveAvailable}
-                      title={
-                        mode === "live" && !liveAvailable
-                          ? "Live trading is off on this server"
-                          : undefined
-                      }
-                      onClick={() => {
-                        if (mode === "live") {
-                          setLiveSheetOpen(true);
-                        } else {
-                          setConfig((current) => ({ ...current, mode }));
-                        }
-                      }}
-                    >
-                      {mode}
-                    </button>
-                  ))}
-                </div>
-                {!liveAvailable && (
-                  <small>Live trading is off on this server</small>
-                )}
+              <p className="strategy-section-copy">
+                Runs in{" "}
+                {bundles.find((bundle) => bundle.name === "Core")?.mode ===
+                "live"
+                  ? "Live"
+                  : "Paper"}{" "}
+                on Core.{" "}
                 <button
-                  className="strategy-live-review"
                   type="button"
-                  onClick={() => setLiveSheetOpen(true)}
+                  className="strategy-context-link"
+                  onClick={() => selectView("bundles")}
                 >
-                  Review live setup
+                  Go live
                 </button>
-              </fieldset>
+              </p>
               <dl className="strategy-review-summary">
                 <div>
                   <dt>Goal</dt>
@@ -6713,6 +6811,21 @@ function DashboardBody() {
                   <dd>{money(config.maxRunDrawdownUsd)} drawdown</dd>
                 </div>
               </dl>
+              {config.strategyObjective === "volume" && (
+                <p className="strategy-section-copy">
+                  Each filled loop trades about {money(volumeLoopNotionalUsd)}
+                  {" "}(maker fill, hedge, two closes) and costs about{" "}
+                  {money(volumeLoopEstimatedFeeUsd)} at current fees and
+                  spreads, about {money(
+                    volumeLoopNotionalUsd > 0
+                      ? (volumeLoopEstimatedFeeUsd / volumeLoopNotionalUsd) *
+                          1_000
+                      : 0,
+                  )}{" "}
+                  per $1,000 of volume. Daily fee budget{" "}
+                  {money(config.dailyFeeBudgetUsd)}.
+                </p>
+              )}
             </section>
 
             <fieldset className="objective-control strategy-step strategy-step-goal">
@@ -6741,6 +6854,19 @@ function DashboardBody() {
                         setConfig((current) => ({
                           ...current,
                           strategyObjective: objective.value,
+                          ...(objective.value === "volume"
+                            ? {
+                                rotationMode: "single-slot" as const,
+                                marketDwellMs: 5 * 60_000,
+                                spreadBps: 8,
+                                flattenOnRotate: true,
+                                hedge: {
+                                  ...current.hedge,
+                                  enabled: true,
+                                  thresholdUsd: current.quoteSizeUsd,
+                                },
+                              }
+                            : {}),
                         }));
                       }}
                     >
@@ -6754,6 +6880,47 @@ function DashboardBody() {
                 })}
               </div>
             </fieldset>
+            {config.strategyObjective === "volume" && (
+              <div className="field-pair strategy-step strategy-step-goal">
+                <label>
+                  <span>Time in each market</span>
+                  <NumericDraftInput
+                    id="strategy-volume-dwell"
+                    label="Time in each market"
+                    unit="minutes"
+                    value={config.marketDwellMs / 60_000}
+                    min={1}
+                    max={60}
+                    integer
+                    onValidity={setNumericValidity}
+                    onValue={(value) =>
+                      setConfig((current) => ({
+                        ...current,
+                        marketDwellMs: value * 60_000,
+                      }))
+                    }
+                  />
+                </label>
+                <label>
+                  <span>Daily fee budget</span>
+                  <NumericDraftInput
+                    id="strategy-volume-fee-budget"
+                    label="Daily fee budget"
+                    unit="USD"
+                    value={config.dailyFeeBudgetUsd}
+                    min={0.01}
+                    max={100000}
+                    onValidity={setNumericValidity}
+                    onValue={(value) =>
+                      setConfig((current) => ({
+                        ...current,
+                        dailyFeeBudgetUsd: value,
+                      }))
+                    }
+                  />
+                </label>
+              </div>
+            )}
 
             <div
               className="strategy-trial strategy-step strategy-step-review"
@@ -7845,6 +8012,29 @@ function DashboardBody() {
                 </label>
                 <AdvancedTip id="gross-exposure" />
               </p>
+              <p className="strategy-section-copy">
+                Quoting {config.markets.length} market
+                {config.markets.length === 1 ? "" : "s"} at{" "}
+                {money(config.quoteSizeUsd)} a side uses{" "}
+                {money(quotedGrossExposureUsd)} of your{" "}
+                {money(config.maxGrossExposureUsd)} gross limit.
+                {quoteUsesMostGrossLimit && (
+                  <>
+                    {" "}
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setConfig((current) => ({
+                          ...current,
+                          maxGrossExposureUsd: suggestedGrossExposureUsd,
+                        }))
+                      }
+                    >
+                      Set to {money(suggestedGrossExposureUsd)}
+                    </button>
+                  </>
+                )}
+              </p>
               {grossExposureError && (
                 <p className="field-error" role="alert">
                   Gross exposure must cover the per-market inventory limit.
@@ -8111,7 +8301,7 @@ function DashboardBody() {
                       unit="x"
                       value={config.maxLeverage}
                       min={1}
-                      max={3}
+                      max={strategyMarketMaxLeverage}
                       onValidity={setNumericValidity}
                       onValue={(value) =>
                         setConfig((current) => ({
@@ -8121,6 +8311,18 @@ function DashboardBody() {
                       }
                     />
                     <b>x</b>
+                    <button
+                      type="button"
+                      className="input-action"
+                      onClick={() =>
+                        setConfig((current) => ({
+                          ...current,
+                          maxLeverage: strategyMarketMaxLeverage,
+                        }))
+                      }
+                    >
+                      Max
+                    </button>
                   </div>
                 </label>
               </div>
@@ -8336,6 +8538,13 @@ function DashboardBody() {
           }
           void bundleAction(bundleId, "start");
         }}
+        onChangeMode={(bundle, mode) => {
+          if (mode === "paper") {
+            void switchBundleMode(bundle, "paper");
+            return;
+          }
+          setLiveSheetOpen(true);
+        }}
         onFixStage={(bundle, stage) => {
           const detail = bundle.readiness?.stages.find(
             (entry) => entry.id === stage,
@@ -8470,6 +8679,10 @@ function DashboardBody() {
             policyMarket.overrides,
             policyStrategy.config,
           )}
+          maxLeverage={
+            markets.find((market) => market.id === policyMarket.marketId)
+              ?.maxLeverage ?? policyMarket.marketMaxLeverage ?? 1
+          }
           blocked={policyBlocked}
           onClose={() => setPolicyEditorTarget(null)}
           onOpenStrategy={() => {
@@ -9004,7 +9217,10 @@ function DashboardBody() {
                   <th>Market</th>
                   <th>Maker volume / fills</th>
                   <th>Taker volume / fills</th>
-                  <th>Share of volume</th>
+                  <th title={performance?.marketVolumeLabel ?? undefined}>
+                    Share of market volume
+                  </th>
+                  <th>Mix</th>
                   <th>Net</th>
                 </tr>
               </thead>
@@ -9019,6 +9235,10 @@ function DashboardBody() {
                       ) || 1;
                     const rowVolume =
                       row.makerNotionalUsd + row.takerNotionalUsd;
+                    const marketShare =
+                      row.marketVolumeUsd && row.marketVolumeUsd > 0
+                        ? (rowVolume / row.marketVolumeUsd) * 100
+                        : null;
                     const expanded = expandedPerformanceMarket === row.marketId;
                     return (
                       <Fragment key={row.marketId}>
@@ -9043,12 +9263,17 @@ function DashboardBody() {
                           <td>
                             {money(row.takerNotionalUsd)} / {row.takerFills}
                           </td>
+                          <td title={row.marketVolumeError ?? undefined}>
+                            {marketShare === null
+                              ? "Not available"
+                              : percent(marketShare, 3)}
+                          </td>
                           <td>{percent((rowVolume / totalVolume) * 100, 1)}</td>
                           <td>{money(row.realizedPnlUsd - row.feesUsd)}</td>
                         </tr>
                         {expanded && (
                           <tr className="performance-market-fills">
-                            <td colSpan={5}>
+                            <td colSpan={6}>
                               {(performance?.fills ?? [])
                                 .filter(
                                   (fill) => fill.marketId === row.marketId,
@@ -9081,13 +9306,36 @@ function DashboardBody() {
                   })
                 ) : (
                   <tr>
-                    <td colSpan={5}>
+                    <td colSpan={6}>
                       Taker volume is shown in the account total until market
                       history is available.
                     </td>
                   </tr>
                 )}
               </tbody>
+              {performanceVolumeByMarket.length > 0 && (
+                <tfoot>
+                  <tr>
+                    <th>Total</th>
+                    <td>{money(performanceMarketTotals.ourVolume)}</td>
+                    <td>—</td>
+                    <td title={performance?.marketVolumeLabel ?? undefined}>
+                      {performanceMarketTotals.marketRows ===
+                        performanceVolumeByMarket.length &&
+                      performanceMarketTotals.marketVolume > 0
+                        ? percent(
+                            (performanceMarketTotals.ourVolume /
+                              performanceMarketTotals.marketVolume) *
+                              100,
+                            3,
+                          )
+                        : "Not available"}
+                    </td>
+                    <td>100.0%</td>
+                    <td>—</td>
+                  </tr>
+                </tfoot>
+              )}
             </KitTable>
           </div>
         </Card>
@@ -9603,7 +9851,9 @@ function DashboardBody() {
 
       <GoLiveSheet
         open={liveSheetOpen}
-        available={liveAvailable}
+        available={Boolean(liveReadiness?.ready)}
+        liveReadiness={liveReadiness}
+        operator={identity.operator}
         venue={primaryVenue}
         marketCount={config.markets.length}
         rotationMode={config.rotationMode}
@@ -9611,11 +9861,16 @@ function DashboardBody() {
         maxGrossExposureUsd={config.maxGrossExposureUsd}
         maxRunDrawdownUsd={config.maxRunDrawdownUsd}
         hedgeAccountId={config.hedge.enabled ? config.hedge.accountId : null}
+        makerAccountId={
+          bundles.find((bundle) => bundle.name === "Core")?.makerAccountId ??
+          null
+        }
         hedgeSlippageBps={config.hedge.maxSlippageBps}
         onClose={() => setLiveSheetOpen(false)}
         onConfirm={() => {
-          if (!liveAvailable) return;
-          setConfig((current) => ({ ...current, mode: "live" }));
+          const core = bundles.find((bundle) => bundle.name === "Core");
+          if (!core || !liveReadiness?.ready) return;
+          void switchBundleMode(core, "live");
           setLiveSheetOpen(false);
         }}
       />

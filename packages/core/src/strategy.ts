@@ -15,7 +15,61 @@ export function resolveMarketConfig(
       market.overrides?.inventoryTargetUsd ?? config.inventoryTargetUsd,
     inventorySkewBps:
       market.overrides?.inventorySkewBps ?? config.inventorySkewBps,
-    maxLeverage: market.overrides?.maxLeverage ?? config.maxLeverage,
+    maxLeverage: resolveEffectiveLeverage({
+      requestedLeverage: market.overrides?.maxLeverage ?? config.maxLeverage,
+      ...(market.marketMaxLeverage === undefined
+        ? {}
+        : { marketMaxLeverage: market.marketMaxLeverage }),
+    }),
+  };
+}
+
+/** Resolve leverage once so quote sizing and capital checks share the cap. */
+export function resolveEffectiveLeverage(inputs: {
+  requestedLeverage: number;
+  marketMaxLeverage?: number | null;
+}): number {
+  return Math.min(
+    inputs.requestedLeverage,
+    Math.max(1, inputs.marketMaxLeverage ?? inputs.requestedLeverage),
+  );
+}
+
+export function marketRiskThresholds(inputs: {
+  effectiveLeverage: number;
+  maintenanceMarginRatio: number;
+}): { minMarginRatio: number; minLiquidationDistanceBps: number } {
+  if (inputs.effectiveLeverage <= 3) {
+    return { minMarginRatio: 0.12, minLiquidationDistanceBps: 1_000 };
+  }
+  const cushion = Math.max(
+    0,
+    1 / inputs.effectiveLeverage - inputs.maintenanceMarginRatio,
+  );
+  return {
+    minMarginRatio: Number(
+      Math.min(0.12, inputs.maintenanceMarginRatio + cushion / 2).toFixed(10),
+    ),
+    minLiquidationDistanceBps: Number(
+      Math.min(1_000, cushion * 5_000).toFixed(6),
+    ),
+  };
+}
+
+/** Quote only the side that moves inventory back to its configured target. */
+export function reduceOnlyQuoteIntent(inputs: {
+  quote: QuoteIntent;
+  inventoryUsd: number;
+  targetUsd: number;
+}): QuoteIntent | null {
+  const remainingUsd = Math.abs(inputs.inventoryUsd - inputs.targetUsd);
+  if (remainingUsd < 0.000_001) return null;
+  const sizeUsd = Math.min(inputs.quote.sizeUsd, remainingUsd);
+  return {
+    ...inputs.quote,
+    sizeUsd,
+    sizeBase: (inputs.quote.sizeBase * sizeUsd) / inputs.quote.sizeUsd,
+    sides: inputs.inventoryUsd > inputs.targetUsd ? "ask" : "bid",
   };
 }
 
@@ -115,6 +169,7 @@ export function buildQuoteIntent(inputs: {
     askPrice,
     sizeBase: round(config.quoteSizeUsd / mid),
     sizeUsd: config.quoteSizeUsd,
+    sides: "both",
     inventoryUsd,
     unrealizedPnlUsd,
   };

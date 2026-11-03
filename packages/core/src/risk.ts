@@ -1,9 +1,11 @@
 import type { MakerConfig, QuoteIntent, SafetyCheck } from "./schema.js";
+import { resolveMarketConfig } from "./strategy.js";
 
 export function aggregatePortfolioQuoteRisk(
   markets: Array<{
     inventoryUsd: number;
     restingQuoteSizeUsd: number;
+    restingQuoteSides?: "both" | "bid" | "ask";
     maxLeverage: number;
   }>,
 ): {
@@ -14,16 +16,19 @@ export function aggregatePortfolioQuoteRisk(
     (risk, market) => {
       const quoteSizeUsd = Math.max(0, market.restingQuoteSizeUsd);
       const inventoryUsd = market.inventoryUsd;
-      risk.worstCaseGrossExposureUsd +=
-        quoteSizeUsd > 0
-          ? Math.max(
-              Math.abs(inventoryUsd + quoteSizeUsd),
-              Math.abs(inventoryUsd - quoteSizeUsd),
-            )
-          : Math.abs(inventoryUsd);
+      const sides = market.restingQuoteSides ?? "both";
+      const outcomes = [Math.abs(inventoryUsd)];
+      if (quoteSizeUsd > 0 && (sides === "both" || sides === "bid")) {
+        outcomes.push(Math.abs(inventoryUsd + quoteSizeUsd));
+      }
+      if (quoteSizeUsd > 0 && (sides === "both" || sides === "ask")) {
+        outcomes.push(Math.abs(inventoryUsd - quoteSizeUsd));
+      }
+      risk.worstCaseGrossExposureUsd += Math.max(...outcomes);
       risk.requiredQuoteCollateralUsd +=
         quoteSizeUsd > 0
-          ? (quoteSizeUsd * 2) / Math.max(1, market.maxLeverage)
+          ? (quoteSizeUsd * (sides === "both" ? 2 : 1)) /
+            Math.max(1, market.maxLeverage)
           : 0;
       return risk;
     },
@@ -39,7 +44,7 @@ export function requiredMakerCollateralUsd(config: MakerConfig): number {
   const risks = config.markets.map((market) => ({
     inventoryUsd: 0,
     restingQuoteSizeUsd: market.overrides?.quoteSizeUsd ?? config.quoteSizeUsd,
-    maxLeverage: market.overrides?.maxLeverage ?? config.maxLeverage,
+    maxLeverage: resolveMarketConfig(config, market).maxLeverage,
   }));
   if (config.rotationMode === "single-slot") {
     return Math.max(
@@ -60,7 +65,7 @@ export function lowestEffectiveHedgeLeverage(config: MakerConfig): number {
   return config.markets.length
     ? Math.min(
         ...config.markets.map(
-          (market) => market.overrides?.maxLeverage ?? config.maxLeverage,
+          (market) => resolveMarketConfig(config, market).maxLeverage,
         ),
       )
     : config.maxLeverage;
@@ -153,17 +158,21 @@ export function evaluateQuoteSafety(inputs: {
   }
 
   const ageMs = now.getTime() - new Date(quote.observedAt).getTime();
-  const worstMarketInventoryUsd = Math.max(
-    Math.abs(quote.inventoryUsd + quote.sizeUsd),
-    Math.abs(quote.inventoryUsd - quote.sizeUsd),
-  );
+  const inventoryOutcomes = [Math.abs(quote.inventoryUsd)];
+  if (quote.sides === "both" || quote.sides === "bid") {
+    inventoryOutcomes.push(Math.abs(quote.inventoryUsd + quote.sizeUsd));
+  }
+  if (quote.sides === "both" || quote.sides === "ask") {
+    inventoryOutcomes.push(Math.abs(quote.inventoryUsd - quote.sizeUsd));
+  }
+  const worstMarketInventoryUsd = Math.max(...inventoryOutcomes);
   const projectedGrossExposureUsd =
     portfolioWorstCaseExposureUsd ??
     Math.max(0, portfolioGrossExposureUsd - Math.abs(quote.inventoryUsd)) +
       worstMarketInventoryUsd;
   const requiredQuoteCollateralUsd =
     portfolioRequiredQuoteCollateralUsd ??
-    (quote.sizeUsd * 2) / config.maxLeverage;
+    (quote.sizeUsd * (quote.sides === "both" ? 2 : 1)) / config.maxLeverage;
   // Paper only simulates one transaction. Live still reserves quote, cancel and incident gas.
   const requiredGasSui =
     (config.maxGasMist * (config.mode === "paper" ? 1 : 3)) / 1_000_000_000;
