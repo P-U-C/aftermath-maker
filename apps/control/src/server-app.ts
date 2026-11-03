@@ -646,6 +646,7 @@ export async function buildServer({
     scoped: TenantStore,
     ownerAddress: string,
     strict = false,
+    liveCandidateBundleId?: string,
   ): Promise<Map<string, BundleReadiness>> {
     const bundles = scoped.listBundles().filter((bundle) => !bundle.archivedAt);
     const agent = scoped.getAgent();
@@ -695,7 +696,11 @@ export async function buildServer({
     });
     return new Map(
       bundles.map((bundle) => {
-        const config = scoped.getBundleConfig(bundle.id);
+        const storedConfig = scoped.getBundleConfig(bundle.id);
+        const config =
+          storedConfig && bundle.id === liveCandidateBundleId
+            ? makerConfigSchema.parse({ ...storedConfig, mode: "live" })
+            : storedConfig;
         const liveConfigs =
           config?.mode === "live" && bundle.status !== "running"
             ? [...runningLive, config]
@@ -725,13 +730,40 @@ export async function buildServer({
       );
     }
     const owner = requestAuth(request).ownerAddress;
-    const readiness = await ownerBundleReadiness(scoped, owner);
+    const bundles = scoped.listBundles();
+    const core = bundles.find(
+      (bundle) => bundle.name === "Core" && !bundle.archivedAt,
+    );
+    const readiness = await ownerBundleReadiness(
+      scoped,
+      owner,
+      false,
+      core?.id,
+    );
+    const coreReadiness = core ? (readiness.get(core.id) ?? null) : null;
     return {
-      bundles: scoped.listBundles().map((bundle) => ({
+      bundles: bundles.map((bundle) => ({
         ...bundle,
         readiness: readiness.get(bundle.id) ?? null,
       })),
       walletLimits: scoped.getWalletLimits(),
+      liveReadiness: core
+        ? {
+            bundleId: core.id,
+            serverEnabled: env.LIVE_TRADING_ENABLED && env.ALLOW_MAINNET,
+            signerReady: Boolean(env.MAKER_MASTER_KEY),
+            core: true,
+            stopped: core.status === "stopped",
+            readiness: coreReadiness,
+            ready: Boolean(
+              env.LIVE_TRADING_ENABLED &&
+              env.ALLOW_MAINNET &&
+              env.MAKER_MASTER_KEY &&
+              core.status === "stopped" &&
+              coreReadiness?.ready,
+            ),
+          }
+        : null,
     };
   });
 
@@ -1038,6 +1070,96 @@ export async function buildServer({
       },
     });
     return { bundle, config: scoped.getBundleConfig(bundle.id) };
+  });
+
+  app.post("/api/bundles/:bundleId/mode", async (request) => {
+    const scoped = tenant(request);
+    const params = z
+      .object({ bundleId: z.string().min(1).max(200) })
+      .parse(request.params);
+    const body = z
+      .object({
+        mode: z.enum(["paper", "live"]),
+        confirmed: z.boolean(),
+      })
+      .strict()
+      .parse(request.body);
+    if (!body.confirmed) {
+      throw new UserFacingError(
+        "live-confirmation-required",
+        "Confirm that Maker will trade real funds before switching to Live.",
+        { kind: "bundles" },
+        409,
+      );
+    }
+    const bundle = scoped.getStoredBundle(params.bundleId);
+    if (!bundle || bundle.archivedAt) {
+      throw new UserFacingError(
+        "bundle-not-found",
+        "This bundle is no longer available. Refresh Bundles and choose an active bundle.",
+        { kind: "bundles" },
+        404,
+      );
+    }
+    if (bundle.status !== "stopped") {
+      throw new UserFacingError(
+        "mode-requires-stopped",
+        "Stop this bundle before changing its mode.",
+        { kind: "bundles" },
+        409,
+      );
+    }
+    let liveReadiness: BundleReadiness | null = null;
+    if (body.mode === "live") {
+      if (!env.LIVE_TRADING_ENABLED || !env.ALLOW_MAINNET) {
+        throw new UserFacingError(
+          "live-unavailable",
+          "Live is off on this server. Ask the operator.",
+          { kind: "bundles" },
+          409,
+        );
+      }
+      if (!env.MAKER_MASTER_KEY) {
+        throw new UserFacingError(
+          "live-signer-missing",
+          "The control signing key is unavailable.",
+          { kind: "bundles" },
+          409,
+        );
+      }
+      if (bundle.name !== "Core") {
+        throw new UserFacingError(
+          "live-core-only",
+          "Live runs on Core today. Attach this strategy to Core in Bundles.",
+          { kind: "bundles" },
+          409,
+        );
+      }
+      liveReadiness =
+        (
+          await ownerBundleReadiness(
+            scoped,
+            requestAuth(request).ownerAddress,
+            true,
+            bundle.id,
+          )
+        ).get(bundle.id) ?? null;
+      assertBundleReadyToStart(bundle, liveReadiness ?? undefined);
+    }
+    const updated = scoped.updateBundleMode({
+      bundleId: bundle.id,
+      mode: body.mode,
+    });
+    scoped.logEvent({
+      category: "bundles",
+      action: "mode.update",
+      outcome: "success",
+      detail: { name: updated.name, from: bundle.mode, to: body.mode },
+    });
+    return {
+      bundle: updated,
+      ...(liveReadiness ? { liveReadiness } : {}),
+    };
   });
 
   app.post("/api/bundles/:bundleId/start", async (request) => {

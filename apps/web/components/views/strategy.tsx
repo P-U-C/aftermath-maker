@@ -88,6 +88,7 @@ type GoLiveSheetProps = {
   maxGrossExposureUsd: number;
   maxRunDrawdownUsd: number;
   hedgeAccountId: string | null;
+  makerAccountId: string | null;
   hedgeSlippageBps: number;
   onClose: () => void;
   onConfirm: () => void;
@@ -103,10 +104,12 @@ export function GoLiveSheet({
   maxGrossExposureUsd,
   maxRunDrawdownUsd,
   hedgeAccountId,
+  makerAccountId,
   hedgeSlippageBps,
   onClose,
   onConfirm,
 }: GoLiveSheetProps) {
+  const [confirmed, setConfirmed] = useState(false);
   return (
     <Sheet
       open={open}
@@ -118,8 +121,12 @@ export function GoLiveSheet({
           <Button variant="quiet" onClick={onClose}>
             Cancel
           </Button>
-          <Button variant="primary" onClick={onConfirm} disabled={!available}>
-            Use Live mode
+          <Button
+            variant="primary"
+            onClick={onConfirm}
+            disabled={!available || !confirmed}
+          >
+            Switch Core to Live
           </Button>
         </>
       }
@@ -171,9 +178,18 @@ export function GoLiveSheet({
           <dd>Stop cancels Maker orders; Flatten closes positions at market</dd>
         </div>
       </dl>
+      <label className="go-live-confirmation">
+        <input
+          type="checkbox"
+          checked={confirmed}
+          onChange={(event) => setConfirmed(event.target.checked)}
+        />
+        Maker will trade real funds on account {makerAccountId ?? "—"}
+      </label>
       {!available && (
         <p className="go-live-blocked" role="status">
-          Live trading is off on this server
+          Live is not ready on this server. Check the server gates, signing key,
+          Core readiness, gas reserve, and collateral in Bundles.
         </p>
       )}
     </Sheet>

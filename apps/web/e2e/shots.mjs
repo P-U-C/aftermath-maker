@@ -1567,6 +1567,28 @@ async function capture(browser, stateName, captureConfig, view) {
         .waitFor();
       await page.waitForTimeout(350); // Wait for the sheet entrance animation before visual evidence.
     }
+    const overflowingButtons = await page.evaluate(() =>
+      [...document.querySelectorAll("button")]
+        .filter((button) => {
+          const style = getComputedStyle(button);
+          return (
+            style.display !== "none" &&
+            style.visibility !== "hidden" &&
+            button.getClientRects().length > 0 &&
+            button.scrollWidth > button.clientWidth
+          );
+        })
+        .map((button) => ({
+          text: button.textContent?.replace(/\s+/g, " ").trim() ?? "",
+          scrollWidth: button.scrollWidth,
+          clientWidth: button.clientWidth,
+        })),
+    );
+    if (overflowingButtons.length) {
+      throw new Error(
+        `${stateName}/${view ?? "root"}/${captureConfig.name} has overflowing button labels: ${JSON.stringify(overflowingButtons)}`,
+      );
+    }
     await page.screenshot({ path: file, fullPage: false });
     process.stdout.write(
       `${stateName}${view ? `/${view}` : ""}/${captureConfig.name}: ${file} (${dimensions.scrollWidth}px wide)\n`,

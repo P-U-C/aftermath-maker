@@ -82,6 +82,7 @@ type BundlesViewProps = {
   onArchive: (bundleId: string) => void;
   onFixStage: (bundle: BundleCard, stage: BundleStageId) => void;
   onStart: (bundleId: string) => void;
+  onChangeMode: (bundle: BundleCard, mode: "paper" | "live") => void;
   accounts: Array<{
     accountId: string;
     label: string | null;
@@ -142,6 +143,7 @@ export function BundlesView({
   onArchive,
   onFixStage,
   onStart,
+  onChangeMode,
   accounts,
   markets,
   strategies,
@@ -648,9 +650,28 @@ export function BundlesView({
                           : undefined
                       }
                     >
-                      Start
+                      {bundle.mode === "live" ? "Start Live" : "Start"}
                     </Button>
                   )}
+                  {!editing &&
+                    bundle.status === "stopped" &&
+                    bundle.name === "Core" && (
+                      <Button
+                        variant="secondary"
+                        size="small"
+                        onClick={() =>
+                          onChangeMode(
+                            bundle,
+                            bundle.mode === "live" ? "paper" : "live",
+                          )
+                        }
+                        disabled={busy}
+                      >
+                        {bundle.mode === "live"
+                          ? "Switch to Paper"
+                          : "Go live…"}
+                      </Button>
+                    )}
                   {bundle.name !== "Core" && (
                     <Button
                       variant="secondary"

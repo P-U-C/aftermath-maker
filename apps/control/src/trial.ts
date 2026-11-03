@@ -10,7 +10,6 @@ export const STRATEGY_TRIAL_OBJECTIVES = [
   "farming",
   "profit",
   "both",
-  "volume",
 ] as const satisfies readonly StrategyObjective[];
 
 /** The user-facing test run is always an isolated Paper dry run. */
@@ -32,10 +31,11 @@ export type StrategyTrialPlan = {
   rounds: StrategyTrialPlanRound[];
 };
 
-type Dashboards = Record<StrategyObjective, RewardDashboard>;
+type TrialObjective = (typeof STRATEGY_TRIAL_OBJECTIVES)[number];
+type Dashboards = Record<TrialObjective, RewardDashboard>;
 
 const profiles: Record<
-  StrategyObjective,
+  TrialObjective,
   {
     profile: MakerConfig["strategyProfile"];
     inventorySkewBps: number;
@@ -44,7 +44,6 @@ const profiles: Record<
   farming: { profile: "active", inventorySkewBps: 30 },
   profit: { profile: "cautious", inventorySkewBps: 35 },
   both: { profile: "balanced", inventorySkewBps: 20 },
-  volume: { profile: "active", inventorySkewBps: 0 },
 };
 
 export function inventoryCapacityFloor(

@@ -3056,7 +3056,7 @@ export class MakerRuntime {
               requiredUsd: Number(
                 originalGrossCheck.detail.match(/^\$(\d+(?:\.\d+)?)/)?.[1] ?? 0,
               ),
-              message: `${this.store.bundleId ? (this.store.getStoredBundle(this.store.bundleId)?.name ?? "Maker") : "Core"}: Paper paused new exposure. One more fill could take gross exposure to ${originalGrossCheck.detail.split("; ")[0]}, over the $${marketConfig.maxGrossExposureUsd.toFixed(2)} limit. Maker quotes only the sides that reduce inventory until it's back under. Raise the limit in Strategy, or quote fewer markets.`,
+              message: `${this.store.bundleId ? (this.store.getStoredBundle(this.store.bundleId)?.name ?? "Maker") : "Core"}: Paper paused new exposure. One more fill could take gross exposure to $${Number(originalGrossCheck.detail.match(/^\$(\d+(?:\.\d+)?)/)?.[1] ?? 0).toFixed(2)}, over the $${marketConfig.maxGrossExposureUsd.toFixed(2)} limit. Maker quotes only the sides that reduce inventory until it's back under. Raise the limit in Strategy, or quote fewer markets.`,
             }
           : null;
       if (
@@ -3611,7 +3611,7 @@ export class MakerRuntime {
     ]);
     const plan = buildStrategyTrialPlan({
       originalConfig,
-      dashboards: { farming, profit, both, volume: both },
+      dashboards: { farming, profit, both },
       availableCollateralUsd: makerPortfolio.availableCollateralUsd,
       mode: "paper",
       cadenceMs: inputs.cadenceMs,

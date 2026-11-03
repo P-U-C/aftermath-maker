@@ -7,6 +7,7 @@ const CONTROL_EVENT_KINDS = [
   "bundles:allocation.update:success",
   "bundles:configure:success",
   "bundles:create:success",
+  "bundles:mode.update:success",
   "bundles:wallet-limits.update:success",
   "collateral:deposit.transaction:prepared",
   "collateral:withdraw.transaction:prepared",

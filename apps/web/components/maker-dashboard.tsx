@@ -750,6 +750,16 @@ type LiveGates = {
   mainnetAllowed: boolean;
 };
 
+type LiveReadiness = {
+  bundleId: string;
+  serverEnabled: boolean;
+  signerReady: boolean;
+  core: boolean;
+  stopped: boolean;
+  readiness: BundleReadiness | null;
+  ready: boolean;
+};
+
 type StrategyTrialResult = {
   mode: "paper";
   marketId: string;
@@ -1219,6 +1229,9 @@ function DashboardBody() {
     liveTradingEnabled: false,
     mainnetAllowed: false,
   });
+  const [liveReadiness, setLiveReadiness] = useState<LiveReadiness | null>(
+    null,
+  );
   const [strategyStep, setStrategyStep] = useState(0);
   const [strategyEditing, setStrategyEditing] = useState(false);
   const [draftBaseVersion, setDraftBaseVersion] = useState<number | null>(null);
@@ -1380,6 +1393,7 @@ function DashboardBody() {
       request<{
         bundles: MakerBundle[];
         walletLimits: BundleWalletLimits | null;
+        liveReadiness: LiveReadiness | null;
       }>("api/bundles"),
       request<{ strategies: MakerStrategy[] }>("api/strategies"),
     ]);
@@ -1424,6 +1438,7 @@ function DashboardBody() {
       return next;
     });
     setWalletLimits(bundleResult.walletLimits);
+    setLiveReadiness(bundleResult.liveReadiness);
     const previousBundleId = selectedBundleIdRef.current;
     const nextBundleId = selectedActiveBundleId(
       bundleResult.bundles,
@@ -1862,6 +1877,25 @@ function DashboardBody() {
         setBundlePending((current) => ({ ...current, [bundleId]: undefined }));
       }
     }
+  }
+
+  async function switchBundleMode(
+    bundle: Pick<MakerBundle, "id" | "name">,
+    mode: "paper" | "live",
+  ) {
+    await mutate(`bundle-mode-${bundle.id}`, async () => {
+      await request(`api/bundles/${encodeURIComponent(bundle.id)}/mode`, {
+        method: "POST",
+        body: JSON.stringify({ mode, confirmed: true }),
+      });
+      await refresh();
+      setNotice(
+        mode === "live"
+          ? "Core is set to Live. Starting is still a separate action."
+          : "Core is set to Paper.",
+        "success",
+      );
+    });
   }
 
   async function createBundle(draft: {
@@ -3979,6 +4013,16 @@ function DashboardBody() {
     config.maxGrossExposureUsd < config.maxInventoryUsd
       ? "Gross exposure must cover at least one market's inventory limit."
       : null;
+  const quotedGrossExposureUsd = config.markets.reduce(
+    (total, market) =>
+      total + (market.overrides?.quoteSizeUsd ?? config.quoteSizeUsd),
+    0,
+  );
+  const suggestedGrossExposureUsd =
+    quotedGrossExposureUsd + config.maxInventoryUsd;
+  const quoteUsesMostGrossLimit =
+    config.maxGrossExposureUsd > 0 &&
+    quotedGrossExposureUsd / config.maxGrossExposureUsd > 0.8;
   const strategyValid = !quoteSizeError && !grossExposureError;
   const selectedMarketIds = new Set(
     config.markets.map((market) => market.marketId),
@@ -5277,9 +5321,6 @@ function DashboardBody() {
             ? ""
             : `, ${snapshot.execution.gasRunwayTransactions} transactions after reserve`
         }`;
-  const liveAvailable =
-    liveGates.liveTradingEnabled && liveGates.mainnetAllowed;
-
   const bundleCards = bundles.map((bundle) => {
     const runtime = bundleSnapshots.find(
       (candidate) => candidate.bundle.id === bundle.id,
@@ -6118,6 +6159,13 @@ function DashboardBody() {
                       </dd>
                     </div>
                   </dl>
+                  <p className="strategy-section-copy">
+                    Quoting {config.markets.length} market
+                    {config.markets.length === 1 ? "" : "s"} at{" "}
+                    {money(config.quoteSizeUsd)} a side uses{" "}
+                    {money(quotedGrossExposureUsd)} of your{" "}
+                    {money(config.maxGrossExposureUsd)} gross limit.
+                  </p>
                 </section>
                 <section>
                   <header>
@@ -6667,50 +6715,21 @@ function DashboardBody() {
                   )}
                 </div>
               )}
-              <fieldset
-                className={
-                  selectedStrategy
-                    ? "strategy-mode-fieldset strategy-allocation-owned"
-                    : "strategy-mode-fieldset"
-                }
-              >
-                <legend>Mode</legend>
-                <div className="segments">
-                  {(["paper", "live"] as const).map((mode) => (
-                    <button
-                      key={mode}
-                      type="button"
-                      className={config.mode === mode ? "selected" : ""}
-                      aria-pressed={config.mode === mode}
-                      disabled={mode === "live" && !liveAvailable}
-                      title={
-                        mode === "live" && !liveAvailable
-                          ? "Live trading is off on this server"
-                          : undefined
-                      }
-                      onClick={() => {
-                        if (mode === "live") {
-                          setLiveSheetOpen(true);
-                        } else {
-                          setConfig((current) => ({ ...current, mode }));
-                        }
-                      }}
-                    >
-                      {mode}
-                    </button>
-                  ))}
-                </div>
-                {!liveAvailable && (
-                  <small>Live trading is off on this server</small>
-                )}
+              <p className="strategy-section-copy">
+                Runs in{" "}
+                {bundles.find((bundle) => bundle.name === "Core")?.mode ===
+                "live"
+                  ? "Live"
+                  : "Paper"}{" "}
+                on Core.{" "}
                 <button
-                  className="strategy-live-review"
                   type="button"
-                  onClick={() => setLiveSheetOpen(true)}
+                  className="strategy-context-link"
+                  onClick={() => selectView("bundles")}
                 >
-                  Review live setup
+                  Go live
                 </button>
-              </fieldset>
+              </p>
               <dl className="strategy-review-summary">
                 <div>
                   <dt>Goal</dt>
@@ -7917,6 +7936,29 @@ function DashboardBody() {
                 </label>
                 <AdvancedTip id="gross-exposure" />
               </p>
+              <p className="strategy-section-copy">
+                Quoting {config.markets.length} market
+                {config.markets.length === 1 ? "" : "s"} at{" "}
+                {money(config.quoteSizeUsd)} a side uses{" "}
+                {money(quotedGrossExposureUsd)} of your{" "}
+                {money(config.maxGrossExposureUsd)} gross limit.
+                {quoteUsesMostGrossLimit && (
+                  <>
+                    {" "}
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setConfig((current) => ({
+                          ...current,
+                          maxGrossExposureUsd: suggestedGrossExposureUsd,
+                        }))
+                      }
+                    >
+                      Set to {money(suggestedGrossExposureUsd)}
+                    </button>
+                  </>
+                )}
+              </p>
               {grossExposureError && (
                 <p className="field-error" role="alert">
                   Gross exposure must cover the per-market inventory limit.
@@ -8407,6 +8449,13 @@ function DashboardBody() {
             return;
           }
           void bundleAction(bundleId, "start");
+        }}
+        onChangeMode={(bundle, mode) => {
+          if (mode === "paper") {
+            void switchBundleMode(bundle, "paper");
+            return;
+          }
+          setLiveSheetOpen(true);
         }}
         onFixStage={(bundle, stage) => {
           const detail = bundle.readiness?.stages.find(
@@ -9675,7 +9724,7 @@ function DashboardBody() {
 
       <GoLiveSheet
         open={liveSheetOpen}
-        available={liveAvailable}
+        available={Boolean(liveReadiness?.ready)}
         venue={primaryVenue}
         marketCount={config.markets.length}
         rotationMode={config.rotationMode}
@@ -9683,11 +9732,16 @@ function DashboardBody() {
         maxGrossExposureUsd={config.maxGrossExposureUsd}
         maxRunDrawdownUsd={config.maxRunDrawdownUsd}
         hedgeAccountId={config.hedge.enabled ? config.hedge.accountId : null}
+        makerAccountId={
+          bundles.find((bundle) => bundle.name === "Core")?.makerAccountId ??
+          null
+        }
         hedgeSlippageBps={config.hedge.maxSlippageBps}
         onClose={() => setLiveSheetOpen(false)}
         onConfirm={() => {
-          if (!liveAvailable) return;
-          setConfig((current) => ({ ...current, mode: "live" }));
+          const core = bundles.find((bundle) => bundle.name === "Core");
+          if (!core || !liveReadiness?.ready) return;
+          void switchBundleMode(core, "live");
           setLiveSheetOpen(false);
         }}
       />

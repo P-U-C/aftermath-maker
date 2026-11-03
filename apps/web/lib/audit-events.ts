@@ -77,6 +77,11 @@ const copies: Record<string, AuditCopy> = {
     severity: "info",
     sentence: (detail) => `Bundle${bundle(detail)} allocation saved.`,
   },
+  "bundles:mode.update:success": {
+    severity: "info",
+    sentence: (detail) =>
+      `Bundle${bundle(detail)} switched to ${detail.to === "live" ? "Live" : "Paper"}.`,
+  },
   "strategies:create:success": {
     severity: "info",
     sentence: (detail) => `Strategy${bundle(detail)} created.`,

@@ -133,8 +133,8 @@ const strategyConfigSchema = z
     spreadBps: z.number().min(8).max(500),
     refreshMs: z.number().int().min(2_000).max(300_000),
     marketDwellMs: z.number().int().min(2_000).max(3_600_000),
-    flattenOnRotate: z.boolean(),
-    dailyFeeBudgetUsd: z.number().positive().max(100_000),
+    flattenOnRotate: z.boolean().default(false),
+    dailyFeeBudgetUsd: z.number().positive().max(100_000).default(5),
     requoteThresholdBps: z.number().min(0).max(500),
     maxRestingMs: z.number().int().min(5_000).max(3_600_000),
     autoRebalanceEnabled: z.boolean(),
@@ -3215,6 +3215,45 @@ export class TenantStore {
     if (current.name === "Core") this.writeCoreConfig(inputs.config);
     else this.writeBundleConfig(inputs.bundleId, inputs.config);
     return this.getStoredBundle(inputs.bundleId)!;
+  }
+
+  /** Change only a stopped bundle's operating mode.  Account and strategy
+   * assignments deliberately remain untouched. */
+  updateBundleMode(inputs: {
+    bundleId: string;
+    mode: Extract<MakerConfig["mode"], "paper" | "live">;
+  }): StoredBundle {
+    const bundle = this.getStoredBundle(inputs.bundleId);
+    if (!bundle || bundle.archivedAt) {
+      throw new UserFacingError(
+        "bundle-not-found",
+        "This bundle is no longer available. Refresh Bundles and select an active bundle.",
+        { kind: "bundles" },
+        404,
+      );
+    }
+    if (bundle.status !== "stopped") {
+      throw new UserFacingError(
+        "mode-requires-stopped",
+        "Stop this bundle before changing its mode.",
+        { kind: "bundles" },
+        409,
+      );
+    }
+    if (inputs.mode === "live" && bundle.name !== "Core") {
+      throw new UserFacingError(
+        "live-core-only",
+        "Only Core can use Live mode. Switch this bundle to Paper.",
+        { kind: "bundles" },
+        409,
+      );
+    }
+    const config = this.getBundleConfig(bundle.id);
+    if (!config) throw new Error("Bundle configuration was not found");
+    const next = makerConfigSchema.parse({ ...config, mode: inputs.mode });
+    if (bundle.name === "Core") this.writeCoreConfig(next);
+    else this.writeBundleConfig(bundle.id, next);
+    return this.getStoredBundle(bundle.id)!;
   }
 
   listBundles(): StoredBundle[] {
