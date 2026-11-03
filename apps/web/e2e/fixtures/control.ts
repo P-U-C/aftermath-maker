@@ -412,6 +412,15 @@ export type FixtureState = {
       updatedAt: string;
       confirmedAt: string | null;
     };
+    liveReadiness?: {
+      bundleId: string;
+      serverEnabled: boolean;
+      signerReady: boolean;
+      core: boolean;
+      stopped: boolean;
+      readiness: import("../../lib/bundle-readiness").BundleReadiness;
+      ready: boolean;
+    };
   };
   setup: SetupState;
   accounts: {
@@ -1168,6 +1177,26 @@ function fixture(
   setup: SetupState,
 ): FixtureState {
   const cloned = structuredClone(base);
+  const liveReady = process.env.MAKER_TEST_LIVE_READY === "1";
+  const stopped = !stateSnapshot.running;
+  cloned.bundles.liveReadiness = {
+    bundleId: "core-fixture",
+    serverEnabled: liveReady,
+    signerReady: liveReady,
+    core: true,
+    stopped,
+    readiness: {
+      ready: liveReady,
+      stages: [
+        { id: "strategy", status: "done", detail: "Strategy attached" },
+        { id: "accounts", status: "done", detail: "Accounts assigned" },
+        { id: "tradingKeys", status: liveReady ? "done" : "todo", detail: "Authorize the Live trading key" },
+        { id: "gas", status: liveReady ? "done" : "todo", detail: "Add Live gas reserve" },
+        { id: "collateral", status: liveReady ? "done" : "todo", detail: "Deposit collateral" },
+      ],
+    },
+    ready: liveReady && stopped,
+  };
   return {
     ...cloned,
     auth,
@@ -1180,8 +1209,8 @@ function fixture(
       snapshot: stateSnapshot,
       builderCode: { integratorId: 2048, integratorFee: 0.0001 },
       liveGates: {
-        liveTradingEnabled: false,
-        mainnetAllowed: false,
+        liveTradingEnabled: liveReady,
+        mainnetAllowed: liveReady,
       },
       bundles: cloned.bundles.bundles.map((bundle) => ({
         bundle,

@@ -793,7 +793,14 @@ async function capture(browser, stateName, captureConfig, view) {
       if (view === null) await page.getByRole("link", { name: "Bundles" }).click();
       await page.getByRole("button", { name: "Go live…" }).click();
       await page.getByRole("dialog", { name: "Switch Core to Live?" }).waitFor();
-      if (await page.getByRole("button", { name: "Switch Core to Live" }).isEnabled()) {
+      const switchButton = page.getByRole("button", { name: "Switch Core to Live" });
+      if (process.env.MAKER_TEST_LIVE_READY === "1") {
+        const unresolved = await page.locator('.go-live-checklist li[data-ready="false"]').count();
+        if (unresolved) throw new Error(`Live-ready fixture retained ${unresolved} unresolved checklist item(s)`);
+        if (await switchButton.isEnabled()) throw new Error("Live switch bypassed its real-funds confirmation");
+        await page.getByLabel(/Maker will trade real funds/).check();
+        if (!(await switchButton.isEnabled())) throw new Error("Live switch did not enable after every gate and confirmation passed");
+      } else if (await switchButton.isEnabled()) {
         throw new Error("Live mode was selectable while deployment gates were off");
       }
     }
