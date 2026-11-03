@@ -187,11 +187,19 @@ describe("gateway execution evidence", () => {
           ],
           totalEquityUsd: 10,
           availableCollateralUsd: 9,
+          availableCollateral: 0,
         },
       },
     });
     const readMarkets = async () => ({
-      markets: [{ marketId: "0x1", indexPrice: 10 }],
+      markets: [
+        {
+          marketId: "0x1",
+          indexPrice: 10,
+          collateralCoinType: "USDC",
+          collateralPrice: 0.9997,
+        },
+      ],
     });
     const gateway = {
       getOwnedAccountCaps: async () => [
@@ -205,6 +213,7 @@ describe("gateway execution evidence", () => {
       sdk: {
         Perpetuals: () => ({
           getAccount: readAccount,
+          getAllMarkets: async () => ({ markets: [{ marketId: "0x1" }] }),
           getMarkets: readMarkets,
         }),
       },
@@ -217,6 +226,8 @@ describe("gateway execution evidence", () => {
       accountId: "1757",
       exposureUsd: 20,
       positionCount: 1,
+      availableCollateral: 0,
+      collateralPrice: 0.9997,
     });
     expect(account?.unrealizedPnlUsd).toBeCloseTo(-0.009, 6);
   });

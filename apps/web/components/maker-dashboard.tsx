@@ -1460,6 +1460,8 @@ function DashboardBody() {
 
   const loadPerformance = useCallback(async () => {
     if (performancePeriod === "EPOCH" && !rewards?.epoch.startedAt) return;
+    const requestOwner = identity?.ownerAddress.toLowerCase() ?? null;
+    if (!requestOwner) return;
     const params = new URLSearchParams({ period: performancePeriod });
     if (performancePeriod === "EPOCH" && rewards?.epoch.startedAt) {
       params.set("since", rewards.epoch.startedAt);
@@ -1468,8 +1470,14 @@ function DashboardBody() {
     const result = await request<{ performance: Performance | null }>(
       `api/performance?${params.toString()}`,
     );
+    if (ownerRef.current !== requestOwner) return;
     setPerformance(result.performance);
-  }, [performancePeriod, performanceBundle, rewards?.epoch.startedAt]);
+  }, [
+    identity?.ownerAddress,
+    performancePeriod,
+    performanceBundle,
+    rewards?.epoch.startedAt,
+  ]);
 
   useEffect(() => {
     if (performanceBundle === "all" || performanceBundle === "before") return;
@@ -6524,7 +6532,7 @@ function DashboardBody() {
                       ? busy === "save"
                         ? "Saving…"
                         : "Save and finish"
-                      : `Save and continue to ${strategySteps[strategyStep + 1]?.label ?? "Review"}`}
+                      : `Next: ${strategySteps[strategyStep + 1]?.label ?? "Review"}`}
                   </Button>
                 </div>
                 {strategySaveBlocker &&

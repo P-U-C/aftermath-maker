@@ -237,6 +237,140 @@ describe("Paper cycle freshness under a stalled venue read", () => {
     }
   });
 
+  it("keeps fair-value skips visible while surfacing the bundle collateral blocker", async () => {
+    const h = await paperRuntime();
+    h.tenant.setConfig(
+      makerConfigSchema.parse({
+        ...h.tenant.getConfig()!,
+        markets: [
+          { marketId: "0x1", symbol: "NEAR" },
+          { marketId: "0x2", symbol: "DRAM" },
+        ],
+      }),
+    );
+    h.gateway.when("getOrderbook", (marketId: string) => ({
+      market: {
+        metadata: { symbol: marketId === "0x1" ? "NEAR" : "DRAM" },
+        indexPrice: 10,
+        marketState: { openInterest: 1_000 },
+        marketParams: { maxOpenInterest: 10_000 },
+        estimatedFundingRate: () => 0.0001,
+        tickSize: () => 0.01,
+      },
+      orderbook: {
+        bestBidPrice: 9,
+        bestAskPrice: 9.1,
+        bids: [],
+        asks: [],
+      },
+    }));
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-10-31T01:11:55.000Z"));
+    try {
+      h.runtime.start();
+      await vi.advanceTimersByTimeAsync(5_001);
+
+      expect(h.runtime.snapshot.paperBlocker).toMatchObject({
+        code: "collateral",
+      });
+      expect(h.runtime.snapshot.markets).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            id: "0x1",
+            skip: expect.objectContaining({ code: "fair-value" }),
+          }),
+          expect.objectContaining({
+            id: "0x2",
+            skip: expect.objectContaining({ code: "fair-value" }),
+          }),
+        ]),
+      );
+    } finally {
+      await h.runtime.stop();
+      vi.useRealTimers();
+      await h.close();
+    }
+  });
+
+  it("reduces filled inventory at the gross cap, waits on flat markets, then resumes both sides", async () => {
+    const h = await paperRuntime({ makerFreeUsd: 300 });
+    const markets = Array.from({ length: 15 }, (_, index) => ({
+      marketId: `0x${(index + 1).toString(16)}`,
+      symbol: `M${index + 1}`,
+    }));
+    h.tenant.setConfig(
+      makerConfigSchema.parse({
+        ...h.tenant.getConfig()!,
+        markets,
+        maxGrossExposureUsd: 150,
+        maxInventoryUsd: 20,
+        quoteSizeUsd: 10,
+      }),
+    );
+    for (const market of markets.slice(0, 4)) {
+      h.tenant.recordPaperQuote({
+        trialId: "runtime",
+        marketId: market.marketId,
+        symbol: market.symbol,
+        bidPrice: 10,
+        askPrice: 11,
+        sizeUsd: 10,
+        sides: "bid",
+      });
+      h.tenant.matchPaperOrders({
+        trialId: "runtime",
+        marketId: market.marketId,
+        bestBid: 9.9,
+        bestAsk: 9.8,
+      });
+    }
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-10-31T01:11:55.000Z"));
+    try {
+      h.runtime.start();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(h.runtime.snapshot.quote).toMatchObject({
+        sides: "ask",
+        sizeUsd: 10,
+      });
+      expect(h.runtime.snapshot.markets[0]?.error).toBe(
+        "Reducing: quoting the ask to bring inventory from $10.00 back to $0.00.",
+      );
+
+      // After the four filled markets have each had a chance to post their
+      // reducing ask, the next flat market remains unquoted at the cap.
+      await vi.advanceTimersByTimeAsync(4 * 5_000);
+      expect(
+        h.gateway.calls.filter((call) => call.method === "simulateQuote"),
+      ).toHaveLength(4);
+
+      for (const market of markets.slice(0, 4)) {
+        h.tenant.matchPaperOrders({
+          trialId: "runtime",
+          marketId: market.marketId,
+          bestBid: 20,
+          bestAsk: 20.1,
+        });
+      }
+      await h.runtime.cycle({ executeLive: true });
+      expect(h.runtime.snapshot.quote).toMatchObject({ sides: "both" });
+      const blocked = h.tenant
+        .listEvents(100)
+        .filter(
+          (event) =>
+            event.category === "paper" &&
+            event.action === "simulation" &&
+            event.outcome === "blocked",
+        );
+      expect(blocked).toHaveLength(1);
+      expect(blocked[0]?.detail.marketId).toBeUndefined();
+    } finally {
+      await h.runtime.stop();
+      vi.useRealTimers();
+      await h.close();
+    }
+  });
+
   it("Paper uses the same $100.85 hedge floor as Start and clears when funded", async () => {
     const h = await paperRuntime({ hedge: true, makerFreeUsd: 20 });
     vi.useFakeTimers();

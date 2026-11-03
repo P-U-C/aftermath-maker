@@ -3,6 +3,7 @@ import {
   formatPaperBlocker,
   type PaperBlocker,
 } from "./paper-blocker";
+import { formatPrice } from "./format";
 
 export type AuditEventInput = {
   id: number;
@@ -236,7 +237,7 @@ const copies: Record<string, AuditCopy> = {
           typeof fill.symbol === "string" ? fill.symbol : market(detail);
         const price =
           typeof fill.price === "number" && Number.isFinite(fill.price)
-            ? fill.price.toFixed(4)
+            ? formatPrice(fill.price, null)
             : "an unknown price";
         return `${side} $${size} of ${symbol} at ${price}`;
       };

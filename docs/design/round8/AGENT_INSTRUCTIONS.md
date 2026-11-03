@@ -341,7 +341,7 @@ Make these parts once, in `components/ui/primitives.tsx` and `globals.css`, then
 - **Tables:**
     - header 12.5/600 ink-2 at 40 px, with a bottom hairline;
     - rows ≥52 px, split by hairlines;
-    - no vertical lines, zebra stripes or colored rows;
+    - no vertical lines or zebra stripes; semantic table headers and group rows use the shared fill tokens;
     - numbers right-aligned;
     - group rows in sentence case with a count;
     - wide tables scroll inside their card.

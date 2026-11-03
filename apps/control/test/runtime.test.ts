@@ -576,7 +576,7 @@ describe("runtime execution boundaries", () => {
     );
     expect(runtime.snapshot.markets[0]).toMatchObject({
       status: "healthy",
-      error: runtime.snapshot.lastError,
+      error: null,
     });
     expect(onBundleError).not.toHaveBeenCalled();
     expect(harness.executionSequence).toEqual([]);
@@ -1595,9 +1595,9 @@ describe("runtime execution boundaries", () => {
     harness.runtime.start();
     await harness.runtime.cycle();
 
-    expect(harness.executions()).toBe(0);
-    expect(harness.runtime.snapshot.running).toBe(false);
-    expect(harness.runtime.snapshot.lastError).toContain("gross-exposure");
+    expect(harness.executions()).toBe(1);
+    expect(harness.runtime.snapshot.running).toBe(true);
+    expect(harness.runtime.snapshot.quote).toMatchObject({ sides: "ask" });
     harness.store.close();
   });
 
@@ -1651,7 +1651,8 @@ describe("runtime execution boundaries", () => {
     await harness.runtime.cycle();
 
     expect(harness.executions()).toBe(0);
-    expect(harness.runtime.snapshot.lastError).toContain("gross-exposure");
+    expect(harness.runtime.snapshot.running).toBe(true);
+    expect(harness.runtime.snapshot.execution.lastDecision).toBe("held");
     harness.store.close();
   });
 
@@ -2199,14 +2200,14 @@ describe("runtime execution boundaries", () => {
     await harness.runtime.cycle();
 
     expect(harness.hedgeExecutions()).toBe(1);
-    expect(harness.executions()).toBe(0);
+    expect(harness.executions()).toBe(1);
     expect(harness.executionSequence.slice(0, 3)).toEqual([
       "cancel",
       "cancel",
       "hedge",
     ]);
-    expect(harness.runtime.snapshot.running).toBe(false);
-    expect(harness.runtime.snapshot.lastError).toContain("inventory");
+    expect(harness.runtime.snapshot.running).toBe(true);
+    expect(harness.runtime.snapshot.quote).toMatchObject({ sides: "ask" });
     expect(harness.runtime.snapshot.hedge).toMatchObject({
       state: "ready",
       lastDigest: "hedge-digest-1",

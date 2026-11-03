@@ -50,6 +50,10 @@ describe("price formatting", () => {
   it("supports sub-cent market ticks", () => {
     expect(formatPrice(0.0213931, 0.000001)).toBe("0.021393");
   });
+
+  it("keeps a small Paper fill price meaningful without a tick size", () => {
+    expect(formatPrice(0.00001234, null)).toBe("0.00001234");
+  });
 });
 
 describe("timestamp formatting", () => {

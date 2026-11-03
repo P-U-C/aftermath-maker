@@ -33,7 +33,7 @@ export const makerMarketOverridesSchema = z
     maxInventoryUsd: z.number().positive().max(10_000).optional(),
     inventoryTargetUsd: z.number().min(-10_000).max(10_000).optional(),
     inventorySkewBps: z.number().min(0).max(250).optional(),
-    maxLeverage: z.number().min(1).max(3).optional(),
+    maxLeverage: z.number().min(1).max(100).optional(),
   })
   .strict();
 
@@ -43,6 +43,7 @@ export const makerMarketSchema = z
   .object({
     marketId: z.string().regex(/^0x[0-9a-fA-F]+$/, "Expected a Sui object ID"),
     symbol: z.string().min(1).max(24),
+    marketMaxLeverage: z.number().min(1).max(100).optional(),
     overrides: makerMarketOverridesSchema.optional(),
   })
   .strict();
@@ -89,7 +90,7 @@ export const makerConfigSchema = z
     maxUnrealizedLossUsd: z.number().positive().max(10_000).default(20),
     maxRunDrawdownUsd: z.number().positive().max(10_000).default(20),
     maxBookDivergenceBps: z.number().positive().max(5_000).default(100),
-    maxLeverage: z.number().min(1).max(3).default(1),
+    maxLeverage: z.number().min(1).max(100).default(1),
     maxGasMist: z
       .number()
       .int()
@@ -211,6 +212,18 @@ export const makerConfigSchema = z
             "Inventory target must fit inside the market inventory limit",
         });
       }
+      const requestedLeverage =
+        market.overrides?.maxLeverage ?? config.maxLeverage;
+      if (
+        market.marketMaxLeverage !== undefined &&
+        requestedLeverage > market.marketMaxLeverage
+      ) {
+        context.addIssue({
+          code: "custom",
+          path: ["markets", index, "overrides", "maxLeverage"],
+          message: "market-max-leverage-exceeded",
+        });
+      }
     }
   });
 
@@ -238,6 +251,7 @@ export const quoteIntentSchema = z
     askPrice: z.number().positive(),
     sizeBase: z.number().positive(),
     sizeUsd: z.number().positive(),
+    sides: z.enum(["both", "bid", "ask"]).default("both"),
     inventoryUsd: z.number(),
     unrealizedPnlUsd: z.number(),
   })

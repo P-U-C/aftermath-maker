@@ -38,6 +38,7 @@ export type AgentTransactionIntent =
       askPrice: bigint;
       bidClientOrderId: bigint;
       askClientOrderId: bigint;
+      sides?: "both" | "bid" | "ask";
       orderIdsByMarket?: Record<string, bigint[]>;
     })
   | (CommonIntent & {
@@ -857,22 +858,34 @@ export function assertAgentTransactionIntent(
   );
 
   if (intent.kind === "quote") {
-    if (placements.length !== 2) {
-      fail("quote transaction must place exactly two orders");
+    const sides = intent.sides ?? "both";
+    const expectedCount = sides === "both" ? 2 : 1;
+    if (placements.length !== expectedCount) {
+      fail(
+        `quote transaction must place exactly ${expectedCount} order${expectedCount === 1 ? "" : "s"}`,
+      );
     }
     const expected = [
-      {
-        side: false,
-        size: intent.size,
-        price: intent.bidPrice,
-        clientOrderId: intent.bidClientOrderId,
-      },
-      {
-        side: true,
-        size: intent.size,
-        price: intent.askPrice,
-        clientOrderId: intent.askClientOrderId,
-      },
+      ...(sides === "ask"
+        ? []
+        : [
+            {
+              side: false,
+              size: intent.size,
+              price: intent.bidPrice,
+              clientOrderId: intent.bidClientOrderId,
+            },
+          ]),
+      ...(sides === "bid"
+        ? []
+        : [
+            {
+              side: true,
+              size: intent.size,
+              price: intent.askPrice,
+              clientOrderId: intent.askClientOrderId,
+            },
+          ]),
     ];
     placements.forEach((place, index) => {
       if (

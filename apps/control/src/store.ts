@@ -4595,6 +4595,7 @@ export class TenantStore {
     bidPrice: number;
     askPrice: number;
     sizeUsd: number;
+    sides?: "both" | "bid" | "ask";
   }): void {
     const bundleId = this.paperBundleId();
     const now = new Date().toISOString();
@@ -4614,32 +4615,36 @@ export class TenantStore {
            side, price, size_usd, status, created_at, updated_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?)`,
       );
-      insert.run(
-        this.ownerAddress,
-        bundleId,
-        inputs.trialId,
-        `${quoteKey}:bid`,
-        inputs.marketId,
-        inputs.symbol,
-        "bid",
-        inputs.bidPrice,
-        inputs.sizeUsd,
-        now,
-        now,
-      );
-      insert.run(
-        this.ownerAddress,
-        bundleId,
-        inputs.trialId,
-        `${quoteKey}:ask`,
-        inputs.marketId,
-        inputs.symbol,
-        "ask",
-        inputs.askPrice,
-        inputs.sizeUsd,
-        now,
-        now,
-      );
+      if (inputs.sides !== "ask") {
+        insert.run(
+          this.ownerAddress,
+          bundleId,
+          inputs.trialId,
+          `${quoteKey}:bid`,
+          inputs.marketId,
+          inputs.symbol,
+          "bid",
+          inputs.bidPrice,
+          inputs.sizeUsd,
+          now,
+          now,
+        );
+      }
+      if (inputs.sides !== "bid") {
+        insert.run(
+          this.ownerAddress,
+          bundleId,
+          inputs.trialId,
+          `${quoteKey}:ask`,
+          inputs.marketId,
+          inputs.symbol,
+          "ask",
+          inputs.askPrice,
+          inputs.sizeUsd,
+          now,
+          now,
+        );
+      }
     });
     write();
     this.pruneTable("tenant_paper_orders", RETENTION_LIMITS.paperOrders);

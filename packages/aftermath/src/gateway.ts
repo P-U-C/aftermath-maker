@@ -55,6 +55,8 @@ export type MarketSummary = {
   maxOpenInterestBase: number;
   fundingRate: number;
   makerFee: number;
+  maxLeverage: number;
+  maintenanceMarginRatio: number;
   category: string | null;
   sessionOpen: boolean | null;
   sessionNextTransitionAt: number | null;
@@ -373,6 +375,7 @@ export function buildQuoteReplacementRequest(inputs: {
   size: bigint;
   leverage: number;
   hasPosition: boolean;
+  sides?: "both" | "bid" | "ask";
   activeMakerOrderIds?: bigint[];
   activeMakerClientOrderIds?: bigint[];
   clientOrderIds?: { bid: bigint; ask: bigint };
@@ -390,18 +393,26 @@ export function buildQuoteReplacementRequest(inputs: {
       MAKER_ASK_CLIENT_ORDER_ID,
     ],
     ordersToPlace: [
-      {
-        side: PerpetualsOrderSide.Bid,
-        price: inputs.bidPrice,
-        size: inputs.size,
-        clientOrderId: clientOrderIds.bid,
-      },
-      {
-        side: PerpetualsOrderSide.Ask,
-        price: inputs.askPrice,
-        size: inputs.size,
-        clientOrderId: clientOrderIds.ask,
-      },
+      ...(inputs.sides === "ask"
+        ? []
+        : [
+            {
+              side: PerpetualsOrderSide.Bid,
+              price: inputs.bidPrice,
+              size: inputs.size,
+              clientOrderId: clientOrderIds.bid,
+            },
+          ]),
+      ...(inputs.sides === "bid"
+        ? []
+        : [
+            {
+              side: PerpetualsOrderSide.Ask,
+              price: inputs.askPrice,
+              size: inputs.size,
+              clientOrderId: clientOrderIds.ask,
+            },
+          ]),
     ],
     orderType: PerpetualsOrderType.PostOnly,
     reduceOnly: false,
@@ -914,6 +925,8 @@ export class AftermathGateway {
         maxOpenInterestBase,
         fundingRate: market.estimatedFundingRate(),
         makerFee: market.marketParams.makerFee,
+        maxLeverage: market.maxLeverage(),
+        maintenanceMarginRatio: market.marketParams.marginRatioMaintenance,
         category: metadata?.category ?? null,
         sessionOpen:
           typeof metadata?.session?.isOpen === "boolean"
@@ -1221,6 +1234,38 @@ export class AftermathGateway {
   }): Promise<OwnerAccountSummary[]> {
     const caps = await this.getOwnedAccountCaps(inputs);
     const adminCaps = caps.filter((cap) => !cap.isAgent);
+    if (!adminCaps.length) return [];
+    // Account data has native available collateral but not the USD price used
+    // to value it. Read that price from a market instead, including for an
+    // empty account with no positions.
+    const collateralCoinTypes = [
+      ...new Set(
+        inputs.collateralCoinType
+          ? [inputs.collateralCoinType]
+          : adminCaps.map((cap) => cap.collateralCoinType),
+      ),
+    ];
+    const marketLists = await Promise.all(
+      collateralCoinTypes.map((collateralCoinType) =>
+        this.sdk.Perpetuals().getAllMarkets({ collateralCoinType }),
+      ),
+    );
+    const marketIds = marketLists.flatMap(({ markets }) =>
+      markets.map((market) => market.marketId),
+    );
+    const collateralMarkets = marketIds.length
+      ? (
+          await this.sdk.Perpetuals().getMarkets({
+            marketIds,
+          })
+        ).markets
+      : [];
+    const collateralPriceByCoinType = new Map(
+      collateralMarkets.map((market) => [
+        market.collateralCoinType,
+        market.collateralPrice,
+      ]),
+    );
     return Promise.all(
       adminCaps.map(async (cap) => {
         const { account } = await this.sdk.Perpetuals().getAccount({
@@ -1260,15 +1305,9 @@ export class AftermathGateway {
           collateralCoinType: cap.collateralCoinType,
           equityUsd: account.account.totalEquityUsd,
           availableCollateralUsd: account.account.availableCollateralUsd,
-          availableCollateral: Number(
-            (account.account as unknown as { availableCollateral?: number })
-              .availableCollateral ?? 0,
-          ),
+          availableCollateral: account.account.availableCollateral,
           collateralPrice:
-            Number(
-              (account.account as unknown as { collateralPrice?: number })
-                .collateralPrice ?? 0,
-            ) || undefined,
+            collateralPriceByCoinType.get(cap.collateralCoinType) ?? undefined,
           allocatedCollateralUsd,
           freeMarginUsd,
           positionCount: openPositions.length,
@@ -2683,6 +2722,7 @@ export class AftermathGateway {
       size,
       leverage: inputs.config.maxLeverage,
       hasPosition: Boolean(position),
+      sides: inputs.quote.sides,
       activeMakerOrderIds,
       activeMakerClientOrderIds,
       clientOrderIds,
@@ -2742,6 +2782,7 @@ export class AftermathGateway {
           askPrice,
           bidClientOrderId: clientOrderIds.bid,
           askClientOrderId: clientOrderIds.ask,
+          sides: inputs.quote.sides,
           orderIdsByMarket,
         },
       });
