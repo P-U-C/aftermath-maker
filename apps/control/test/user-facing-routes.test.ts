@@ -326,7 +326,7 @@ const cases: Case[] = [
   {
     code: "mode-requires-stopped",
     status: 409,
-    copy: "Stop this bundle before changing its mode.",
+    copy: "Stop or pause this bundle before changing its mode.",
     prepare: (h) => {
       const { tenant, core } = seed(h);
       tenant.setBundleStatus(core.id, "running");
@@ -1068,6 +1068,27 @@ describe("bundle mode route", () => {
       expect(
         h.gateway.calls.some((call) => call.method.includes("place")),
       ).toBe(false);
+    } finally {
+      await h.close();
+    }
+  });
+
+  it("accepts a paused Core for a mode switch", async () => {
+    const h = await appHarness();
+    try {
+      const { tenant, core } = seed(h);
+      tenant.setBundleStatus(core.id, "paused");
+      const response = await h.app.inject({
+        method: "POST",
+        url: `/api/bundles/${core.id}/mode`,
+        payload: { mode: "paper", confirmed: true },
+        headers: h.signedInAs(),
+      });
+      expect(response.statusCode).toBe(200);
+      expect(tenant.getStoredBundle(core.id)).toMatchObject({
+        status: "paused",
+        mode: "paper",
+      });
     } finally {
       await h.close();
     }

@@ -77,13 +77,12 @@ const makerViews = [
   "markets",
   "bundles",
   "performance",
-  "accounts",
   "venues",
   "learn",
 ];
 
 const navigationViews = makerViews.filter(
-  (view) => view !== "accounts" && view !== "learn",
+  (view) => view !== "learn",
 );
 
 function selectedViews(stateName) {
@@ -285,7 +284,7 @@ async function capture(browser, stateName, captureConfig, view) {
     );
   }
 
-  await page.route("**/api/control/**", async (route) => {
+  await page.route("**/api/control**", async (route) => {
     const request = route.request();
     const url = new URL(request.url());
     if (

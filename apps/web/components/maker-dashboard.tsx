@@ -643,6 +643,7 @@ type MakerFill = {
   orderId: string;
   estimated: boolean;
   role: "Maker fill" | "Hedge" | "Close" | "Unwind";
+  bundleName?: string;
 };
 
 type PerformancePeriod = "1D" | "EPOCH" | "ALL";
@@ -1269,6 +1270,11 @@ function DashboardBody() {
   const [problemEvents, setProblemEvents] = useState<AuditEvent[]>([]);
   const [deskProblemFilter, setDeskProblemFilter] = useState(false);
   const [performance, setPerformance] = useState<Performance | null>(null);
+  const lastPerformanceFillSequence = useRef<number | null>(null);
+  const [strategyResults, setStrategyResults] = useState<{
+    paper: { fills: number; notionalUsd: number };
+    live: { executions: number; notionalUsd: number };
+  } | null>(null);
   const [performancePeriod, setPerformancePeriod] =
     useState<PerformancePeriod>("1D");
   const [performanceBundle, setPerformanceBundle] = useState<string>("all");
@@ -1680,6 +1686,26 @@ function DashboardBody() {
         ),
       };
     });
+  }, [identity?.ownerAddress, selectedStrategyId]);
+
+  useEffect(() => {
+    if (!selectedStrategyId || !identity?.ownerAddress) {
+      setStrategyResults(null);
+      return;
+    }
+    let current = true;
+    void request<{
+      results: { paper: { fills: number; notionalUsd: number }; live: { executions: number; notionalUsd: number } };
+    }>(`api/strategies/${encodeURIComponent(selectedStrategyId)}/results`)
+      .then((result) => {
+        if (current) setStrategyResults(result.results);
+      })
+      .catch(() => {
+        if (current) setStrategyResults(null);
+      });
+    return () => {
+      current = false;
+    };
   }, [identity?.ownerAddress, selectedStrategyId]);
 
   useEffect(() => {
@@ -5217,6 +5243,16 @@ function DashboardBody() {
     : null;
   const deskRunningSnapshot = deskRunningRun?.snapshot ?? null;
   const deskReportSnapshot = deskRunningBundle ? deskRunningSnapshot : snapshot;
+  const observedFillSequence = deskReportSnapshot?.fillSequence ?? null;
+  useEffect(() => {
+    if (
+      observedFillSequence === null ||
+      observedFillSequence === lastPerformanceFillSequence.current
+    )
+      return;
+    lastPerformanceFillSequence.current = observedFillSequence;
+    void loadPerformance();
+  }, [loadPerformance, observedFillSequence]);
   const deskRunningStrategy = strategies.find(
     (strategy) => strategy.id === deskRunningBundle?.strategyId,
   );
@@ -5265,6 +5301,7 @@ function DashboardBody() {
       txDigest: fill.txDigest,
       estimated: fill.estimated,
       role: fill.role,
+      ...(fill.bundleName ? { bundleName: fill.bundleName } : {}),
     })) ?? [];
   const deskNarration = narrate({
     name: deskRunningBundle?.name ?? "Maker",
@@ -6289,6 +6326,9 @@ function DashboardBody() {
                   {config.markets.length === 1 ? "" : "s"} with{" "}
                   {money(config.quoteSizeUsd)} on each side, and stop before{" "}
                   {money(config.maxRunDrawdownUsd)} of run drawdown.
+                </p>
+                <p className="strategy-results" aria-label="Strategy results">
+                  Paper: {strategyResults?.paper.fills ?? 0} estimated fills, {money(strategyResults?.paper.notionalUsd ?? 0)} notional. Live: {strategyResults?.live.executions ?? 0} confirmed executions, {money(strategyResults?.live.notionalUsd ?? 0)} notional.
                 </p>
               </section>
               <div className="strategy-summary-grid">
@@ -9621,9 +9661,12 @@ function DashboardBody() {
               })),
             });
           }}
-          onAuthorize={(accountId) => {
+          onAuthorize={async (accountId) => {
             setSelectedAccount(accountId);
-            void authorizeAgent(accountId);
+            if (!setup.accounts.some((managed) => managed.accountId === accountId)) {
+              await provision(accountId);
+            }
+            await authorizeAgent(accountId);
           }}
           onOpenStrategy={() => {
             const blocked = bundles.find(
@@ -10172,7 +10215,7 @@ function DashboardBody() {
           setLiveSheetOpen(false);
         }}
         onStopCore={() => {
-          void stopRuntime();
+          if (coreBundle) void bundleAction(coreBundle.id, "pause");
         }}
       />
 

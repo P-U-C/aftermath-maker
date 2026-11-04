@@ -56,6 +56,7 @@ export type DeskFill = {
   txDigest: string;
   estimated: boolean;
   role: "Maker fill" | "Hedge" | "Close" | "Unwind";
+  bundleName?: string;
 };
 
 export type DeskEvent = {
@@ -604,7 +605,7 @@ export function DeskView({
                   >
                     <span className="desk-fill-row">
                     <strong>{fill.symbol}</strong>
-                    <small>{fill.role}{fill.estimated ? " · Estimated" : ""}</small>
+                    <small>{fill.bundleName ? `${fill.bundleName} · ` : ""}{fill.role}{fill.estimated ? " · Estimated" : ""}</small>
                       <span className={`desk-fill-side is-${fill.side}`}>
                         {fill.estimated ? "Estimated " : ""}
                         {fill.side === "bid" ? "Bought" : "Sold"}

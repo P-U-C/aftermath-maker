@@ -267,6 +267,11 @@ const copies: Record<string, AuditCopy> = {
     sentence: (detail) =>
       `Paper closed $${typeof detail.sizeUsd === "number" ? detail.sizeUsd.toFixed(2) : "0.00"} of ${market(detail)} to bring gross exposure under the limit.`,
   },
+  "risk:exposure-unwind:confirmed": {
+    severity: "warning",
+    sentence: (detail) =>
+      `Maker closed $${typeof detail.sizeUsd === "number" ? detail.sizeUsd.toFixed(2) : "0.00"} of ${market(detail)} to bring gross exposure under the limit.`,
+  },
   "paper:volume-fee-budget:warning": {
     severity: "warning",
     sentence: (detail) =>

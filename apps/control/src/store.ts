@@ -426,6 +426,19 @@ export type StoredStrategy = {
   usedBy: Array<{ id: string; name: string }>;
 };
 
+export type StrategyAttachment = {
+  bundleId: string;
+  strategyId: string;
+  strategyVersion: number;
+  attachedAt: string;
+  detachedAt: string | null;
+};
+
+export type StrategyResults = {
+  paper: { fills: number; notionalUsd: number };
+  live: { executions: number; notionalUsd: number };
+};
+
 type BundleRow = {
   id: string;
   owner_address: string;
@@ -926,6 +939,18 @@ export class Store {
           FOREIGN KEY (strategy_id) REFERENCES strategies(id) ON DELETE CASCADE
         );
 
+        -- Keep attachment intervals so strategy performance remains
+        -- historical after a bundle is detached or changed.
+        CREATE TABLE IF NOT EXISTS strategy_attachments (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          owner_address TEXT NOT NULL,
+          bundle_id TEXT NOT NULL REFERENCES bundles(id) ON DELETE CASCADE,
+          strategy_id TEXT NOT NULL REFERENCES strategies(id),
+          strategy_version INTEGER NOT NULL CHECK (strategy_version >= 1),
+          attached_at TEXT NOT NULL,
+          detached_at TEXT
+        );
+
         CREATE TABLE IF NOT EXISTS bundle_account_roles (
           bundle_id TEXT NOT NULL,
           owner_address TEXT NOT NULL,
@@ -1004,6 +1029,8 @@ export class Store {
           WHERE taker_account_id IS NOT NULL;
         CREATE UNIQUE INDEX IF NOT EXISTS bundle_account_roles_owner_account_unique
           ON bundle_account_roles(owner_address, account_id);
+        CREATE INDEX IF NOT EXISTS strategy_attachments_lookup
+          ON strategy_attachments(owner_address, strategy_id, bundle_id, attached_at, detached_at);
       `);
 
       const ensureColumn = (
@@ -1842,6 +1869,25 @@ export class Store {
             .run(core.id, core.owner_address);
         }
       }
+
+      // Existing bundles predate attachment intervals. Their current strategy
+      // is the best available historical boundary, and all future changes are
+      // recorded exactly at the transition.
+      this.db.exec(`
+        INSERT INTO strategy_attachments
+          (owner_address, bundle_id, strategy_id, strategy_version, attached_at, detached_at)
+        SELECT bundles.owner_address, bundles.id, bundles.strategy_id,
+               COALESCE(bundles.strategy_version_applied, strategies.version),
+               bundles.created_at, NULL
+        FROM bundles
+        JOIN strategies ON strategies.id = bundles.strategy_id
+        WHERE bundles.strategy_id IS NOT NULL
+          AND NOT EXISTS (
+            SELECT 1 FROM strategy_attachments
+            WHERE strategy_attachments.bundle_id = bundles.id
+              AND strategy_attachments.detached_at IS NULL
+          );
+      `);
     });
     migrate();
   }
@@ -2677,6 +2723,121 @@ export class TenantStore {
     return name;
   }
 
+  private attachStrategy(
+    bundleId: string,
+    strategyId: string,
+    strategyVersion: number,
+    attachedAt: string,
+  ): void {
+    const active = this.db
+      .prepare(
+        `SELECT strategy_id, strategy_version FROM strategy_attachments
+         WHERE owner_address = ? AND bundle_id = ? AND detached_at IS NULL
+         ORDER BY id DESC LIMIT 1`,
+      )
+      .get(this.ownerAddress, bundleId) as
+      | { strategy_id: string; strategy_version: number }
+      | undefined;
+    if (
+      active?.strategy_id === strategyId &&
+      active.strategy_version === strategyVersion
+    )
+      return;
+    this.db
+      .prepare(
+        `UPDATE strategy_attachments SET detached_at = ?
+         WHERE owner_address = ? AND bundle_id = ? AND detached_at IS NULL`,
+      )
+      .run(attachedAt, this.ownerAddress, bundleId);
+    this.db
+      .prepare(
+        `INSERT INTO strategy_attachments
+          (owner_address, bundle_id, strategy_id, strategy_version, attached_at, detached_at)
+         VALUES (?, ?, ?, ?, ?, NULL)`,
+      )
+      .run(
+        this.ownerAddress,
+        bundleId,
+        strategyId,
+        strategyVersion,
+        attachedAt,
+      );
+  }
+
+  private detachStrategy(bundleId: string, detachedAt: string): void {
+    this.db
+      .prepare(
+        `UPDATE strategy_attachments SET detached_at = ?
+         WHERE owner_address = ? AND bundle_id = ? AND detached_at IS NULL`,
+      )
+      .run(detachedAt, this.ownerAddress, bundleId);
+  }
+
+  listStrategyAttachments(strategyId: string): StrategyAttachment[] {
+    return (
+      this.db
+        .prepare(
+          `SELECT bundle_id, strategy_id, strategy_version, attached_at, detached_at
+           FROM strategy_attachments
+           WHERE owner_address = ? AND strategy_id = ?
+           ORDER BY attached_at ASC, id ASC`,
+        )
+        .all(this.ownerAddress, strategyId) as Array<{
+        bundle_id: string;
+        strategy_id: string;
+        strategy_version: number;
+        attached_at: string;
+        detached_at: string | null;
+      }>
+    ).map((row) => ({
+      bundleId: row.bundle_id,
+      strategyId: row.strategy_id,
+      strategyVersion: row.strategy_version,
+      attachedAt: row.attached_at,
+      detachedAt: row.detached_at,
+    }));
+  }
+
+  strategyResults(strategyId: string): StrategyResults {
+    const attachments = this.listStrategyAttachments(strategyId);
+    const result: StrategyResults = {
+      paper: { fills: 0, notionalUsd: 0 },
+      live: { executions: 0, notionalUsd: 0 },
+    };
+    for (const attachment of attachments) {
+      const bounds = [
+        this.ownerAddress,
+        attachment.bundleId,
+        attachment.attachedAt,
+        attachment.detachedAt,
+        attachment.detachedAt,
+      ];
+      const paper = this.db
+        .prepare(
+          `SELECT COUNT(*) AS fills, COALESCE(SUM(size_usd), 0) AS notional_usd
+           FROM tenant_paper_fills
+           WHERE owner_address = ? AND bundle_id = ?
+             AND occurred_at >= ?
+             AND (? IS NULL OR occurred_at < ?)`,
+        )
+        .get(...bounds) as { fills: number; notional_usd: number };
+      const live = this.db
+        .prepare(
+          `SELECT COUNT(*) AS executions, COALESCE(SUM(size_usd), 0) AS notional_usd
+           FROM tenant_executions
+           WHERE owner_address = ? AND bundle_id = ?
+             AND occurred_at >= ?
+             AND (? IS NULL OR occurred_at < ?)`,
+        )
+        .get(...bounds) as { executions: number; notional_usd: number };
+      result.paper.fills += paper.fills;
+      result.paper.notionalUsd += paper.notional_usd;
+      result.live.executions += live.executions;
+      result.live.notionalUsd += live.notional_usd;
+    }
+    return result;
+  }
+
   /**
    * The legacy config endpoints are intentionally narrow adapters: they may
    * update a dedicated strategy, but never silently alter a second bundle that
@@ -3054,6 +3215,7 @@ export class TenantStore {
         config,
         forkShared: bundle.name === "Core",
       });
+      const updatedAt = this.nextBundleUpdatedAt(bundleId);
       this.db
         .prepare(
           `UPDATE bundles
@@ -3069,12 +3231,13 @@ export class TenantStore {
           config.hedge.accountId ?? null,
           stringify(config),
           config.mode,
-          this.nextBundleUpdatedAt(bundleId),
+          updatedAt,
           this.ownerAddress,
           bundleId,
         );
       this.replaceBundleMarkets(bundleId, config);
       this.replaceBundleAccountRoles(bundleId, config);
+      this.attachStrategy(bundleId, strategy.strategyId, strategy.version, updatedAt);
     });
     write();
   }
@@ -3173,6 +3336,7 @@ export class TenantStore {
       }
       this.replaceBundleMarkets(id, config);
       this.replaceBundleAccountRoles(id, config);
+      this.attachStrategy(id, strategy.strategyId, strategy.version, now);
       this.db
         .prepare(
           `INSERT INTO tenant_settings (owner_address, key, value, updated_at)
@@ -3265,10 +3429,10 @@ export class TenantStore {
         404,
       );
     }
-    if (bundle.status !== "stopped") {
+    if (bundle.status !== "stopped" && bundle.status !== "paused") {
       throw new UserFacingError(
         "mode-requires-stopped",
-        "Stop this bundle before changing its mode.",
+        "Stop or pause this bundle before changing its mode.",
         { kind: "bundles" },
         409,
       );
@@ -3567,6 +3731,12 @@ export class TenantStore {
           updatedAt,
           this.ownerAddress,
           projection.bundle.id,
+        );
+        this.attachStrategy(
+          projection.bundle.id,
+          current.id,
+          version,
+          updatedAt,
         );
         if (projection.bundle.name === "Core") {
           coreProjection = { config: projection.config, updatedAt };
@@ -3891,6 +4061,7 @@ export class TenantStore {
         );
       this.replaceBundleMarkets(id, inputs.config);
       this.replaceBundleAccountRoles(id, inputs.config);
+      this.attachStrategy(id, strategy.strategyId, strategy.version, now);
       return this.getStoredBundle(id)!;
     });
     return create();
@@ -4046,6 +4217,7 @@ export class TenantStore {
         );
       this.replaceBundleMarkets(id, config);
       this.replaceBundleAccountRoles(id, config);
+      if (strategy) this.attachStrategy(id, strategy.id, strategy.version, now);
       return this.getStoredBundle(id)!;
     });
     return create();
@@ -4180,6 +4352,16 @@ export class TenantStore {
         );
       this.replaceBundleMarkets(current.id, config);
       this.replaceBundleAccountRoles(current.id, config);
+      if (strategy) {
+        this.attachStrategy(
+          current.id,
+          strategy.id,
+          strategy.version,
+          updatedAt,
+        );
+      } else {
+        this.detachStrategy(current.id, updatedAt);
+      }
       if (current.name === "Core") {
         this.db
           .prepare(
@@ -4266,6 +4448,7 @@ export class TenantStore {
       this.db
         .prepare("DELETE FROM bundle_account_roles WHERE bundle_id = ?")
         .run(bundleId);
+      this.detachStrategy(bundleId, now);
       return this.getStoredBundle(bundleId)!;
     });
     return archive();

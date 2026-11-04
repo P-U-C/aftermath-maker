@@ -79,6 +79,7 @@ export type MakerFill = {
   orderId: string;
   estimated: boolean;
   role: "Maker fill" | "Hedge" | "Close" | "Unwind";
+  bundleName?: string;
 };
 
 export type FlattenResult = {
@@ -3013,9 +3014,20 @@ export class MakerRuntime {
       const exposureWasPaused =
         this.snapshotValue.paperBlocker?.code === "gross-exposure" ||
         this.paperSimulationBlockerKey === `${paperTrialId}:gross-exposure`;
+      const bundleHasInventory =
+        portfolio.positions.some(
+          (position) => Math.abs(position.inventoryUsd) > 0.000001,
+        ) ||
+        (paperState?.positions.some(
+          (position) => Math.abs(position.inventoryUsd) > 0.000001,
+        ) ?? false) ||
+        (hedgeRiskPortfolio?.positions.some(
+          (position) => Math.abs(position.inventoryUsd) > 0.000001,
+        ) ?? false);
       const exposurePaused = exposureWasPaused
-        ? bundleWorstCaseGrossExposureUsd >
-          activeConfig.maxGrossExposureUsd - largestBundleQuoteUsd
+        ? bundleHasInventory &&
+          bundleWorstCaseGrossExposureUsd >
+            activeConfig.maxGrossExposureUsd - largestBundleQuoteUsd
         : bundleWorstCaseGrossExposureUsd > activeConfig.maxGrossExposureUsd;
       const hedgeCollateralRequirement =
         requiredHedgeCollateralUsd(activeConfig);
@@ -3296,6 +3308,8 @@ export class MakerRuntime {
               message: `${this.store.bundleId ? (this.store.getStoredBundle(this.store.bundleId)?.name ?? "Maker") : "Core"}: Paper paused new exposure. One more fill could take gross exposure to $${Number(originalGrossCheck.detail.match(/^\$(\d+(?:\.\d+)?)/)?.[1] ?? 0).toFixed(2)}, over the $${marketConfig.maxGrossExposureUsd.toFixed(2)} limit. Maker quotes only the sides that reduce inventory until it's back under. Raise the limit in Strategy, or quote fewer markets.`,
             }
           : null;
+      if (exposurePaused) this.paperExposurePausedAt ??= Date.now();
+      else this.paperExposurePausedAt = null;
       if (
         config.mode === "paper" &&
         inputs.executeLive &&
@@ -3590,6 +3604,66 @@ export class MakerRuntime {
         context: agent.encryptionContext,
         encryptedSecret: agent.encryptedSecret,
       });
+      // Live follows the same deliberately slow recovery path as Paper: once
+      // the pause has persisted, cancel our resting Maker quotes first, then
+      // reduce the largest position in one market.  This branch is reachable
+      // only after the existing Live gates and signer checks above.
+      if (
+        exposurePaused &&
+        config.unwindAfterPauseMinutes > 0 &&
+        Date.now() - (this.paperExposurePausedAt ?? Date.now()) >=
+          config.unwindAfterPauseMinutes * 60_000
+      ) {
+        const largest = [...portfolio.positions, ...(hedgeRiskPortfolio?.positions ?? [])]
+          .filter((position) => Math.abs(position.inventoryUsd) > 0.000001)
+          .sort((left, right) => Math.abs(right.inventoryUsd) - Math.abs(left.inventoryUsd))[0];
+        if (largest) {
+          const cancelled = await this.cancelOpenOrders(config, {
+            attempts: 3,
+            retryDelayMs: 750,
+            marketIds: [largest.marketId],
+          });
+          if (!cancelled)
+            throw new Error("Exposure unwind could not confirm Maker order cancellation");
+          this.clearActiveQuoteState();
+          const accounts = [setup];
+          const hedgeSetup = config.hedge.enabled && config.hedge.accountId
+            ? this.store.getAccountSetup(config.hedge.accountId)
+            : null;
+          if (hedgeSetup?.agentCapId && hedgeSetup.accountId !== setup.accountId)
+            accounts.push(hedgeSetup);
+          for (const unwindSetup of accounts) {
+            const receipt = await this.gateway.flattenPositions({
+              setup: unwindSetup,
+              config,
+              signer,
+              marketIds: [largest.marketId],
+              maxSlippage: config.hedge.maxSlippageBps / 10_000,
+            });
+            if (!receipt) continue;
+            this.store.logExecution({
+              mode: "live",
+              marketId: largest.marketId,
+              digest: receipt.digest,
+              endpoint: receipt.endpoint,
+              bidPrice: 0,
+              askPrice: 0,
+              sizeUsd: Math.abs(largest.inventoryUsd),
+              outcome: "exposure-unwind",
+              gasUsedMist: receipt.gasUsedMist,
+            });
+          }
+          this.store.logEvent({
+            category: "risk",
+            action: "exposure-unwind",
+            outcome: "confirmed",
+            detail: { marketId: largest.marketId, sizeUsd: Math.abs(largest.inventoryUsd) },
+          });
+          this.snapshotValue.execution.lastDecision = "rebalanced";
+          this.snapshotValue.lastSuccessfulCycleAt = updatedAt;
+          return;
+        }
+      }
       const hedgeReadyForQuotes = await this.reconcileHedge({
         config,
         marketConfig,
