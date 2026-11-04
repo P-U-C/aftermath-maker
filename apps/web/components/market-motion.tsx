@@ -51,6 +51,8 @@ type MarketMotionProps = MarketMotionUpdate & {
   seed?: number;
   /** A fixed desktop lane height. The phone layout keeps the engine's compact default. */
   height?: number;
+  /** Fill a fixed-height panel instead of preserving the illustrative aspect ratio. */
+  fill?: boolean;
   /** Learn turns off the engine's ambient simulated takers and directs named scenes. */
   director?: boolean;
   onEvent?: (event: string) => void;
@@ -86,6 +88,7 @@ export const MarketMotion = forwardRef<MarketMotionHandle, MarketMotionProps>(
       spreadBps,
       seed,
       height,
+      fill = false,
       director,
       onEvent,
     } = props;
@@ -132,6 +135,7 @@ export const MarketMotion = forwardRef<MarketMotionHandle, MarketMotionProps>(
         compact,
         static: reduced,
         height: layout === "phone" && !compact ? undefined : height,
+        fill,
         mid: first.mid && first.mid > 0 ? first.mid : undefined,
         sizeUsd,
         hedgeTriggerUsd,
@@ -155,6 +159,7 @@ export const MarketMotion = forwardRef<MarketMotionHandle, MarketMotionProps>(
       compact,
       narrate,
       height,
+      fill,
       sizeUsd,
       hedgeTriggerUsd,
       spreadBps,

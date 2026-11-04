@@ -35,7 +35,12 @@ type LaneSnapshot = {
   inventory?: {
     netUsd: number;
     grossUsd: number;
-    positions: Array<{ marketId: string; symbol: string; account: string; inventoryUsd: number }>;
+    positions: Array<{
+      marketId: string;
+      symbol: string;
+      account: string;
+      inventoryUsd: number;
+    }>;
   };
   maxInventoryUsd?: number;
   portfolio: { unrealizedPnlUsd: number };
@@ -51,17 +56,27 @@ function BundleLane({ lane }: { lane: RunningBundleLane }) {
   const { open: openRunStatus } = useMakerRunControls();
   const { snapshot, bundle } = lane;
   const notices = [
-    snapshot.paperBlocker ? formatPaperBlocker(snapshot.paperBlocker).sentence : null,
+    snapshot.paperBlocker
+      ? formatPaperBlocker(snapshot.paperBlocker).sentence
+      : null,
     bundle.lastError ?? snapshot.lastError ?? null,
-    snapshot.accountReadAt && Date.now() - Date.parse(snapshot.accountReadAt) > 3 * (snapshot.cycleIntervalMs ?? 5_000)
+    snapshot.accountReadAt &&
+    Date.now() - Date.parse(snapshot.accountReadAt) >
+      3 * (snapshot.cycleIntervalMs ?? 5_000)
       ? `Account data is stale, last read ${relativeAccountRead(snapshot.accountReadAt)?.replace(/^Checked /, "")}`
       : null,
   ].filter((notice): notice is string => Boolean(notice));
-  const positions = [...(snapshot.inventory?.positions ?? [])]
-    .sort((left, right) => Math.abs(right.inventoryUsd) - Math.abs(left.inventoryUsd));
+  const positions = [...(snapshot.inventory?.positions ?? [])].sort(
+    (left, right) => Math.abs(right.inventoryUsd) - Math.abs(left.inventoryUsd),
+  );
   const shownPositions = positions.slice(0, 3);
-  const grossInventory = snapshot.inventory?.grossUsd ?? Math.abs(snapshot.balances.inventoryUsd);
-  const inventoryLimit = snapshot.maxInventoryUsd ?? Math.max(1, grossInventory);
+  // Positions are the cross-account source of truth. A legacy single-market balance
+  // must not make a flat bundle look gross while its position list is empty.
+  const grossInventory = positions.length
+    ? (snapshot.inventory?.grossUsd ?? 0)
+    : 0;
+  const inventoryLimit =
+    snapshot.maxInventoryUsd ?? Math.max(1, grossInventory);
 
   useEffect(() => {
     motion.current?.update({
@@ -76,7 +91,9 @@ function BundleLane({ lane }: { lane: RunningBundleLane }) {
   }, [snapshot]);
 
   return (
-    <article className="bundle-desk-lane">
+    <article
+      className={`bundle-desk-lane${positions.length ? "" : " is-flat"}`}
+    >
       <header>
         <div>
           <div className="bundle-lane-title">
@@ -103,8 +120,13 @@ function BundleLane({ lane }: { lane: RunningBundleLane }) {
       </header>
       <div className="bundle-lane-notice-slot">
         {notices.length > 0 && (
-          <p className="bundle-lane-notice" role="status" title={notices.join(" ")}>
-            {notices[0]}{notices.length > 1 ? `, and ${notices.length - 1} more` : ""}
+          <p
+            className="bundle-lane-notice"
+            role="status"
+            title={notices.join(" ")}
+          >
+            {notices[0]}
+            {notices.length > 1 ? `, and ${notices.length - 1} more` : ""}
             <details>
               <summary>Details</summary>
               {notices.join(" ")}
@@ -112,30 +134,68 @@ function BundleLane({ lane }: { lane: RunningBundleLane }) {
           </p>
         )}
       </div>
-      <section className="bundle-lane-inventory" aria-label={`${bundle.name} inventory`}>
-        <header><span>Inventory</span><strong>{formatMoney(grossInventory)} gross</strong></header>
-        <div className="bundle-lane-meter" aria-label={`${formatMoney(grossInventory)} of ${formatMoney(inventoryLimit)} inventory limit`}>
-          <i style={{ width: `${Math.min(100, (grossInventory / inventoryLimit) * 100)}%` }} />
-        </div>
+      <section
+        className="bundle-lane-inventory"
+        aria-label={`${bundle.name} inventory`}
+      >
+        <header>
+          <span>Inventory</span>
+          {positions.length > 0 && (
+            <strong>{formatMoney(grossInventory)} gross</strong>
+          )}
+        </header>
+        {positions.length > 0 && (
+          <div
+            className="bundle-lane-meter"
+            aria-label={`${formatMoney(grossInventory)} of ${formatMoney(inventoryLimit)} inventory limit`}
+          >
+            <i
+              style={{
+                width: `${Math.min(100, (grossInventory / inventoryLimit) * 100)}%`,
+              }}
+            />
+          </div>
+        )}
         {shownPositions.length ? (
           <ul>
             {shownPositions.map((position) => (
               <li key={`${position.account}:${position.marketId}`}>
                 <span>{position.symbol}</span>
-                <i><b style={{ width: `${Math.min(100, (Math.abs(position.inventoryUsd) / inventoryLimit) * 100)}%` }} /></i>
+                <i>
+                  <b
+                    style={{
+                      width: `${Math.min(100, (Math.abs(position.inventoryUsd) / inventoryLimit) * 100)}%`,
+                    }}
+                  />
+                </i>
                 <strong>{formatMoney(position.inventoryUsd)}</strong>
               </li>
             ))}
           </ul>
-        ) : <small>Flat across accounts</small>}
-        {positions.length > 3 && <details className="bundle-lane-more"><summary>+{positions.length - 3} more</summary><ul>{positions.slice(3).map((position) => <li key={`${position.account}:${position.marketId}`}><span>{position.symbol}</span><strong>{formatMoney(position.inventoryUsd)}</strong></li>)}</ul></details>}
+        ) : (
+          <small>Flat across accounts</small>
+        )}
+        {positions.length > 3 && (
+          <details className="bundle-lane-more">
+            <summary>+{positions.length - 3} more</summary>
+            <ul>
+              {positions.slice(3).map((position) => (
+                <li key={`${position.account}:${position.marketId}`}>
+                  <span>{position.symbol}</span>
+                  <strong>{formatMoney(position.inventoryUsd)}</strong>
+                </li>
+              ))}
+            </ul>
+          </details>
+        )}
       </section>
       <MarketMotion
         ref={motion}
         compact
         sim={false}
+        fill
         className="bundle-lane-motion"
-        height={140}
+        height={160}
         mid={snapshot.market.indexPrice}
         bid={snapshot.quote?.bidPrice ?? null}
         ask={snapshot.quote?.askPrice ?? null}

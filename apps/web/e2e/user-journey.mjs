@@ -864,7 +864,11 @@ async function goToStrategyStep(page, target) {
   for (let count = 0; count < 5; count += 1) {
     const step = Number(await form.getAttribute("data-strategy-step"));
     if (step >= target) return;
-    await form.getByRole("button", { name: /Save and continue to/ }).click();
+    await form
+      .getByRole("button", {
+        name: `Next: ${["Markets", "Size and limits", "Hedging", "Review"][step]}`,
+      })
+      .click();
     await page.waitForFunction(
       (next) =>
         Number(
@@ -1034,7 +1038,7 @@ async function savedDeskOnly(browser) {
       .getByRole("textbox", { name: "Gross exposure (USD)" })
       .fill("1.50");
     await page
-      .getByText("Save and continue to Hedging", { exact: true })
+      .getByRole("button", { name: "Next: Hedging", exact: true })
       .waitFor();
     assert(
       (await page
@@ -2136,6 +2140,8 @@ async function paperSimulationBlockerStaysVisible(browser) {
       (entry) => entry.bundle.id === "core-fixture",
     );
     core.snapshot = structuredClone(core.snapshot);
+    core.bundle.lastError = null;
+    core.snapshot.paperBlocker = null;
     core.snapshot.lastError = message;
     state.fixture.events.events.unshift({
       id: 884,
@@ -2148,7 +2154,21 @@ async function paperSimulationBlockerStaysVisible(browser) {
 
     await goToDesk(page);
     const lane = page.locator(".bundle-desk-lane").filter({ hasText: "Core" });
-    await lane.getByText(message, { exact: true }).waitFor();
+    const notice = lane.locator(".bundle-lane-notice");
+    assert(
+      (await notice.innerText()) === `${message}Details`,
+      "The paper blocker notice did not keep its one-line summary and Details control",
+    );
+    const details = notice.locator("details");
+    await details.locator("summary", { hasText: "Details" }).click();
+    assert(
+      (await details.getAttribute("open")) !== null,
+      "Details did not open",
+    );
+    assert(
+      (await details.innerText()) === `Details${message}`,
+      "Details did not reveal the full paper blocker message",
+    );
     await lane
       .getByRole("button", {
         name: "Core: Needs attention. Open run status",
@@ -2274,7 +2294,7 @@ async function round6PickerAndRename(browser) {
       .getByLabel("Strategy name", { exact: true })
       .fill("Rewards strategy");
     await strategy
-      .getByRole("button", { name: /Save and continue to/ })
+      .getByRole("button", { name: "Next: Markets", exact: true })
       .click();
     assert(
       (await strategy
@@ -2296,7 +2316,7 @@ async function round6PickerAndRename(browser) {
       "Corrected name error persisted",
     );
     await strategy
-      .getByRole("button", { name: /Save and continue to/ })
+      .getByRole("button", { name: "Next: Markets", exact: true })
       .click();
     await page.getByRole("link", { name: "Bundles", exact: true }).click();
     await page
@@ -2521,7 +2541,9 @@ async function round6ContextLinksAndHelp(browser) {
     await strategy
       .getByRole("button", { name: "View Maker account 1745" })
       .click();
-    await page.locator('[id="account-1745"]').waitFor();
+    await page
+      .locator('.maker-view[data-view="venues"]:not([hidden]) #account-1745')
+      .waitFor();
     await page.getByRole("button", { name: "Back to Strategy" }).click();
     await strategy.getByRole("button", { name: "Edit Core bundle" }).click();
     const bundle = page.getByRole("dialog", { name: "Edit Core" });
@@ -3032,7 +3054,7 @@ async function v7BundleDeskAndStrategy(browser) {
       "Blank quote size did not show a field error",
     );
     await strategyView
-      .getByRole("button", { name: /Save and continue to/ })
+      .getByRole("button", { name: "Next: Hedging", exact: true })
       .click();
     assert(
       (await strategyView
