@@ -156,6 +156,7 @@ const strategyConfigSchema = z
     maxInventoryUsd: z.number().positive().max(10_000),
     inventoryTargetUsd: z.number().min(-10_000).max(10_000),
     maxGrossExposureUsd: z.number().positive().max(100_000),
+    unwindAfterPauseMinutes: z.number().int().min(0).max(1_440).default(10),
     maxUnrealizedLossUsd: z.number().positive().max(10_000),
     maxRunDrawdownUsd: z.number().positive().max(10_000),
     maxBookDivergenceBps: z.number().positive().max(5_000),
@@ -4848,6 +4849,7 @@ export class TenantStore {
     marketId: string;
     bestBid: number;
     bestAsk: number;
+    reason?: "close" | "unwind";
   }): PaperFill[] {
     const bundleId = this.paperBundleId();
     const positions = this.getPaperState(inputs.trialId).positions.filter(
@@ -4868,7 +4870,7 @@ export class TenantStore {
           position.inventoryUsd > 0 ? "ask" : "bid";
         const price = side === "ask" ? inputs.bestBid : inputs.bestAsk;
         const fill: PaperFill = {
-          orderKey: `close:${position.role}:${inputs.marketId}:${now}`,
+          orderKey: `${inputs.reason ?? "close"}:${position.role}:${inputs.marketId}:${now}`,
           role: position.role,
           marketId: position.marketId,
           symbol: position.symbol,

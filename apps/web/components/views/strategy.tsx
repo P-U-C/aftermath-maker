@@ -102,6 +102,7 @@ type GoLiveSheetProps = {
   hedgeSlippageBps: number;
   onClose: () => void;
   onConfirm: () => void;
+  onStopCore?: () => void;
 };
 
 export const GO_LIVE_REQUIREMENT_HEADINGS = [
@@ -131,6 +132,7 @@ export function GoLiveSheet({
   hedgeSlippageBps,
   onClose,
   onConfirm,
+  onStopCore,
 }: GoLiveSheetProps) {
   const [confirmed, setConfirmed] = useState(false);
   return (
@@ -177,7 +179,14 @@ export function GoLiveSheet({
           </li>
           <li data-ready={liveReadiness?.stopped ? "true" : "false"}>
             <strong>{GO_LIVE_REQUIREMENT_HEADINGS[3]}</strong>
-            <span>{liveReadiness?.stopped ? "Done" : "Needed — Stop Core before switching its mode."}</span>
+            <span>
+              {liveReadiness?.stopped ? "Done" : "Needed — Stop Core before switching its mode. "}
+              {!liveReadiness?.stopped && onStopCore && (
+                <Button variant="secondary" size="small" onClick={onStopCore}>
+                  Stop Core
+                </Button>
+              )}
+            </span>
           </li>
           {(liveReadiness?.readiness?.stages ?? []).map((stage) => (
             <li

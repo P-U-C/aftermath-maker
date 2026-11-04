@@ -1602,6 +1602,8 @@ async function capture(browser, stateName, captureConfig, view) {
         if (!stage || !fields || !actions) return null;
         const fieldBox = fields.getBoundingClientRect();
         const actionBox = actions.getBoundingClientRect();
+        if (!fieldBox.width || !fieldBox.height || !actionBox.width || !actionBox.height)
+          return null;
         return {
           sameRow:
             fieldBox.top < actionBox.bottom && actionBox.top < fieldBox.bottom,

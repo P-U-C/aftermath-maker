@@ -35,6 +35,7 @@ const CONTROL_EVENT_KINDS = [
   "operator:runtime.stop-tenant:completed",
   "operator:runtime.stop-tenant:not-found",
   "paper:estimated-fill:estimated",
+  "paper:exposure-unwind:estimated",
   "paper:market-skip:all-paused",
   "paper:market-skip:paused",
   "paper:market-skip:resumed",

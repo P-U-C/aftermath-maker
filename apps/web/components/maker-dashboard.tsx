@@ -137,7 +137,6 @@ import { SpreadMark } from "./spread-mark";
 import { StrategyPicker } from "./strategy-picker";
 import { MarketPolicySheet } from "./market-policy-sheet";
 import { VenueChip } from "./venue-chip";
-import { AccountsView } from "./views/accounts";
 import { BundleDeskLanes } from "./views/bundle-desk-lanes";
 import {
   BundlesView,
@@ -349,6 +348,12 @@ type Snapshot = {
     unrealizedPnlUsd: number;
     gasSui: number | null;
   };
+  inventory?: {
+    netUsd: number;
+    grossUsd: number;
+    positions: Array<{ marketId: string; symbol: string; account: "Maker" | "Hedge"; inventoryUsd: number }>;
+  };
+  fillSequence?: number;
   watchdog: {
     state: "idle" | "armed" | "tripped";
     checkedAt: string | null;
@@ -467,6 +472,7 @@ type MakerConfig = {
   maxInventoryUsd: number;
   inventoryTargetUsd: number;
   maxGrossExposureUsd: number;
+  unwindAfterPauseMinutes: number;
   maxUnrealizedLossUsd: number;
   maxRunDrawdownUsd: number;
   maxBookDivergenceBps: number;
@@ -636,6 +642,7 @@ type MakerFill = {
   estimatedBuilderFeeUsd: number;
   orderId: string;
   estimated: boolean;
+  role: "Maker fill" | "Hedge" | "Close" | "Unwind";
 };
 
 type PerformancePeriod = "1D" | "EPOCH" | "ALL";
@@ -982,6 +989,7 @@ const defaultConfig: MakerConfig = {
   maxInventoryUsd: 50,
   inventoryTargetUsd: 0,
   maxGrossExposureUsd: 150,
+  unwindAfterPauseMinutes: 10,
   maxUnrealizedLossUsd: 20,
   maxRunDrawdownUsd: 20,
   maxBookDivergenceBps: 100,
@@ -1249,7 +1257,7 @@ function DashboardBody() {
   const ownerRef = useRef<string | null>(null);
   const [accountsLoaded, setAccountsLoaded] = useState(false);
   useEffect(() => {
-    if (activeView !== "accounts" || !accountFocusId) return;
+    if (activeView !== "venues" || !accountFocusId) return;
     const frame = window.requestAnimationFrame(() => {
       const target = document.getElementById(`account-${accountFocusId}`);
       target?.scrollIntoView({ block: "center" });
@@ -1264,6 +1272,7 @@ function DashboardBody() {
   const [performancePeriod, setPerformancePeriod] =
     useState<PerformancePeriod>("1D");
   const [performanceBundle, setPerformanceBundle] = useState<string>("all");
+  const [pendingStrategyFocus, setPendingStrategyFocus] = useState<string | null>(null);
   const [expandedPerformanceMarket, setExpandedPerformanceMarket] = useState<
     string | null
   >(null);
@@ -2390,7 +2399,7 @@ function DashboardBody() {
       ),
     );
     if (!onboardingComplete && !window.location.hash) {
-      selectView("accounts");
+      selectView("venues");
     }
   }, [config.makerAccountId, identity, savedConfig, selectView, setup]);
 
@@ -3194,12 +3203,17 @@ function DashboardBody() {
   function focusStrategyField(fieldId: string, step: number) {
     setStrategyStep(step);
     setAdvancedOpen(true);
-    window.requestAnimationFrame(() => {
-      const field = document.getElementById(fieldId) as HTMLInputElement | null;
-      field?.scrollIntoView({ block: "center", behavior: "smooth" });
-      field?.focus({ preventScroll: true });
-    });
+    setPendingStrategyFocus(fieldId);
   }
+
+  useEffect(() => {
+    if (!pendingStrategyFocus) return;
+    const field = document.getElementById(pendingStrategyFocus) as HTMLInputElement | null;
+    if (!field) return;
+    field.scrollIntoView({ block: "center", behavior: "smooth" });
+    field.focus({ preventScroll: true });
+    setPendingStrategyFocus(null);
+  }, [pendingStrategyFocus, strategyStep, advancedOpen]);
 
   function chooseSuggestionPreset(preset: MarketSuggestionPreset) {
     setSuggestionPreset(preset);
@@ -3935,7 +3949,7 @@ function DashboardBody() {
     if (configDirty && !persistStrategyDraft()) return;
     setStrategyReturn({ strategyId: selectedStrategy.id, step: strategyStep });
     setAccountFocusId(accountId);
-    selectView("accounts");
+    selectView("venues");
   }
 
   function returnToStrategy() {
@@ -4189,7 +4203,7 @@ function DashboardBody() {
     ...config.markets.map(
       (configured) =>
         markets.find((listed) => listed.id === configured.marketId)
-          ?.maxLeverage ?? configured.marketMaxLeverage ?? 1,
+          ?.maxLeverage ?? 100,
     ),
   );
   const volumeLoopNotionalUsd = config.quoteSizeUsd * 4;
@@ -5250,6 +5264,7 @@ function DashboardBody() {
       realizedPnlUsd: fill.realizedPnlUsd,
       txDigest: fill.txDigest,
       estimated: fill.estimated,
+      role: fill.role,
     })) ?? [];
   const deskNarration = narrate({
     name: deskRunningBundle?.name ?? "Maker",
@@ -5482,6 +5497,7 @@ function DashboardBody() {
         },
         quote: null,
         balances: { inventoryUsd: 0 },
+        inventory: { netUsd: 0, grossUsd: 0, positions: [] },
         portfolio: { unrealizedPnlUsd: 0 },
       } satisfies Parameters<
         typeof BundleDeskLanes
@@ -5494,6 +5510,9 @@ function DashboardBody() {
           cycleIntervalMs:
             strategies.find((strategy) => strategy.id === source?.strategyId)
               ?.config.refreshMs ?? deskConfig.refreshMs,
+          maxInventoryUsd:
+            strategies.find((strategy) => strategy.id === source?.strategyId)
+              ?.config.maxInventoryUsd ?? deskConfig.maxInventoryUsd,
         },
       },
     ];
@@ -5501,6 +5520,17 @@ function DashboardBody() {
   const selectedBundle = bundles.find(
     (bundle) => bundle.id === selectedBundleId,
   );
+  const coreBundle = bundles.find((bundle) => bundle.name === "Core");
+  const coreStrategy = coreBundle?.strategyId
+    ? strategies.find((strategy) => strategy.id === coreBundle.strategyId)
+    : null;
+  const coreConfig =
+    coreStrategy
+      ? configWithStrategySettings(
+          { ...config, markets: coreStrategy.markets },
+          coreStrategy.config,
+        )
+      : config;
 
   const canOperate = onboardingComplete && deskConfig.markets.length > 0;
   const displayedView = activeView;
@@ -5547,7 +5577,9 @@ function DashboardBody() {
       onLogout={() => void logout(true)}
       onStopAll={() => void stopRuntime()}
     >
-      <AccountsView active={displayedView === "accounts"}>
+      {/* Account management lives in Venues.  Keep this legacy markup out of
+          the document while old local state is retired incrementally. */}
+      <section hidden aria-hidden="true">
         <header className="accounts-title">
           <div>
             <h1>Accounts</h1>
@@ -6056,7 +6088,7 @@ function DashboardBody() {
             </a>
           </footer>
         </section>
-      </AccountsView>
+      </section>
 
       <DeskView
         active={displayedView === "desk"}
@@ -6852,7 +6884,10 @@ function DashboardBody() {
                 <button
                   type="button"
                   className="strategy-context-link"
-                  onClick={() => selectView("bundles")}
+                onClick={() => {
+                  selectView("bundles");
+                  setLiveSheetOpen(true);
+                }}
                 >
                   Go live
                 </button>
@@ -7022,7 +7057,7 @@ function DashboardBody() {
                   ) : !onboardingComplete ? (
                     <button
                       type="button"
-                      onClick={() => selectView("accounts")}
+                      onClick={() => selectView("venues")}
                     >
                       Finish setup
                     </button>
@@ -7477,47 +7512,30 @@ function DashboardBody() {
                 </div>
                 <div className="strategy-rotation-stage">
                   <div className="strategy-suggestion-fields">
-                    <div
-                      className="reward-focus"
-                      aria-label="Market suggestion focus"
-                    >
+                    <div className="reward-focus" aria-label="Market suggestion focus">
                       <span>Focus</span>
-                      <div role="group" aria-label="Market suggestion focus">
-                        <button
-                          type="button"
-                          className={rewardFocus === "all" ? "selected" : ""}
-                          aria-pressed={rewardFocus === "all"}
-                          onClick={() => {
+                      <SegmentedTabs
+                        label="Market suggestion focus"
+                        value={rewardFocus}
+                        options={[
+                          { value: "all", label: "All eligible" },
+                          { value: "thin", label: "Thin books" },
+                          { value: "reward-share", label: "Reward share" },
+                        ]}
+                        onChange={(next) => {
+                          if (next === "all") {
                             setRewardFocus("all");
                             setPendingMarketSuggestion(null);
-                          }}
-                        >
-                          All eligible
-                        </button>
-                        <button
-                          type="button"
-                          className={rewardFocus === "thin" ? "selected" : ""}
-                          aria-pressed={rewardFocus === "thin"}
-                          onClick={() => {
+                          } else if (next === "thin") {
                             setRewardFocus("thin");
                             setPendingMarketSuggestion(null);
-                          }}
-                        >
-                          Thin books
-                        </button>
-                        <button
-                          type="button"
-                          className={rewardFocus === "reward-share" ? "selected" : ""}
-                          aria-pressed={rewardFocus === "reward-share"}
-                          onClick={() => {
+                          } else {
                             setRewardFocus("reward-share");
                             setPendingMarketSuggestion(null);
                             void loadRewardShare(rewardShareScenario, rewardShareBudget).catch((error) => setNotice(error instanceof Error ? error.message : String(error)));
-                          }}
-                        >
-                          Reward share
-                        </button>
-                      </div>
+                          }
+                        }}
+                      />
                     </div>
                     <label className="reward-count">
                       <span>Markets</span>
@@ -8141,6 +8159,25 @@ function DashboardBody() {
                 </label>
                 <AdvancedTip id="gross-exposure" />
               </p>
+              <p>
+                If exposure stays paused, unwind after {" "}
+                <label>
+                  <span className="sr-only">Unwind after pause in minutes</span>
+                  <NumericDraftInput
+                    key={selectedStrategyId ?? "core"}
+                    id="strategy-unwind-after-pause"
+                    label="Unwind after pause"
+                    unit="minutes"
+                    value={config.unwindAfterPauseMinutes}
+                    min={0}
+                    max={1440}
+                    integer
+                    onValidity={setNumericValidity}
+                    onValue={(value) => setConfig((current) => ({ ...current, unwindAfterPauseMinutes: value }))}
+                  />
+                </label>{" "}
+                minutes. Set 0 to leave reduce-only quotes working without a taker unwind.
+              </p>
               <p className="strategy-section-copy">
                 Quoting {config.markets.length} market
                 {config.markets.length === 1 ? "" : "s"} at{" "}
@@ -8627,9 +8664,10 @@ function DashboardBody() {
                       {strategySaveBlocker.message}{" "}
                       <button
                         type="button"
-                        onClick={() =>
-                          setStrategyStep(strategySaveBlocker.step)
-                        }
+                        onClick={() => focusStrategyField(
+                          "strategy-max-leverage",
+                          strategySaveBlocker.step,
+                        )}
                       >
                         Go to that step
                       </button>
@@ -8652,7 +8690,7 @@ function DashboardBody() {
         editorRequest={bundleEditorRequest}
         returnToStrategy={strategyReturn !== null}
         onReturnToStrategy={returnToStrategy}
-        onOpenAccounts={() => selectView("accounts")}
+        onOpenAccounts={() => selectView("venues")}
         busy={Boolean(busy)}
         run={runState}
         onSelect={(bundleId) => void selectBundle(bundleId)}
@@ -8683,7 +8721,7 @@ function DashboardBody() {
             return;
           }
           if (stage === "accounts" || stage === "tradingKeys") {
-            selectView("accounts");
+            selectView("venues");
             if (detail?.accountId) setSelectedAccount(detail.accountId);
             return;
           }
@@ -9584,8 +9622,8 @@ function DashboardBody() {
             });
           }}
           onAuthorize={(accountId) => {
-            selectView("accounts");
             setSelectedAccount(accountId);
+            void authorizeAgent(accountId);
           }}
           onOpenStrategy={() => {
             const blocked = bundles.find(
@@ -10116,23 +10154,25 @@ function DashboardBody() {
         operator={identity.operator}
         ownerAddress={identity.ownerAddress}
         venue={primaryVenue}
-        marketCount={config.markets.length}
-        rotationMode={config.rotationMode}
-        quoteSizeUsd={config.quoteSizeUsd}
-        maxGrossExposureUsd={config.maxGrossExposureUsd}
-        maxRunDrawdownUsd={config.maxRunDrawdownUsd}
-        hedgeAccountId={config.hedge.enabled ? config.hedge.accountId : null}
+        marketCount={coreConfig.markets.length}
+        rotationMode={coreConfig.rotationMode}
+        quoteSizeUsd={coreConfig.quoteSizeUsd}
+        maxGrossExposureUsd={coreConfig.maxGrossExposureUsd}
+        maxRunDrawdownUsd={coreConfig.maxRunDrawdownUsd}
+        hedgeAccountId={coreConfig.hedge.enabled ? coreConfig.hedge.accountId : null}
         makerAccountId={
-          bundles.find((bundle) => bundle.name === "Core")?.makerAccountId ??
-          null
+          coreBundle?.makerAccountId ?? null
         }
-        hedgeSlippageBps={config.hedge.maxSlippageBps}
+        hedgeSlippageBps={coreConfig.hedge.maxSlippageBps}
         onClose={() => setLiveSheetOpen(false)}
         onConfirm={() => {
           const core = bundles.find((bundle) => bundle.name === "Core");
           if (!core || !liveReadiness?.ready) return;
           void switchBundleMode(core, "live");
           setLiveSheetOpen(false);
+        }}
+        onStopCore={() => {
+          void stopRuntime();
         }}
       />
 

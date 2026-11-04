@@ -348,7 +348,7 @@ export function VenueBoard({
                               </>
                             ) : (
                               <Button
-                                variant="quiet"
+                                variant={account.shortfallUsd > 0 ? "secondary" : "primary"}
                                 size="small"
                                 onClick={() => onAuthorize(account.accountId)}
                               >
@@ -371,7 +371,7 @@ export function VenueBoard({
                           <td className="venue-account-actions">
                             <Button
                               variant={
-                                account.shortfallUsd > 0
+                                account.shortfallUsd > 0 && account.authorized
                                   ? "primary"
                                   : "secondary"
                               }

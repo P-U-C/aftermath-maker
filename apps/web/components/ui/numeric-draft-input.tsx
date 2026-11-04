@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { parseNumericDraft } from "../../lib/numeric-draft";
 
 export function NumericDraftInput({
@@ -28,11 +28,20 @@ export function NumericDraftInput({
 }) {
   const [text, setText] = useState(String(value));
   const [focused, setFocused] = useState(false);
+  const lastExternalValue = useRef(value);
   const { error } = parseNumericDraft(text, { label, unit, min, max, integer });
 
   useEffect(() => {
-    if (!focused && !error) setText(String(value));
-  }, [focused, value, error]);
+    // Controls such as Max are authoritative external changes.  A stale,
+    // invalid draft must never keep the field visually invalid after one.
+    if (lastExternalValue.current !== value) {
+      lastExternalValue.current = value;
+      setText(String(value));
+      onValidity(id, null);
+    } else if (!focused && !error) {
+      setText(String(value));
+    }
+  }, [error, focused, id, onValidity, value]);
 
   return (
     <>
