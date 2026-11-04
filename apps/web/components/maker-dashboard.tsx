@@ -4095,6 +4095,18 @@ function DashboardBody() {
     selectView,
   ]);
 
+  // Hooks must run before the signed-out early returns below; React requires
+  // the same hook order on every render.
+  const observedFillSequence = Math.max(
+    snapshot?.fillSequence ?? 0,
+    ...bundleSnapshots.map((entry) => entry.snapshot?.fillSequence ?? 0),
+  );
+  useEffect(() => {
+    if (observedFillSequence === lastPerformanceFillSequence.current) return;
+    lastPerformanceFillSequence.current = observedFillSequence;
+    void loadPerformance().catch(() => undefined);
+  }, [loadPerformance, observedFillSequence]);
+
   if (!authChecked) {
     return (
       <main className="loading-shell">
@@ -5243,16 +5255,6 @@ function DashboardBody() {
     : null;
   const deskRunningSnapshot = deskRunningRun?.snapshot ?? null;
   const deskReportSnapshot = deskRunningBundle ? deskRunningSnapshot : snapshot;
-  const observedFillSequence = deskReportSnapshot?.fillSequence ?? null;
-  useEffect(() => {
-    if (
-      observedFillSequence === null ||
-      observedFillSequence === lastPerformanceFillSequence.current
-    )
-      return;
-    lastPerformanceFillSequence.current = observedFillSequence;
-    void loadPerformance();
-  }, [loadPerformance, observedFillSequence]);
   const deskRunningStrategy = strategies.find(
     (strategy) => strategy.id === deskRunningBundle?.strategyId,
   );
