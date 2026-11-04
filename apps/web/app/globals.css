@@ -8281,6 +8281,29 @@ mysten-dapp-kit-connect-modal,
 .strategy-suggestion-panel .strategy-suggestion-hint {
   margin: 0;
 }
+.reward-share-ranking {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  border-radius: 10px;
+  font-size: 13px;
+}
+.reward-share-ranking p { margin: 0; }
+.reward-share-ranking ul { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.reward-share-ranking li { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; padding-top: 8px; border-top: 1px solid var(--line); }
+.reward-share-budget { display: flex; flex-wrap: wrap; align-items: end; gap: 8px; }
+.reward-share-budget span { width: 100%; color: var(--ink-2); }
+.reward-share-budget input { width: 150px; }
+.reward-model-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-3); }
+.reward-model-fields label, .reward-model-fields fieldset { display: grid; gap: var(--space-1); color: var(--ink-2); }
+.reward-model-fields input, .reward-model-fields select { min-height: 44px; width: 100%; }
+.reward-model-fields fieldset { grid-column: 1 / -1; border: 1px solid var(--line); border-radius: var(--radius-2); padding: var(--space-3); }
+.reward-model-account { display: flex !important; align-items: center; gap: var(--space-2) !important; }
+.reward-model-account input { min-height: 20px; width: 20px; }
+@media (max-width: 700px) { .reward-model-fields { grid-template-columns: 1fr; } }
+.go-live-confirmation { min-height: 44px; display: flex; align-items: center; gap: 8px; }
 .strategy-clear-selection {
   margin: 0 0 16px;
 }
@@ -8423,7 +8446,7 @@ mysten-dapp-kit-connect-modal,
 }
 
 .workspace-strategy .input-unit input {
-  min-height: 42px;
+  min-height: 44px;
   border-radius: 0;
 }
 
@@ -10451,6 +10474,9 @@ mysten-dapp-kit-connect-modal,
   flex: 0 0 auto;
   white-space: nowrap;
 }
+@media (max-width: 700px) {
+  .strategy-select-row .strategy-new-button { min-height: 44px; }
+}
 @media (max-width: 350px) {
   .strategy-select-row {
     flex-wrap: wrap;
@@ -11028,7 +11054,9 @@ mysten-dapp-kit-connect-modal,
 }
 .strategy-suggestion-fields .reward-focus > div {
   height: 44px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
 }
+.strategy-suggestion-fields .reward-focus button { white-space: normal; }
 .strategy-suggestion-fields .reward-count input {
   width: 100%;
   height: 44px;
@@ -11071,6 +11099,14 @@ mysten-dapp-kit-connect-modal,
   overflow-wrap: anywhere;
 }
 @media (max-width: 700px) {
+  .strategy-select-row .strategy-new-button,
+  .strategy-summary-actions .button,
+  .strategy-market-legend summary,
+  .strategy-market-reasons summary {
+    min-height: 44px;
+    display: flex;
+    align-items: center;
+  }
   .maker-view[data-view="strategy"] .strategy-title {
     flex-direction: row;
     align-items: center;
@@ -11122,9 +11158,9 @@ mysten-dapp-kit-connect-modal,
   }
   .strategy-suggestion-fields .reward-focus > div {
     min-width: 0;
-    height: 88px;
+    height: 132px;
     grid-template-columns: minmax(0, 1fr);
-    grid-template-rows: repeat(2, minmax(0, 1fr));
+    grid-template-rows: repeat(3, minmax(0, 1fr));
   }
   .strategy-suggestion-fields .reward-focus button {
     min-width: 0;
@@ -11153,11 +11189,11 @@ mysten-dapp-kit-connect-modal,
   .workspace-strategy .strategy-market-evidence span {
     min-width: 0;
     padding-inline: 1px;
-    font-size: 10px;
+    font-size: 12px;
   }
   .strategy-market-key .strategy-market-evidence span {
     padding-inline: 2px;
-    font-size: 11px;
+    font-size: 12px;
     overflow-wrap: normal;
   }
   .strategy-suggestion-fields .reward-focus,
@@ -11209,6 +11245,9 @@ mysten-dapp-kit-connect-modal,
   min-height: 40px;
   background: var(--fill);
   border-color: transparent;
+}
+@media (max-width: 700px) {
+  .strategy-select-row .strategy-new-button { min-height: 44px; }
 }
 .strategy-summary {
   width: 100%;

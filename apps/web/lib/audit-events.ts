@@ -82,6 +82,10 @@ const copies: Record<string, AuditCopy> = {
     sentence: (detail) =>
       `Bundle${bundle(detail)} switched to ${detail.to === "live" ? "Live" : "Paper"}.`,
   },
+  "rewards:share.settings.update:success": {
+    severity: "info",
+    sentence: () => "Reward model settings saved.",
+  },
   "strategies:create:success": {
     severity: "info",
     sentence: (detail) => `Strategy${bundle(detail)} created.`,

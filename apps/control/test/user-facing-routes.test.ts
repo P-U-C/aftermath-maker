@@ -286,7 +286,7 @@ const cases: Case[] = [
   {
     code: "live-unavailable",
     status: 409,
-    copy: "Live mode is unavailable. Keep this bundle in Paper until the operator enables Live.",
+    copy: "Live is off on this server. The operator wallet can turn it on. If you run this server, sign in with the wallet that first set it up.",
     prepare: () => ({
       method: "POST",
       url: "/api/config",

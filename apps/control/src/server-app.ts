@@ -10,9 +10,11 @@ import {
 } from "@puc/aftermath";
 import {
   decimalToBaseUnits,
+  allocateRewardShareVolume,
   integratorInspectionSchema,
   makerConfigSchema,
   makerMarketOverridesSchema,
+  scoreRewardShare,
   setupSchema,
   USDC_COIN_TYPE,
   type BuilderFeePolicy,
@@ -35,7 +37,7 @@ import {
 } from "./request-error-audit.js";
 import { activeBuilderCode } from "./integrator.js";
 import type { RuntimeManager } from "./runtime-manager.js";
-import type { Store, TenantStore } from "./store.js";
+import type { RewardShareSettings, Store, TenantStore } from "./store.js";
 import { VENUE_READ_TIMEOUT_MS, withTimeout } from "./venue-read.js";
 
 const optionalUrl = z.preprocess(
@@ -68,6 +70,7 @@ const bundleMarketSchema = z
   .object({
     marketId: z.string().regex(/^0x[0-9a-fA-F]+$/),
     symbol: z.string().min(1).max(24),
+    marketMaxLeverage: z.number().min(1).max(100).optional(),
     overrides: makerMarketOverridesSchema.optional(),
   })
   .strict();
@@ -86,6 +89,24 @@ const strategyMarketRuleSchema = z.union([
     })
     .strict(),
 ]);
+
+const rewardShareSettingsSchema = z
+  .object({
+    selectedAccountIds: z.array(z.string().regex(/^\d+$/)).max(32).default([]),
+    poolUsd: z.number().nonnegative().max(10_000_000).default(70_000),
+    volumeRewardFraction: z.number().min(0).max(1).default(1),
+    incrementUsd: z.number().positive().max(10_000_000).default(32_000),
+    fillSizeUsd: z.number().positive().max(10_000_000).nullable().default(null),
+    forecast: z.enum(["recent", "none"]).default("recent"),
+    scenario: z.enum(["per-market", "cross-market"]).default("per-market"),
+    rewardMarketCount: z.number().int().positive().max(1_000).nullable().default(null),
+    extraCostBps: z.number().min(0).max(1_000).default(0),
+    fixedCostUsd: z.number().min(0).max(1_000_000).default(0),
+  })
+  .strict();
+
+const defaultRewardShareSettings = (): RewardShareSettings =>
+  rewardShareSettingsSchema.parse({});
 
 export const envSchema = z.object({
   NODE_ENV: z
@@ -344,6 +365,7 @@ export async function buildServer({
 
   function assertLiveModeEnabled(
     config: ReturnType<typeof makerConfigSchema.parse>,
+    operator = false,
   ): void {
     if (config.mode === "observe") {
       throw new UserFacingError(
@@ -359,7 +381,9 @@ export async function buildServer({
     ) {
       throw new UserFacingError(
         "live-unavailable",
-        "Live mode is unavailable. Keep this bundle in Paper until the operator enables Live.",
+        operator
+          ? "Live is off on this server. Set LIVE_TRADING_ENABLED=true and ALLOW_MAINNET=true in control's .env, then recreate control: docker compose up -d --no-build --force-recreate control."
+          : "Live is off on this server. The operator wallet can turn it on. If you run this server, sign in with the wallet that first set it up.",
         { kind: "bundles" },
       );
     }
@@ -854,7 +878,7 @@ export async function buildServer({
         "config" in body
           ? (() => {
               const config = makerConfigSchema.parse(body.config);
-              assertLiveModeEnabled(config);
+              assertLiveModeEnabled(config, requestAuth(request).operator);
               assertConfiguredAccounts(scoped, config);
               return scoped.createBundle({
                 name: body.name,
@@ -983,7 +1007,7 @@ export async function buildServer({
         { kind: "bundles" },
       );
     }
-    assertLiveModeEnabled(config);
+    assertLiveModeEnabled(config, requestAuth(request).operator);
     assertConfiguredAccounts(scoped, config);
     const bundle = await runtimeManager.reconfigureBundle({
       ownerAddress: requestAuth(request).ownerAddress,
@@ -1114,7 +1138,9 @@ export async function buildServer({
       if (!env.LIVE_TRADING_ENABLED || !env.ALLOW_MAINNET) {
         throw new UserFacingError(
           "live-unavailable",
-          "Live is off on this server. Ask the operator.",
+          requestAuth(request).operator
+            ? "Live is off on this server. Set LIVE_TRADING_ENABLED=true and ALLOW_MAINNET=true in control's .env, then recreate control: docker compose up -d --no-build --force-recreate control."
+            : "Live is off on this server. The operator wallet can turn it on. If you run this server, sign in with the wallet that first set it up.",
           { kind: "bundles" },
           409,
         );
@@ -1198,7 +1224,7 @@ export async function buildServer({
         { kind: "bundles" },
         404,
       );
-    assertLiveModeEnabled(config);
+    assertLiveModeEnabled(config, requestAuth(request).operator);
     assertBundleReadyToStart(
       bundle,
       (
@@ -1252,7 +1278,7 @@ export async function buildServer({
         { kind: "bundles" },
         404,
       );
-    assertLiveModeEnabled(config);
+    assertLiveModeEnabled(config, requestAuth(request).operator);
     assertBundleReadyToStart(
       bundle,
       (
@@ -1393,6 +1419,112 @@ export async function buildServer({
         query.objective,
       ),
     };
+  });
+
+  app.get("/api/rewards/share", async (request) => {
+    const identity = requestAuth(request);
+    const scoped = tenant(request);
+    const query = z
+      .object({
+        accountIds: z.string().optional(),
+        scenario: z.enum(["per-market", "cross-market"]).optional(),
+        volumeBudgetUsd: z.coerce.number().positive().max(100_000_000).optional(),
+      })
+      .parse(request.query);
+    const stored = scoped.getRewardShareSettings() ?? defaultRewardShareSettings();
+    const ownerAccounts = await runtime(request).requireGateway().listOwnerAccounts({
+      walletAddress: identity.ownerAddress,
+      collateralCoinType: USDC_COIN_TYPE,
+    });
+    const allowed = new Set(ownerAccounts.map((account) => account.accountId));
+    const selectedAccountIds = query.accountIds
+      ? query.accountIds.split(",").filter(Boolean)
+      : stored.selectedAccountIds.length
+        ? stored.selectedAccountIds
+        : ownerAccounts.map((account) => account.accountId);
+    if (selectedAccountIds.some((accountId) => !allowed.has(accountId))) {
+      throw new AuthError(403, "Selected account does not belong to the connected wallet");
+    }
+    const settings = {
+      ...stored,
+      ...(query.scenario ? { scenario: query.scenario } : {}),
+    };
+    const snapshot = await runtime(request).requireGateway().getRewardShareSnapshot({
+      walletAddress: identity.ownerAddress,
+      accountIds: selectedAccountIds,
+      collateralCoinType: USDC_COIN_TYPE,
+      poolUsd: settings.poolUsd,
+      ...(settings.rewardMarketCount ? { rewardMarketCount: settings.rewardMarketCount } : {}),
+    });
+    const scoreSettings = {
+      scenario: settings.scenario,
+      volumeRewardFraction: settings.volumeRewardFraction,
+      incrementUsd: settings.incrementUsd,
+      ...(settings.fillSizeUsd === null
+        ? {}
+        : { fillSizeUsd: settings.fillSizeUsd }),
+      forecast: settings.forecast,
+      extraCostBps: settings.extraCostBps,
+      fixedCostUsd: settings.fixedCostUsd,
+    } as const;
+    const modeledSnapshot = {
+      ...snapshot,
+      markets: snapshot.markets.map((market) => ({
+        ...market,
+        cost: {
+          ...market.cost,
+          builderFeeBps: env.AFTERMATH_INTEGRATOR_FEE_BPS,
+        },
+      })),
+    };
+    const rankings = scoreRewardShare(modeledSnapshot, scoreSettings);
+    const scenarioTotals = (["per-market", "cross-market"] as const).map((scenario) => ({
+      scenario,
+      modeledIncrementalRewardUsd: scoreRewardShare(modeledSnapshot, { ...scoreSettings, scenario }).reduce((total, row) => total + row.modeledAdditionalRewardUsd, 0),
+    }));
+    return {
+      settings: { ...settings, selectedAccountIds },
+      snapshot: {
+        asOf: snapshot.asOf,
+        epochEnd: snapshot.epochEnd,
+        rewardMarketCount: snapshot.rewardMarketCount,
+        marketCount: snapshot.markets.length,
+        flags: snapshot.flags,
+      },
+      rankings,
+      reconciliation: {
+        ...snapshot.reconciliation,
+        scenarios: scenarioTotals,
+      },
+      ...(query.volumeBudgetUsd
+        ? { allocation: allocateRewardShareVolume(modeledSnapshot, query.volumeBudgetUsd, scoreSettings) }
+        : {}),
+      fetchedAt: new Date().toISOString(),
+      stale: Date.now() - Date.parse(snapshot.asOf) > 90 * 60_000,
+      incomplete: snapshot.incomplete,
+    };
+  });
+
+  app.put("/api/rewards/share/settings", async (request) => {
+    const identity = requestAuth(request);
+    const scoped = tenant(request);
+    const settings = rewardShareSettingsSchema.parse(request.body);
+    const owned = await runtime(request).requireGateway().listOwnerAccounts({
+      walletAddress: identity.ownerAddress,
+      collateralCoinType: USDC_COIN_TYPE,
+    });
+    const allowed = new Set(owned.map((account) => account.accountId));
+    if (settings.selectedAccountIds.some((accountId) => !allowed.has(accountId))) {
+      throw new AuthError(403, "Selected account does not belong to the connected wallet");
+    }
+    scoped.setRewardShareSettings(settings);
+    scoped.logEvent({
+      category: "rewards",
+      action: "share.settings.update",
+      outcome: "success",
+      detail: { scenario: settings.scenario, accountCount: settings.selectedAccountIds.length },
+    });
+    return { settings };
   });
 
   app.get("/api/setup", async (request) => {
@@ -1684,7 +1816,7 @@ export async function buildServer({
   app.post("/api/config", async (request) => {
     const scoped = tenant(request);
     const config = makerConfigSchema.parse(request.body);
-    assertLiveModeEnabled(config);
+    assertLiveModeEnabled(config, requestAuth(request).operator);
     assertConfiguredAccounts(scoped, config);
     await runtime(request).reconfigure(config);
     scoped.logEvent({

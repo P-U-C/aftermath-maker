@@ -90,6 +90,7 @@ type GoLiveSheetProps = {
     readiness: BundleReadiness | null;
   } | null;
   operator: boolean;
+  ownerAddress: string;
   venue: VenueDescriptor;
   marketCount: number;
   rotationMode: "portfolio" | "single-slot";
@@ -103,11 +104,22 @@ type GoLiveSheetProps = {
   onConfirm: () => void;
 };
 
+export const GO_LIVE_REQUIREMENT_HEADINGS = [
+  "Live enabled on this server",
+  "Signing key on control",
+  "Runs on Core",
+  "Core stopped",
+  "Live trading key",
+  "Live gas reserve",
+  "Collateral",
+] as const;
+
 export function GoLiveSheet({
   open,
   available,
   liveReadiness,
   operator,
+  ownerAddress,
   venue,
   marketCount,
   rotationMode,
@@ -124,8 +136,8 @@ export function GoLiveSheet({
   return (
     <Sheet
       open={open}
-      title="Use Live mode?"
-      description="Maker will quote with real funds after you save this strategy and press Start."
+      title="Switch Core to Live?"
+      description="Core will quote with real funds after you switch and press Start Live."
       onClose={onClose}
       footer={
         <>
@@ -146,34 +158,34 @@ export function GoLiveSheet({
         <h3>Before switching Core to Live</h3>
         <ul>
           <li data-ready={liveReadiness?.serverEnabled ? "true" : "false"}>
-            <strong>Live is on for this server</strong>
+            <strong>{GO_LIVE_REQUIREMENT_HEADINGS[0]}</strong>
             <span>
               {liveReadiness?.serverEnabled
                 ? "Done"
                 : operator
-                  ? "Set LIVE_TRADING_ENABLED=true and ALLOW_MAINNET=true in control's .env, then recreate control: docker compose up -d --no-build --force-recreate control."
-                  : "Live is off on this server. Ask the operator."}
+                  ? "Needed — Set LIVE_TRADING_ENABLED=true and ALLOW_MAINNET=true in control's .env, then recreate control: docker compose up -d --no-build --force-recreate control."
+                  : `Needed — Live is off on this server. The operator wallet can turn it on. You're connected with ${ownerAddress.slice(0, 4)}…${ownerAddress.slice(-2)}, which isn't this server's operator wallet. If you run this server, sign in with the wallet that first set it up.`}
             </span>
           </li>
           <li data-ready={liveReadiness?.signerReady ? "true" : "false"}>
-            <strong>Signing key is available on control</strong>
-            <span>{liveReadiness?.signerReady ? "Done" : "Add the control signing key, then refresh."}</span>
+            <strong>{GO_LIVE_REQUIREMENT_HEADINGS[1]}</strong>
+            <span>{liveReadiness?.signerReady ? "Done" : "Needed — Add the control signing key, then refresh."}</span>
           </li>
           <li data-ready={liveReadiness?.core ? "true" : "false"}>
-            <strong>This bundle is Core</strong>
-            <span>{liveReadiness?.core ? "Done" : "Live runs on Core today. To run this strategy live, attach it to Core in Bundles."}</span>
+            <strong>{GO_LIVE_REQUIREMENT_HEADINGS[2]}</strong>
+            <span>{liveReadiness?.core ? "Done" : "Needed — Live runs on Core today. To run this strategy live, attach it to Core in Bundles."}</span>
           </li>
           <li data-ready={liveReadiness?.stopped ? "true" : "false"}>
-            <strong>Core is stopped</strong>
-            <span>{liveReadiness?.stopped ? "Done" : "Stop Core before switching its mode."}</span>
+            <strong>{GO_LIVE_REQUIREMENT_HEADINGS[3]}</strong>
+            <span>{liveReadiness?.stopped ? "Done" : "Needed — Stop Core before switching its mode."}</span>
           </li>
           {(liveReadiness?.readiness?.stages ?? []).map((stage) => (
             <li
               key={stage.id}
               data-ready={stage.status === "done" ? "true" : "false"}
             >
-              <strong>{stage.id === "tradingKeys" ? "Live trading key" : stage.id === "gas" ? "Live gas reserve" : stage.id === "collateral" ? "Collateral" : stage.id}</strong>
-              <span>{stage.status === "done" ? "Done" : stage.detail}</span>
+              <strong>{stage.id === "tradingKeys" ? GO_LIVE_REQUIREMENT_HEADINGS[4] : stage.id === "gas" ? GO_LIVE_REQUIREMENT_HEADINGS[5] : stage.id === "collateral" ? GO_LIVE_REQUIREMENT_HEADINGS[6] : stage.id}</strong>
+              <span>{stage.status === "done" ? "Done" : `Needed — ${stage.detail}`}</span>
             </li>
           ))}
         </ul>

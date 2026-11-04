@@ -402,6 +402,7 @@ type Market = {
   maxOpenInterestBase: number;
   fundingRate: number;
   makerFee: number;
+  takerFee: number;
   maxLeverage: number;
   maintenanceMarginRatio: number;
   volume24hUsd: number | null;
@@ -753,6 +754,38 @@ type RewardDashboard = {
     depthBandBps: 50;
     opportunities: RewardOpportunity[];
   };
+};
+
+type RewardShareRanking = {
+  marketId: string;
+  symbol: string;
+  currentMarketShare: number;
+  proposedAdditionalVolumeUsd: number;
+  modeledAdditionalRewardUsd: number;
+  estimatedExecutionCostUsd: number;
+  modeledBenefitUsd: number;
+  benefitPerDollar: number;
+  flags: string[];
+};
+
+type RewardShareData = {
+  settings: {
+    selectedAccountIds: string[];
+    scenario: "per-market" | "cross-market";
+    poolUsd: number;
+    volumeRewardFraction: number;
+    incrementUsd: number;
+    fillSizeUsd: number | null;
+    forecast: "recent" | "none";
+    rewardMarketCount: number | null;
+    extraCostBps: number;
+    fixedCostUsd: number;
+  };
+  snapshot: { asOf: string; rewardMarketCount: number; flags: string[] };
+  rankings: RewardShareRanking[];
+  reconciliation: { takerRewardsUsd: number | null; scenarios: Array<{ scenario: string; modeledIncrementalRewardUsd: number }> };
+  allocation?: { allocations: Array<{ marketId: string; volumeUsd: number }>; unallocatedVolumeUsd: number };
+  incomplete: boolean;
 };
 
 type LiveGates = {
@@ -1266,7 +1299,13 @@ function DashboardBody() {
   const [suggestionCountError, setSuggestionCountError] = useState<
     string | null
   >(null);
-  const [rewardFocus, setRewardFocus] = useState<"all" | "thin">("all");
+  const [rewardFocus, setRewardFocus] = useState<"all" | "thin" | "reward-share">("all");
+  const [rewardShare, setRewardShare] = useState<RewardShareData | null>(null);
+  const [rewardShareScenario, setRewardShareScenario] = useState<"per-market" | "cross-market">("per-market");
+  const [rewardShareBudget, setRewardShareBudget] = useState(0);
+  const [expandedRewardShareCost, setExpandedRewardShareCost] = useState<string | null>(null);
+  const [rewardModelSheetOpen, setRewardModelSheetOpen] = useState(false);
+  const [rewardModelDraft, setRewardModelDraft] = useState<RewardShareData["settings"] | null>(null);
   const [marketVenueFilter, setMarketVenueFilter] = useState<
     "all" | "aftermath"
   >("all");
@@ -1533,6 +1572,31 @@ function DashboardBody() {
     );
     setRewards(result.rewards);
   }, []);
+
+  const loadRewardShare = useCallback(async (
+    scenario: "per-market" | "cross-market",
+    budget = 0,
+  ) => {
+    const params = new URLSearchParams({ scenario });
+    if (budget > 0) params.set("volumeBudgetUsd", String(budget));
+    const result = await request<RewardShareData>(`api/rewards/share?${params}`);
+    setRewardShare(result);
+  }, []);
+
+  const saveRewardShareSettings = useCallback(async () => {
+    if (!rewardModelDraft) return;
+    const saved = await request<{ settings: RewardShareData["settings"] }>(
+      "api/rewards/share/settings",
+      {
+        method: "PUT",
+        body: JSON.stringify(rewardModelDraft),
+      },
+    );
+    setRewardShareScenario(saved.settings.scenario);
+    setRewardModelDraft(saved.settings);
+    setRewardModelSheetOpen(false);
+    await loadRewardShare(saved.settings.scenario, rewardShareBudget);
+  }, [loadRewardShare, rewardModelDraft, rewardShareBudget]);
 
   const loadMarkets = useCallback(async () => {
     const result = await request<{ markets: Market[] }>(
@@ -3180,17 +3244,19 @@ function DashboardBody() {
 
   function stageRewardRotation() {
     if (suggestionCountError) return;
-    const ids = suggestMarketIds(
-      rewards?.marketModel.opportunities ?? [],
-      suggestionPreset,
-      rewardFocus,
-      rewardMarketCount,
-    );
+    const ids = rewardFocus === "reward-share"
+      ? (rewardShare?.rankings ?? []).slice(0, rewardMarketCount).map((row) => row.marketId)
+      : suggestMarketIds(
+          rewards?.marketModel.opportunities ?? [],
+          suggestionPreset,
+          rewardFocus,
+          rewardMarketCount,
+        );
     if (!ids.length) return;
     setPendingMarketSuggestion({
       ids,
-      preset: suggestionPreset,
-      focus: rewardFocus,
+      preset: rewardFocus === "reward-share" ? "ranked" : suggestionPreset,
+      focus: rewardFocus === "reward-share" ? "all" : rewardFocus,
       count: rewardMarketCount,
       strategyId: selectedStrategyId,
     });
@@ -4191,12 +4257,12 @@ function DashboardBody() {
   const focusedRewardOpportunities = rewardOpportunities.filter(
     (opportunity) =>
       opportunity.objectiveEligible &&
-      (rewardFocus === "all" || opportunity.thinActive),
+      (rewardFocus !== "thin" || opportunity.thinActive),
   );
   const suggestionCandidateIds = suggestMarketIds(
     rewards?.marketModel.opportunities ?? [],
     suggestionPreset,
-    rewardFocus,
+    rewardFocus === "thin" ? "thin" : "all",
     64,
   );
   const strategyMarketCount = config.markets.length;
@@ -7384,31 +7450,30 @@ function DashboardBody() {
                     changes the draft.
                   </span>
                 </header>
-                <div
-                  className="strategy-quick-picks"
-                  role="group"
-                  aria-label="Suggestion ranking"
-                >
-                  {(
-                    [
+                <div className="strategy-quick-picks" role="group" aria-label="Suggestion ranking">
+                  {rewardFocus === "reward-share" ? (
+                    <>
+                      <span>Scenario</span>
+                      {(["per-market", "cross-market"] as const).map((scenario) => (
+                        <button key={scenario} type="button" className={rewardShareScenario === scenario ? "is-selected" : undefined} aria-pressed={rewardShareScenario === scenario} onClick={() => {
+                          setRewardShareScenario(scenario);
+                          setPendingMarketSuggestion(null);
+                          void loadRewardShare(scenario, rewardShareBudget).catch((error) => setNotice(error instanceof Error ? error.message : String(error)));
+                        }}>
+                          {scenario === "per-market" ? "Per market" : "Cross-market"}
+                        </button>
+                      ))}
+                    </>
+                  ) : (
+                    ([
                       ["rewards", "Best for rewards"],
                       ["balanced", "Balanced"],
                       ["steady", "Smallest 24h move"],
                       ["ranked", "Top ranked"],
-                    ] as const
-                  ).map(([preset, label]) => (
-                    <button
-                      key={preset}
-                      type="button"
-                      className={
-                        suggestionPreset === preset ? "is-selected" : undefined
-                      }
-                      aria-pressed={suggestionPreset === preset}
-                      onClick={() => chooseSuggestionPreset(preset)}
-                    >
-                      {label}
-                    </button>
-                  ))}
+                    ] as const).map(([preset, label]) => (
+                      <button key={preset} type="button" className={suggestionPreset === preset ? "is-selected" : undefined} aria-pressed={suggestionPreset === preset} onClick={() => chooseSuggestionPreset(preset)}>{label}</button>
+                    ))
+                  )}
                 </div>
                 <div className="strategy-rotation-stage">
                   <div className="strategy-suggestion-fields">
@@ -7440,6 +7505,18 @@ function DashboardBody() {
                         >
                           Thin books
                         </button>
+                        <button
+                          type="button"
+                          className={rewardFocus === "reward-share" ? "selected" : ""}
+                          aria-pressed={rewardFocus === "reward-share"}
+                          onClick={() => {
+                            setRewardFocus("reward-share");
+                            setPendingMarketSuggestion(null);
+                            void loadRewardShare(rewardShareScenario, rewardShareBudget).catch((error) => setNotice(error instanceof Error ? error.message : String(error)));
+                          }}
+                        >
+                          Reward share
+                        </button>
                       </div>
                     </div>
                     <label className="reward-count">
@@ -7466,13 +7543,37 @@ function DashboardBody() {
                     </label>
                   </div>
                   <div className="strategy-suggestion-actions">
+                    {rewardFocus === "reward-share" && (
+                      <Button
+                        variant="secondary"
+                        onClick={() => {
+                          setRewardModelDraft(
+                            rewardShare?.settings ?? {
+                              selectedAccountIds: accounts.map((account) => account.accountId),
+                              scenario: rewardShareScenario,
+                              poolUsd: 70_000,
+                              volumeRewardFraction: 1,
+                              incrementUsd: 32_000,
+                              fillSizeUsd: config.quoteSizeUsd,
+                              forecast: "recent",
+                              rewardMarketCount: null,
+                              extraCostBps: 0,
+                              fixedCostUsd: 0,
+                            },
+                          );
+                          setRewardModelSheetOpen(true);
+                        }}
+                      >
+                        Reward model
+                      </Button>
+                    )}
                     <Button
                       variant="secondary"
                       className="reward-stage"
                       onClick={stageRewardRotation}
                       disabled={
                         Boolean(suggestionCountError) ||
-                        suggestionCandidateIds.length === 0
+                        (rewardFocus === "reward-share" ? (rewardShare?.rankings.length ?? 0) : suggestionCandidateIds.length) === 0
                       }
                     >
                       Preview selection
@@ -7480,7 +7581,9 @@ function DashboardBody() {
                     <Button
                       variant="secondary"
                       onClick={() =>
-                        void loadRewards(config.strategyObjective).catch(
+                        void (rewardFocus === "reward-share"
+                          ? loadRewardShare(rewardShareScenario, rewardShareBudget)
+                          : loadRewards(config.strategyObjective)).catch(
                           (error) =>
                             setNotice(
                               error instanceof Error
@@ -7490,12 +7593,14 @@ function DashboardBody() {
                         )
                       }
                     >
-                      Refresh suggestions
+                      {rewardFocus === "reward-share" ? "Refresh modeled ranking" : "Refresh suggestions"}
                     </Button>
                   </div>
                 </div>
                 <p className="strategy-suggestion-hint" role="status">
-                  {suggestionCandidateIds.length === 0
+                  {rewardFocus === "reward-share"
+                    ? `Scenario: ${rewardShareScenario === "per-market" ? "per market" : "cross-market"}. ${rewardShare?.incomplete ? "Data is marked incomplete; ranking is advisory only." : "Modeled after current execution costs."}`
+                    : suggestionCandidateIds.length === 0
                     ? "No current candidates pass this preset and focus. Your accepted markets remain unchanged."
                     : suggestionCandidateIds.length < rewardMarketCount
                       ? `${suggestionCandidateIds.length} candidates available; Preview will propose all ${suggestionCandidateIds.length}, not block saved policy.`
@@ -7506,6 +7611,30 @@ function DashboardBody() {
                   bps. Markets previews up to the chosen count (1–64); fewer
                   eligible markets means fewer proposed.
                 </p>
+                {rewardFocus === "reward-share" && rewardShare && (
+                  <section className="reward-share-ranking" aria-label="Reward share modeled ranking">
+                    <p>
+                      Scenario: {rewardShare.settings.scenario === "per-market" ? "per market" : "cross-market"}. {money(rewardShare.settings.poolUsd)} pool ÷ {rewardShare.snapshot.rewardMarketCount} markets, modeled volume only. Data as of {new Date(rewardShare.snapshot.asOf).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", timeZone: "UTC" })} UTC.
+                    </p>
+                    <p className="field-hint">Distribution API taker result: {rewardShare.reconciliation.takerRewardsUsd === null ? "Not available" : money(rewardShare.reconciliation.takerRewardsUsd)}. This does not select a payout rule.</p>
+                    <label className="reward-share-budget">
+                      <span>Volume budget (optional)</span>
+                      <input type="number" min="0" value={rewardShareBudget || ""} onChange={(event) => setRewardShareBudget(Number(event.target.value) || 0)} />
+                      <Button variant="quiet" type="button" onClick={() => void loadRewardShare(rewardShareScenario, rewardShareBudget)}>Model budget</Button>
+                    </label>
+                    {rewardShare.allocation && <p className="field-hint">Unallocated modeled volume: {money(rewardShare.allocation.unallocatedVolumeUsd)}.</p>}
+                    <ul>
+                      {rewardShare.rankings.slice(0, 12).map((row) => (
+                        <li key={row.marketId}>
+                          <strong>{row.symbol}</strong> · share {(row.currentMarketShare * 100).toFixed(2)}% · +{money(row.proposedAdditionalVolumeUsd)} modeled volume · {money(row.modeledAdditionalRewardUsd)} modeled reward · {money(row.modeledBenefitUsd)} benefit
+                          <Button variant="quiet" size="small" type="button" onClick={() => setExpandedRewardShareCost(expandedRewardShareCost === row.marketId ? null : row.marketId)}>{expandedRewardShareCost === row.marketId ? "Hide costs" : "Expand costs"}</Button>
+                          {expandedRewardShareCost === row.marketId && <span className="field-hint">Estimated execution cost {money(row.estimatedExecutionCostUsd)} includes taker fee, builder fee, slippage, gas and funding when available.</span>}
+                          {row.flags.length > 0 && <span className="field-hint">{row.flags.join("; ")}</span>}
+                        </li>
+                      ))}
+                    </ul>
+                  </section>
+                )}
               </section>
               <p className="strategy-quick-preview" aria-live="polite">
                 Accepted draft selection ({strategyMarketCount}/64):{" "}
@@ -9849,11 +9978,143 @@ function DashboardBody() {
         </p>
       </Sheet>
 
+      <Sheet
+        open={rewardModelSheetOpen}
+        title="Reward model"
+        description="Scenario estimates are advisory. Saving these assumptions never changes a strategy or starts a bundle."
+        onClose={() => setRewardModelSheetOpen(false)}
+        footer={
+          <>
+            <Button variant="quiet" onClick={() => setRewardModelSheetOpen(false)}>
+              Cancel
+            </Button>
+            <Button
+              variant="primary"
+              disabled={!rewardModelDraft}
+              onClick={() => void saveRewardShareSettings().catch((error) => setNotice(error instanceof Error ? error.message : String(error)))}
+            >
+              Save reward model
+            </Button>
+          </>
+        }
+      >
+        {rewardModelDraft && (
+          <div className="reward-model-fields">
+            <label>
+              <span>Epoch pool (reference model, unverified)</span>
+              <input
+                aria-label="Epoch pool"
+                type="number"
+                min="0"
+                value={rewardModelDraft.poolUsd}
+                onChange={(event) => setRewardModelDraft((current) => current ? { ...current, poolUsd: Number(event.target.value) || 0 } : current)}
+              />
+            </label>
+            <label>
+              <span>Volume reward fraction</span>
+              <input
+                aria-label="Volume reward fraction"
+                type="number"
+                min="0"
+                max="1"
+                step="0.01"
+                value={rewardModelDraft.volumeRewardFraction}
+                onChange={(event) => setRewardModelDraft((current) => current ? { ...current, volumeRewardFraction: Number(event.target.value) || 0 } : current)}
+              />
+            </label>
+            <label>
+              <span>Increment notional</span>
+              <input
+                aria-label="Increment notional"
+                type="number"
+                min="0.01"
+                value={rewardModelDraft.incrementUsd}
+                onChange={(event) => setRewardModelDraft((current) => current ? { ...current, incrementUsd: Number(event.target.value) || 0 } : current)}
+              />
+            </label>
+            <label>
+              <span>Fill size</span>
+              <input
+                aria-label="Fill size"
+                type="number"
+                min="0.01"
+                placeholder={`Strategy quote size: ${config.quoteSizeUsd}`}
+                value={rewardModelDraft.fillSizeUsd ?? ""}
+                onChange={(event) => setRewardModelDraft((current) => current ? { ...current, fillSizeUsd: event.target.value ? Number(event.target.value) : null } : current)}
+              />
+            </label>
+            <label>
+              <span>Forecast</span>
+              <select value={rewardModelDraft.forecast} onChange={(event) => setRewardModelDraft((current) => current ? { ...current, forecast: event.target.value as "recent" | "none" } : current)}>
+                <option value="recent">Recent external volume</option>
+                <option value="none">None (snapshot only)</option>
+              </select>
+            </label>
+            <label>
+              <span>Scenario</span>
+              <select value={rewardModelDraft.scenario} onChange={(event) => setRewardModelDraft((current) => current ? { ...current, scenario: event.target.value as "per-market" | "cross-market" } : current)}>
+                <option value="per-market">Per market</option>
+                <option value="cross-market">Cross-market</option>
+              </select>
+            </label>
+            <label>
+              <span>Reward-market divisor override</span>
+              <input
+                aria-label="Reward-market divisor override"
+                type="number"
+                min="1"
+                value={rewardModelDraft.rewardMarketCount ?? ""}
+                onChange={(event) => setRewardModelDraft((current) => current ? { ...current, rewardMarketCount: event.target.value ? Number(event.target.value) : null } : current)}
+              />
+            </label>
+            <label>
+              <span>Extra execution cost (bps)</span>
+              <input
+                aria-label="Extra execution cost"
+                type="number"
+                min="0"
+                value={rewardModelDraft.extraCostBps}
+                onChange={(event) => setRewardModelDraft((current) => current ? { ...current, extraCostBps: Number(event.target.value) || 0 } : current)}
+              />
+            </label>
+            <label>
+              <span>Fixed cost per increment</span>
+              <input
+                aria-label="Fixed cost per increment"
+                type="number"
+                min="0"
+                value={rewardModelDraft.fixedCostUsd}
+                onChange={(event) => setRewardModelDraft((current) => current ? { ...current, fixedCostUsd: Number(event.target.value) || 0 } : current)}
+              />
+            </label>
+            <fieldset>
+              <legend>Owner accounts</legend>
+              {accounts.map((account) => (
+                <label key={account.accountId} className="reward-model-account">
+                  <input
+                    type="checkbox"
+                    checked={rewardModelDraft.selectedAccountIds.includes(account.accountId)}
+                    onChange={(event) => setRewardModelDraft((current) => current ? {
+                      ...current,
+                      selectedAccountIds: event.target.checked
+                        ? [...new Set([...current.selectedAccountIds, account.accountId])]
+                        : current.selectedAccountIds.filter((id) => id !== account.accountId),
+                    } : current)}
+                  />
+                  Account {account.accountId}
+                </label>
+              ))}
+            </fieldset>
+          </div>
+        )}
+      </Sheet>
+
       <GoLiveSheet
         open={liveSheetOpen}
         available={Boolean(liveReadiness?.ready)}
         liveReadiness={liveReadiness}
         operator={identity.operator}
+        ownerAddress={identity.ownerAddress}
         venue={primaryVenue}
         marketCount={config.markets.length}
         rotationMode={config.rotationMode}
