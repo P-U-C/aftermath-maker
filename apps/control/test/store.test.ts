@@ -865,6 +865,12 @@ describe("persistent control store", () => {
       quoteSizeUsd: 17,
       markets: [{ marketId: "0xd001", symbol: "CORE" }],
     });
+    expect(tenant.listStrategyAttachments(shared.id)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ bundleId: core.id, strategyVersion: 2, detachedAt: null }),
+        expect.objectContaining({ bundleId: paper.id, strategyVersion: 2, detachedAt: null }),
+      ]),
+    );
     expect(() => tenant.archiveStrategy(shared.id)).toThrow(
       "Detach it in Bundles",
     );
@@ -874,6 +880,12 @@ describe("persistent control store", () => {
     expect(forkedCore.strategyId).not.toBe(shared.id);
     expect(tenant.getBundleConfig(paper.id)?.quoteSizeUsd).toBe(17);
     expect(tenant.getConfig()?.quoteSizeUsd).toBe(19);
+    expect(
+      tenant
+        .listStrategyAttachments(shared.id)
+        .find((attachment) => attachment.bundleId === core.id && attachment.strategyVersion === 2)
+        ?.detachedAt,
+    ).not.toBeNull();
     expect(
       databaseStore.forTenant(`0x${"e".repeat(64)}`).getStrategy(shared.id),
     ).toBeNull();

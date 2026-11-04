@@ -142,7 +142,7 @@ function routePathFor(url) {
 }
 
 async function installStatefulControl(page, state) {
-  await page.route("**/api/control/**", async (route) => {
+  await page.route("**/api/control**", async (route) => {
     const request = route.request();
     const url = new URL(request.url());
     const routePath = routePathFor(url);

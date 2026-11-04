@@ -37,6 +37,7 @@ import {
 } from "./request-error-audit.js";
 import { activeBuilderCode } from "./integrator.js";
 import type { RuntimeManager } from "./runtime-manager.js";
+import type { PerformanceSnapshot } from "./runtime.js";
 import type { RewardShareSettings, Store, TenantStore } from "./store.js";
 import { VENUE_READ_TIMEOUT_MS, withTimeout } from "./venue-read.js";
 
@@ -55,6 +56,68 @@ const optionalIntegratorId = z.preprocess(
   (value) => (value === "" || value === undefined ? undefined : value),
   z.coerce.number().int().nonnegative().optional(),
 );
+
+export function aggregatePerformance(
+  reports: Array<{ bundleName: string; performance: PerformanceSnapshot }>,
+): PerformanceSnapshot | null {
+  const first = reports[0]?.performance;
+  if (!first) return null;
+  const sum = (select: (report: PerformanceSnapshot) => number) =>
+    reports.reduce((total, report) => total + select(report.performance), 0);
+  const volume = new Map<string, PerformanceSnapshot["volumeByMarket"][number]>();
+  for (const { performance } of reports) {
+    for (const row of performance.volumeByMarket) {
+      const current = volume.get(row.marketId);
+      volume.set(row.marketId, current ? {
+        ...current,
+        makerNotionalUsd: current.makerNotionalUsd + row.makerNotionalUsd,
+        makerFills: current.makerFills + row.makerFills,
+        takerNotionalUsd: current.takerNotionalUsd + row.takerNotionalUsd,
+        takerFills: current.takerFills + row.takerFills,
+        realizedPnlUsd: current.realizedPnlUsd + row.realizedPnlUsd,
+        feesUsd: current.feesUsd + row.feesUsd,
+      } : { ...row });
+    }
+  }
+  return {
+    ...first,
+    asOf: new Date().toISOString(),
+    account: null,
+    attributed: {
+      fills: sum((report) => report.attributed.fills),
+      notionalUsd: sum((report) => report.attributed.notionalUsd),
+      realizedPnlUsd: sum((report) => report.attributed.realizedPnlUsd),
+      protocolFeesUsd: sum((report) => report.attributed.protocolFeesUsd),
+      estimatedBuilderFeesUsd: sum((report) => report.attributed.estimatedBuilderFeesUsd),
+      netAfterKnownCostsUsd: sum((report) => report.attributed.netAfterKnownCostsUsd),
+      makerVolumeCoveragePct: null,
+    },
+    hedge: {
+      ...first.hedge,
+      enabled: reports.some((report) => report.performance.hedge.enabled),
+      accountId: null,
+      executions: sum((report) => report.hedge.executions),
+      fills: sum((report) => report.hedge.fills),
+      notionalUsd: sum((report) => report.hedge.notionalUsd),
+      realizedPnlUsd: sum((report) => report.hedge.realizedPnlUsd),
+      protocolFeesUsd: sum((report) => report.hedge.protocolFeesUsd),
+      estimatedBuilderFeesUsd: sum((report) => report.hedge.estimatedBuilderFeesUsd),
+      netAfterKnownCostsUsd: sum((report) => report.hedge.netAfterKnownCostsUsd),
+    },
+    combinedNetAfterKnownCostsUsd: sum((report) => report.combinedNetAfterKnownCostsUsd),
+    paper: {
+      estimated: reports.some((report) => report.performance.paper.estimated),
+      makerFills: sum((report) => report.paper.makerFills),
+      hedgeFills: sum((report) => report.paper.hedgeFills),
+      notionalUsd: sum((report) => report.paper.notionalUsd),
+    },
+    volumeByMarket: [...volume.values()].sort((left, right) => left.symbol.localeCompare(right.symbol)),
+    fills: reports.flatMap(({ bundleName, performance }) =>
+      performance.fills.map((fill) => ({ ...fill, bundleName })),
+    ).sort((left, right) => right.occurredAt.localeCompare(left.occurredAt)),
+    note: "All active bundles. Each fill is labelled with its bundle; Paper estimates and confirmed Live fills remain separate.",
+  };
+}
 
 const walletLimitsSchema = z
   .object({
@@ -531,6 +594,26 @@ export async function buildServer({
     return { strategy };
   });
 
+  app.get("/api/strategies/:strategyId/results", async (request) => {
+    const scoped = tenant(request);
+    const params = z
+      .object({ strategyId: z.string().min(1).max(200) })
+      .parse(request.params);
+    const strategy = scoped.getStrategy(params.strategyId);
+    if (!strategy || strategy.archivedAt) {
+      throw new UserFacingError(
+        "strategy-not-found",
+        "This strategy is no longer available. Choose a strategy in Strategy.",
+        { kind: "strategy" },
+        404,
+      );
+    }
+    return {
+      results: scoped.strategyResults(params.strategyId),
+      attachments: scoped.listStrategyAttachments(params.strategyId),
+    };
+  });
+
   app.post("/api/strategies", async (request) => {
     const scoped = tenant(request);
     if (scoped.bundlesRolledBack()) {
@@ -777,13 +860,13 @@ export async function buildServer({
             serverEnabled: env.LIVE_TRADING_ENABLED && env.ALLOW_MAINNET,
             signerReady: Boolean(env.MAKER_MASTER_KEY),
             core: true,
-            stopped: core.status === "stopped",
+            stopped: core.status === "stopped" || core.status === "paused",
             readiness: coreReadiness,
             ready: Boolean(
               env.LIVE_TRADING_ENABLED &&
               env.ALLOW_MAINNET &&
               env.MAKER_MASTER_KEY &&
-              core.status === "stopped" &&
+              (core.status === "stopped" || core.status === "paused") &&
               coreReadiness?.ready,
             ),
           }
@@ -1125,10 +1208,10 @@ export async function buildServer({
         404,
       );
     }
-    if (bundle.status !== "stopped") {
+    if (bundle.status !== "stopped" && bundle.status !== "paused") {
       throw new UserFacingError(
         "mode-requires-stopped",
-        "Stop this bundle before changing its mode.",
+        "Stop or pause this bundle before changing its mode.",
         { kind: "bundles" },
         409,
       );
@@ -1363,6 +1446,7 @@ export async function buildServer({
   });
 
   app.get("/api/performance", async (request) => {
+    const scoped = tenant(request);
     const query = z
       .object({
         period: z.enum(["1D", "EPOCH", "ALL"]).default("1D"),
@@ -1381,12 +1465,23 @@ export async function buildServer({
         events: tenant(request).listEvents(200, "before"),
       };
     }
-    const active = query.bundle
-      ? runtimeManager.getBundle(
-          requestAuth(request).ownerAddress,
-          query.bundle,
-        )
-      : runtime(request);
+    const ownerAddress = requestAuth(request).ownerAddress;
+    if (!query.bundle) {
+      const reports = await Promise.all(
+        scoped
+          .listBundles()
+          .filter((bundle) => !bundle.archivedAt)
+          .map(async (bundle) => ({
+            bundleName: bundle.name,
+            performance: await runtimeManager.getBundle(ownerAddress, bundle.id).performance({
+              period: query.period,
+              ...(query.since ? { since: query.since } : {}),
+            }),
+          })),
+      );
+      return { performance: aggregatePerformance(reports) };
+    }
+    const active = runtimeManager.getBundle(ownerAddress, query.bundle);
     return {
       performance: await active.performance({
         period: query.period,

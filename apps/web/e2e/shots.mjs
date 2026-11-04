@@ -77,13 +77,12 @@ const makerViews = [
   "markets",
   "bundles",
   "performance",
-  "accounts",
   "venues",
   "learn",
 ];
 
 const navigationViews = makerViews.filter(
-  (view) => view !== "accounts" && view !== "learn",
+  (view) => view !== "learn",
 );
 
 function selectedViews(stateName) {
@@ -285,7 +284,7 @@ async function capture(browser, stateName, captureConfig, view) {
     );
   }
 
-  await page.route("**/api/control/**", async (route) => {
+  await page.route("**/api/control**", async (route) => {
     const request = route.request();
     const url = new URL(request.url());
     if (
@@ -1602,6 +1601,8 @@ async function capture(browser, stateName, captureConfig, view) {
         if (!stage || !fields || !actions) return null;
         const fieldBox = fields.getBoundingClientRect();
         const actionBox = actions.getBoundingClientRect();
+        if (!fieldBox.width || !fieldBox.height || !actionBox.width || !actionBox.height)
+          return null;
         return {
           sameRow:
             fieldBox.top < actionBox.bottom && actionBox.top < fieldBox.bottom,

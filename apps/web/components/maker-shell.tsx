@@ -32,7 +32,6 @@ export const makerViews = [
   { id: "markets", label: "Markets" },
   { id: "bundles", label: "Bundles" },
   { id: "performance", label: "Performance" },
-  { id: "accounts", label: "Accounts" },
   { id: "venues", label: "Venues" },
   { id: "learn", label: "Learn" },
 ] as const;
@@ -64,6 +63,7 @@ export function useMakerExplain() {
 
 function viewFromHash(hash: string): MakerView {
   const candidate = hash.replace(/^#/, "").split("/")[0];
+  if (candidate === "accounts") return "venues";
   return makerViews.some((view) => view.id === candidate)
     ? (candidate as MakerView)
     : "desk";
@@ -250,23 +250,6 @@ const coachNotes: Record<MakerView, CoachNote[]> = {
       selector: ".performance-note",
       title: "Coverage",
       body: "This explains what the performance record includes and what it cannot yet prove.",
-    },
-  ],
-  accounts: [
-    {
-      selector: ".accounts-title",
-      title: "Accounts",
-      body: "Create, fund, authorise, and name the accounts Maker can use.",
-    },
-    {
-      selector: ".onboarding",
-      title: "Setup",
-      body: "Complete owner-wallet and trading-key setup before Maker can run.",
-    },
-    {
-      selector: ".account-desk",
-      title: "Trading accounts",
-      body: "Assign Maker and Taker roles, then manage collateral and trading keys.",
     },
   ],
   venues: [
@@ -817,7 +800,7 @@ export function MakerShell({
 
             <nav className="maker-view-tabs" aria-label="Maker views">
               {makerViews
-                .filter((view) => view.id !== "learn" && view.id !== "accounts")
+                .filter((view) => view.id !== "learn")
                 .map((view) => (
                   <a
                     key={view.id}
@@ -905,7 +888,7 @@ export function MakerShell({
                       <dd>
                         <button
                           type="button"
-                          onClick={() => selectView("accounts")}
+                          onClick={() => selectView("venues")}
                         >
                           {walletSummary.authorizedAccounts} authorized
                         </button>

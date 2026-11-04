@@ -74,7 +74,7 @@ type VenueBoardProps = {
     mode: "deposit" | "withdraw" | "gas",
   ) => void;
   onFundBundle: (bundleName: string, accounts: VenueAccountRow[]) => void;
-  onAuthorize: (accountId: string) => void;
+  onAuthorize: (accountId: string) => Promise<void>;
   onOpenStrategy: () => void;
   blockedBundle?: {
     name: string;
@@ -122,8 +122,12 @@ export function VenueBoard({
   const [nameDraft, setNameDraft] = useState("");
   const [nameError, setNameError] = useState<string | null>(null);
   const [nameBusy, setNameBusy] = useState(false);
+  const [authorizing, setAuthorizing] = useState<VenueAccountRow | null>(null);
+  const [authorizeBusy, setAuthorizeBusy] = useState(false);
+  const [authorizeError, setAuthorizeError] = useState<string | null>(null);
   const renamePending = useRef(false);
   const menuButtons = useRef(new Map<string, HTMLButtonElement>());
+  const authorizeButtons = useRef(new Map<string, HTMLButtonElement>());
   const closeRename = () => {
     if (renamePending.current) return;
     const accountId = renaming?.accountId;
@@ -156,6 +160,21 @@ export function VenueBoard({
     }
   };
   const [revokeConfirm, setRevokeConfirm] = useState(false);
+  const confirmAuthorization = async () => {
+    if (!authorizing || authorizeBusy) return;
+    setAuthorizeBusy(true);
+    setAuthorizeError(null);
+    try {
+      const accountId = authorizing.accountId;
+      await onAuthorize(accountId);
+      setAuthorizing(null);
+      requestAnimationFrame(() => authorizeButtons.current.get(accountId)?.focus());
+    } catch (error) {
+      setAuthorizeError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setAuthorizeBusy(false);
+    }
+  };
   const accountsByBundle = Array.from(
     accounts.reduce((groups, account) => {
       const group = groups.get(account.bundle) ?? [];
@@ -348,9 +367,15 @@ export function VenueBoard({
                               </>
                             ) : (
                               <Button
-                                variant="quiet"
+                                variant={account.shortfallUsd > 0 ? "secondary" : "primary"}
                                 size="small"
-                                onClick={() => onAuthorize(account.accountId)}
+                                ref={(element) => {
+                                  if (element) authorizeButtons.current.set(account.accountId, element);
+                                }}
+                                onClick={() => {
+                                  setAuthorizeError(null);
+                                  setAuthorizing(account);
+                                }}
                               >
                                 Authorize
                               </Button>
@@ -371,7 +396,7 @@ export function VenueBoard({
                           <td className="venue-account-actions">
                             <Button
                               variant={
-                                account.shortfallUsd > 0
+                                account.shortfallUsd > 0 && account.authorized
                                   ? "primary"
                                   : "secondary"
                               }
@@ -550,6 +575,31 @@ export function VenueBoard({
           </Sheet>,
           document.body,
         )}
+
+      <Sheet
+        open={Boolean(authorizing)}
+        title={`Authorize trading key${authorizing ? ` for account ${authorizing.accountId}` : ""}?`}
+        description="Your wallet will review a transaction that gives Maker a trading-only key. It cannot withdraw funds."
+        onClose={() => {
+          if (authorizeBusy) return;
+          const accountId = authorizing?.accountId;
+          setAuthorizing(null);
+          if (accountId) requestAnimationFrame(() => authorizeButtons.current.get(accountId)?.focus());
+        }}
+        footer={
+          <>
+            <Button variant="secondary" disabled={authorizeBusy} onClick={() => setAuthorizing(null)}>
+              Cancel
+            </Button>
+            <Button variant="primary" disabled={authorizeBusy} onClick={() => void confirmAuthorization()}>
+              {authorizeBusy ? "Waiting for wallet…" : "Authorize trading key"}
+            </Button>
+          </>
+        }
+      >
+        <p>Maker may quote, cancel, and reduce positions for this account. Deposits, withdrawals, and permissions always remain owner-signed.</p>
+        {authorizeError && <p role="alert">{authorizeError}</p>}
+      </Sheet>
 
       <Sheet
         open={revokeConfirm}

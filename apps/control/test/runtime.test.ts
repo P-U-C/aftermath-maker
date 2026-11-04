@@ -224,6 +224,7 @@ function createHarness(options: { configured?: boolean } = {}) {
     flattenPositions: async (inputs: { setup: { accountId: string } }) => {
       flattenCount += 1;
       flattenedAccountIds.push(inputs.setup.accountId);
+      executionSequence.push("flatten");
       return {
         digest: `flatten-digest-${inputs.setup.accountId}`,
         endpoint: "test",
@@ -1670,6 +1671,187 @@ describe("runtime execution boundaries", () => {
     });
     expect(harness.executionSequence).toContain("paper-dry-run");
     expect(harness.runtime.snapshot.execution.lastDecision).toBe("quoted");
+    await harness.runtime.stop();
+    harness.store.close();
+  });
+
+  it("records one bundle exposure pause, unwinds after ten minutes, and clears without per-market rows", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-11-04T00:00:00.000Z"));
+    const harness = createHarness();
+    const markets = Array.from({ length: 15 }, (_, index) => ({
+      marketId: `0x${(index + 1).toString(16).padStart(4, "0")}`,
+      symbol: `M${index}`,
+    }));
+    harness.tenant.setConfig(
+      makerConfigSchema.parse({
+        ...harness.tenant.getConfig()!,
+        mode: "paper",
+        rotationMode: "portfolio",
+        hedge: { enabled: false, accountId: null, thresholdUsd: 25, maxOrderUsd: 100, maxSlippageBps: 75 },
+        markets,
+        quoteSizeUsd: 10,
+        maxGrossExposureUsd: 150,
+        maxQuoteAgeMs: 128_000,
+        unwindAfterPauseMinutes: 10,
+      }),
+    );
+    for (const market of markets.slice(0, 4)) {
+      harness.tenant.recordPaperQuote({
+        trialId: "runtime",
+        marketId: market.marketId,
+        symbol: market.symbol,
+        bidPrice: 10,
+        askPrice: 10.1,
+        sizeUsd: 10,
+        sides: "bid",
+      });
+      harness.tenant.matchPaperOrders({
+        trialId: "runtime",
+        marketId: market.marketId,
+        bestBid: 9.9,
+        bestAsk: 9.9,
+      });
+    }
+    harness.setPortfolioResolver((inputs) => ({
+      equityUsd: 1_000,
+      availableCollateralUsd: 1_000,
+      allocatedCollateralUsd: 0,
+      freeMarginUsd: 1_000,
+      withdrawableCollateralUsd: 1_000,
+      grossExposureUsd: 0,
+      unrealizedPnlUsd: 0,
+      gasSui: 1,
+      positions: inputs.marketIds.map((marketId) => ({
+        marketId,
+        baseAssetAmount: 0,
+        pendingOrderCount: 0,
+        inventoryUsd: 0,
+        unrealizedPnlUsd: 0,
+        collateralUsd: 0,
+        freeMarginUsd: 1_000,
+        makerOrderIds: [],
+        hasPosition: false,
+      })),
+    }));
+    harness.runtime.start();
+    await harness.runtime.cycle({ executeLive: true });
+    expect(harness.runtime.snapshot.paperBlocker).toMatchObject({
+      code: "gross-exposure",
+      requiredUsd: 190,
+    });
+
+    for (let minute = 15; minute <= 75; minute += 15) {
+      vi.setSystemTime(new Date(`2026-11-04T${String(Math.floor(minute / 60)).padStart(2, "0")}:${String(minute % 60).padStart(2, "0")}:00.000Z`));
+      await harness.runtime.cycle({ executeLive: true });
+    }
+
+    const events = harness.tenant.listEvents(100).filter(
+      (event) => event.category === "paper" && event.action === "simulation",
+    );
+    expect(events.filter((event) => event.outcome === "blocked")).toHaveLength(5);
+    expect(events.filter((event) => event.outcome === "cleared")).toHaveLength(1);
+    expect(events.every((event) => !("marketId" in event.detail))).toBe(true);
+    expect(
+      harness.tenant.getPaperState("runtime").positions,
+    ).toEqual([]);
+    await harness.runtime.stop();
+    harness.store.close();
+  });
+
+  it("uses the Live cancel-confirm-then-reduce path after an exposure pause", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-11-04T00:00:00.000Z"));
+    const harness = createHarness();
+    harness.tenant.setConfig(
+      makerConfigSchema.parse({
+        ...harness.tenant.getConfig()!,
+        markets: [{ marketId: "0x5678", symbol: "SUI" }],
+        mode: "live",
+        quoteSizeUsd: 10,
+        maxInventoryUsd: 20,
+        maxGrossExposureUsd: 20,
+        unwindAfterPauseMinutes: 10,
+      }),
+    );
+    harness.setPortfolioResolver((inputs) => ({
+      equityUsd: 100,
+      availableCollateralUsd: 80,
+      allocatedCollateralUsd: 20,
+      freeMarginUsd: 70,
+      withdrawableCollateralUsd: 75,
+      grossExposureUsd: 20,
+      unrealizedPnlUsd: 0,
+      gasSui: 1,
+      positions: inputs.marketIds.map((marketId) => ({
+        marketId,
+        baseAssetAmount: 2,
+        pendingOrderCount: 1,
+        inventoryUsd: 20,
+        unrealizedPnlUsd: 0,
+        collateralUsd: 20,
+        freeMarginUsd: 70,
+        makerOrderIds: ["resting"],
+        hasPosition: true,
+      })),
+    }));
+    harness.runtime.start();
+    await harness.runtime.cycle({ executeLive: true });
+    vi.setSystemTime(new Date("2026-11-04T00:10:00.000Z"));
+    await harness.runtime.cycle({ executeLive: true });
+
+    expect(harness.executionSequence).toContain("flatten");
+    expect(harness.executionSequence.indexOf("cancel")).toBeLessThan(
+      harness.executionSequence.indexOf("flatten"),
+    );
+    expect(harness.flattens()).toBe(1);
+    expect(
+      harness.tenant.listEvents(20).some(
+        (event) => event.category === "risk" && event.action === "exposure-unwind" && event.outcome === "confirmed",
+      ),
+    ).toBe(true);
+    await harness.runtime.stop();
+    harness.store.close();
+  });
+
+  it("does not unwind an exposure pause when the timeout is disabled", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-11-04T00:00:00.000Z"));
+    const harness = createHarness();
+    harness.tenant.setConfig(
+      makerConfigSchema.parse({
+        ...harness.tenant.getConfig()!,
+        mode: "paper",
+        quoteSizeUsd: 10,
+        maxInventoryUsd: 20,
+        maxGrossExposureUsd: 20,
+        unwindAfterPauseMinutes: 0,
+      }),
+    );
+    harness.tenant.recordPaperQuote({
+      trialId: "runtime",
+      marketId: "0x5678",
+      symbol: "SUI",
+      bidPrice: 10,
+      askPrice: 10.1,
+      sizeUsd: 10,
+      sides: "bid",
+    });
+    harness.tenant.matchPaperOrders({
+      trialId: "runtime",
+      marketId: "0x5678",
+      bestBid: 9.9,
+      bestAsk: 9.9,
+    });
+    harness.runtime.start();
+    await harness.runtime.cycle({ executeLive: true });
+    vi.setSystemTime(new Date("2026-11-04T01:00:00.000Z"));
+    await harness.runtime.cycle({ executeLive: true });
+
+    expect(harness.tenant.getPaperState("runtime").positions).toHaveLength(1);
+    expect(
+      harness.tenant.listEvents(20).some((event) => event.action === "exposure-unwind"),
+    ).toBe(false);
     await harness.runtime.stop();
     harness.store.close();
   });

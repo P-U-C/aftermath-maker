@@ -94,6 +94,7 @@ export const makerConfigSchema = z
     maxInventoryUsd: z.number().positive().max(10_000).default(50),
     inventoryTargetUsd: z.number().min(-10_000).max(10_000).default(0),
     maxGrossExposureUsd: z.number().positive().max(100_000).default(150),
+    unwindAfterPauseMinutes: z.number().int().min(0).max(1_440).default(10),
     maxUnrealizedLossUsd: z.number().positive().max(10_000).default(20),
     maxRunDrawdownUsd: z.number().positive().max(10_000).default(20),
     maxBookDivergenceBps: z.number().positive().max(5_000).default(100),
@@ -364,6 +365,19 @@ export type RuntimeSnapshot = {
     unrealizedPnlUsd: number;
     gasSui: number | null;
   };
+  /** Stable whole-bundle inventory. The selected-market value above is chart-only. */
+  inventory?: {
+    netUsd: number;
+    grossUsd: number;
+    positions: Array<{
+      marketId: string;
+      symbol: string;
+      account: "Maker" | "Hedge";
+      inventoryUsd: number;
+    }>;
+  };
+  /** Changes whenever a fill is recorded, so clients can refresh immediately. */
+  fillSequence?: number;
   watchdog: {
     state: "idle" | "armed" | "tripped";
     checkedAt: string | null;

@@ -213,6 +213,37 @@ describe("runtime endpoint management", () => {
     store.close();
   });
 
+  it("pauses only the requested bundle", async () => {
+    const store = storeHarness();
+    const ownerAddress = `0x${"8".repeat(64)}`;
+    const tenant = store.forTenant(ownerAddress);
+    const config = makerConfigSchema.parse({
+      markets: [{ marketId: "0x8001", symbol: "CORE" }],
+    });
+    tenant.setConfig(config);
+    tenant.confirmWalletLimits();
+    const other = tenant.createBundle({
+      name: "Second paper",
+      config: makerConfigSchema.parse({
+        ...config,
+        makerAccountId: "3",
+        hedge: { ...config.hedge, accountId: "4" },
+      }),
+    });
+    const core = tenant.listBundles().find((bundle) => bundle.name === "Core")!;
+    tenant.setBundleStatus(core.id, "running");
+    tenant.setBundleStatus(other.id, "running");
+    const manager = new RuntimeManager(store, {} as never, {});
+    await manager.initialize();
+
+    await manager.pauseBundle(ownerAddress, core.id);
+
+    expect(tenant.getStoredBundle(core.id)?.status).toBe("paused");
+    expect(tenant.getStoredBundle(other.id)?.status).toBe("running");
+    manager.close();
+    store.close();
+  });
+
   it("still rejects a second running Live overlap in a test-only legacy state", () => {
     const store = storeHarness();
     const owner = `0x${"7".repeat(64)}`;
