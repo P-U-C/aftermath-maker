@@ -81,9 +81,7 @@ const makerViews = [
   "learn",
 ];
 
-const navigationViews = makerViews.filter(
-  (view) => view !== "learn",
-);
+const navigationViews = makerViews.filter((view) => view !== "learn");
 
 function selectedViews(stateName) {
   const requested = option("--view", null);
@@ -187,9 +185,7 @@ async function waitForFixture(page, stateName) {
     .locator('nav[aria-label="Maker views"]')
     .waitFor({ state: "attached" });
   if (stateName === "onboarding") {
-    await page
-      .getByRole("heading", { name: "Authorize once. Run unattended." })
-      .waitFor();
+    await page.getByRole("heading", { name: "Venues" }).waitFor();
   }
 }
 
@@ -603,7 +599,7 @@ async function capture(browser, stateName, captureConfig, view) {
             .click();
           await page.getByText("All time").first().waitFor();
         }
-        const resetView = stateName === "onboarding" ? "accounts" : "desk";
+        const resetView = stateName === "onboarding" ? "venues" : "desk";
         if (navigationViews.includes(resetView)) {
           await page
             .getByRole("link", { name: resetView, exact: false })
@@ -683,11 +679,7 @@ async function capture(browser, stateName, captureConfig, view) {
         );
       }
     }
-    if (
-      showAccountEditor &&
-      view === "accounts" &&
-      fixture.auth.status === 200
-    ) {
+    if (showAccountEditor && view === "venues" && fixture.auth.status === 200) {
       await page
         .getByRole("button", { name: /Edit name and tags for account/ })
         .first()
@@ -789,28 +781,50 @@ async function capture(browser, stateName, captureConfig, view) {
       stateName === "stopped" &&
       (view === null || view === "bundles")
     ) {
-      if (view === null) await page.getByRole("link", { name: "Bundles" }).click();
+      if (view === null)
+        await page.getByRole("link", { name: "Bundles" }).click();
       await page.getByRole("button", { name: "Go live…" }).click();
-      await page.getByRole("dialog", { name: "Switch Core to Live?" }).waitFor();
-      const switchButton = page.getByRole("button", { name: "Switch Core to Live" });
+      await page
+        .getByRole("dialog", { name: "Switch Core to Live?" })
+        .waitFor();
+      const switchButton = page.getByRole("button", {
+        name: "Switch Core to Live",
+      });
       if (process.env.MAKER_TEST_LIVE_READY === "1") {
-        const unresolved = await page.locator('.go-live-checklist li[data-ready="false"]').count();
-        if (unresolved) throw new Error(`Live-ready fixture retained ${unresolved} unresolved checklist item(s)`);
-        if (await switchButton.isEnabled()) throw new Error("Live switch bypassed its real-funds confirmation");
+        const unresolved = await page
+          .locator('.go-live-checklist li[data-ready="false"]')
+          .count();
+        if (unresolved)
+          throw new Error(
+            `Live-ready fixture retained ${unresolved} unresolved checklist item(s)`,
+          );
+        if (await switchButton.isEnabled())
+          throw new Error("Live switch bypassed its real-funds confirmation");
         await page.getByLabel(/Maker will trade real funds/).check();
-        if (!(await switchButton.isEnabled())) throw new Error("Live switch did not enable after every gate and confirmation passed");
+        if (!(await switchButton.isEnabled()))
+          throw new Error(
+            "Live switch did not enable after every gate and confirmation passed",
+          );
       } else if (await switchButton.isEnabled()) {
-        throw new Error("Live mode was selectable while deployment gates were off");
+        throw new Error(
+          "Live mode was selectable while deployment gates were off",
+        );
       }
     }
     if (showRewardShare && stateName === "stopped" && view === "strategy") {
       await page.getByRole("button", { name: "Edit strategy" }).click();
-      await page.getByRole("button", { name: /Markets/ }).first().click();
+      await page
+        .getByRole("button", { name: /Markets/ })
+        .first()
+        .click();
       await page.getByRole("button", { name: "Reward share" }).click();
       await page.getByText("Scenario", { exact: true }).waitFor();
       await page.getByRole("button", { name: "Cross-market" }).click();
       await page.getByRole("button", { name: "Expand costs" }).first().click();
-      await page.getByText(/Estimated execution cost/).first().waitFor();
+      await page
+        .getByText(/Estimated execution cost/)
+        .first()
+        .waitFor();
       await page.locator("#strategy-top-count").fill("2");
       await page.getByLabel("Volume budget (optional)").fill("64000");
       await page.getByRole("button", { name: "Model budget" }).click();
@@ -818,7 +832,9 @@ async function capture(browser, stateName, captureConfig, view) {
       await page.getByRole("button", { name: "Preview selection" }).click();
       await page.getByRole("button", { name: "Use these markets" }).click();
       await page.getByText(/Accepted draft selection \(2\/64\)/).waitFor();
-      process.stdout.write(`${stateName}/${view}/${captureConfig.name}: Reward share scenario, costs, budget allocation, and two-market draft rendered\n`);
+      process.stdout.write(
+        `${stateName}/${view}/${captureConfig.name}: Reward share scenario, costs, budget allocation, and two-market draft rendered\n`,
+      );
     }
     if (
       verifyConfigSave &&
@@ -1588,10 +1604,7 @@ async function capture(browser, stateName, captureConfig, view) {
         `${stateName}/${view ?? "root"}/${captureConfig.name} has overflowing button labels: ${JSON.stringify(overflowingButtons)}`,
       );
     }
-    if (
-      view === "strategy" &&
-      captureConfig.viewport.width >= 1024
-    ) {
+    if (view === "strategy" && captureConfig.viewport.width >= 1024) {
       const suggestionRow = await page.evaluate(() => {
         const stage = document.querySelector(
           ".strategy-suggestion-panel .strategy-rotation-stage",
@@ -1601,7 +1614,12 @@ async function capture(browser, stateName, captureConfig, view) {
         if (!stage || !fields || !actions) return null;
         const fieldBox = fields.getBoundingClientRect();
         const actionBox = actions.getBoundingClientRect();
-        if (!fieldBox.width || !fieldBox.height || !actionBox.width || !actionBox.height)
+        if (
+          !fieldBox.width ||
+          !fieldBox.height ||
+          !actionBox.width ||
+          !actionBox.height
+        )
           return null;
         return {
           sameRow:

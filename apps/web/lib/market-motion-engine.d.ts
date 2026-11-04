@@ -33,6 +33,7 @@ export type MarketMotionOptions = {
   initialInventory?: number | undefined;
   viewWidth?: number | undefined;
   height?: number | undefined;
+  fill?: boolean | undefined;
   fontScale?: number | undefined;
   pxPerBps?: number | undefined;
   tickBps?: number | undefined;

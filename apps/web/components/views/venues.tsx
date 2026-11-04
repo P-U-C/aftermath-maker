@@ -168,7 +168,9 @@ export function VenueBoard({
       const accountId = authorizing.accountId;
       await onAuthorize(accountId);
       setAuthorizing(null);
-      requestAnimationFrame(() => authorizeButtons.current.get(accountId)?.focus());
+      requestAnimationFrame(() =>
+        authorizeButtons.current.get(accountId)?.focus(),
+      );
     } catch (error) {
       setAuthorizeError(error instanceof Error ? error.message : String(error));
     } finally {
@@ -342,7 +344,11 @@ export function VenueBoard({
                               ? "Ready"
                               : "Checking";
                       return (
-                        <tr key={account.accountId}>
+                        <tr
+                          key={account.accountId}
+                          id={`account-${account.accountId}`}
+                          tabIndex={-1}
+                        >
                           <td>
                             <strong>
                               {account.label ?? `Account ${account.accountId}`}
@@ -367,10 +373,18 @@ export function VenueBoard({
                               </>
                             ) : (
                               <Button
-                                variant={account.shortfallUsd > 0 ? "secondary" : "primary"}
+                                variant={
+                                  account.shortfallUsd > 0
+                                    ? "secondary"
+                                    : "primary"
+                                }
                                 size="small"
                                 ref={(element) => {
-                                  if (element) authorizeButtons.current.set(account.accountId, element);
+                                  if (element)
+                                    authorizeButtons.current.set(
+                                      account.accountId,
+                                      element,
+                                    );
                                 }}
                                 onClick={() => {
                                   setAuthorizeError(null);
@@ -584,20 +598,34 @@ export function VenueBoard({
           if (authorizeBusy) return;
           const accountId = authorizing?.accountId;
           setAuthorizing(null);
-          if (accountId) requestAnimationFrame(() => authorizeButtons.current.get(accountId)?.focus());
+          if (accountId)
+            requestAnimationFrame(() =>
+              authorizeButtons.current.get(accountId)?.focus(),
+            );
         }}
         footer={
           <>
-            <Button variant="secondary" disabled={authorizeBusy} onClick={() => setAuthorizing(null)}>
+            <Button
+              variant="secondary"
+              disabled={authorizeBusy}
+              onClick={() => setAuthorizing(null)}
+            >
               Cancel
             </Button>
-            <Button variant="primary" disabled={authorizeBusy} onClick={() => void confirmAuthorization()}>
+            <Button
+              variant="primary"
+              disabled={authorizeBusy}
+              onClick={() => void confirmAuthorization()}
+            >
               {authorizeBusy ? "Waiting for wallet…" : "Authorize trading key"}
             </Button>
           </>
         }
       >
-        <p>Maker may quote, cancel, and reduce positions for this account. Deposits, withdrawals, and permissions always remain owner-signed.</p>
+        <p>
+          Maker may quote, cancel, and reduce positions for this account.
+          Deposits, withdrawals, and permissions always remain owner-signed.
+        </p>
         {authorizeError && <p role="alert">{authorizeError}</p>}
       </Sheet>
 

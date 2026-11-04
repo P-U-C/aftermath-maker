@@ -103,6 +103,7 @@ export function mountMarketMotion(host, o = {}) {
     "svg",
     {
       viewBox: `0 0 ${W} ${H}`,
+      preserveAspectRatio: o.fill ? "none" : "xMidYMid meet",
       role: "img",
       "aria-label":
         "Order book. Your ask rests above the market price and your bid below it. Takers fill them, and inventory is hedged past your trigger.",
@@ -111,7 +112,7 @@ export function mountMarketMotion(host, o = {}) {
   );
   S(
     svg,
-    "display:block;width:100%;height:auto;overflow:visible;font-family:var(--motion-font, system-ui, sans-serif);font-variant-numeric:tabular-nums",
+    `display:block;width:100%;height:${o.fill ? "100%" : "auto"};overflow:visible;font-family:var(--motion-font, system-ui, sans-serif);font-variant-numeric:tabular-nums`,
   );
   const gBook = E("g", {}, svg);
   const gAxis = E("g", {}, svg);
@@ -1217,8 +1218,11 @@ export function mountMarketMotion(host, o = {}) {
         liveDepth = false;
         for (const L of levels) L.w = 0;
       }
-      if (reduce) {
-        // A still picture has no frames to glide through, so settle and redraw now.
+      if (reduce || (live && !visible)) {
+        // A still picture, or a live lane before it intersects the viewport, has no
+        // frames to glide through. Settle once so an initial snapshot never renders
+        // as an empty chart with only its quote capsules.
+        entrance = Math.max(entrance, 2);
         for (let k = 0; k < 240; k++) step(1 / 60);
         const q = Q();
         for (const s of ["ask", "bid"]) cap[s].x.x = xOf(q[s]);
