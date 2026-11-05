@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import {
   agentEncryptionContext,
   assertRoundedQuoteOrderValue,
+  QuoteBelowMinimumError,
   buildQuoteReplacementRequest,
   createEncryptedAgent,
   decodeIntegratorId,
@@ -27,7 +28,7 @@ describe("maker order isolation", () => {
         askPrice: 0.02127092,
         minOrderUsdValue: 1,
       }),
-    ).toThrow("below the venue's $1.00 minimum");
+    ).toThrow(QuoteBelowMinimumError);
 
     expect(() =>
       assertRoundedQuoteOrderValue({

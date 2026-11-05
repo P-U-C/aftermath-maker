@@ -440,6 +440,12 @@ export function buildQuoteReplacementRequest(inputs: {
   };
 }
 
+/** This market can't take a quote at the configured size: a market
+ * condition for Maker to skip, not a bundle failure. */
+export class QuoteBelowMinimumError extends Error {
+  override readonly name = "QuoteBelowMinimumError";
+}
+
 export function assertRoundedQuoteOrderValue(inputs: {
   symbol: string;
   sizeBase: number;
@@ -451,8 +457,8 @@ export function assertRoundedQuoteOrderValue(inputs: {
     inputs.sizeBase * Math.min(inputs.bidPrice, inputs.askPrice);
   if (roundedNotionalUsd + 1e-9 >= inputs.minOrderUsdValue) return;
 
-  throw new Error(
-    `${inputs.symbol} quote rounds to $${roundedNotionalUsd.toFixed(4)}, below the venue's $${inputs.minOrderUsdValue.toFixed(2)} minimum. Restage the market to apply a lot-size buffer.`,
+  throw new QuoteBelowMinimumError(
+    `Its quote rounds to $${roundedNotionalUsd.toFixed(4)}, below the venue's $${inputs.minOrderUsdValue.toFixed(2)} minimum order.`,
   );
 }
 
@@ -2904,7 +2910,9 @@ export class AftermathGateway {
       floor: true,
     });
     if (roundedSizeBase <= 0) {
-      throw new Error("Quote size is below the market lot size");
+      throw new QuoteBelowMinimumError(
+        "Its quote size is smaller than one lot on the venue.",
+      );
     }
     const roundedBidPrice = market.roundToValidPrice({
       price: inputs.quote.bidPrice,

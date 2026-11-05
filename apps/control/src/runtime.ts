@@ -1,6 +1,7 @@
 import {
   AftermathGateway,
   isPostOnlyWouldMatch,
+  QuoteBelowMinimumError,
   loadAgentKeypair,
   type EndpointHealth,
   type MarketSummary,
@@ -1966,15 +1967,13 @@ export class MakerRuntime {
       }),
       "Maker fill history read",
     );
-    const runStartedAt = Date.parse(this.snapshotValue.startedAt ?? "");
+    // Any Maker order this bundle posted counts, not only this run's: a fill
+    // that landed just before a pause is still Maker's to hedge after
+    // resuming. The hedge never exceeds the accounts' actual combined delta.
     const trackedOrderIds = new Set(
       this.store
         .listTrackedMakerOrders({ accountId: inputs.makerSetup.accountId })
-        .filter(
-          (order) =>
-            order.marketId === inputs.selected.marketId &&
-            Date.parse(order.postedAt) >= runStartedAt - 1_000,
-        )
+        .filter((order) => order.marketId === inputs.selected.marketId)
         .map((order) => order.orderId),
     );
     const pendingFills = history.orders.filter(
@@ -2013,9 +2012,38 @@ export class MakerRuntime {
           },
         });
       } else if (now - waitingSince >= 10_000) {
-        throw new Error(
-          `Hedge blocked: $${Math.abs(combinedDeltaUsd).toFixed(4)} of account delta has no attributable Maker fill history`,
+        // A position Maker can't match to its own fills (a manual trade, or
+        // history beyond what the venue returns) isn't Maker's to hedge.
+        // Leave this market alone, with no quote, and keep the others going.
+        const resting = inputs.makerPortfolio.positions.find(
+          (position) => position.marketId === inputs.selected.marketId,
         );
+        if (resting?.makerOrderIds.length) {
+          const cancelled = await this.cancelOpenOrders(inputs.config, {
+            attempts: 3,
+            retryDelayMs: 750,
+            marketIds: [inputs.selected.marketId],
+          });
+          if (!cancelled)
+            throw new Error(
+              `Could not confirm cancellation of ${inputs.selected.symbol} quotes beside an unmatched position`,
+            );
+        }
+        if (this.activeQuote?.marketId === inputs.selected.marketId)
+          this.clearActiveQuoteState();
+        this.recordPaperMarketSkip({
+          selected: inputs.selected,
+          failed: {
+            code: "unmatched-position",
+            label: "Position Maker can't match to its fills",
+            ok: false,
+            scope: "market",
+            detail: `$${Math.abs(combinedDeltaUsd).toFixed(2)}`,
+          },
+          config: inputs.config,
+        });
+        this.snapshotValue.hedge.state = "waiting";
+        return false;
       }
       this.snapshotValue.hedge.state = "waiting";
       return false;
@@ -2465,11 +2493,15 @@ export class MakerRuntime {
       ? (this.store.getStoredBundle(this.store.bundleId)?.name ?? "Maker")
       : "Core";
     const message =
-      failed.code === "market-held"
-        ? `${bundleName}: ${selected.symbol} skipped. ${failed.detail} quotes it live, and one Live bundle quotes a market at a time. ${bundleName} picks it up when ${failed.detail} stops quoting it.`
-        : failed.code === "fair-value"
-          ? `${bundleName}: ${selected.symbol} paused. Its book is ${failed.detail.split(";")[0]} from the index price, and ${bundleName} quotes only within ${maxFairValue.toFixed(1)} bps (${limitName}). Quoting resumes when the book comes back, or widen the spread in Strategy.`
-          : `${bundleName}: ${selected.symbol} paused. ${failed.detail}. Quoting resumes when this market is safe again.`;
+      failed.code === "unmatched-position"
+        ? `${bundleName}: ${selected.symbol} skipped. Its accounts hold ${failed.detail} of position Maker can't match to its own fills, so Maker won't hedge or quote it. Flatten ${selected.symbol} in Bundles, or close it yourself, and Maker picks it up again.`
+        : failed.code === "below-minimum"
+          ? `${bundleName}: ${selected.symbol} skipped. ${failed.detail} Raise the quote size for ${selected.symbol} in Strategy, or remove it.`
+          : failed.code === "market-held"
+            ? `${bundleName}: ${selected.symbol} skipped. ${failed.detail} quotes it live, and one Live bundle quotes a market at a time. ${bundleName} picks it up when ${failed.detail} stops quoting it.`
+            : failed.code === "fair-value"
+              ? `${bundleName}: ${selected.symbol} paused. Its book is ${failed.detail.split(";")[0]} from the index price, and ${bundleName} quotes only within ${maxFairValue.toFixed(1)} bps (${limitName}). Quoting resumes when the book comes back, or widen the spread in Strategy.`
+              : `${bundleName}: ${selected.symbol} paused. ${failed.detail}. Quoting resumes when this market is safe again.`;
     const previous = this.paperMarketSkips.get(selected.marketId);
     this.snapshotValue.markets = this.snapshotValue.markets.map((row) =>
       row.id === selected.marketId
@@ -3733,6 +3765,22 @@ export class MakerRuntime {
           );
         } catch (error) {
           if (!executionIsCurrent()) return;
+          if (error instanceof QuoteBelowMinimumError) {
+            this.recordPaperMarketSkip({
+              selected,
+              failed: {
+                code: "below-minimum",
+                label: "Quote below the venue minimum",
+                ok: false,
+                scope: "market",
+                detail: error.message,
+              },
+              config,
+            });
+            this.snapshotValue.execution.lastDecision = "held";
+            this.snapshotValue.lastSuccessfulCycleAt = updatedAt;
+            return;
+          }
           const errorText = message(error);
           const gasRelated = /(?:gas|sui balance|insufficient funds)/i.test(
             errorText,
@@ -4046,23 +4094,58 @@ export class MakerRuntime {
       // Require a fresh account read on a later cycle before reporting them.
       this.snapshotValue.restingQuoteMarketIds = [];
       this.snapshotValue.restingQuoteVerifiedAt = null;
-      const receipt = await this.gateway.executeQuote({
-        setup,
-        config: marketConfig,
-        quote,
-        signer,
-        builderCode: this.options.builderCode(),
-        shouldContinue: executionIsCurrent,
-        knownMakerOrderIds,
-        ...(switchFromMarketId
-          ? {
-              cancelMarketIds: [switchFromMarketId],
-              expectedCancelOrderIds: {
-                [switchFromMarketId]: expectedCancelOrderIds,
-              },
-            }
-          : {}),
-      });
+      let receipt: Awaited<ReturnType<AftermathGateway["executeQuote"]>>;
+      try {
+        receipt = await this.gateway.executeQuote({
+          setup,
+          config: marketConfig,
+          quote,
+          signer,
+          builderCode: this.options.builderCode(),
+          shouldContinue: executionIsCurrent,
+          knownMakerOrderIds,
+          ...(switchFromMarketId
+            ? {
+                cancelMarketIds: [switchFromMarketId],
+                expectedCancelOrderIds: {
+                  [switchFromMarketId]: expectedCancelOrderIds,
+                },
+              }
+            : {}),
+        });
+      } catch (error) {
+        // This market can't take a quote at this size: skip it, keep going.
+        // Nothing was built or signed.
+        if (!(error instanceof QuoteBelowMinimumError)) throw error;
+        if (knownMakerOrderIds.length) {
+          const cancelled = await this.cancelOpenOrders(config, {
+            attempts: 3,
+            retryDelayMs: 750,
+            marketIds: [selected.marketId],
+          });
+          if (!cancelled)
+            throw new Error(
+              `Could not confirm cancellation of ${selected.symbol} quotes after a below-minimum skip`,
+              { cause: error },
+            );
+        }
+        if (this.activeQuote?.marketId === selected.marketId)
+          this.clearActiveQuoteState();
+        this.recordPaperMarketSkip({
+          selected,
+          failed: {
+            code: "below-minimum",
+            label: "Quote below the venue minimum",
+            ok: false,
+            scope: "market",
+            detail: error.message,
+          },
+          config,
+        });
+        this.snapshotValue.execution.lastDecision = "held";
+        this.snapshotValue.lastSuccessfulCycleAt = updatedAt;
+        return;
+      }
       this.store.logExecution({
         mode: "live",
         marketId: selected.marketId,
