@@ -244,7 +244,7 @@ describe("runtime endpoint management", () => {
     store.close();
   });
 
-  it("lets several bundles run Live on their own markets, never on a shared one", () => {
+  it("lets several Live bundles start on shared markets; the longest-running one holds each", () => {
     const store = storeHarness();
     const owner = `0x${"7".repeat(64)}`;
     const tenant = store.forTenant(owner);
@@ -254,49 +254,61 @@ describe("runtime endpoint management", () => {
     tenant.setConfig(config);
     tenant.confirmWalletLimits();
     const core = tenant.listBundles().find((bundle) => bundle.name === "Core")!;
-    const ownMarket = tenant.createBundle({
-      name: "Rewards",
-      config: makerConfigSchema.parse({
-        ...config,
-        makerAccountId: "3",
-        hedge: { ...config.hedge, accountId: "4" },
-        markets: [{ marketId: "0x7002", symbol: "ALT" }],
-      }),
-    });
-    const sharedMarket = tenant.createBundle({
+    const shared = tenant.createBundle({
       name: "Delta neutral",
       config: makerConfigSchema.parse({
         ...config,
         makerAccountId: "5",
         hedge: { ...config.hedge, accountId: "6" },
+        markets: [
+          { marketId: "0x7001", symbol: "NEAR" },
+          { marketId: "0x7002", symbol: "ALT" },
+        ],
       }),
     });
-    for (const bundle of [core, ownMarket, sharedMarket])
+    for (const bundle of [core, shared])
       tenant.updateBundleMode({ bundleId: bundle.id, mode: "live" });
     tenant.setBundleStatus(core.id, "running");
-    const manager = new RuntimeManager(store, {} as never, {});
-    const assertStartAllowed = (
-      manager as unknown as {
-        assertStartAllowed: (
-          owner: string,
-          bundle: ReturnType<typeof tenant.getStoredBundle>,
-        ) => unknown;
-      }
-    ).assertStartAllowed.bind(manager);
+    // A shared Live market no longer blocks the start.
+    expect(() =>
+      tenant.assertBundleMarketsAvailableToStart(shared.id),
+    ).not.toThrow();
 
-    // A second Live bundle on its own market and accounts may start.
-    expect(() =>
-      assertStartAllowed(owner, tenant.getStoredBundle(ownMarket.id)),
-    ).not.toThrow();
-    expect(() =>
-      tenant.assertBundleMarketsAvailableToStart(ownMarket.id),
-    ).not.toThrow();
-    // A Live bundle can't quote a market another running Live bundle quotes.
-    expect(() =>
-      tenant.assertBundleMarketsAvailableToStart(sharedMarket.id),
-    ).toThrow(
-      "NEAR is already quoted live by Core. Only one Live bundle can quote a market.",
+    const manager = new RuntimeManager(store, {} as never, {});
+    const internals = manager as unknown as {
+      runtimes: Map<string, { snapshot: unknown }>;
+      runtimeKey: (owner: string, bundleId: string) => string;
+      marketHeldBy: (
+        owner: string,
+        bundleId: string,
+        marketId: string,
+      ) => string | null;
+    };
+    const live = (startedAt: string, marketIds: string[]) => ({
+      snapshot: {
+        running: true,
+        mode: "live",
+        startedAt,
+        markets: marketIds.map((id) => ({ id })),
+      },
+    });
+    internals.runtimes.set(
+      internals.runtimeKey(owner, core.id),
+      live("2026-11-05T20:00:00.000Z", ["0x7001"]),
     );
+    internals.runtimes.set(
+      internals.runtimeKey(owner, shared.id),
+      live("2026-11-05T20:10:00.000Z", ["0x7001", "0x7002"]),
+    );
+    // Core has run Live longer: it holds NEAR; Delta neutral quotes ALT.
+    expect(internals.marketHeldBy(owner, shared.id, "0x7001")).toBe("Core");
+    expect(internals.marketHeldBy(owner, shared.id, "0x7002")).toBeNull();
+    expect(internals.marketHeldBy(owner, core.id, "0x7001")).toBeNull();
+    // Once Core stops, Delta neutral picks NEAR up.
+    internals.runtimes.set(internals.runtimeKey(owner, core.id), {
+      snapshot: { running: false, mode: "live", startedAt: null, markets: [] },
+    });
+    expect(internals.marketHeldBy(owner, shared.id, "0x7001")).toBeNull();
     manager.close();
     store.close();
   });

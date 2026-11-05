@@ -331,8 +331,30 @@ const copies: Record<string, AuditCopy> = {
   },
   "risk:stale-quote-watchdog:tripped": {
     severity: "warning",
+    sentence: () =>
+      "No market check finished in time, so Maker cancelled its quotes. It keeps checking and quotes again on the next completed check.",
+  },
+  "risk:stale-quote-watchdog:recovered": {
+    severity: "info",
+    sentence: () => "Market checks resumed; Maker is quoting again.",
+  },
+  "risk:stale-quote-cancel:cancelled": {
+    severity: "info",
+    sentence: (detail) => {
+      const symbols = Array.isArray(detail.symbols)
+        ? detail.symbols.filter((value) => typeof value === "string")
+        : [];
+      const seconds =
+        typeof detail.maxQuoteAgeMs === "number"
+          ? `${Math.round(detail.maxQuoteAgeMs / 1000)}s`
+          : "its limit";
+      return `Cancelled the ${symbols.length ? symbols.join(", ") : market(detail)} ${symbols.length > 1 ? "quotes" : "quote"}: not re-checked within ${seconds}. ${symbols.length > 1 ? "They're" : "It's"} replaced on the next visit.`;
+    },
+  },
+  "risk:stale-quote-cancel:error": {
+    severity: "warning",
     sentence: (detail) =>
-      `Stale quote protection paused Maker${market(detail)}.`,
+      `Couldn't confirm cancelling the stale ${market(detail)} quote. Maker tries again on the next check.`,
   },
   "risk:flatten-cycle-wait:timeout": {
     severity: "warning",
@@ -427,11 +449,20 @@ function withContext(
       : null);
   if (!bundleName && !accountId) return sentence;
 
-  const withoutAccountSuffix = sentence.replace(/ for account \d+(?=\.)/, "");
+  // Some sentences already name their bundle; never say it twice.
+  const own =
+    bundleName && sentence.startsWith(`${bundleName}: `)
+      ? sentence.slice(bundleName.length + 2)
+      : sentence;
+  const withoutAccountSuffix = own.replace(/ for account \d+(?=\.)/, "");
   const subject = [bundleName, accountId ? `account ${accountId}` : null]
     .filter((value): value is string => Boolean(value))
     .join(" · ");
-  return `${subject}: ${withoutAccountSuffix[0]?.toLowerCase() ?? ""}${withoutAccountSuffix.slice(1)}`;
+  // Lowercase a leading word ("Maker" -> "maker"), never a symbol ("SHFL").
+  const lead = /^[A-Z][a-z]/.test(withoutAccountSuffix)
+    ? withoutAccountSuffix[0]!.toLowerCase()
+    : (withoutAccountSuffix[0] ?? "");
+  return `${subject}: ${lead}${withoutAccountSuffix.slice(1)}`;
 }
 
 export function deskEvent(

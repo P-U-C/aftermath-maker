@@ -51,6 +51,12 @@ export type RuntimeOptions = {
   sleep?: (milliseconds: number) => Promise<void>;
   pauseOnError?: boolean;
   onBundleError?: (error: string) => Promise<void> | void;
+  /**
+   * The name of another running Live bundle that holds this market, or null.
+   * One Live bundle quotes a market at a time: the one running Live longest.
+   * The others quote around it and pick the market up when it's free.
+   */
+  marketHeldBy?: (marketId: string) => string | null;
   admitBundleProposal?: (proposal: {
     worstCaseGrossExposureDeltaUsd: number;
     worstCaseInventoryDeltaUsd: number;
@@ -564,6 +570,7 @@ export class MakerRuntime {
   private timer: NodeJS.Timeout | null = null;
   private watchdogTimer: NodeJS.Timeout | null = null;
   private watchdogTripping = false;
+  private watchdogTrippedAt = 0;
   private generation = 0;
   /** Invalidates late Paper reads without ending the running bundle generation. */
   private cycleToken = 0;
@@ -865,6 +872,13 @@ export class MakerRuntime {
     });
   }
 
+  /**
+   * Keeps every Live quote within the stale-quote limit without stopping the
+   * bundle. A market whose quote hasn't been re-checked in time has just that
+   * quote cancelled; it's replaced on the market's next visit. If no market
+   * check completes at all in time, every quote is cancelled and the loop is
+   * restarted on fresh data; quoting resumes on the next completed check.
+   */
   private async checkQuoteAges(config: MakerConfig): Promise<void> {
     if (
       !this.snapshotValue.running ||
@@ -876,66 +890,131 @@ export class MakerRuntime {
     const now = Date.now();
     this.snapshotValue.watchdog.checkedAt = new Date(now).toISOString();
     const startedAt = Date.parse(this.snapshotValue.startedAt ?? "");
-    const activeQuote =
-      config.rotationMode === "single-slot" ? this.activeQuote : null;
-    if (config.rotationMode === "single-slot" && !activeQuote) return;
-    const watchedMarkets = activeQuote
-      ? this.snapshotValue.markets.filter(
-          (market) => market.id === activeQuote.marketId,
-        )
-      : this.snapshotValue.markets;
-    const stale = watchedMarkets.find((market) => {
-      const observedAt = activeQuote
-        ? activeQuote.placedAt
-        : market.updatedAt
-          ? Date.parse(market.updatedAt)
-          : startedAt;
-      return (
-        Number.isFinite(observedAt) && now - observedAt > config.maxQuoteAgeMs
-      );
-    });
-    if (!stale) return;
+    const lastCheck = Math.max(
+      Number.isFinite(startedAt) ? startedAt : 0,
+      Date.parse(this.snapshotValue.lastSuccessfulCycleAt ?? "") || 0,
+    );
+    const limitSeconds = Math.round(config.maxQuoteAgeMs / 1000);
+    // Only quotes already resting can go stale; one still being confirmed
+    // hasn't started aging.
+    const quotesRest =
+      (this.snapshotValue.restingQuoteMarketIds?.length ?? 0) > 0 ||
+      Boolean(this.activeQuote);
 
-    this.watchdogTripping = true;
-    this.snapshotValue.watchdog.state = "tripped";
-    this.snapshotValue.lastError = `Stale-quote watchdog tripped on ${stale.symbol}`;
-    this.store.logEvent({
-      category: "risk",
-      action: "stale-quote-watchdog",
-      outcome: "tripped",
-      detail: {
-        marketId: stale.id,
-        ageSource: activeQuote ? "quote-placement" : "market-observation",
-        observedAt: activeQuote
-          ? new Date(activeQuote.placedAt).toISOString()
-          : stale.updatedAt,
-        maxQuoteAgeMs: config.maxQuoteAgeMs,
-      },
-    });
-    const activeCycle = this.cyclePromise;
-    this.stopScheduling("watchdog");
-    if (config) {
-      await this.cancelOpenOrders(config, {
-        attempts: 3,
-        retryDelayMs: 2_000,
+    if (now - lastCheck > config.maxQuoteAgeMs && quotesRest) {
+      if (this.snapshotValue.watchdog.state === "tripped") return;
+      this.watchdogTripping = true;
+      this.watchdogTrippedAt = now;
+      this.snapshotValue.watchdog.state = "tripped";
+      this.snapshotValue.lastError = `No market check finished in ${limitSeconds}s, so Maker cancelled its quotes. It keeps checking and quotes again on the next completed check.`;
+      this.store.logEvent({
+        category: "risk",
+        action: "stale-quote-watchdog",
+        outcome: "tripped",
+        detail: {
+          scope: "bundle",
+          lastCheckAt: new Date(lastCheck).toISOString(),
+          maxQuoteAgeMs: config.maxQuoteAgeMs,
+        },
+      });
+      const stalled = this.cyclePromise;
+      this.restartSchedulingAfterStall(config);
+      await this.cancelOpenOrders(config, { attempts: 3, retryDelayMs: 2_000 });
+      this.clearActiveQuoteState();
+      // A stalled cycle may still broadcast once its RPC returns; cancel
+      // again then if checks haven't recovered.
+      if (stalled) {
+        void stalled
+          .finally(async () => {
+            if (this.snapshotValue.watchdog.state === "tripped")
+              await this.cancelOpenOrders(config, {
+                attempts: 3,
+                retryDelayMs: 2_000,
+              });
+          })
+          .catch(() => undefined);
+      }
+      this.watchdogTripping = false;
+      return;
+    }
+
+    if (
+      this.snapshotValue.watchdog.state === "tripped" &&
+      lastCheck > this.watchdogTrippedAt
+    ) {
+      this.snapshotValue.watchdog.state = "armed";
+      if (this.snapshotValue.lastError?.startsWith("No market check finished"))
+        this.snapshotValue.lastError = null;
+      this.store.logEvent({
+        category: "risk",
+        action: "stale-quote-watchdog",
+        outcome: "recovered",
+        detail: { maxQuoteAgeMs: config.maxQuoteAgeMs },
       });
     }
 
-    // Do not let a stalled RPC prevent immediate cancellation. If a transaction
-    // was already broadcast, cancel again after its result becomes known.
-    if (activeCycle) {
-      void activeCycle
-        .finally(async () => {
-          if (this.snapshotValue.watchdog.state === "tripped") {
-            await this.cancelOpenOrders(config, {
-              attempts: 3,
-              retryDelayMs: 2_000,
-            });
-          }
-        })
-        .catch(() => undefined);
-    }
+    // Quotes that rest but haven't been re-checked within the limit.
+    const resting = new Set(this.snapshotValue.restingQuoteMarketIds);
+    const activeQuote =
+      config.rotationMode === "single-slot" ? this.activeQuote : null;
+    const stale =
+      config.rotationMode === "single-slot"
+        ? activeQuote && now - activeQuote.placedAt > config.maxQuoteAgeMs
+          ? this.snapshotValue.markets.filter(
+              (market) => market.id === activeQuote.marketId,
+            )
+          : []
+        : this.snapshotValue.markets.filter((market) => {
+            if (!resting.has(market.id)) return false;
+            const observedAt = market.updatedAt
+              ? Date.parse(market.updatedAt)
+              : startedAt;
+            return (
+              Number.isFinite(observedAt) &&
+              now - observedAt > config.maxQuoteAgeMs
+            );
+          });
+    if (!stale.length) return;
+
+    this.watchdogTripping = true;
+    const marketIds = stale.map((market) => market.id);
+    const cancelled = await this.cancelOpenOrders(config, {
+      attempts: 3,
+      retryDelayMs: 2_000,
+      marketIds,
+    });
+    if (activeQuote && marketIds.includes(activeQuote.marketId))
+      this.clearActiveQuoteState();
+    this.store.logEvent({
+      category: "risk",
+      action: "stale-quote-cancel",
+      outcome: cancelled ? "cancelled" : "error",
+      detail: {
+        marketId: stale[0]!.id,
+        symbol: stale[0]!.symbol,
+        marketIds,
+        symbols: stale.map((market) => market.symbol),
+        maxQuoteAgeMs: config.maxQuoteAgeMs,
+      },
+    });
     this.watchdogTripping = false;
+  }
+
+  /**
+   * Invalidate a stalled cycle so it can't act on old data, and keep the
+   * loop running on a fresh generation. The stalled cycle bails at its next
+   * check, before signing anything.
+   */
+  private restartSchedulingAfterStall(config: MakerConfig): void {
+    if (this.timer) clearInterval(this.timer);
+    this.generation += 1;
+    const generation = this.generation;
+    this.cyclePromise = null;
+    this.timer = setInterval(
+      () => void this.cycle({ executeLive: true, generation }),
+      config.refreshMs,
+    );
+    this.timer.unref();
   }
 
   private stopScheduling(
@@ -984,8 +1063,13 @@ export class MakerRuntime {
       marketIds?: string[];
     } = {},
   ): Promise<boolean> {
-    this.snapshotValue.restingQuoteMarketIds = [];
-    this.snapshotValue.restingQuoteVerifiedAt = null;
+    // A targeted cancel leaves other markets' confirmed quotes in place.
+    this.snapshotValue.restingQuoteMarketIds = options.marketIds
+      ? (this.snapshotValue.restingQuoteMarketIds ?? []).filter(
+          (marketId) => !options.marketIds!.includes(marketId),
+        )
+      : [];
+    if (!options.marketIds) this.snapshotValue.restingQuoteVerifiedAt = null;
     const setup = this.store.getSetup();
     const account = setup ? this.store.getAccountSetup(setup.accountId) : null;
     const agent = this.store.getAgent();
@@ -1675,7 +1759,10 @@ export class MakerRuntime {
     }
     this.clearActiveQuoteState();
     const accounts = [inputs.makerSetup, hedgeAccount];
-    const marketIds = inputs.config.markets.map((market) => market.marketId);
+    // Never sweep a market another Live bundle is quoting.
+    const marketIds = inputs.config.markets
+      .map((market) => market.marketId)
+      .filter((marketId) => !this.options.marketHeldBy?.(marketId));
     const transactions: FlattenResult["transactions"] = [];
     let flatReads = 0;
     let verifiedFlat = false;
@@ -2378,9 +2465,11 @@ export class MakerRuntime {
       ? (this.store.getStoredBundle(this.store.bundleId)?.name ?? "Maker")
       : "Core";
     const message =
-      failed.code === "fair-value"
-        ? `${bundleName}: ${selected.symbol} paused. Its book is ${failed.detail.split(";")[0]} from the index price, and ${bundleName} quotes only within ${maxFairValue.toFixed(1)} bps (${limitName}). Quoting resumes when the book comes back, or widen the spread in Strategy.`
-        : `${bundleName}: ${selected.symbol} paused. ${failed.detail}. Quoting resumes when this market is safe again.`;
+      failed.code === "market-held"
+        ? `${bundleName}: ${selected.symbol} skipped. ${failed.detail} quotes it live, and one Live bundle quotes a market at a time. ${bundleName} picks it up when ${failed.detail} stops quoting it.`
+        : failed.code === "fair-value"
+          ? `${bundleName}: ${selected.symbol} paused. Its book is ${failed.detail.split(";")[0]} from the index price, and ${bundleName} quotes only within ${maxFairValue.toFixed(1)} bps (${limitName}). Quoting resumes when the book comes back, or widen the spread in Strategy.`
+          : `${bundleName}: ${selected.symbol} paused. ${failed.detail}. Quoting resumes when this market is safe again.`;
     const previous = this.paperMarketSkips.get(selected.marketId);
     this.snapshotValue.markets = this.snapshotValue.markets.map((row) =>
       row.id === selected.marketId
@@ -3716,6 +3805,42 @@ export class MakerRuntime {
         context: agent.encryptionContext,
         encryptedSecret: agent.encryptedSecret,
       });
+      // Another running Live bundle holds this market: quote around it,
+      // with no quote or taker order here, so our hedges never trade against
+      // its resting quotes. It's a routine skip, not an error.
+      const heldBy = this.options.marketHeldBy?.(selected.marketId) ?? null;
+      if (heldBy) {
+        const resting = portfolio.positions.find(
+          (position) => position.marketId === selected!.marketId,
+        );
+        if (resting?.makerOrderIds.length) {
+          const cancelled = await this.cancelOpenOrders(config, {
+            attempts: 3,
+            retryDelayMs: 750,
+            marketIds: [selected.marketId],
+          });
+          if (!cancelled)
+            throw new Error(
+              `Could not confirm cancellation of ${selected.symbol} quotes while ${heldBy} holds it`,
+            );
+        }
+        if (this.activeQuote?.marketId === selected.marketId)
+          this.clearActiveQuoteState();
+        this.recordPaperMarketSkip({
+          selected,
+          failed: {
+            code: "market-held",
+            label: "Market held by another Live bundle",
+            ok: false,
+            scope: "market",
+            detail: heldBy,
+          },
+          config,
+        });
+        this.snapshotValue.execution.lastDecision = "held";
+        this.snapshotValue.lastSuccessfulCycleAt = updatedAt;
+        return;
+      }
       // Live follows the same deliberately slow recovery path as Paper: once
       // the pause has persisted, cancel our resting Maker quotes first, then
       // reduce the largest position in one market.  This branch is reachable
@@ -3730,7 +3855,13 @@ export class MakerRuntime {
           ...portfolio.positions,
           ...(hedgeRiskPortfolio?.positions ?? []),
         ]
-          .filter((position) => Math.abs(position.inventoryUsd) > 0.000001)
+          .filter(
+            (position) =>
+              Math.abs(position.inventoryUsd) > 0.000001 &&
+              // A taker unwind never runs in a market another Live bundle
+              // quotes; it waits until that market is free.
+              !this.options.marketHeldBy?.(position.marketId),
+          )
           .sort(
             (left, right) =>
               Math.abs(right.inventoryUsd) - Math.abs(left.inventoryUsd),

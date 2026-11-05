@@ -3231,34 +3231,8 @@ export class TenantStore {
         409,
       );
     }
-    if (bundle.mode !== "live") return;
-    const assigned = this.db.prepare(
-      `SELECT bundles.name
-       FROM bundles
-       JOIN strategy_markets ON strategy_markets.strategy_id = bundles.strategy_id
-       WHERE bundles.owner_address = ?
-         AND bundles.id <> ?
-         AND bundles.archived_at IS NULL
-         AND bundles.status = 'running'
-         AND bundles.mode = 'live'
-         AND strategy_markets.market_id = ?
-       ORDER BY bundles.created_at ASC, bundles.id ASC
-       LIMIT 1`,
-    );
-    for (const market of this.getStrategyMarkets(bundle.strategyId)) {
-      const existing = assigned.get(
-        this.ownerAddress,
-        bundle.id,
-        market.marketId,
-      ) as { name: string } | undefined;
-      if (existing) {
-        throw new UserFacingError(
-          "market-taken",
-          `${market.symbol} is already quoted live by ${existing.name}. Only one Live bundle can quote a market.`,
-          { kind: "strategy" },
-        );
-      }
-    }
+    // A Live market shared with another running Live bundle doesn't block
+    // the start: the runtime quotes around the bundle that holds it.
   }
 
   private writeBundleConfig(bundleId: string, config: MakerConfig): void {
@@ -3734,47 +3708,8 @@ export class TenantStore {
           }),
         };
       });
-      const running = projections.filter(
-        (projection) =>
-          projection.status === "running" && projection.config.mode === "live",
-      );
-      if (running.length > 1 && markets.length) {
-        throw new UserFacingError(
-          "market-taken",
-          `${markets[0]!.symbol} is already quoted live by ${running[0]!.bundle.name}. Only one Live bundle can quote a market.`,
-          { kind: "strategy" },
-        );
-      }
-      if (running.length && markets.length) {
-        const reservedMarket = this.db.prepare(
-          `SELECT bundles.name
-           FROM bundles
-           JOIN strategy_markets
-             ON strategy_markets.strategy_id = bundles.strategy_id
-           WHERE bundles.owner_address = ?
-             AND bundles.archived_at IS NULL
-             AND bundles.status = 'running'
-             AND bundles.mode = 'live'
-             AND bundles.strategy_id <> ?
-             AND strategy_markets.market_id = ?
-           ORDER BY bundles.created_at ASC, bundles.id ASC
-           LIMIT 1`,
-        );
-        for (const market of markets) {
-          const existing = reservedMarket.get(
-            this.ownerAddress,
-            current.id,
-            market.marketId,
-          ) as { name: string } | undefined;
-          if (existing) {
-            throw new UserFacingError(
-              "market-taken",
-              `${market.symbol} is already quoted live by ${existing.name}. Only one Live bundle can quote a market.`,
-              { kind: "strategy" },
-            );
-          }
-        }
-      }
+      // Markets shared between running Live bundles are resolved at run
+      // time: the bundle running Live longest quotes them; others skip them.
       const walletLimits = this.getWalletLimits();
       if (walletLimits) {
         for (const projection of projections) {

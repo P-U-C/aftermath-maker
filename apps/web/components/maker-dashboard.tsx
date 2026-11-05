@@ -4313,6 +4313,16 @@ function DashboardBody() {
     restingQuoteSizeUsd: market.overrides?.quoteSizeUsd ?? config.quoteSizeUsd,
     maxLeverage: market.overrides?.maxLeverage ?? config.maxLeverage,
   }));
+  // Markets whose own maximum is below the strategy's leverage: they quote
+  // at their maximum (the strategy value is a ceiling, not a requirement).
+  const leverageCappedMarkets = config.markets.flatMap((configured) => {
+    const maxLeverage = markets.find(
+      (listed) => listed.id === configured.marketId,
+    )?.maxLeverage;
+    return maxLeverage !== undefined && maxLeverage < config.maxLeverage
+      ? [{ symbol: configured.symbol, maxLeverage }]
+      : [];
+  });
   const strategyMarketMaxLeverage = Math.max(
     1,
     ...config.markets.map(
@@ -8813,6 +8823,19 @@ function DashboardBody() {
                       </Button>
                     }
                   />
+                  {leverageCappedMarkets.length > 0 && (
+                    <small>
+                      Each market uses up to its own limit:{" "}
+                      {leverageCappedMarkets
+                        .slice(0, 4)
+                        .map((entry) => `${entry.symbol} ${entry.maxLeverage}x`)
+                        .join(", ")}
+                      {leverageCappedMarkets.length > 4
+                        ? ` and ${leverageCappedMarkets.length - 4} more`
+                        : ""}
+                      .
+                    </small>
+                  )}
                 </label>
               </div>
 

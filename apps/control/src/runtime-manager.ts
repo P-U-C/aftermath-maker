@@ -125,10 +125,50 @@ export class RuntimeManager {
         },
         admitBundleProposal: (proposal) =>
           this.admitBundleProposal(owner, bundle.id, proposal),
+        marketHeldBy: (marketId) =>
+          this.marketHeldBy(owner, bundle.id, marketId),
       },
     );
     this.runtimes.set(key, runtime);
     return runtime;
+  }
+
+  /**
+   * One Live bundle quotes a market at a time, so one bundle's hedge never
+   * trades against another's resting quote. The holder is the bundle that
+   * has been running Live longest (ties by ID). Every other Live bundle
+   * quotes around it and picks the market up once it's free.
+   */
+  private marketHeldBy(
+    ownerAddress: string,
+    bundleId: string,
+    marketId: string,
+  ): string | null {
+    const startedAt = (runtime: MakerRuntime | undefined) =>
+      runtime?.snapshot.running && runtime.snapshot.mode === "live"
+        ? Date.parse(runtime.snapshot.startedAt ?? "")
+        : Number.NaN;
+    const mine = startedAt(
+      this.runtimes.get(this.runtimeKey(ownerAddress, bundleId)),
+    );
+    const tenant = this.store.forTenant(ownerAddress);
+    for (const other of tenant.listBundles()) {
+      if (other.id === bundleId || other.archivedAt) continue;
+      const runtime = this.runtimes.get(
+        this.runtimeKey(ownerAddress, other.id),
+      );
+      const theirs = startedAt(runtime);
+      if (!Number.isFinite(theirs)) continue;
+      if (!runtime!.snapshot.markets.some((market) => market.id === marketId))
+        continue;
+      if (
+        !Number.isFinite(mine) ||
+        theirs < mine ||
+        (theirs === mine && other.id < bundleId)
+      )
+        return other.name;
+    }
+    return null;
   }
 
   getBundle(ownerAddress: string, bundleId: string): MakerRuntime {

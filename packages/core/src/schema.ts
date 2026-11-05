@@ -220,16 +220,18 @@ export const makerConfigSchema = z
             "Inventory target must fit inside the market inventory limit",
         });
       }
-      const requestedLeverage =
-        market.overrides?.maxLeverage ?? config.maxLeverage;
+      // The strategy-wide leverage is a ceiling: each market uses the lower
+      // of it and the market's own maximum (resolveEffectiveLeverage). Only an
+      // explicit per-market override above that market's maximum is invalid.
       if (
+        market.overrides?.maxLeverage !== undefined &&
         market.marketMaxLeverage !== undefined &&
-        requestedLeverage > market.marketMaxLeverage
+        market.overrides.maxLeverage > market.marketMaxLeverage
       ) {
         context.addIssue({
           code: "custom",
           path: ["markets", index, "overrides", "maxLeverage"],
-          message: "market-max-leverage-exceeded",
+          message: `${market.symbol} allows at most ${market.marketMaxLeverage}x leverage`,
         });
       }
     }

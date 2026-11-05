@@ -1194,36 +1194,6 @@ export const notReachableOverHttp: ReadonlyArray<{
     },
   },
   {
-    code: "market-taken",
-    reason:
-      "Only Core can run Live; a second Live overlap can only exist in a disposable legacy/DB corruption fixture.",
-    exercise: (h) => {
-      const { tenant, core, strategy } = seed(h);
-      tenant.confirmWalletLimits();
-      const other = tenant.createAllocatedBundle({
-        name: "Pilot",
-        makerAccountId: null,
-        takerAccountId: null,
-        mode: "paper",
-        strategyId: strategy.id,
-        markets: config.markets,
-      });
-      const db = (
-        h.store as unknown as {
-          db: {
-            prepare: (sql: string) => { run: (...args: string[]) => unknown };
-          };
-        }
-      ).db;
-      db.prepare("UPDATE bundles SET mode = 'live' WHERE id IN (?, ?)").run(
-        core.id,
-        other.id,
-      );
-      tenant.setBundleStatus(core.id, "running");
-      tenant.assertBundleMarketsAvailableToStart(other.id);
-    },
-  },
-  {
     code: "markets-on-strategy",
     reason:
       "Bundle PATCH does not accept markets; only internal allocation calls can submit that field.",
