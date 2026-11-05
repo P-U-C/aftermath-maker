@@ -1787,6 +1787,26 @@ async function goLiveFromAnyBundle(browser) {
       );
       await page.waitForTimeout(400);
       await capture(page, `ml-go-live-rewards-${tag}.png`);
+
+      // A missing step has its fix right there: the gas button opens the
+      // trading key top-up prefilled with exactly the shortfall, measured
+      // against the shared Live reserve, and returns to Go live after.
+      await sheet.getByRole("button", { name: "Add 0.77 SUI" }).click();
+      const gas = page.getByRole("dialog", {
+        name: "Add gas to trading key for account 1747",
+      });
+      await gas.waitFor();
+      assert(
+        (await gas
+          .getByRole("textbox", { name: "Add gas amount" })
+          .inputValue()) === "0.77",
+        "Go live's gas fix did not prefill the shortfall",
+      );
+      await gas.getByText("0.05 / 1.20 SUI", { exact: true }).waitFor();
+      await page.waitForTimeout(400);
+      await capture(page, `ml-go-live-gas-fix-${tag}.png`);
+      await gas.getByRole("button", { name: "Cancel", exact: true }).click();
+      await sheet.waitFor();
       await sheet.getByRole("button", { name: "Cancel", exact: true }).click();
       await sheet.waitFor({ state: "detached" });
 

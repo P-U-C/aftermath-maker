@@ -172,6 +172,36 @@ describe("five ordered bundle readiness stages", () => {
       paper.stages[3].requiredGasSui!,
     );
   });
+  it("states a Paper bundle's Live gas as the reserve shared with running Live bundles", () => {
+    const otherLive = makerConfigSchema.parse({
+      ...config,
+      mode: "live",
+      makerAccountId: "7",
+    });
+    const alone = deriveBundleReadiness({ ...base, gasSui: 0.01 });
+    const beside = deriveBundleReadiness({
+      ...base,
+      liveConfigs: [otherLive],
+      gasSui: 0.01,
+    });
+    const goLive = deriveBundleReadiness({
+      ...base,
+      config: makerConfigSchema.parse({ ...config, mode: "live" }),
+      liveConfigs: [
+        otherLive,
+        makerConfigSchema.parse({ ...config, mode: "live" }),
+      ],
+      gasSui: 0.01,
+    });
+    // The figure the funding sheet shows is exactly what Go live checks.
+    expect(beside.stages[3].requiredGasLiveSui).toBeCloseTo(
+      goLive.stages[3].requiredGasSui!,
+      9,
+    );
+    expect(beside.stages[3].requiredGasLiveSui).toBeGreaterThan(
+      alone.stages[3].requiredGasLiveSui!,
+    );
+  });
   it("uses the largest one-market override and requires full hedge margin plus costs", () => {
     const single = makerConfigSchema.parse({
       ...config,

@@ -22,7 +22,12 @@ export type FundingTarget = {
   bundleRunning: boolean;
   keyGasSui: number;
   paperGasSui: number;
+  /** The trading key's Live reserve, shared with every running Live bundle. */
   liveGasSui: number;
+  /** Gas opened from Go live is measured against Live, not Paper. */
+  gasGoal?: "paper" | "live";
+  /** A prefilled gas amount, such as Go live's shortfall. */
+  suggestedSui?: number;
 };
 
 export function VenueFundingSheet({
@@ -60,12 +65,12 @@ export function VenueFundingSheet({
         ? (target.suggestedDepositUsdc ?? target.shortfallUsd).toFixed(2)
         : ""
       : target.mode === "gas"
-        ? "0.25"
+        ? (target.suggestedSui?.toFixed(2) ?? "0.25")
         : "",
   );
   const [pick, setPick] = useState(
     target.mode === "gas"
-      ? "0.25-0"
+      ? `${target.suggestedSui?.toFixed(2) ?? "0.25"}-0`
       : target.mode === "deposit" && target.shortfallUsd > 0
         ? `${(target.suggestedDepositUsdc ?? target.shortfallUsd).toFixed(2)}-0`
         : "",
@@ -135,13 +140,22 @@ export function VenueFundingSheet({
       : target.mode === "deposit"
         ? target.freeUsd + (amount || 0)
         : target.freeUsd - (amount || 0);
+  const gasGoalSui =
+    target.gasGoal === "live" ? target.liveGasSui : target.paperGasSui;
   const remaining =
     target.mode === "gas"
-      ? Math.max(0, target.paperGasSui - resulting)
+      ? Math.max(0, gasGoalSui - resulting)
       : Math.max(0, target.requiredUsd - resulting);
   const picks =
     target.mode === "gas"
-      ? ["0.25", "0.50", "1.00"]
+      ? [
+          ...new Set([
+            ...(target.suggestedSui ? [target.suggestedSui.toFixed(2)] : []),
+            "0.25",
+            "0.50",
+            "1.00",
+          ]),
+        ]
       : target.mode === "deposit"
         ? [
             ...(target.shortfallUsd > 0
@@ -413,7 +427,9 @@ export function VenueFundingSheet({
                     : "Enter an amount to preview this deposit"
                 : remaining <= 0
                   ? target.mode === "gas"
-                    ? "Enough gas for Paper simulations"
+                    ? target.gasGoal === "live"
+                      ? `Enough gas for ${target.bundleName} to go Live`
+                      : "Enough gas for Paper simulations"
                     : target.mode === "deposit" &&
                         target.keyGasSui < target.paperGasSui
                       ? "Enough collateral; add gas before starting"
