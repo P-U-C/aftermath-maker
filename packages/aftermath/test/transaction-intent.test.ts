@@ -264,6 +264,21 @@ function currentSdkQuoteFixture() {
   });
 }
 
+/** The venue's builder returns spare collateral from two other markets. */
+function twoDeallocationsQuoteFixture(secondClearingHouseId: string) {
+  return mutate(currentSdkQuoteFixture(), (snapshot) => {
+    snapshot.inputs.push(shared(secondClearingHouseId, true));
+    const second = structuredClone(snapshot.commands[0]!);
+    second.MoveCall!.arguments[0] = input(17);
+    snapshot.commands.splice(1, 0, second);
+    snapshot.commands[3]!.MoveCall!.arguments[5] = result(2);
+    snapshot.commands[4]!.MoveCall!.arguments[0] = result(3);
+    snapshot.commands[5]!.MoveCall!.arguments[0] = result(3);
+    snapshot.commands[6]!.MoveCall!.arguments[0] = result(3);
+    snapshot.commands[7]!.MoveCall!.arguments[0] = nestedResult(6, 0);
+  });
+}
+
 function currentLiveQuoteFixture() {
   return mutate(quoteFixture(), (snapshot) => {
     snapshot.inputs.push(pure(bcs.u128().serialize(123n).toBytes()));
@@ -325,6 +340,24 @@ describe("agent transaction intent", () => {
         currentLiveQuoteIntent,
       ),
     ).not.toThrow();
+  });
+
+  it("accepts collateral returned from more than one other market", () => {
+    expect(() =>
+      assertAgentTransactionIntent(
+        twoDeallocationsQuoteFixture(`0x${"99".repeat(32)}`),
+        quoteIntent,
+      ),
+    ).not.toThrow();
+  });
+
+  it("rejects two deallocations from the same clearing house", () => {
+    expect(() =>
+      assertAgentTransactionIntent(
+        twoDeallocationsQuoteFixture(clearingHouseId),
+        quoteIntent,
+      ),
+    ).toThrow("two collateral deallocations use the same clearing house");
   });
 
   it("rejects a deallocation clearing house reused by another command", () => {
@@ -389,6 +422,26 @@ describe("agent transaction intent", () => {
         maxLeverage: 1.5,
       }),
     ).not.toThrow();
+  });
+
+  it("accepts the margin ratio for leverage above 3x", () => {
+    const changed = mutate(currentLiveQuoteFixture(), (snapshot) => {
+      snapshot.inputs[15] = pure(
+        bcs.u256().serialize(100_000_000_000_000_000n).toBytes(),
+      );
+    });
+    expect(() =>
+      assertAgentTransactionIntent(changed, {
+        ...currentLiveQuoteIntent,
+        maxLeverage: 10,
+      }),
+    ).not.toThrow();
+    expect(() =>
+      assertAgentTransactionIntent(changed, {
+        ...currentLiveQuoteIntent,
+        maxLeverage: 101,
+      }),
+    ).toThrow("max leverage is outside the configured range");
   });
 
   it("rejects an untrusted deallocation authority type", () => {
