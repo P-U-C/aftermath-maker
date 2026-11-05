@@ -1226,7 +1226,10 @@ function fixture(
           {
             id: "gas",
             status: liveReady ? "done" : "todo",
-            detail: "Add Live gas reserve",
+            detail: liveReady ? "1.20 SUI available" : "Needs 0.77 SUI gas",
+            requiredGasSui: 1.2,
+            requiredGasPaperSui: 0.05,
+            availableGasSui: liveReady ? 1.2 : 0.43,
           },
           {
             id: "collateral",

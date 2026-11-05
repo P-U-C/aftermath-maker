@@ -196,11 +196,18 @@ export function deriveBundleReadiness(inputs: {
   const requiredGasPaperSui = config
     ? requiredBundleGasMist([], { ...config, mode: "paper" }) / 1_000_000_000
     : 0;
-  const requiredGasLiveSui = config
-    ? requiredBundleGasMist([{ ...config, mode: "live" }], {
-        ...config,
-        mode: "live",
-      }) / 1_000_000_000
+  // One trading key pays for every Live bundle, so this bundle's Live
+  // figure is the shared reserve with it added to the running Live bundles:
+  // the same number Go live checks. A Live bundle's `liveConfigs` already
+  // includes itself.
+  const liveConfig: MakerConfig | null = config
+    ? { ...config, mode: "live" }
+    : null;
+  const requiredGasLiveSui = liveConfig
+    ? requiredBundleGasMist(
+        config!.mode === "live" ? liveConfigs : [...liveConfigs, liveConfig],
+        liveConfig,
+      ) / 1_000_000_000
     : 0;
   const gas: BundleStage =
     tradingKeys.status !== "done"

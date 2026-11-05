@@ -58,7 +58,7 @@ import {
 } from "../lib/access";
 import { deskEvent } from "../lib/audit-events";
 import { selectedActiveBundleId } from "../lib/bundle-options";
-import type { BundleReadiness } from "../lib/bundle-readiness";
+import type { BundleReadiness, BundleStage } from "../lib/bundle-readiness";
 import { configsEqual } from "../lib/config-equality";
 import {
   effectiveMarketOverrides,
@@ -1416,6 +1416,10 @@ function DashboardBody() {
   const [liveSheetBundleId, setLiveSheetBundleId] = useState<string | null>(
     null,
   );
+  /** Go live to reopen after a fix opened from it (gas, deposit) closes. */
+  const [goLiveReturnBundleId, setGoLiveReturnBundleId] = useState<
+    string | null
+  >(null);
   const [pendingStrategyExit, setPendingStrategyExit] =
     useState<MakerView | null>(null);
   const [notice, setNoticeMessage] = useState<string | null>(null);
@@ -5466,6 +5470,68 @@ function DashboardBody() {
             : ("Available" as const),
     };
   });
+  /** Finishes one Go live step from the sheet. Gas and deposits open their
+   * funding sheet and come back to Go live when it closes. */
+  function fixGoLiveStage(bundle: MakerBundle, stage: BundleStage) {
+    const accountId = stage.accountId ?? bundle.makerAccountId;
+    const row = venueAccountRows.find(
+      (account) => account.accountId === accountId,
+    );
+    if ((stage.id === "gas" || stage.id === "collateral") && accountId) {
+      setGoLiveReturnBundleId(bundle.id);
+      setLiveSheetBundleId(null);
+      if (stage.id === "collateral" && row) {
+        openVenueFunding(row, "deposit");
+        return;
+      }
+      if (stage.id === "gas") {
+        // Measured against the shared Live reserve Go live checks, not the
+        // Paper budget, and prefilled with exactly what's missing.
+        setBundleFunding(null);
+        setFundingTarget({
+          mode: "gas",
+          accountId,
+          bundleName: bundle.name,
+          role: row?.role ?? "Maker",
+          freeUsd: row?.freeUsd ?? 0,
+          equityUsd: row?.equityUsd ?? 0,
+          withdrawableUsd: row?.withdrawableUsd ?? 0,
+          requiredUsd: row?.requiredUsd ?? 0,
+          shortfallUsd: row?.shortfallUsd ?? 0,
+          bundleRunning: false,
+          keyGasSui: stage.availableGasSui ?? 0,
+          paperGasSui: stage.requiredGasPaperSui ?? 0,
+          liveGasSui: stage.requiredGasSui ?? 0,
+          gasGoal: "live",
+          suggestedSui: Math.max(
+            0.01,
+            Math.ceil(
+              ((stage.requiredGasSui ?? 0) - (stage.availableGasSui ?? 0)) *
+                100,
+            ) / 100,
+          ),
+        });
+        return;
+      }
+    }
+    setLiveSheetBundleId(null);
+    if (stage.id === "strategy") {
+      selectView("bundles");
+      return;
+    }
+    selectView("venues");
+    if (accountId) setSelectedAccount(accountId);
+  }
+
+  function closeFunding() {
+    setFundingTarget(null);
+    if (goLiveReturnBundleId) {
+      setLiveSheetBundleId(goLiveReturnBundleId);
+      setGoLiveReturnBundleId(null);
+      void refresh().catch(() => undefined);
+    }
+  }
+
   function openVenueFunding(
     row: import("./views/venues").VenueAccountRow,
     mode: FundingMode,
@@ -9969,7 +10035,7 @@ function DashboardBody() {
                 : walletBalanceLoading.usdc
             }
             onRetryBalances={() => setWalletBalanceRetry((value) => value + 1)}
-            onClose={() => setFundingTarget(null)}
+            onClose={closeFunding}
             onSubmit={submitVenueFunding}
             onConnectWallet={() => walletPickerRef.current?.show()}
             onPause={async (bundleName) => {
@@ -10550,6 +10616,7 @@ function DashboardBody() {
             setLiveSheetBundleId(null);
           }}
           onStopBundle={() => void bundleAction(liveSheetBundle.id, "pause")}
+          onFixStage={(stage) => fixGoLiveStage(liveSheetBundle, stage)}
         />
       )}
 

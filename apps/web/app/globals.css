@@ -3922,6 +3922,11 @@ mysten-dapp-kit-connect-modal,
   border-left-color: var(--green);
 }
 
+.go-live-checklist .go-live-fix {
+  margin-top: 6px;
+  justify-self: start;
+}
+
 .go-live-checklist li span,
 .go-live-checklist > p {
   color: var(--ink-2);

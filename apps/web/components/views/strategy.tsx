@@ -2,7 +2,7 @@ import { useState, type ReactNode } from "react";
 import { CircleHelp, X } from "lucide-react";
 
 import { formatMoney } from "../../lib/format";
-import type { BundleReadiness } from "../../lib/bundle-readiness";
+import type { BundleReadiness, BundleStage } from "../../lib/bundle-readiness";
 import type { RunState } from "../../lib/run-state";
 import type { VenueDescriptor } from "../../lib/venues";
 import { RunControl } from "../run-control";
@@ -104,7 +104,29 @@ type GoLiveSheetProps = {
   onClose: () => void;
   onConfirm: () => void;
   onStopBundle?: () => void;
+  /** Fixes one unfinished stage, such as adding the missing gas. */
+  onFixStage?: (stage: BundleStage) => void;
 };
+
+/** The action that finishes a stage, named by what it does. */
+function stageFixLabel(stage: BundleStage): string {
+  if (stage.id === "gas") {
+    const shortfall = Math.max(
+      0.01,
+      Math.ceil(
+        ((stage.requiredGasSui ?? 0) - (stage.availableGasSui ?? 0)) * 100,
+      ) / 100,
+    );
+    return `Add ${shortfall.toFixed(2)} SUI`;
+  }
+  if (stage.id === "collateral")
+    return stage.shortfallUsd
+      ? `Deposit ${formatMoney(stage.suggestedDepositUsdc ?? stage.shortfallUsd)}`
+      : "Add collateral";
+  if (stage.id === "tradingKeys") return "Authorize in Venues";
+  if (stage.id === "accounts") return "Choose accounts in Venues";
+  return "Attach a strategy in Bundles";
+}
 
 export const GO_LIVE_REQUIREMENT_HEADINGS = [
   "Live enabled on this server",
@@ -136,6 +158,7 @@ export function GoLiveSheet({
   onClose,
   onConfirm,
   onStopBundle,
+  onFixStage,
 }: GoLiveSheetProps) {
   const [confirmed, setConfirmed] = useState(false);
   return (
@@ -214,6 +237,16 @@ export function GoLiveSheet({
               <span>
                 {stage.status === "done" ? "Done" : `Needed — ${stage.detail}`}
               </span>
+              {stage.status === "todo" && onFixStage && (
+                <Button
+                  variant="secondary"
+                  size="small"
+                  className="go-live-fix"
+                  onClick={() => onFixStage(stage)}
+                >
+                  {stageFixLabel(stage)}
+                </Button>
+              )}
             </li>
           ))}
         </ul>
@@ -279,8 +312,9 @@ export function GoLiveSheet({
       </label>
       {!available && (
         <p className="go-live-blocked" role="status">
-          Live is not ready on this server. Check the server gates, signing key,
-          {` ${bundleName}`} readiness, gas reserve, and collateral in Bundles.
+          {liveReadiness?.serverEnabled && liveReadiness.signerReady
+            ? `Finish the steps marked Needed, then switch ${bundleName} to Live.`
+            : "Live is not ready on this server. Finish the steps marked Needed above."}
         </p>
       )}
     </Sheet>
