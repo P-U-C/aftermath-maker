@@ -817,7 +817,7 @@ async function capture(browser, stateName, captureConfig, view) {
         .getByRole("button", { name: /Markets/ })
         .first()
         .click();
-      await page.getByRole("button", { name: "Reward share" }).click();
+      await page.getByRole("tab", { name: "Reward share" }).click();
       await page.getByText("Scenario", { exact: true }).waitFor();
       await page.getByRole("button", { name: "Cross-market" }).click();
       await page.getByRole("button", { name: "Expand costs" }).first().click();

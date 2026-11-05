@@ -64,6 +64,25 @@ function loggedEventKeys() {
 }
 
 describe("desk audit events", () => {
+  it("shows why a cycle failed, without endpoint URLs", () => {
+    const event = (error?: string) =>
+      deskEvent({
+        id: 9,
+        occurredAt: "2026-11-04T21:22:00Z",
+        category: "runtime",
+        action: "cycle",
+        outcome: "error",
+        detail: error === undefined ? {} : { error },
+      }).sentence;
+    expect(event("Insufficient margin for order\nstack")).toBe(
+      "Maker cycle failed: Insufficient margin for order.",
+    );
+    expect(event("fetch failed at https://rpc.example/v1.")).toBe(
+      "Maker cycle failed: fetch failed at the venue endpoint.",
+    );
+    expect(event()).toBe("Maker cycle failed.");
+  });
+
   it("narrates estimated Paper fills with symbols and a safe market fallback", () => {
     const base = {
       id: 7,

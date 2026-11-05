@@ -132,6 +132,10 @@ import {
   Sheet,
   Toggle,
 } from "./ui/primitives";
+import {
+  StrategyResultSummary,
+  type StrategyResults,
+} from "./strategy-result-summary";
 import { NumericDraftInput } from "./ui/numeric-draft-input";
 import { SpreadMark } from "./spread-mark";
 import { StrategyPicker } from "./strategy-picker";
@@ -528,11 +532,12 @@ const strategySettingsFromConfig = (config: MakerConfig): StrategySettings => {
 const configWithStrategySettings = (
   config: MakerConfig,
   settings: StrategySettings,
-): MakerConfig => ({
-  ...config,
-  ...settings,
-  hedge: { ...settings.hedge, accountId: config.hedge.accountId },
-});
+): MakerConfig =>
+  withConfigDefaults({
+    ...config,
+    ...settings,
+    hedge: { ...settings.hedge, accountId: config.hedge.accountId },
+  });
 
 type StoredStrategyDraft = {
   baseVersion: number;
@@ -1011,6 +1016,25 @@ const defaultConfig: MakerConfig = {
   inventorySkewBps: 20,
 };
 
+/** Settings added after a strategy was saved arrive without a value. Fill every
+ * missing field from the defaults so no input ever renders "undefined" and a
+ * hidden field can't block saving. */
+const withConfigDefaults = (config: MakerConfig): MakerConfig =>
+  ({
+    ...defaultConfig,
+    ...Object.fromEntries(
+      Object.entries(config).filter(([, value]) => value !== undefined),
+    ),
+    hedge: {
+      ...defaultConfig.hedge,
+      ...Object.fromEntries(
+        Object.entries(config.hedge ?? {}).filter(
+          ([, value]) => value !== undefined,
+        ),
+      ),
+    },
+  }) as MakerConfig;
+
 function AdvancedTip({ id }: { id: AdvancedFieldTipId }) {
   return (
     <GlossaryTerm
@@ -1201,7 +1225,21 @@ function DashboardBody() {
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
   const [bundleSnapshots, setBundleSnapshots] = useState<BundleSnapshot[]>([]);
   const [bundles, setBundles] = useState<MakerBundle[]>([]);
-  const [strategies, setStrategies] = useState<MakerStrategy[]>([]);
+  const [strategies, setStoredStrategies] = useState<MakerStrategy[]>([]);
+  // Every strategy enters state with its settings completed from the defaults,
+  // so a field added after it was saved never makes it look edited or invalid.
+  const setStrategies = useCallback(
+    (next: MakerStrategy[] | ((current: MakerStrategy[]) => MakerStrategy[])) =>
+      setStoredStrategies((current) =>
+        (typeof next === "function" ? next(current) : next).map((strategy) => ({
+          ...strategy,
+          config: strategySettingsFromConfig(
+            configWithStrategySettings(defaultConfig, strategy.config),
+          ),
+        })),
+      ),
+    [],
+  );
   const [selectedStrategyId, setSelectedStrategyId] = useState<string | null>(
     null,
   );
@@ -1282,10 +1320,8 @@ function DashboardBody() {
   const [deskProblemFilter, setDeskProblemFilter] = useState(false);
   const [performance, setPerformance] = useState<Performance | null>(null);
   const lastPerformanceFillSequence = useRef<number | null>(null);
-  const [strategyResults, setStrategyResults] = useState<{
-    paper: { fills: number; notionalUsd: number };
-    live: { executions: number; notionalUsd: number };
-  } | null>(null);
+  const [strategyResults, setStrategyResults] =
+    useState<StrategyResults | null>(null);
   const [performancePeriod, setPerformancePeriod] =
     useState<PerformancePeriod>("1D");
   const [performanceBundle, setPerformanceBundle] = useState<string>("all");
@@ -1536,13 +1572,13 @@ function DashboardBody() {
       previousBundleId !== nextBundleId &&
       configResult.config
     ) {
-      const loadedConfig = {
+      const loadedConfig = withConfigDefaults({
         ...configResult.config,
         makerAccountId:
           configResult.config.makerAccountId ??
           setupResult.setup?.accountId ??
           null,
-      };
+      });
       setConfig(loadedConfig);
       setSavedConfig(loadedConfig);
     }
@@ -1553,13 +1589,13 @@ function DashboardBody() {
     if (!configLoaded.current) {
       configLoaded.current = true;
       if (configResult.config) {
-        const loadedConfig = {
+        const loadedConfig = withConfigDefaults({
           ...configResult.config,
           makerAccountId:
             configResult.config.makerAccountId ??
             setupResult.setup?.accountId ??
             null,
-        };
+        });
         setConfig(loadedConfig);
         setSavedConfig(loadedConfig);
       } else {
@@ -1669,16 +1705,16 @@ function DashboardBody() {
     if (selected.name === "Core") {
       const core = await request<{ config: MakerConfig | null }>("api/config");
       if (core.config) {
-        setConfig(core.config);
-        setSavedConfig(core.config);
+        setConfig(withConfigDefaults(core.config));
+        setSavedConfig(withConfigDefaults(core.config));
       }
       return;
     }
     const result = await request<{ config: MakerConfig }>(
       `api/bundles/${encodeURIComponent(bundleId)}/config`,
     );
-    setConfig(result.config);
-    setSavedConfig(result.config);
+    setConfig(withConfigDefaults(result.config));
+    setSavedConfig(withConfigDefaults(result.config));
   }
 
   const selectedStrategy = strategies.find(
@@ -1717,12 +1753,9 @@ function DashboardBody() {
       return;
     }
     let current = true;
-    void request<{
-      results: {
-        paper: { fills: number; notionalUsd: number };
-        live: { executions: number; notionalUsd: number };
-      };
-    }>(`api/strategies/${encodeURIComponent(selectedStrategyId)}/results`)
+    void request<{ results: StrategyResults }>(
+      `api/strategies/${encodeURIComponent(selectedStrategyId)}/results`,
+    )
       .then((result) => {
         if (current) setStrategyResults(result.results);
       })
@@ -1873,14 +1906,8 @@ function DashboardBody() {
           "success",
         );
       });
-      if (createdId)
-        window.requestAnimationFrame(() => {
-          const name = document.getElementById(
-            "strategy-name",
-          ) as HTMLInputElement | null;
-          name?.focus();
-          name?.select();
-        });
+      // Focus waits for the render that re-enables the name field.
+      if (createdId) setPendingStrategyFocus("strategy-name");
     } finally {
       createStrategyInFlight.current = false;
     }
@@ -2146,8 +2173,8 @@ function DashboardBody() {
         ),
       );
       if (selectedBundleIdRef.current === result.bundle.id) {
-        setConfig(result.config);
-        setSavedConfig(result.config);
+        setConfig(withConfigDefaults(result.config));
+        setSavedConfig(withConfigDefaults(result.config));
       }
       setNotice("Strategy attached. The bundle can now be started.", "success");
     });
@@ -2181,8 +2208,8 @@ function DashboardBody() {
         ),
       );
       if (selectedBundleIdRef.current === result.bundle.id) {
-        setConfig(result.config);
-        setSavedConfig(result.config);
+        setConfig(withConfigDefaults(result.config));
+        setSavedConfig(withConfigDefaults(result.config));
       }
       setNotice("Bundle allocation saved.", "success");
     });
@@ -3263,11 +3290,21 @@ function DashboardBody() {
     const field = document.getElementById(
       pendingStrategyFocus,
     ) as HTMLInputElement | null;
-    if (!field) return;
+    // A disabled field can't take focus; busy clearing re-runs this.
+    if (!field || field.disabled) return;
+    // A field inside a closed disclosure is invisible; open every one around it.
+    for (
+      let parent = field.parentElement;
+      parent;
+      parent = parent.parentElement
+    )
+      if (parent instanceof HTMLDetailsElement) parent.open = true;
     field.scrollIntoView({ block: "center", behavior: "smooth" });
     field.focus({ preventScroll: true });
+    // Selected, so typing replaces the value that needs fixing.
+    if (field.type === "text") field.select();
     setPendingStrategyFocus(null);
-  }, [pendingStrategyFocus, strategyStep, advancedOpen]);
+  }, [pendingStrategyFocus, strategyStep, advancedOpen, busy]);
 
   function chooseSuggestionPreset(preset: MarketSuggestionPreset) {
     setSuggestionPreset(preset);
@@ -6359,13 +6396,7 @@ function DashboardBody() {
                   {money(config.quoteSizeUsd)} on each side, and stop before{" "}
                   {money(config.maxRunDrawdownUsd)} of run drawdown.
                 </p>
-                <p className="strategy-results" aria-label="Strategy results">
-                  Paper: {strategyResults?.paper.fills ?? 0} estimated fills,{" "}
-                  {money(strategyResults?.paper.notionalUsd ?? 0)} notional.
-                  Live: {strategyResults?.live.executions ?? 0} confirmed
-                  executions, {money(strategyResults?.live.notionalUsd ?? 0)}{" "}
-                  notional.
-                </p>
+                <StrategyResultSummary results={strategyResults} />
               </section>
               <div className="strategy-summary-grid">
                 <section>
@@ -6689,6 +6720,7 @@ function DashboardBody() {
                 </Button>
               )}
             </header>
+            <StrategyResultSummary results={strategyResults} />
 
             {selectedStrategy && (
               <p className="strategy-section-copy strategy-step strategy-step-markets">
@@ -6831,10 +6863,7 @@ function DashboardBody() {
                 {strategySaveBlocker &&
                   strategySaveBlocker.step <= strategyStep && (
                     <p className="strategy-save-reason" role="status">
-                      {"fieldId" in strategySaveBlocker &&
-                      strategySaveBlocker.fieldId
-                        ? `Fix the highlighted field in ${strategySteps[strategySaveBlocker.step]?.label ?? "Strategy"}.`
-                        : strategySaveBlocker.message}{" "}
+                      {strategySaveBlocker.message.replace(/\.?$/, ".")}{" "}
                       <button
                         type="button"
                         onClick={() =>
@@ -7374,73 +7403,67 @@ function DashboardBody() {
                   <div className="hedge-limit-grid">
                     <label>
                       <span>Trigger</span>
-                      <div className="input-unit">
-                        <b>$</b>
-                        <NumericDraftInput
-                          key={selectedStrategyId ?? "core"}
-                          id="strategy-hedge-trigger"
-                          label="Hedge trigger"
-                          unit="USD"
-                          value={config.hedge.thresholdUsd}
-                          min={0.01}
-                          max={10000}
-                          onValidity={setNumericValidity}
-                          onValue={(value) =>
-                            setConfig((current) => ({
-                              ...current,
-                              hedge: { ...current.hedge, thresholdUsd: value },
-                            }))
-                          }
-                        />
-                      </div>
+                      <NumericDraftInput
+                        key={selectedStrategyId ?? "core"}
+                        id="strategy-hedge-trigger"
+                        label="Hedge trigger"
+                        unit="USD"
+                        value={config.hedge.thresholdUsd}
+                        min={0.01}
+                        max={10000}
+                        onValidity={setNumericValidity}
+                        onValue={(value) =>
+                          setConfig((current) => ({
+                            ...current,
+                            hedge: { ...current.hedge, thresholdUsd: value },
+                          }))
+                        }
+                        prefix="$"
+                      />
                     </label>
                     <label>
                       <span>Max order</span>
-                      <div className="input-unit">
-                        <b>$</b>
-                        <NumericDraftInput
-                          key={selectedStrategyId ?? "core"}
-                          id="strategy-hedge-max"
-                          label="Maximum hedge order"
-                          unit="USD"
-                          value={config.hedge.maxOrderUsd}
-                          min={0.01}
-                          max={10000}
-                          onValidity={setNumericValidity}
-                          onValue={(value) =>
-                            setConfig((current) => ({
-                              ...current,
-                              hedge: { ...current.hedge, maxOrderUsd: value },
-                            }))
-                          }
-                        />
-                      </div>
+                      <NumericDraftInput
+                        key={selectedStrategyId ?? "core"}
+                        id="strategy-hedge-max"
+                        label="Maximum hedge order"
+                        unit="USD"
+                        value={config.hedge.maxOrderUsd}
+                        min={0.01}
+                        max={10000}
+                        onValidity={setNumericValidity}
+                        onValue={(value) =>
+                          setConfig((current) => ({
+                            ...current,
+                            hedge: { ...current.hedge, maxOrderUsd: value },
+                          }))
+                        }
+                        prefix="$"
+                      />
                     </label>
                     <label>
                       <span>Slippage</span>
-                      <div className="input-unit suffix">
-                        <NumericDraftInput
-                          key={selectedStrategyId ?? "core"}
-                          id="strategy-hedge-slippage"
-                          label="Hedge slippage"
-                          unit="bps"
-                          value={config.hedge.maxSlippageBps}
-                          min={5}
-                          max={500}
-                          integer
-                          onValidity={setNumericValidity}
-                          onValue={(value) =>
-                            setConfig((current) => ({
-                              ...current,
-                              hedge: {
-                                ...current.hedge,
-                                maxSlippageBps: value,
-                              },
-                            }))
-                          }
-                        />
-                        <b>bps</b>
-                      </div>
+                      <NumericDraftInput
+                        key={selectedStrategyId ?? "core"}
+                        id="strategy-hedge-slippage"
+                        label="Hedge slippage"
+                        unit="bps"
+                        value={config.hedge.maxSlippageBps}
+                        min={5}
+                        max={500}
+                        integer
+                        onValidity={setNumericValidity}
+                        onValue={(value) =>
+                          setConfig((current) => ({
+                            ...current,
+                            hedge: {
+                              ...current.hedge,
+                              maxSlippageBps: value,
+                            },
+                          }))
+                        }
+                        suffix="bps"
+                      />
                     </label>
                   </div>
                   <Toggle
@@ -7462,25 +7485,23 @@ function DashboardBody() {
                   {config.autoRebalanceEnabled && (
                     <label>
                       <span>Rebalance before gross exposure reaches</span>
-                      <div className="input-unit">
-                        <b>$</b>
-                        <NumericDraftInput
-                          key={selectedStrategyId ?? "core"}
-                          id="strategy-rebalance-gross-exposure-usd"
-                          label="Rebalance gross threshold"
-                          unit="USD"
-                          value={config.rebalanceGrossExposureUsd}
-                          min={0.01}
-                          max={Math.min(config.maxGrossExposureUsd, 100000)}
-                          onValidity={setNumericValidity}
-                          onValue={(value) =>
-                            setConfig((current) => ({
-                              ...current,
-                              rebalanceGrossExposureUsd: value,
-                            }))
-                          }
-                        />
-                      </div>
+                      <NumericDraftInput
+                        key={selectedStrategyId ?? "core"}
+                        id="strategy-rebalance-gross-exposure-usd"
+                        label="Rebalance gross threshold"
+                        unit="USD"
+                        value={config.rebalanceGrossExposureUsd}
+                        min={0.01}
+                        max={Math.min(config.maxGrossExposureUsd, 100000)}
+                        onValidity={setNumericValidity}
+                        onValue={(value) =>
+                          setConfig((current) => ({
+                            ...current,
+                            rebalanceGrossExposureUsd: value,
+                          }))
+                        }
+                        prefix="$"
+                      />
                       <small>
                         {percent(rebalanceEquityPct, 1)} of Maker equity.
                         Cancels quotes and uses{" "}
@@ -7627,10 +7648,7 @@ function DashboardBody() {
                 </div>
                 <div className="strategy-rotation-stage">
                   <div className="strategy-suggestion-fields">
-                    <div
-                      className="reward-focus"
-                      aria-label="Market suggestion focus"
-                    >
+                    <div className="suggestion-focus">
                       <span>Focus</span>
                       <SegmentedTabs
                         label="Market suggestion focus"
@@ -8223,7 +8241,7 @@ function DashboardBody() {
                 >
                   {walletLimits
                     ? "Edit wallet limits"
-                    : "Finish Core setup in Accounts"}
+                    : "Finish Core setup in Venues"}
                 </button>
               </p>
               <p className="strategy-section-copy">
@@ -8460,25 +8478,23 @@ function DashboardBody() {
               <div className="field-pair">
                 <label>
                   <span>Quote {money(config.quoteSizeUsd)} on each side</span>
-                  <div className="input-unit">
-                    <b>$</b>
-                    <NumericDraftInput
-                      key={selectedStrategyId ?? "core"}
-                      id="strategy-quote-size"
-                      label="Quote size"
-                      unit="USD"
-                      value={config.quoteSizeUsd}
-                      min={0.01}
-                      max={1000}
-                      onValidity={setNumericValidity}
-                      onValue={(value) =>
-                        setConfig((current) => ({
-                          ...current,
-                          quoteSizeUsd: value,
-                        }))
-                      }
-                    />
-                  </div>
+                  <NumericDraftInput
+                    key={selectedStrategyId ?? "core"}
+                    id="strategy-quote-size"
+                    label="Quote size"
+                    unit="USD"
+                    value={config.quoteSizeUsd}
+                    min={0.01}
+                    max={1000}
+                    onValidity={setNumericValidity}
+                    onValue={(value) =>
+                      setConfig((current) => ({
+                        ...current,
+                        quoteSizeUsd: value,
+                      }))
+                    }
+                    prefix="$"
+                  />
                   {quoteSizeError ? (
                     <small className="field-error">
                       {config.quoteSizeUsd <= 0 ? (
@@ -8510,25 +8526,23 @@ function DashboardBody() {
                       bps
                     </GlossaryTerm>
                   </span>
-                  <div className="input-unit suffix">
-                    <NumericDraftInput
-                      key={selectedStrategyId ?? "core"}
-                      id="strategy-spread"
-                      label="Spread"
-                      unit="bps"
-                      value={config.spreadBps}
-                      min={8}
-                      max={500}
-                      onValidity={setNumericValidity}
-                      onValue={(value) =>
-                        setConfig((current) => ({
-                          ...current,
-                          spreadBps: value,
-                        }))
-                      }
-                    />
-                    <b>bps</b>
-                  </div>
+                  <NumericDraftInput
+                    key={selectedStrategyId ?? "core"}
+                    id="strategy-spread"
+                    label="Spread"
+                    unit="bps"
+                    value={config.spreadBps}
+                    min={8}
+                    max={500}
+                    onValidity={setNumericValidity}
+                    onValue={(value) =>
+                      setConfig((current) => ({
+                        ...current,
+                        spreadBps: value,
+                      }))
+                    }
+                    suffix="bps"
+                  />
                 </label>
               </div>
             </section>
@@ -8596,25 +8610,23 @@ function DashboardBody() {
                   <span>
                     Inventory target <AdvancedTip id="inventory-target" />
                   </span>
-                  <div className="input-unit">
-                    <b>$</b>
-                    <NumericDraftInput
-                      key={selectedStrategyId ?? "core"}
-                      id="strategy-inventory-target"
-                      label="Inventory target"
-                      unit="USD"
-                      value={config.inventoryTargetUsd}
-                      min={-10000}
-                      max={10000}
-                      onValidity={setNumericValidity}
-                      onValue={(value) =>
-                        setConfig((current) => ({
-                          ...current,
-                          inventoryTargetUsd: value,
-                        }))
-                      }
-                    />
-                  </div>
+                  <NumericDraftInput
+                    key={selectedStrategyId ?? "core"}
+                    id="strategy-inventory-target"
+                    label="Inventory target"
+                    unit="USD"
+                    value={config.inventoryTargetUsd}
+                    min={-10000}
+                    max={10000}
+                    onValidity={setNumericValidity}
+                    onValue={(value) =>
+                      setConfig((current) => ({
+                        ...current,
+                        inventoryTargetUsd: value,
+                      }))
+                    }
+                    prefix="$"
+                  />
                 </label>
                 <label>
                   <span>
@@ -8624,25 +8636,23 @@ function DashboardBody() {
                     </GlossaryTerm>{" "}
                     <AdvancedTip id="book-index-divergence" />
                   </span>
-                  <div className="input-unit suffix">
-                    <NumericDraftInput
-                      key={selectedStrategyId ?? "core"}
-                      id="strategy-max-book-divergence-bps"
-                      label="Book / index divergence"
-                      unit="bps"
-                      value={config.maxBookDivergenceBps}
-                      min={1}
-                      max={5000}
-                      onValidity={setNumericValidity}
-                      onValue={(value) =>
-                        setConfig((current) => ({
-                          ...current,
-                          maxBookDivergenceBps: value,
-                        }))
-                      }
-                    />
-                    <b>bps</b>
-                  </div>
+                  <NumericDraftInput
+                    key={selectedStrategyId ?? "core"}
+                    id="strategy-max-book-divergence-bps"
+                    label="Book / index divergence"
+                    unit="bps"
+                    value={config.maxBookDivergenceBps}
+                    min={1}
+                    max={5000}
+                    onValidity={setNumericValidity}
+                    onValue={(value) =>
+                      setConfig((current) => ({
+                        ...current,
+                        maxBookDivergenceBps: value,
+                      }))
+                    }
+                    suffix="bps"
+                  />
                 </label>
                 <label>
                   <span>
@@ -8652,61 +8662,61 @@ function DashboardBody() {
                     </GlossaryTerm>{" "}
                     <AdvancedTip id="inventory-skew" />
                   </span>
-                  <div className="input-unit suffix">
-                    <NumericDraftInput
-                      key={selectedStrategyId ?? "core"}
-                      id="strategy-inventory-skew-bps"
-                      label="Inventory skew"
-                      unit="bps"
-                      value={config.inventorySkewBps}
-                      min={0}
-                      max={250}
-                      onValidity={setNumericValidity}
-                      onValue={(value) =>
-                        setConfig((current) => ({
-                          ...current,
-                          inventorySkewBps: value,
-                        }))
-                      }
-                    />
-                    <b>bps</b>
-                  </div>
+                  <NumericDraftInput
+                    key={selectedStrategyId ?? "core"}
+                    id="strategy-inventory-skew-bps"
+                    label="Inventory skew"
+                    unit="bps"
+                    value={config.inventorySkewBps}
+                    min={0}
+                    max={250}
+                    onValidity={setNumericValidity}
+                    onValue={(value) =>
+                      setConfig((current) => ({
+                        ...current,
+                        inventorySkewBps: value,
+                      }))
+                    }
+                    suffix="bps"
+                  />
                 </label>
                 <label>
                   <span>
                     Max leverage <AdvancedTip id="max-leverage" />
                   </span>
-                  <div className="input-unit suffix">
-                    <NumericDraftInput
-                      key={selectedStrategyId ?? "core"}
-                      id="strategy-max-leverage"
-                      label="Maximum leverage"
-                      unit="x"
-                      value={config.maxLeverage}
-                      min={1}
-                      max={strategyMarketMaxLeverage}
-                      onValidity={setNumericValidity}
-                      onValue={(value) =>
-                        setConfig((current) => ({
-                          ...current,
-                          maxLeverage: value,
-                        }))
-                      }
-                    />
-                    <b>x</b>
-                    <button
-                      type="button"
-                      className="input-action"
-                      onClick={() =>
-                        setConfig((current) => ({
-                          ...current,
-                          maxLeverage: strategyMarketMaxLeverage,
-                        }))
-                      }
-                    >
-                      Max
-                    </button>
-                  </div>
+                  <NumericDraftInput
+                    key={selectedStrategyId ?? "core"}
+                    id="strategy-max-leverage"
+                    label="Maximum leverage"
+                    unit="x"
+                    value={config.maxLeverage}
+                    min={1}
+                    max={strategyMarketMaxLeverage}
+                    onValidity={setNumericValidity}
+                    onValue={(value) =>
+                      setConfig((current) => ({
+                        ...current,
+                        maxLeverage: value,
+                      }))
+                    }
+                    suffix="x"
+                    action={
+                      <Button
+                        variant="secondary"
+                        size="small"
+                        className="input-action"
+                        aria-label={`Max leverage, ${strategyMarketMaxLeverage}x`}
+                        onClick={() =>
+                          setConfig((current) => ({
+                            ...current,
+                            maxLeverage: strategyMarketMaxLeverage,
+                          }))
+                        }
+                      >
+                        Max
+                      </Button>
+                    }
+                  />
                 </label>
               </div>
 
@@ -8737,77 +8747,71 @@ function DashboardBody() {
                   <span>
                     Market dwell <AdvancedTip id="market-dwell" />
                   </span>
-                  <div className="input-unit suffix">
-                    <NumericDraftInput
-                      key={selectedStrategyId ?? "core"}
-                      id="strategy-market-dwell-ms"
-                      label="Market dwell"
-                      unit="seconds"
-                      value={config.marketDwellMs / 1_000}
-                      min={Math.max(2, Math.ceil(config.refreshMs / 1000))}
-                      max={3600}
-                      integer
-                      onValidity={setNumericValidity}
-                      onValue={(value) =>
-                        setConfig((current) => ({
-                          ...current,
-                          marketDwellMs: value * 1000,
-                        }))
-                      }
-                    />
-                    <b>sec</b>
-                  </div>
+                  <NumericDraftInput
+                    key={selectedStrategyId ?? "core"}
+                    id="strategy-market-dwell-ms"
+                    label="Market dwell"
+                    unit="seconds"
+                    value={config.marketDwellMs / 1_000}
+                    min={Math.max(2, Math.ceil(config.refreshMs / 1000))}
+                    max={3600}
+                    integer
+                    onValidity={setNumericValidity}
+                    onValue={(value) =>
+                      setConfig((current) => ({
+                        ...current,
+                        marketDwellMs: value * 1000,
+                      }))
+                    }
+                    suffix="sec"
+                  />
                   <small>Switches the one live pair.</small>
                 </label>
                 <label>
                   <span>
                     Requote movement <AdvancedTip id="requote-movement" />
                   </span>
-                  <div className="input-unit suffix">
-                    <NumericDraftInput
-                      key={selectedStrategyId ?? "core"}
-                      id="strategy-requote-threshold-bps"
-                      label="Requote movement"
-                      unit="bps"
-                      value={config.requoteThresholdBps}
-                      min={0}
-                      max={500}
-                      onValidity={setNumericValidity}
-                      onValue={(value) =>
-                        setConfig((current) => ({
-                          ...current,
-                          requoteThresholdBps: value,
-                        }))
-                      }
-                    />
-                    <b>bps</b>
-                  </div>
+                  <NumericDraftInput
+                    key={selectedStrategyId ?? "core"}
+                    id="strategy-requote-threshold-bps"
+                    label="Requote movement"
+                    unit="bps"
+                    value={config.requoteThresholdBps}
+                    min={0}
+                    max={500}
+                    onValidity={setNumericValidity}
+                    onValue={(value) =>
+                      setConfig((current) => ({
+                        ...current,
+                        requoteThresholdBps: value,
+                      }))
+                    }
+                    suffix="bps"
+                  />
                   <small>Smaller moves keep the resting quote.</small>
                 </label>
                 <label>
                   <span>
                     Forced refresh <AdvancedTip id="forced-refresh" />
                   </span>
-                  <div className="input-unit suffix">
-                    <NumericDraftInput
-                      key={selectedStrategyId ?? "core"}
-                      id="strategy-max-resting-ms"
-                      label="Forced refresh"
-                      unit="seconds"
-                      value={config.maxRestingMs / 1_000}
-                      min={Math.max(5, Math.ceil(config.refreshMs / 1000))}
-                      max={3600}
-                      integer
-                      onValidity={setNumericValidity}
-                      onValue={(value) =>
-                        setConfig((current) => ({
-                          ...current,
-                          maxRestingMs: value * 1000,
-                        }))
-                      }
-                    />
-                    <b>sec</b>
-                  </div>
+                  <NumericDraftInput
+                    key={selectedStrategyId ?? "core"}
+                    id="strategy-max-resting-ms"
+                    label="Forced refresh"
+                    unit="seconds"
+                    value={config.maxRestingMs / 1_000}
+                    min={Math.max(5, Math.ceil(config.refreshMs / 1000))}
+                    max={3600}
+                    integer
+                    onValidity={setNumericValidity}
+                    onValue={(value) =>
+                      setConfig((current) => ({
+                        ...current,
+                        maxRestingMs: value * 1000,
+                      }))
+                    }
+                    suffix="sec"
+                  />
                   <small>Maximum time before a paid requote.</small>
                 </label>
                 <label>
@@ -8815,33 +8819,31 @@ function DashboardBody() {
                     Stale-observation cutoff{" "}
                     <AdvancedTip id="stale-observation-cutoff" />
                   </span>
-                  <div className="input-unit suffix">
-                    <NumericDraftInput
-                      key={selectedStrategyId ?? "core"}
-                      id="strategy-max-quote-age-ms"
-                      label="Stale observation cutoff"
-                      unit="seconds"
-                      value={config.maxQuoteAgeMs / 1_000}
-                      min={Math.ceil(
-                        minimumObservationWindowMs(
-                          config.refreshMs,
-                          config.markets.length,
-                          config.rotationMode,
-                          config.maxRestingMs,
-                        ) / 1000,
-                      )}
-                      max={86400}
-                      integer
-                      onValidity={setNumericValidity}
-                      onValue={(value) =>
-                        setConfig((current) => ({
-                          ...current,
-                          maxQuoteAgeMs: value * 1000,
-                        }))
-                      }
-                    />
-                    <b>sec</b>
-                  </div>
+                  <NumericDraftInput
+                    key={selectedStrategyId ?? "core"}
+                    id="strategy-max-quote-age-ms"
+                    label="Stale observation cutoff"
+                    unit="seconds"
+                    value={config.maxQuoteAgeMs / 1_000}
+                    min={Math.ceil(
+                      minimumObservationWindowMs(
+                        config.refreshMs,
+                        config.markets.length,
+                        config.rotationMode,
+                        config.maxRestingMs,
+                      ) / 1000,
+                    )}
+                    max={86400}
+                    integer
+                    onValidity={setNumericValidity}
+                    onValue={(value) =>
+                      setConfig((current) => ({
+                        ...current,
+                        maxQuoteAgeMs: value * 1000,
+                      }))
+                    }
+                    suffix="sec"
+                  />
                   <small>
                     Watchdog cancels on missing market observations.
                   </small>
@@ -8882,10 +8884,13 @@ function DashboardBody() {
                       <button
                         type="button"
                         onClick={() =>
-                          focusStrategyField(
-                            "strategy-max-leverage",
-                            strategySaveBlocker.step,
-                          )
+                          "fieldId" in strategySaveBlocker &&
+                          strategySaveBlocker.fieldId
+                            ? focusStrategyField(
+                                strategySaveBlocker.fieldId,
+                                strategySaveBlocker.step,
+                              )
+                            : setStrategyStep(strategySaveBlocker.step)
                         }
                       >
                         Go to that step
@@ -9851,6 +9856,7 @@ function DashboardBody() {
             }
             await authorizeAgent(accountId);
           }}
+          onReturnToStrategy={strategyReturn ? returnToStrategy : null}
           onOpenStrategy={() => {
             const blocked = bundles.find(
               (candidate) =>

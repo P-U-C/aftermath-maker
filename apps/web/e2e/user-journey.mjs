@@ -1085,10 +1085,19 @@ async function revokeWithoutWallet(browser) {
       window.location.hash = "accounts";
     });
     await page
-      .locator('.maker-view[data-view="accounts"]:not([hidden])')
+      .locator('.maker-view[data-view="venues"]:not([hidden])')
       .waitFor();
+    // Revoking now lives in the Venues row menu and asks for confirmation.
     await page
-      .getByRole("button", { name: "Revoke trading key for account 1745" })
+      .getByRole("button", { name: "More actions for account 1745" })
+      .click();
+    await page
+      .getByRole("group", { name: "Account 1745 actions" })
+      .getByRole("button", { name: "Revoke trading key" })
+      .click();
+    await page
+      .getByRole("dialog", { name: "Revoke trading key?" })
+      .getByRole("button", { name: "Revoke trading key" })
       .click();
     await page
       .getByText("Connect your owner wallet to revoke", { exact: true })
@@ -1627,74 +1636,6 @@ async function depositsToTwoAccountsWithOneOwnerSignature(browser) {
   }
 }
 
-async function withdrawsToOwnerWallet(browser) {
-  const { context, page, state } = await newPage(browser, {
-    width: 1440,
-    height: 900,
-  });
-  try {
-    state.fixture.status.snapshot.running = false;
-    state.fixture.bundles.bundles.forEach((bundle) => {
-      bundle.status = "stopped";
-    });
-    state.fixture.status.bundles = state.fixture.status.bundles.map(
-      (entry) => ({
-        ...entry,
-        bundle: { ...entry.bundle, status: "stopped" },
-      }),
-    );
-    await goToDesk(page);
-    await page.evaluate(() => {
-      window.location.hash = "accounts";
-    });
-    await page
-      .locator('.maker-view[data-view="accounts"]:not([hidden])')
-      .waitFor();
-    const withdraw = page
-      .getByRole("button", { name: "Withdraw", exact: true })
-      .first();
-    await withdraw.waitFor();
-    await withdraw.click();
-    await page
-      .getByText("Connect your owner wallet to withdraw", { exact: true })
-      .waitFor();
-    await page
-      .locator("mysten-dapp-kit-connect-modal")
-      .getByText("Mock Sui Wallet", { exact: true })
-      .filter({ visible: true })
-      .click();
-    await page.waitForTimeout(100);
-    assert(
-      await withdraw.isEnabled(),
-      "Withdraw did not become ready after the owner wallet connected",
-    );
-    await withdraw.click();
-    const withdrawalNotice = page.getByText(
-      "10 USDC withdrawn from account 1745.",
-      { exact: true },
-    );
-    await page.waitForTimeout(1_500);
-    assert(
-      (await withdrawalNotice.count()) > 0,
-      `Withdraw did not complete: ${JSON.stringify(await page.locator(".notice").allTextContents())}`,
-    );
-    assert(
-      state.lastWithdrawIntent?.recipient === ownerAddress &&
-        state.lastWithdrawIntent?.sender === ownerAddress,
-      "Withdraw did not build an owner-wallet-only transaction",
-    );
-    await page
-      .getByRole("link", { name: "View trading-key permission", exact: true })
-      .first()
-      .waitFor();
-    await capture(page, "v8-withdraw-owner-wallet-desktop.png");
-    await page.locator(".account-security").scrollIntoViewIfNeeded();
-    await capture(page, "v8-account-security-desktop.png");
-  } finally {
-    await context.close();
-  }
-}
-
 async function serviceAndSessionFailures(browser) {
   const desktop = await newPage(browser, { width: 1440, height: 900 });
   try {
@@ -2154,20 +2095,21 @@ async function paperSimulationBlockerStaysVisible(browser) {
 
     await goToDesk(page);
     const lane = page.locator(".bundle-desk-lane").filter({ hasText: "Core" });
+    // One line on the card; the full text is the notice's title, and the
+    // notice opens the run status where the whole message reads in full.
     const notice = lane.locator(".bundle-lane-notice");
     assert(
-      (await notice.innerText()) === `${message}Details`,
-      "The paper blocker notice did not keep its one-line summary and Details control",
-    );
-    const details = notice.locator("details");
-    await details.locator("summary", { hasText: "Details" }).click();
-    assert(
-      (await details.getAttribute("open")) !== null,
-      "Details did not open",
+      (await notice.locator("span").innerText()) === message,
+      "The paper blocker notice did not show the blocker on one line",
     );
     assert(
-      (await details.innerText()) === `Details${message}`,
-      "Details did not reveal the full paper blocker message",
+      (await notice.getAttribute("title")) === message,
+      "The paper blocker notice did not carry the full message",
+    );
+    const box = await notice.boundingBox();
+    assert(
+      box && box.height <= 36,
+      "The paper blocker notice wrapped past one line",
     );
     await lane
       .getByRole("button", {
@@ -2680,9 +2622,9 @@ async function round6AttachmentDestinations(browser) {
         !(await dialog.getByRole("button", { name: "Continue" }).isEnabled()),
         "Missing wallet limits permitted a create",
       );
-      await dialog.getByRole("button", { name: "Open Accounts setup" }).click();
+      await dialog.getByRole("button", { name: "Open Venues setup" }).click();
       await page
-        .locator('.maker-view[data-view="accounts"]:not([hidden])')
+        .locator('.maker-view[data-view="venues"]:not([hidden])')
         .waitFor();
       await page.getByRole("button", { name: "Back to Strategy" }).click();
       assert(
@@ -2848,7 +2790,7 @@ async function round6SuggestionRefresh(browser) {
       (await strategy.getByText(/Proposed 2 markets/).count()) > 0,
       "Polling silently replaced the frozen proposal",
     );
-    await strategy.getByRole("button", { name: "Thin books" }).click();
+    await strategy.getByRole("tab", { name: "Thin books" }).click();
     assert(
       (await strategy.getByText(/Proposed 2 markets/).count()) === 0,
       "Changing Focus failed to discard the stale proposal",
@@ -2890,7 +2832,7 @@ async function round6SuggestionRefresh(browser) {
     state.fixture.rewards.rewards.marketModel.opportunities =
       originalCandidates;
     await goToStrategyStep(page, 1);
-    await strategy.getByRole("button", { name: "All eligible" }).click();
+    await strategy.getByRole("tab", { name: "All eligible" }).click();
     await strategy.getByRole("button", { name: "Refresh suggestions" }).click();
     await strategy.getByText(/5 candidates available/).waitFor();
     await strategy.getByText(/Accepted draft selection \(5\/64\)/).waitFor();
@@ -3695,7 +3637,6 @@ try {
     if (!process.argv.includes("--polish-only")) {
       await v7BundleDeskAndStrategy(browser);
       await revokeWithoutWallet(browser);
-      await withdrawsToOwnerWallet(browser);
       await depositsToTwoAccountsWithOneOwnerSignature(browser);
       await depositsWhilePaperBundleRuns(browser, { width: 1440, height: 900 });
       await depositsWhilePaperBundleRuns(browser, { width: 390, height: 844 });

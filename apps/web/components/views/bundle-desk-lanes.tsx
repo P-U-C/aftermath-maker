@@ -15,6 +15,8 @@ import { RunStatusChip } from "../run-control";
 
 type LaneSnapshot = {
   mode: "observe" | "paper" | "live";
+  running?: boolean;
+  markets?: Array<{ id: string; symbol: string; inventoryUsd?: number }>;
   lastError?: string | null;
   paperBlocker?: PaperBlocker | null;
   accountReadAt?: string | null;
@@ -51,32 +53,66 @@ export type RunningBundleLane = {
   snapshot: LaneSnapshot;
 };
 
-function BundleLane({ lane }: { lane: RunningBundleLane }) {
-  const motion = useRef<MarketMotionHandle>(null);
-  const { open: openRunStatus } = useMakerRunControls();
+function laneNotices(lane: RunningBundleLane): string[] {
   const { snapshot, bundle } = lane;
-  const notices = [
+  return [
     snapshot.paperBlocker
       ? formatPaperBlocker(snapshot.paperBlocker).sentence
       : null,
     bundle.lastError ?? snapshot.lastError ?? null,
+    // A paused or stopped bundle stops reading on purpose; only a running one
+    // can be stale.
+    snapshot.running !== false &&
     snapshot.accountReadAt &&
     Date.now() - Date.parse(snapshot.accountReadAt) >
       3 * (snapshot.cycleIntervalMs ?? 5_000)
       ? `Account data is stale, last read ${relativeAccountRead(snapshot.accountReadAt)?.replace(/^Checked /, "")}`
       : null,
   ].filter((notice): notice is string => Boolean(notice));
-  const positions = [...(snapshot.inventory?.positions ?? [])].sort(
+}
+
+function lanePositions(snapshot: LaneSnapshot) {
+  // Bundle-wide positions, never the market being quoted this second.
+  const positions = snapshot.inventory?.positions?.length
+    ? snapshot.inventory.positions
+    : (snapshot.markets ?? [])
+        .filter((market) => Math.abs(market.inventoryUsd ?? 0) >= 0.005)
+        .map((market) => ({
+          marketId: market.id,
+          symbol: market.symbol,
+          account: "maker",
+          inventoryUsd: market.inventoryUsd ?? 0,
+        }));
+  return [...positions].sort(
     (left, right) => Math.abs(right.inventoryUsd) - Math.abs(left.inventoryUsd),
   );
-  const shownPositions = positions.slice(0, 3);
-  // Positions are the cross-account source of truth. A legacy single-market balance
-  // must not make a flat bundle look gross while its position list is empty.
-  const grossInventory = positions.length
-    ? (snapshot.inventory?.grossUsd ?? 0)
-    : 0;
-  const inventoryLimit =
-    snapshot.maxInventoryUsd ?? Math.max(1, grossInventory);
+}
+
+function BundleLane({
+  lane,
+  reserveNotice,
+}: {
+  lane: RunningBundleLane;
+  reserveNotice: boolean;
+}) {
+  const motion = useRef<MarketMotionHandle>(null);
+  const { open: openRunStatus } = useMakerRunControls();
+  const { snapshot, bundle } = lane;
+  const notices = laneNotices(lane);
+  const positions = lanePositions(snapshot);
+  const netInventoryUsd = positions.reduce(
+    (total, position) => total + position.inventoryUsd,
+    0,
+  );
+  const grossInventoryUsd = positions.reduce(
+    (total, position) => total + Math.abs(position.inventoryUsd),
+    0,
+  );
+  const positionSummary = positions
+    .map(
+      (position) => `${position.symbol} ${formatMoney(position.inventoryUsd)}`,
+    )
+    .join(", ");
 
   useEffect(() => {
     motion.current?.update({
@@ -85,32 +121,35 @@ function BundleLane({ lane }: { lane: RunningBundleLane }) {
       ask: snapshot.quote?.askPrice ?? null,
       bestBid: snapshot.market.bestBid,
       bestAsk: snapshot.market.bestAsk,
-      inventoryUsd: snapshot.balances.inventoryUsd,
+      inventoryUsd: netInventoryUsd,
       book: snapshot.market.book,
     });
-  }, [snapshot]);
+  }, [snapshot, netInventoryUsd]);
 
   return (
-    <article
-      className={`bundle-desk-lane${positions.length ? "" : " is-flat"}`}
-    >
+    <article className="bundle-desk-lane">
       <header>
-        <div>
-          <div className="bundle-lane-title">
-            <h2>{bundle.name}</h2>
-            <span className={`run-mode-tag is-${bundle.mode}`}>
-              {bundle.mode === "live" ? "Live" : "Paper"}
-            </span>
-            <RunStatusChip
-              bundle={bundle}
-              onClick={() => openRunStatus(bundle.id)}
-            />
-          </div>
+        <div className="bundle-lane-title">
+          <h2>{bundle.name}</h2>
+          <span className={`run-mode-tag is-${bundle.mode}`}>
+            {bundle.mode === "live" ? "Live" : "Paper"}
+          </span>
+          <RunStatusChip
+            bundle={bundle}
+            onClick={() => openRunStatus(bundle.id)}
+          />
         </div>
         <dl>
           <div>
-            <dt>Market</dt>
+            <dt>Quoting</dt>
             <dd>{snapshot.market.symbol || "Waiting"}</dd>
+          </div>
+          <div title={positionSummary || "No open positions"}>
+            <dt>Gross</dt>
+            <dd>
+              {formatMoney(grossInventoryUsd)}
+              {positions.length > 1 && <small> in {positions.length}</small>}
+            </dd>
           </div>
           <div>
             <dt>Known result</dt>
@@ -118,90 +157,32 @@ function BundleLane({ lane }: { lane: RunningBundleLane }) {
           </div>
         </dl>
       </header>
-      <div className="bundle-lane-notice-slot">
-        {notices.length > 0 && (
-          <p
-            className="bundle-lane-notice"
-            role="status"
-            title={notices.join(" ")}
-          >
-            {notices[0]}
-            {notices.length > 1 ? `, and ${notices.length - 1} more` : ""}
-            <details>
-              <summary>Details</summary>
-              {notices.join(" ")}
-            </details>
-          </p>
-        )}
-      </div>
-      <section
-        className="bundle-lane-inventory"
-        aria-label={`${bundle.name} inventory`}
-      >
-        <header>
-          <span>Inventory</span>
-          {positions.length > 0 && (
-            <strong>{formatMoney(grossInventory)} gross</strong>
+      {(notices.length > 0 || reserveNotice) && (
+        <div className="bundle-lane-notice-slot">
+          {notices.length > 0 && (
+            <button
+              type="button"
+              className="bundle-lane-notice"
+              title={notices.join(" ")}
+              onClick={() => openRunStatus(bundle.id)}
+            >
+              <span>{notices[0]}</span>
+              {notices.length > 1 && <b>+{notices.length - 1}</b>}
+            </button>
           )}
-        </header>
-        {positions.length > 0 && (
-          <div
-            className="bundle-lane-meter"
-            aria-label={`${formatMoney(grossInventory)} of ${formatMoney(inventoryLimit)} inventory limit`}
-          >
-            <i
-              style={{
-                width: `${Math.min(100, (grossInventory / inventoryLimit) * 100)}%`,
-              }}
-            />
-          </div>
-        )}
-        {shownPositions.length ? (
-          <ul>
-            {shownPositions.map((position) => (
-              <li key={`${position.account}:${position.marketId}`}>
-                <span>{position.symbol}</span>
-                <i>
-                  <b
-                    style={{
-                      width: `${Math.min(100, (Math.abs(position.inventoryUsd) / inventoryLimit) * 100)}%`,
-                    }}
-                  />
-                </i>
-                <strong>{formatMoney(position.inventoryUsd)}</strong>
-              </li>
-            ))}
-          </ul>
-        ) : (
-          <small>Flat across accounts</small>
-        )}
-        {positions.length > 3 && (
-          <details className="bundle-lane-more">
-            <summary>+{positions.length - 3} more</summary>
-            <ul>
-              {positions.slice(3).map((position) => (
-                <li key={`${position.account}:${position.marketId}`}>
-                  <span>{position.symbol}</span>
-                  <strong>{formatMoney(position.inventoryUsd)}</strong>
-                </li>
-              ))}
-            </ul>
-          </details>
-        )}
-      </section>
+        </div>
+      )}
       <MarketMotion
         ref={motion}
         compact
         sim={false}
-        fill
         className="bundle-lane-motion"
-        height={160}
         mid={snapshot.market.indexPrice}
         bid={snapshot.quote?.bidPrice ?? null}
         ask={snapshot.quote?.askPrice ?? null}
         bestBid={snapshot.market.bestBid}
         bestAsk={snapshot.market.bestAsk}
-        inventoryUsd={snapshot.balances.inventoryUsd}
+        inventoryUsd={netInventoryUsd}
         book={snapshot.market.book}
       />
     </article>
@@ -210,6 +191,11 @@ function BundleLane({ lane }: { lane: RunningBundleLane }) {
 
 export function BundleDeskLanes({ lanes }: { lanes: RunningBundleLane[] }) {
   if (!lanes.length) return null;
+  // Every card keeps the same shape: when one has a notice, the others keep
+  // the same slot empty so a row never goes ragged.
+  const reserveNotice = lanes
+    .slice(0, 4)
+    .some((lane) => laneNotices(lane).length > 0);
   return (
     <section className="bundle-desk-lanes" aria-label="Running bundles">
       <header>
@@ -217,7 +203,11 @@ export function BundleDeskLanes({ lanes }: { lanes: RunningBundleLane[] }) {
       </header>
       <div>
         {lanes.slice(0, 4).map((lane) => (
-          <BundleLane key={lane.bundle.id} lane={lane} />
+          <BundleLane
+            key={lane.bundle.id}
+            lane={lane}
+            reserveNotice={reserveNotice}
+          />
         ))}
       </div>
     </section>

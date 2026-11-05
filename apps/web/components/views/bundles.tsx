@@ -571,8 +571,8 @@ export function BundlesView({
                         : runBundle.lastError}
                     </p>
                   )}
-                {(runBundle?.phase === "running" ||
-                  runBundle?.phase === "attention") &&
+                {runBundle?.phase === "running" &&
+                  runBundle.snapshot?.running &&
                   runBundle.snapshot?.accountReadAt &&
                   Date.now() - Date.parse(runBundle.snapshot.accountReadAt) >
                     3 *
@@ -745,7 +745,7 @@ export function BundlesView({
                   onOpenAccounts?.();
                 }}
               >
-                Open Accounts setup
+                Open Venues setup
               </Button>
             </div>
           )}
@@ -861,7 +861,7 @@ export function BundlesView({
             !availableTakerAccounts.length && (
               <p className="bundle-create-note" role="status">
                 No unassigned authorized hedge account is available. Set one up
-                in Accounts before creating this bundle.
+                in Venues before creating this bundle.
               </p>
             )}
         </Sheet>

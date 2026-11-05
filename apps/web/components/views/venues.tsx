@@ -76,6 +76,8 @@ type VenueBoardProps = {
   onFundBundle: (bundleName: string, accounts: VenueAccountRow[]) => void;
   onAuthorize: (accountId: string) => Promise<void>;
   onOpenStrategy: () => void;
+  /** Set when the owner came here from a Strategy account link. */
+  onReturnToStrategy?: (() => void) | null;
   blockedBundle?: {
     name: string;
     accountId: string;
@@ -114,6 +116,7 @@ export function VenueBoard({
   onFundBundle,
   onAuthorize,
   onOpenStrategy,
+  onReturnToStrategy,
   blockedBundle,
   onRevoke,
 }: VenueBoardProps) {
@@ -197,20 +200,29 @@ export function VenueBoard({
         title="Venues"
         description="Where Maker trades, what it's allowed to do there, and what your accounts hold."
         actions={
-          walletAddress && (
-            <div className="venue-wallet-balance">
-              <span>
-                Your wallet {walletAddress.slice(0, 6)}…
-                {walletAddress.slice(-4)}
-              </span>
-              <strong>
-                {!walletConnected
-                  ? "Connect the owner wallet to see balances"
-                  : walletBalanceLoading
-                    ? "Checking wallet balances…"
-                    : `${walletUsdcUsd == null ? "USDC unavailable" : `${formatMoney(walletUsdcUsd)} USDC`} and ${walletSui == null ? "SUI unavailable" : `${walletSui.toFixed(2)} SUI`}`}
-              </strong>
-            </div>
+          (walletAddress || onReturnToStrategy) && (
+            <>
+              {onReturnToStrategy && (
+                <Button variant="secondary" onClick={onReturnToStrategy}>
+                  Back to Strategy
+                </Button>
+              )}
+              {walletAddress && (
+                <div className="venue-wallet-balance">
+                  <span>
+                    Your wallet {walletAddress.slice(0, 6)}…
+                    {walletAddress.slice(-4)}
+                  </span>
+                  <strong>
+                    {!walletConnected
+                      ? "Connect the owner wallet to see balances"
+                      : walletBalanceLoading
+                        ? "Checking wallet balances…"
+                        : `${walletUsdcUsd == null ? "USDC unavailable" : `${formatMoney(walletUsdcUsd)} USDC`} and ${walletSui == null ? "SUI unavailable" : `${walletSui.toFixed(2)} SUI`}`}
+                  </strong>
+                </div>
+              )}
+            </>
           )
         }
       />

@@ -426,6 +426,59 @@ describe("runtime execution boundaries", () => {
     harness.store.close();
   });
 
+  it("keeps a Live bundle running when one market fails the fair-value check", async () => {
+    // Production: Live paused itself on "Safety gate failed: fair-value"
+    // seconds after starting. A market condition must skip that market only.
+    const harness = createHarness();
+    const onBundleError = vi.fn();
+    const runtime = new MakerRuntime(harness.tenant, harness.gateway as never, {
+      ...harness.runtimeOptions,
+      pauseOnError: true,
+      onBundleError,
+    });
+    // Index is 10; a 10.49 / 10.51 book is about 500 bps away.
+    harness.setOrderbook({
+      bestBidPrice: 10.49,
+      bestAskPrice: 10.51,
+      bids: [],
+      asks: [],
+    });
+    runtime.start();
+    await runtime.cycle({ executeLive: true });
+
+    expect(onBundleError).not.toHaveBeenCalled();
+    expect(runtime.snapshot.running).toBe(true);
+    expect(harness.executionSequence).not.toContain("quote");
+    const skipped = runtime.snapshot.markets.find(
+      (market) => market.id === runtime.snapshot.market.id,
+    );
+    expect(skipped?.skip?.code).toBe("fair-value");
+    expect(
+      harness.tenant
+        .listEvents()
+        .some(
+          (event) =>
+            event.category === "runtime" &&
+            event.action === "cycle" &&
+            event.outcome === "error",
+        ),
+    ).toBe(false);
+
+    // When the book comes back, the same bundle quotes again.
+    harness.setOrderbook({
+      bestBidPrice: 9.99,
+      bestAskPrice: 10.01,
+      bids: [],
+      asks: [],
+    });
+    await runtime.cycle({ executeLive: true });
+    await runtime.cycle({ executeLive: true });
+    expect(harness.executionSequence).toContain("quote");
+    expect(onBundleError).not.toHaveBeenCalled();
+    await runtime.stop();
+    harness.store.close();
+  });
+
   it("keeps Paper reading when an account has no confirmed trading key", async () => {
     const harness = createHarness();
     harness.tenant.setConfig(
@@ -447,7 +500,7 @@ describe("runtime execution boundaries", () => {
 
     expect(runtime.snapshot.running).toBe(true);
     expect(runtime.snapshot.lastError).toBe(
-      "Paper needs a trading key for account 42. Set it up in Accounts; Maker will keep reading the market.",
+      "Paper needs a trading key for account 42. Set it up in Venues; Maker will keep reading the market.",
     );
     expect(runtime.snapshot.lastSuccessfulCycleAt).toBeNull();
     expect(onBundleError).not.toHaveBeenCalled();
@@ -1626,7 +1679,13 @@ describe("runtime execution boundaries", () => {
         ...harness.tenant.getConfig()!,
         mode: "paper",
         rotationMode: "portfolio",
-        hedge: { enabled: false, accountId: null, thresholdUsd: 25, maxOrderUsd: 100, maxSlippageBps: 75 },
+        hedge: {
+          enabled: false,
+          accountId: null,
+          thresholdUsd: 25,
+          maxOrderUsd: 100,
+          maxSlippageBps: 75,
+        },
         markets,
         quoteSizeUsd: 10,
         maxLeverage: 10,
@@ -1688,7 +1747,13 @@ describe("runtime execution boundaries", () => {
         ...harness.tenant.getConfig()!,
         mode: "paper",
         rotationMode: "portfolio",
-        hedge: { enabled: false, accountId: null, thresholdUsd: 25, maxOrderUsd: 100, maxSlippageBps: 75 },
+        hedge: {
+          enabled: false,
+          accountId: null,
+          thresholdUsd: 25,
+          maxOrderUsd: 100,
+          maxSlippageBps: 75,
+        },
         markets,
         quoteSizeUsd: 10,
         maxGrossExposureUsd: 150,
@@ -1742,19 +1807,105 @@ describe("runtime execution boundaries", () => {
     });
 
     for (let minute = 15; minute <= 75; minute += 15) {
-      vi.setSystemTime(new Date(`2026-11-04T${String(Math.floor(minute / 60)).padStart(2, "0")}:${String(minute % 60).padStart(2, "0")}:00.000Z`));
+      vi.setSystemTime(
+        new Date(
+          `2026-11-04T${String(Math.floor(minute / 60)).padStart(2, "0")}:${String(minute % 60).padStart(2, "0")}:00.000Z`,
+        ),
+      );
       await harness.runtime.cycle({ executeLive: true });
     }
 
-    const events = harness.tenant.listEvents(100).filter(
-      (event) => event.category === "paper" && event.action === "simulation",
+    const events = harness.tenant
+      .listEvents(100)
+      .filter(
+        (event) => event.category === "paper" && event.action === "simulation",
+      );
+    expect(events.filter((event) => event.outcome === "blocked")).toHaveLength(
+      5,
     );
-    expect(events.filter((event) => event.outcome === "blocked")).toHaveLength(5);
-    expect(events.filter((event) => event.outcome === "cleared")).toHaveLength(1);
+    expect(events.filter((event) => event.outcome === "cleared")).toHaveLength(
+      1,
+    );
     expect(events.every((event) => !("marketId" in event.detail))).toBe(true);
+    expect(harness.tenant.getPaperState("runtime").positions).toEqual([]);
+    await harness.runtime.stop();
+    harness.store.close();
+  });
+
+  it("clears the exposure pause below the limit even while positions remain", async () => {
+    // Production: "Paper paused new exposure" never cleared because the clear
+    // check looked for a key shape that no longer existed.
+    const harness = createHarness();
+    const markets = [
+      { marketId: "0x0001", symbol: "A" },
+      { marketId: "0x0002", symbol: "B" },
+      { marketId: "0x0003", symbol: "C" },
+    ];
+    harness.tenant.setConfig(
+      makerConfigSchema.parse({
+        ...harness.tenant.getConfig()!,
+        mode: "paper",
+        rotationMode: "portfolio",
+        hedge: {
+          enabled: false,
+          accountId: null,
+          thresholdUsd: 25,
+          maxOrderUsd: 100,
+          maxSlippageBps: 75,
+        },
+        markets,
+        quoteSizeUsd: 10,
+        maxInventoryUsd: 50,
+        maxGrossExposureUsd: 60,
+        unwindAfterPauseMinutes: 0,
+      }),
+    );
+    for (const market of markets) {
+      harness.tenant.recordPaperQuote({
+        trialId: "runtime",
+        marketId: market.marketId,
+        symbol: market.symbol,
+        bidPrice: 10,
+        askPrice: 10.1,
+        sizeUsd: 20,
+        sides: "bid",
+      });
+      harness.tenant.matchPaperOrders({
+        trialId: "runtime",
+        marketId: market.marketId,
+        bestBid: 9.9,
+        bestAsk: 9.9,
+      });
+    }
+    harness.runtime.start();
+    // $20 long in each of 3 markets: worst case 3 x $30 = $90, over $60.
+    await harness.runtime.cycle({ executeLive: true });
+    expect(harness.runtime.snapshot.paperBlocker?.code).toBe("gross-exposure");
+
+    // Close two markets: worst case $30 + $10 + $10 = $50, at the resume line
+    // ($60 limit minus one $10 quote) with one position still open.
+    for (const market of markets.slice(0, 2))
+      harness.tenant.closePaperMarket({
+        trialId: "runtime",
+        marketId: market.marketId,
+        bestBid: 10,
+        bestAsk: 10,
+        reason: "unwind",
+      });
+    await harness.runtime.cycle({ executeLive: true });
+
+    expect(harness.tenant.getPaperState("runtime").positions).toHaveLength(1);
+    expect(harness.runtime.snapshot.paperBlocker).toBeNull();
     expect(
-      harness.tenant.getPaperState("runtime").positions,
-    ).toEqual([]);
+      harness.tenant
+        .listEvents(100)
+        .filter(
+          (event) =>
+            event.category === "paper" &&
+            event.action === "simulation" &&
+            event.outcome === "cleared",
+        ),
+    ).toHaveLength(1);
     await harness.runtime.stop();
     harness.store.close();
   });
@@ -1806,9 +1957,14 @@ describe("runtime execution boundaries", () => {
     );
     expect(harness.flattens()).toBe(1);
     expect(
-      harness.tenant.listEvents(20).some(
-        (event) => event.category === "risk" && event.action === "exposure-unwind" && event.outcome === "confirmed",
-      ),
+      harness.tenant
+        .listEvents(20)
+        .some(
+          (event) =>
+            event.category === "risk" &&
+            event.action === "exposure-unwind" &&
+            event.outcome === "confirmed",
+        ),
     ).toBe(true);
     await harness.runtime.stop();
     harness.store.close();
@@ -1850,7 +2006,9 @@ describe("runtime execution boundaries", () => {
 
     expect(harness.tenant.getPaperState("runtime").positions).toHaveLength(1);
     expect(
-      harness.tenant.listEvents(20).some((event) => event.action === "exposure-unwind"),
+      harness.tenant
+        .listEvents(20)
+        .some((event) => event.action === "exposure-unwind"),
     ).toBe(false);
     await harness.runtime.stop();
     harness.store.close();
