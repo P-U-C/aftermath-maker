@@ -268,8 +268,12 @@ export function evaluateQuoteSafety(inputs: {
 export function assertSafe(checks: SafetyCheck[]): void {
   const failed = checks.filter((check) => !check.ok);
   if (failed.length) {
+    // Codes first (logs and tests key on them), then what each one measured,
+    // so a paused bundle says why in numbers.
     throw new Error(
-      `Safety gate failed: ${failed.map((check) => check.code).join(", ")}`,
+      `Safety gate failed: ${failed.map((check) => check.code).join(", ")}. ${failed
+        .map((check) => `${check.label}: ${check.detail}`)
+        .join("; ")}`,
     );
   }
 }
