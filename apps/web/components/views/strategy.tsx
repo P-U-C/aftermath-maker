@@ -114,7 +114,8 @@ function stageFixLabel(stage: BundleStage): string {
     const shortfall = Math.max(
       0.01,
       Math.ceil(
-        ((stage.requiredGasSui ?? 0) - (stage.availableGasSui ?? 0)) * 100,
+        ((stage.requiredGasSui ?? 0) - (stage.availableGasSui ?? 0)) * 100 -
+          1e-9,
       ) / 100,
     );
     return `Add ${shortfall.toFixed(2)} SUI`;

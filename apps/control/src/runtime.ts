@@ -3091,6 +3091,39 @@ export class MakerRuntime {
           bundleWorstCaseGrossExposureUsd >
             activeConfig.maxGrossExposureUsd - largestBundleQuoteUsd
         : bundleWorstCaseGrossExposureUsd > activeConfig.maxGrossExposureUsd;
+      // Live quotes draw on more than the account's free balance: the venue
+      // allocates collateral to each market as quotes are placed, so once
+      // several markets rest, free collateral is low while that allocation
+      // still backs them. Count it, and count the margin open positions use
+      // on the requirement side so it isn't spent twice. Unrealized losses
+      // reduce what's available; gains don't add to it.
+      const liveCollateralBudgetUsd =
+        portfolio.availableCollateralUsd +
+        portfolio.positions
+          .filter((position) => configuredMarketIds.has(position.marketId))
+          .reduce(
+            (sum, position) =>
+              sum +
+              Math.max(0, position.collateralUsd) +
+              Math.min(0, position.unrealizedPnlUsd),
+            0,
+          );
+      const livePositionMarginUsd = activeConfig.markets.reduce(
+        (sum, configuredMarket) => {
+          const position = portfolio.positions.find(
+            (item) => item.marketId === configuredMarket.marketId,
+          );
+          return (
+            sum +
+            Math.abs(position?.inventoryUsd ?? 0) /
+              Math.max(
+                1,
+                resolveMarketConfig(activeConfig, configuredMarket).maxLeverage,
+              )
+          );
+        },
+        0,
+      );
       const hedgeCollateralRequirement =
         requiredHedgeCollateralUsd(activeConfig);
       const hedgeSharesMakerAccount =
@@ -3111,14 +3144,18 @@ export class MakerRuntime {
           mainnetAllowed: this.options.mainnetAllowed,
           portfolioGrossExposureUsd: combinedGrossExposureUsd,
           portfolioWorstCaseExposureUsd: bundleWorstCaseGrossExposureUsd,
-          portfolioAvailableCollateralUsd: portfolio.availableCollateralUsd,
+          portfolioAvailableCollateralUsd:
+            activeConfig.mode === "paper"
+              ? portfolio.availableCollateralUsd
+              : liveCollateralBudgetUsd,
           portfolioRequiredQuoteCollateralUsd:
             activeConfig.mode === "paper"
               ? Math.max(
                   portfolioRiskFor(intent).requiredQuoteCollateralUsd,
                   requiredMakerCollateralUsd(activeConfig),
                 ) + (hedgeSharesMakerAccount ? hedgeCollateralRequirement : 0)
-              : portfolioRiskFor(intent).requiredQuoteCollateralUsd,
+              : portfolioRiskFor(intent).requiredQuoteCollateralUsd +
+                livePositionMarginUsd,
           agentGasSui: portfolio.gasSui,
           runDrawdownUsd,
         });

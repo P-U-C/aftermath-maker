@@ -154,6 +154,66 @@ describe("five ordered bundle readiness stages", () => {
       }).stages[1].status,
     ).toBe("todo");
   });
+  it("counts collateral backing resting quotes, but not a position's margin", () => {
+    const wide = makerConfigSchema.parse({
+      ...config,
+      maxQuoteAgeMs: 200_000,
+      markets: Array.from({ length: 15 }, (_, index) => ({
+        marketId: `0x${(index + 1).toString(16)}`,
+        symbol: `M${index + 1}`,
+      })),
+    });
+    const quoting = deriveBundleReadiness({
+      ...base,
+      config: wide,
+      accounts: [
+        {
+          accountId: "42",
+          availableCollateralUsd: 120,
+          allocatedCollateralUsd: 200,
+          positionCount: 0,
+        },
+      ],
+    });
+    expect(quoting.stages[4]).toMatchObject({
+      status: "done",
+      detail: "$120.00 free, $200.00 backing resting quotes",
+    });
+    const holding = deriveBundleReadiness({
+      ...base,
+      config: wide,
+      accounts: [
+        {
+          accountId: "42",
+          availableCollateralUsd: 120,
+          allocatedCollateralUsd: 200,
+          positionCount: 1,
+        },
+      ],
+    });
+    expect(holding.stages[4]).toMatchObject({
+      status: "todo",
+      shortfallUsd: 180,
+    });
+  });
+  it("rounds a gas shortfall under a cent up, never to 0.00", () => {
+    const live = makerConfigSchema.parse({ ...config, mode: "live" });
+    const required =
+      deriveBundleReadiness({
+        ...base,
+        config: live,
+        liveConfigs: [live],
+        gasSui: 0,
+      }).stages[3].requiredGasSui ?? 0;
+    expect(
+      deriveBundleReadiness({
+        ...base,
+        config: live,
+        liveConfigs: [live],
+        gasSui: required - 0.001,
+      }).stages[3].detail,
+    ).toBe("Needs 0.01 SUI gas");
+  });
   it("uses one Paper simulation budget and the unchanged Live gas reserve", () => {
     const paper = deriveBundleReadiness({ ...base, gasSui: 0.01 });
     expect(paper.stages[3]).toMatchObject({

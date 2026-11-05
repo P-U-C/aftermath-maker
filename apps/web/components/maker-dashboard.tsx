@@ -5507,7 +5507,8 @@ function DashboardBody() {
             0.01,
             Math.ceil(
               ((stage.requiredGasSui ?? 0) - (stage.availableGasSui ?? 0)) *
-                100,
+                100 -
+                1e-9,
             ) / 100,
           ),
         });

@@ -479,6 +479,75 @@ describe("runtime execution boundaries", () => {
     harness.store.close();
   });
 
+  it("counts collateral the venue already allocated to resting Live quotes", async () => {
+    // Production: a portfolio Live bundle paused on "collateral" soon after
+    // starting. Each placed quote moves collateral into its market, so the
+    // free balance drops while that allocation still backs the quotes.
+    const portfolioWith =
+      (available: number, allocatedPerMarket: number) =>
+      (inputs: { marketIds: string[] }) => ({
+        markedAt: new Date().toISOString(),
+        equityUsd: available + allocatedPerMarket * inputs.marketIds.length,
+        availableCollateralUsd: available,
+        allocatedCollateralUsd: allocatedPerMarket * inputs.marketIds.length,
+        freeMarginUsd: 0,
+        withdrawableCollateralUsd: available,
+        grossExposureUsd: 0,
+        unrealizedPnlUsd: 0,
+        gasSui: 1,
+        positions: inputs.marketIds.map((marketId) => ({
+          marketId,
+          baseAssetAmount: 0,
+          pendingOrderCount: 2,
+          inventoryUsd: 0,
+          unrealizedPnlUsd: 0,
+          collateralUsd: allocatedPerMarket,
+          freeMarginUsd: 0,
+          makerOrderIds: [],
+          hasPosition: false,
+        })),
+      });
+    const runWith = async (available: number, allocatedPerMarket: number) => {
+      const harness = createHarness();
+      harness.tenant.setConfig(
+        makerConfigSchema.parse({
+          ...harness.tenant.getConfig()!,
+          rotationMode: "portfolio",
+          quoteSizeUsd: 10,
+          maxLeverage: 1,
+        }),
+      );
+      harness.setPortfolioResolver(
+        portfolioWith(available, allocatedPerMarket) as never,
+      );
+      const onBundleError = vi.fn();
+      const runtime = new MakerRuntime(
+        harness.tenant,
+        harness.gateway as never,
+        { ...harness.runtimeOptions, pauseOnError: true, onBundleError },
+      );
+      runtime.start();
+      await runtime.cycle({ executeLive: true });
+      const result = {
+        quoted: harness.executionSequence.includes("quote"),
+        error: (onBundleError.mock.calls[0]?.[0] as string | undefined) ?? null,
+      };
+      await runtime.stop();
+      harness.store.close();
+      return result;
+    };
+
+    // Two markets at $10 a side and 1x need $40. $5 is free and $20 sits
+    // allocated in each market: $45 backs the quotes.
+    expect(await runWith(5, 20)).toEqual({ quoted: true, error: null });
+    // With $10 in each market only $25 backs them, and the error says so.
+    const short = await runWith(5, 10);
+    expect(short.quoted).toBe(false);
+    expect(short.error).toContain(
+      "Safety gate failed: collateral. Two-sided quote collateral: $25.00 available; $40.00 conservative requirement",
+    );
+  });
+
   it("keeps Paper reading when an account has no confirmed trading key", async () => {
     const harness = createHarness();
     harness.tenant.setConfig(

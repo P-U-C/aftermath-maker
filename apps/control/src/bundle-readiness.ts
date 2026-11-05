@@ -13,6 +13,9 @@ type AccountRead = {
   availableCollateralUsd: number;
   availableCollateral?: number;
   collateralPrice?: number;
+  /** Collateral the venue moved into markets for resting orders. */
+  allocatedCollateralUsd?: number;
+  positionCount?: number;
 };
 export const DEPOSIT_HEADROOM_USDC = 0.1;
 const ceilToCent = (value: number) => Math.ceil(value * 100 - 1e-9) / 100;
@@ -235,7 +238,8 @@ export function deriveBundleReadiness(inputs: {
           : {
               id: "gas",
               status: "todo",
-              detail: `Needs ${(requiredGasSui - gasSui).toFixed(2)} SUI gas`,
+              // Rounded up: a shortfall under a cent of SUI still needs gas.
+              detail: `Needs ${(Math.ceil((requiredGasSui - gasSui) * 100 - 1e-9) / 100).toFixed(2)} SUI gas`,
               requiredGasSui,
               availableGasSui: gasSui,
             };
@@ -255,7 +259,15 @@ export function deriveBundleReadiness(inputs: {
   const hedge = config?.hedge.enabled
     ? accounts?.find((account) => account.accountId === bundle.takerAccountId)
     : null;
-  const free = maker?.availableCollateralUsd ?? 0;
+  // With no open positions, collateral allocated to markets only backs
+  // resting quotes, which Maker replaces, so it counts toward quoting (the
+  // same budget the Live safety check uses). With positions, only the free
+  // balance counts, since part of the allocation is their margin.
+  const makerAllocatedUsd =
+    maker && maker.positionCount === 0
+      ? Math.max(0, maker.allocatedCollateralUsd ?? 0)
+      : 0;
+  const free = (maker?.availableCollateralUsd ?? 0) + makerAllocatedUsd;
   const makerShort = Math.max(0, requiredUsd - free);
   const hedgeFree = hedge?.availableCollateralUsd ?? 0;
   const hedgeShort = sharedAccount
@@ -295,7 +307,9 @@ export function deriveBundleReadiness(inputs: {
         : {
             id: "collateral",
             status: "done",
-            detail: `$${free.toFixed(2)} free`,
+            detail: makerAllocatedUsd
+              ? `$${(free - makerAllocatedUsd).toFixed(2)} free, $${makerAllocatedUsd.toFixed(2)} backing resting quotes`
+              : `$${free.toFixed(2)} free`,
             requiredUsd,
             availableUsd: free,
             shortfallUsd: 0,
