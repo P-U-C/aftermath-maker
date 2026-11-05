@@ -82,10 +82,11 @@ export function StrategyView({
 type GoLiveSheetProps = {
   open: boolean;
   available: boolean;
+  /** The bundle that switches to Live. Any bundle can; several may run Live. */
+  bundleName: string;
   liveReadiness: {
     serverEnabled: boolean;
     signerReady: boolean;
-    core: boolean;
     stopped: boolean;
     readiness: BundleReadiness | null;
   } | null;
@@ -102,22 +103,24 @@ type GoLiveSheetProps = {
   hedgeSlippageBps: number;
   onClose: () => void;
   onConfirm: () => void;
-  onStopCore?: () => void;
+  onStopBundle?: () => void;
 };
 
 export const GO_LIVE_REQUIREMENT_HEADINGS = [
   "Live enabled on this server",
   "Signing key on control",
-  "Runs on Core",
-  "Core stopped",
+  "Bundle stopped",
   "Live trading key",
   "Live gas reserve",
   "Collateral",
+  "Strategy",
+  "Accounts",
 ] as const;
 
 export function GoLiveSheet({
   open,
   available,
+  bundleName,
   liveReadiness,
   operator,
   ownerAddress,
@@ -132,14 +135,14 @@ export function GoLiveSheet({
   hedgeSlippageBps,
   onClose,
   onConfirm,
-  onStopCore,
+  onStopBundle,
 }: GoLiveSheetProps) {
   const [confirmed, setConfirmed] = useState(false);
   return (
     <Sheet
       open={open}
-      title="Switch Core to Live?"
-      description="Core will quote with real funds after you switch and press Start Live."
+      title={`Switch ${bundleName} to Live?`}
+      description={`${bundleName} will quote with real funds after you switch and press Start Live.`}
       onClose={onClose}
       footer={
         <>
@@ -151,13 +154,13 @@ export function GoLiveSheet({
             onClick={onConfirm}
             disabled={!available || !confirmed}
           >
-            Switch Core to Live
+            Switch {bundleName} to Live
           </Button>
         </>
       }
     >
       <section className="go-live-checklist" aria-label="Live checklist">
-        <h3>Before switching Core to Live</h3>
+        <h3>Before switching {bundleName} to Live</h3>
         <ul>
           <li data-ready={liveReadiness?.serverEnabled ? "true" : "false"}>
             <strong>{GO_LIVE_REQUIREMENT_HEADINGS[0]}</strong>
@@ -171,19 +174,21 @@ export function GoLiveSheet({
           </li>
           <li data-ready={liveReadiness?.signerReady ? "true" : "false"}>
             <strong>{GO_LIVE_REQUIREMENT_HEADINGS[1]}</strong>
-            <span>{liveReadiness?.signerReady ? "Done" : "Needed — Add the control signing key, then refresh."}</span>
-          </li>
-          <li data-ready={liveReadiness?.core ? "true" : "false"}>
-            <strong>{GO_LIVE_REQUIREMENT_HEADINGS[2]}</strong>
-            <span>{liveReadiness?.core ? "Done" : "Needed — Live runs on Core today. To run this strategy live, attach it to Core in Bundles."}</span>
+            <span>
+              {liveReadiness?.signerReady
+                ? "Done"
+                : "Needed — Add the control signing key, then refresh."}
+            </span>
           </li>
           <li data-ready={liveReadiness?.stopped ? "true" : "false"}>
-            <strong>{GO_LIVE_REQUIREMENT_HEADINGS[3]}</strong>
+            <strong>{GO_LIVE_REQUIREMENT_HEADINGS[2]}</strong>
             <span>
-              {liveReadiness?.stopped ? "Done" : "Needed — Stop Core before switching its mode. "}
-              {!liveReadiness?.stopped && onStopCore && (
-                <Button variant="secondary" size="small" onClick={onStopCore}>
-                  Stop Core
+              {liveReadiness?.stopped
+                ? "Done"
+                : `Needed — Stop ${bundleName} before switching its mode. `}
+              {!liveReadiness?.stopped && onStopBundle && (
+                <Button variant="secondary" size="small" onClick={onStopBundle}>
+                  Stop {bundleName}
                 </Button>
               )}
             </span>
@@ -193,12 +198,29 @@ export function GoLiveSheet({
               key={stage.id}
               data-ready={stage.status === "done" ? "true" : "false"}
             >
-              <strong>{stage.id === "tradingKeys" ? GO_LIVE_REQUIREMENT_HEADINGS[4] : stage.id === "gas" ? GO_LIVE_REQUIREMENT_HEADINGS[5] : stage.id === "collateral" ? GO_LIVE_REQUIREMENT_HEADINGS[6] : stage.id}</strong>
-              <span>{stage.status === "done" ? "Done" : `Needed — ${stage.detail}`}</span>
+              <strong>
+                {stage.id === "tradingKeys"
+                  ? GO_LIVE_REQUIREMENT_HEADINGS[3]
+                  : stage.id === "gas"
+                    ? GO_LIVE_REQUIREMENT_HEADINGS[4]
+                    : stage.id === "collateral"
+                      ? GO_LIVE_REQUIREMENT_HEADINGS[5]
+                      : stage.id === "strategy"
+                        ? GO_LIVE_REQUIREMENT_HEADINGS[6]
+                        : stage.id === "accounts"
+                          ? GO_LIVE_REQUIREMENT_HEADINGS[7]
+                          : stage.id}
+              </strong>
+              <span>
+                {stage.status === "done" ? "Done" : `Needed — ${stage.detail}`}
+              </span>
             </li>
           ))}
         </ul>
-        <p>Last Paper run is informational; switching mode never starts Core.</p>
+        <p>
+          Last Paper run is informational; switching mode never starts{" "}
+          {bundleName}.
+        </p>
       </section>
       <dl className="go-live-summary">
         <div>
@@ -258,7 +280,7 @@ export function GoLiveSheet({
       {!available && (
         <p className="go-live-blocked" role="status">
           Live is not ready on this server. Check the server gates, signing key,
-          Core readiness, gas reserve, and collateral in Bundles.
+          {` ${bundleName}`} readiness, gas reserve, and collateral in Bundles.
         </p>
       )}
     </Sheet>

@@ -231,6 +231,47 @@ describe("Start route and server-owned readiness", () => {
     }
   });
 
+  it("judges every Paper bundle as Live for Go live, beside its Paper readiness", async () => {
+    const h = await appHarness();
+    try {
+      const tenant = h.store.forTenant(OWNER);
+      tenant.setConfig(wideConfig("1796", { marketCount: 1 }));
+      tenant.confirmWalletLimits();
+      h.gateway.account("1796", 20);
+      h.gateway.gasSui = 0.08;
+      authorize(h, "1796");
+      const other = tenant.createBundle({
+        name: "Delta neutral",
+        config: wideConfig(null, { marketCount: 1 }),
+      });
+      const core = tenant
+        .listBundles()
+        .find((bundle) => bundle.name === "Core")!;
+      const body = (
+        await h.app.inject({
+          method: "GET",
+          url: "/api/bundles",
+          headers: h.signedInAs(),
+        })
+      ).json();
+      expect(
+        body.liveReadiness.map((entry: any) => entry.bundleId).sort(),
+      ).toEqual([core.id, other.id].sort());
+      // Enough gas to simulate Paper, short of the Live cancel reserve.
+      const paper = body.bundles.find((bundle: any) => bundle.id === core.id);
+      const live = body.liveReadiness.find(
+        (entry: any) => entry.bundleId === core.id,
+      );
+      expect(paper.readiness.ready).toBe(true);
+      expect(
+        live.readiness.stages.find((stage: any) => stage.id === "gas").status,
+      ).toBe("todo");
+      expect(live).toMatchObject({ serverEnabled: false, ready: false });
+    } finally {
+      await h.close();
+    }
+  });
+
   it("rejects an underfunded hedge account using the shared $100.85 rule", async () => {
     const h = await appHarness();
     try {

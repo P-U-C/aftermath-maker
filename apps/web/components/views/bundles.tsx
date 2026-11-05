@@ -654,7 +654,6 @@ export function BundlesView({
                     </Button>
                   )}
                   {!editing &&
-                    bundle.name === "Core" &&
                     (bundle.mode === "live" || bundle.mode === "paper") && (
                       <Button
                         variant="secondary"

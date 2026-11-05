@@ -817,11 +817,11 @@ type LiveGates = {
   mainnetAllowed: boolean;
 };
 
+/** Go live readiness for one Paper bundle, judged as if it switched to Live. */
 type LiveReadiness = {
   bundleId: string;
   serverEnabled: boolean;
   signerReady: boolean;
-  core: boolean;
   stopped: boolean;
   readiness: BundleReadiness | null;
   ready: boolean;
@@ -1336,9 +1336,7 @@ function DashboardBody() {
     liveTradingEnabled: false,
     mainnetAllowed: false,
   });
-  const [liveReadiness, setLiveReadiness] = useState<LiveReadiness | null>(
-    null,
-  );
+  const [liveReadiness, setLiveReadiness] = useState<LiveReadiness[]>([]);
   const [strategyStep, setStrategyStep] = useState(0);
   const [strategyEditing, setStrategyEditing] = useState(false);
   const [draftBaseVersion, setDraftBaseVersion] = useState<number | null>(null);
@@ -1414,7 +1412,10 @@ function DashboardBody() {
   const [busy, setBusy] = useState("");
   const bundleCreateInFlight = useRef(false);
   const [flattenArmed, setFlattenArmed] = useState(false);
-  const [liveSheetOpen, setLiveSheetOpen] = useState(false);
+  /** The bundle the Go live sheet would switch, or null when it's closed. */
+  const [liveSheetBundleId, setLiveSheetBundleId] = useState<string | null>(
+    null,
+  );
   const [pendingStrategyExit, setPendingStrategyExit] =
     useState<MakerView | null>(null);
   const [notice, setNoticeMessage] = useState<string | null>(null);
@@ -1514,7 +1515,7 @@ function DashboardBody() {
       request<{
         bundles: MakerBundle[];
         walletLimits: BundleWalletLimits | null;
-        liveReadiness: LiveReadiness | null;
+        liveReadiness: LiveReadiness[];
       }>("api/bundles"),
       request<{ strategies: MakerStrategy[] }>("api/strategies"),
     ]);
@@ -1559,7 +1560,11 @@ function DashboardBody() {
       return next;
     });
     setWalletLimits(bundleResult.walletLimits);
-    setLiveReadiness(bundleResult.liveReadiness);
+    setLiveReadiness(
+      Array.isArray(bundleResult.liveReadiness)
+        ? bundleResult.liveReadiness
+        : [],
+    );
     const previousBundleId = selectedBundleIdRef.current;
     const nextBundleId = selectedActiveBundleId(
       bundleResult.bundles,
@@ -2059,8 +2064,8 @@ function DashboardBody() {
       await refresh();
       setNotice(
         mode === "live"
-          ? "Core is set to Live. Starting is still a separate action."
-          : "Core is set to Paper.",
+          ? `${bundle.name} is set to Live. Starting is still a separate action.`
+          : `${bundle.name} is set to Paper.`,
         "success",
       );
     });
@@ -5628,6 +5633,23 @@ function DashboardBody() {
     (bundle) => bundle.id === selectedBundleId,
   );
   const coreBundle = bundles.find((bundle) => bundle.name === "Core");
+  const liveSheetBundle = liveSheetBundleId
+    ? (bundles.find(
+        (bundle) => bundle.id === liveSheetBundleId && !bundle.archivedAt,
+      ) ?? null)
+    : null;
+  const liveSheetStrategy = liveSheetBundle
+    ? (strategies.find(
+        (strategy) => strategy.id === liveSheetBundle.strategyId,
+      ) ?? null)
+    : null;
+  // The sheet summarizes the strategy this bundle runs; Core's matches
+  // coreConfig, and any other bundle reads its own strategy's settings.
+  const liveSheetConfig = liveSheetStrategy
+    ? configWithStrategySettings(defaultConfig, liveSheetStrategy.config)
+    : defaultConfig;
+  const liveSheetReadiness =
+    liveReadiness.find((entry) => entry.bundleId === liveSheetBundleId) ?? null;
   const coreStrategy = coreBundle?.strategyId
     ? strategies.find((strategy) => strategy.id === coreBundle.strategyId)
     : null;
@@ -6979,24 +7001,31 @@ function DashboardBody() {
                   )}
                 </div>
               )}
-              <p className="strategy-section-copy">
-                Runs in{" "}
-                {bundles.find((bundle) => bundle.name === "Core")?.mode ===
-                "live"
-                  ? "Live"
-                  : "Paper"}{" "}
-                on Core.{" "}
-                <button
-                  type="button"
-                  className="strategy-context-link"
-                  onClick={() => {
-                    selectView("bundles");
-                    setLiveSheetOpen(true);
-                  }}
-                >
-                  Go live
-                </button>
-              </p>
+              {selectedStrategy?.usedBy.map((used) => {
+                const bundle = bundles.find(
+                  (candidate) =>
+                    candidate.id === used.id && !candidate.archivedAt,
+                );
+                if (!bundle) return null;
+                return (
+                  <p key={bundle.id} className="strategy-section-copy">
+                    Runs in {bundle.mode === "live" ? "Live" : "Paper"} on{" "}
+                    {bundle.name}.{" "}
+                    {bundle.mode === "paper" && (
+                      <button
+                        type="button"
+                        className="strategy-context-link"
+                        onClick={() => {
+                          selectView("bundles");
+                          setLiveSheetBundleId(bundle.id);
+                        }}
+                      >
+                        Go live with {bundle.name}
+                      </button>
+                    )}
+                  </p>
+                );
+              })}
               <dl className="strategy-review-summary">
                 <div>
                   <dt>Goal</dt>
@@ -8934,7 +8963,7 @@ function DashboardBody() {
             void switchBundleMode(bundle, "paper");
             return;
           }
-          setLiveSheetOpen(true);
+          setLiveSheetBundleId(bundle.id);
         }}
         onFixStage={(bundle, stage) => {
           const detail = bundle.readiness?.stages.find(
@@ -10492,34 +10521,37 @@ function DashboardBody() {
         )}
       </Sheet>
 
-      <GoLiveSheet
-        open={liveSheetOpen}
-        available={Boolean(liveReadiness?.ready)}
-        liveReadiness={liveReadiness}
-        operator={identity.operator}
-        ownerAddress={identity.ownerAddress}
-        venue={primaryVenue}
-        marketCount={coreConfig.markets.length}
-        rotationMode={coreConfig.rotationMode}
-        quoteSizeUsd={coreConfig.quoteSizeUsd}
-        maxGrossExposureUsd={coreConfig.maxGrossExposureUsd}
-        maxRunDrawdownUsd={coreConfig.maxRunDrawdownUsd}
-        hedgeAccountId={
-          coreConfig.hedge.enabled ? coreConfig.hedge.accountId : null
-        }
-        makerAccountId={coreBundle?.makerAccountId ?? null}
-        hedgeSlippageBps={coreConfig.hedge.maxSlippageBps}
-        onClose={() => setLiveSheetOpen(false)}
-        onConfirm={() => {
-          const core = bundles.find((bundle) => bundle.name === "Core");
-          if (!core || !liveReadiness?.ready) return;
-          void switchBundleMode(core, "live");
-          setLiveSheetOpen(false);
-        }}
-        onStopCore={() => {
-          if (coreBundle) void bundleAction(coreBundle.id, "pause");
-        }}
-      />
+      {liveSheetBundle && (
+        <GoLiveSheet
+          key={liveSheetBundle.id}
+          open
+          bundleName={liveSheetBundle.name}
+          available={Boolean(liveSheetReadiness?.ready)}
+          liveReadiness={liveSheetReadiness}
+          operator={identity.operator}
+          ownerAddress={identity.ownerAddress}
+          venue={primaryVenue}
+          marketCount={liveSheetStrategy?.markets.length ?? 0}
+          rotationMode={liveSheetConfig.rotationMode}
+          quoteSizeUsd={liveSheetConfig.quoteSizeUsd}
+          maxGrossExposureUsd={liveSheetConfig.maxGrossExposureUsd}
+          maxRunDrawdownUsd={liveSheetConfig.maxRunDrawdownUsd}
+          hedgeAccountId={
+            liveSheetConfig.hedge.enabled
+              ? liveSheetBundle.takerAccountId
+              : null
+          }
+          makerAccountId={liveSheetBundle.makerAccountId}
+          hedgeSlippageBps={liveSheetConfig.hedge.maxSlippageBps}
+          onClose={() => setLiveSheetBundleId(null)}
+          onConfirm={() => {
+            if (!liveSheetReadiness?.ready) return;
+            void switchBundleMode(liveSheetBundle, "live");
+            setLiveSheetBundleId(null);
+          }}
+          onStopBundle={() => void bundleAction(liveSheetBundle.id, "pause")}
+        />
+      )}
 
       <LearnView active={displayedView === "learn"} />
 

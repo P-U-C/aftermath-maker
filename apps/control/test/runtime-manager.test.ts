@@ -244,7 +244,7 @@ describe("runtime endpoint management", () => {
     store.close();
   });
 
-  it("still rejects a second running Live overlap in a test-only legacy state", () => {
+  it("lets several bundles run Live on their own markets, never on a shared one", () => {
     const store = storeHarness();
     const owner = `0x${"7".repeat(64)}`;
     const tenant = store.forTenant(owner);
@@ -254,30 +254,50 @@ describe("runtime endpoint management", () => {
     tenant.setConfig(config);
     tenant.confirmWalletLimits();
     const core = tenant.listBundles().find((bundle) => bundle.name === "Core")!;
-    const other = tenant.createBundle({
+    const ownMarket = tenant.createBundle({
       name: "Rewards",
       config: makerConfigSchema.parse({
         ...config,
         makerAccountId: "3",
         hedge: { ...config.hedge, accountId: "4" },
+        markets: [{ marketId: "0x7002", symbol: "ALT" }],
       }),
     });
-    // Live is Core-only in the public API. Seed an impossible legacy collision
-    // in a disposable test database to exercise the future fail-closed guard.
-    const testDb = (
-      store as unknown as {
-        db: {
-          prepare: (sql: string) => { run: (...args: string[]) => unknown };
-        };
-      }
-    ).db;
-    testDb
-      .prepare("UPDATE bundles SET mode = 'live' WHERE id IN (?, ?)")
-      .run(core.id, other.id);
+    const sharedMarket = tenant.createBundle({
+      name: "Delta neutral",
+      config: makerConfigSchema.parse({
+        ...config,
+        makerAccountId: "5",
+        hedge: { ...config.hedge, accountId: "6" },
+      }),
+    });
+    for (const bundle of [core, ownMarket, sharedMarket])
+      tenant.updateBundleMode({ bundleId: bundle.id, mode: "live" });
     tenant.setBundleStatus(core.id, "running");
-    expect(() => tenant.assertBundleMarketsAvailableToStart(other.id)).toThrow(
+    const manager = new RuntimeManager(store, {} as never, {});
+    const assertStartAllowed = (
+      manager as unknown as {
+        assertStartAllowed: (
+          owner: string,
+          bundle: ReturnType<typeof tenant.getStoredBundle>,
+        ) => unknown;
+      }
+    ).assertStartAllowed.bind(manager);
+
+    // A second Live bundle on its own market and accounts may start.
+    expect(() =>
+      assertStartAllowed(owner, tenant.getStoredBundle(ownMarket.id)),
+    ).not.toThrow();
+    expect(() =>
+      tenant.assertBundleMarketsAvailableToStart(ownMarket.id),
+    ).not.toThrow();
+    // A Live bundle can't quote a market another running Live bundle quotes.
+    expect(() =>
+      tenant.assertBundleMarketsAvailableToStart(sharedMarket.id),
+    ).toThrow(
       "NEAR is already quoted live by Core. Only one Live bundle can quote a market.",
     );
+    manager.close();
     store.close();
   });
 

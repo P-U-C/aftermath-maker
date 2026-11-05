@@ -6,12 +6,15 @@ describe("Go live sheet requirements", () => {
     expect(GO_LIVE_REQUIREMENT_HEADINGS).toEqual([
       "Live enabled on this server",
       "Signing key on control",
-      "Runs on Core",
-      "Core stopped",
+      "Bundle stopped",
       "Live trading key",
       "Live gas reserve",
       "Collateral",
+      "Strategy",
+      "Accounts",
     ]);
-    expect(GO_LIVE_REQUIREMENT_HEADINGS.join(" ")).not.toMatch(/is on|is available|this bundle is/i);
+    expect(GO_LIVE_REQUIREMENT_HEADINGS.join(" ")).not.toMatch(
+      /is on|is available|this bundle is/i,
+    );
   });
 });

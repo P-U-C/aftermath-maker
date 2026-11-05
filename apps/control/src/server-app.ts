@@ -950,13 +950,15 @@ export async function buildServer({
     return { strategy };
   });
 
-  async function ownerBundleReadiness(
+  /** One venue read per request; readiness is then derived from it. */
+  async function readOwnerVenue(
     scoped: TenantStore,
     ownerAddress: string,
-    strict = false,
-    liveCandidateBundleId?: string,
-  ): Promise<Map<string, BundleReadiness>> {
-    const bundles = scoped.listBundles().filter((bundle) => !bundle.archivedAt);
+    strict: boolean,
+  ): Promise<{
+    accounts: OwnerAccountSummary[] | null;
+    gasSui: number | null;
+  }> {
     const agent = scoped.getAgent();
     let accounts: OwnerAccountSummary[] | null = null;
     let gasSui: number | null = null;
@@ -990,6 +992,20 @@ export async function buildServer({
       }
       // Bundles still renders waiting stages during an unavailable venue read.
     }
+    return { accounts, gasSui };
+  }
+
+  /**
+   * Each bundle's readiness in its current mode, except `asLive` bundles,
+   * which are judged as if switched to Live alongside every running Live
+   * bundle (their shared gas reserve included).
+   */
+  function deriveOwnerBundleReadiness(
+    scoped: TenantStore,
+    venue: { accounts: OwnerAccountSummary[] | null; gasSui: number | null },
+    asLive: ReadonlySet<string>,
+  ): Map<string, BundleReadiness> {
+    const bundles = scoped.listBundles().filter((bundle) => !bundle.archivedAt);
     const authorizedAccountIds = new Set(
       scoped
         .listAccountSetups()
@@ -1006,7 +1022,7 @@ export async function buildServer({
       bundles.map((bundle) => {
         const storedConfig = scoped.getBundleConfig(bundle.id);
         const config =
-          storedConfig && bundle.id === liveCandidateBundleId
+          storedConfig && asLive.has(bundle.id)
             ? makerConfigSchema.parse({ ...storedConfig, mode: "live" })
             : storedConfig;
         const liveConfigs =
@@ -1018,13 +1034,26 @@ export async function buildServer({
           deriveBundleReadiness({
             bundle,
             config,
-            accounts,
+            accounts: venue.accounts,
             authorizedAccountIds,
-            gasSui,
+            gasSui: venue.gasSui,
             liveConfigs,
           }),
         ];
       }),
+    );
+  }
+
+  async function ownerBundleReadiness(
+    scoped: TenantStore,
+    ownerAddress: string,
+    strict = false,
+    liveCandidateBundleId?: string,
+  ): Promise<Map<string, BundleReadiness>> {
+    return deriveOwnerBundleReadiness(
+      scoped,
+      await readOwnerVenue(scoped, ownerAddress, strict),
+      new Set(liveCandidateBundleId ? [liveCandidateBundleId] : []),
     );
   }
 
@@ -1039,39 +1068,41 @@ export async function buildServer({
     }
     const owner = requestAuth(request).ownerAddress;
     const bundles = scoped.listBundles();
-    const core = bundles.find(
-      (bundle) => bundle.name === "Core" && !bundle.archivedAt,
+    const venue = await readOwnerVenue(scoped, owner, false);
+    const readiness = deriveOwnerBundleReadiness(scoped, venue, new Set());
+    // Any bundle can go Live; each is judged as if it joined the running
+    // Live bundles, so Go live shows that bundle's own checklist.
+    const paperBundleIds = new Set(
+      bundles
+        .filter((bundle) => !bundle.archivedAt && bundle.mode === "paper")
+        .map((bundle) => bundle.id),
     );
-    const readiness = await ownerBundleReadiness(
-      scoped,
-      owner,
-      false,
-      core?.id,
-    );
-    const coreReadiness = core ? (readiness.get(core.id) ?? null) : null;
+    const asLive = deriveOwnerBundleReadiness(scoped, venue, paperBundleIds);
+    const serverEnabled = env.LIVE_TRADING_ENABLED && env.ALLOW_MAINNET;
+    const signerReady = Boolean(env.MAKER_MASTER_KEY);
     return {
       bundles: bundles.map((bundle) => ({
         ...bundle,
         readiness: readiness.get(bundle.id) ?? null,
       })),
       walletLimits: scoped.getWalletLimits(),
-      liveReadiness: core
-        ? {
-            bundleId: core.id,
-            serverEnabled: env.LIVE_TRADING_ENABLED && env.ALLOW_MAINNET,
-            signerReady: Boolean(env.MAKER_MASTER_KEY),
-            core: true,
-            stopped: core.status === "stopped" || core.status === "paused",
-            readiness: coreReadiness,
+      liveReadiness: bundles
+        .filter((bundle) => paperBundleIds.has(bundle.id))
+        .map((bundle) => {
+          const bundleReadiness = asLive.get(bundle.id) ?? null;
+          const stopped =
+            bundle.status === "stopped" || bundle.status === "paused";
+          return {
+            bundleId: bundle.id,
+            serverEnabled,
+            signerReady,
+            stopped,
+            readiness: bundleReadiness,
             ready: Boolean(
-              env.LIVE_TRADING_ENABLED &&
-              env.ALLOW_MAINNET &&
-              env.MAKER_MASTER_KEY &&
-              (core.status === "stopped" || core.status === "paused") &&
-              coreReadiness?.ready,
+              serverEnabled && signerReady && stopped && bundleReadiness?.ready,
             ),
-          }
-        : null,
+          };
+        }),
     };
   });
 
@@ -1284,13 +1315,6 @@ export async function buildServer({
         404,
       );
     }
-    if (current.name !== "Core" && config.mode === "live") {
-      throw new UserFacingError(
-        "live-core-only",
-        "Only Core can use Live mode. Switch this bundle to Paper.",
-        { kind: "bundles" },
-      );
-    }
     assertLiveModeEnabled(config, requestAuth(request).operator);
     assertConfiguredAccounts(scoped, config);
     const bundle = await runtimeManager.reconfigureBundle({
@@ -1433,14 +1457,6 @@ export async function buildServer({
         throw new UserFacingError(
           "live-signer-missing",
           "The control signing key is unavailable.",
-          { kind: "bundles" },
-          409,
-        );
-      }
-      if (bundle.name !== "Core") {
-        throw new UserFacingError(
-          "live-core-only",
-          "Live runs on Core today. Attach this strategy to Core in Bundles.",
           { kind: "bundles" },
           409,
         );

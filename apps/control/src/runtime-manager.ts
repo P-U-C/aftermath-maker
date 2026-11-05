@@ -319,30 +319,10 @@ export class RuntimeManager {
       );
     const walletLimits = tenant.getWalletLimits();
     if (walletLimits) tenant.assertConfigFitsWallet(config, walletLimits);
-    if (config.mode === "live") {
-      if (bundle.name !== "Core") {
-        throw new UserFacingError(
-          "live-core-only",
-          "Only Core can use Live mode. Select Paper for any other bundle.",
-          { kind: "bundles" },
-        );
-      }
-      const liveOutsideCore = tenant
-        .listBundles()
-        .some(
-          (candidate) =>
-            candidate.id !== bundle.id &&
-            !candidate.archivedAt &&
-            candidate.mode === "live",
-        );
-      if (liveOutsideCore) {
-        throw new UserFacingError(
-          "live-core-only",
-          "Core must be the only Live bundle. Switch other bundles to Paper first.",
-          { kind: "bundles" },
-        );
-      }
-    }
+    // Several bundles may run Live. Each owns its accounts (enforced when
+    // they're assigned), no two running Live bundles quote the same market
+    // (checked at start), and every proposal from every running bundle is
+    // admitted against the shared wallet limits together.
     return config;
   }
 

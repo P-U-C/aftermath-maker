@@ -783,7 +783,12 @@ async function capture(browser, stateName, captureConfig, view) {
     ) {
       if (view === null)
         await page.getByRole("link", { name: "Bundles" }).click();
-      await page.getByRole("button", { name: "Go live…" }).click();
+      // Every bundle card offers Go live; this capture is Core's.
+      await page
+        .locator(".bundle-card", { hasText: "Core" })
+        .getByRole("button", { name: "Go live…" })
+        .first()
+        .click();
       await page
         .getByRole("dialog", { name: "Switch Core to Live?" })
         .waitFor();

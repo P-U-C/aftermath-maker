@@ -1730,6 +1730,88 @@ async function strategyResultBreakdown(browser) {
   }
 }
 
+/** Any bundle can go Live: each Go live opens that bundle's own checklist,
+ * and Review names the bundle that runs the strategy instead of assuming
+ * Core. */
+async function goLiveFromAnyBundle(browser) {
+  for (const viewport of [
+    { width: 1440, height: 900 },
+    { width: 390, height: 844 },
+  ]) {
+    const tag = viewport.width > 500 ? "desktop" : "phone";
+    const { context, page, state } = await newPage(browser, viewport);
+    try {
+      // Mode changes only while a bundle is stopped.
+      state.fixture.status.snapshot.running = false;
+      state.fixture.bundles.bundles.forEach((bundle) => {
+        bundle.status = "stopped";
+      });
+      state.fixture.status.bundles = state.fixture.status.bundles.map(
+        (entry) => ({
+          ...entry,
+          bundle: { ...entry.bundle, status: "stopped" },
+        }),
+      );
+      for (const entry of state.fixture.bundles.liveReadiness)
+        entry.stopped = true;
+      // Same valid gross limit the strategy polish flow uses, so the wizard
+      // can reach Review.
+      state.fixture.config.config.maxGrossExposureUsd = 3;
+      state.strategies.forEach((strategy) => {
+        strategy.config.maxGrossExposureUsd = 3;
+      });
+      await goToDesk(page);
+      await page.evaluate(() => {
+        window.location.hash = "bundles";
+      });
+      await page
+        .locator(".bundle-card", { hasText: "Rewards" })
+        .getByRole("button", { name: "Go live…" })
+        .click();
+      const sheet = page.getByRole("dialog", {
+        name: "Switch Rewards to Live?",
+      });
+      await sheet.waitFor();
+      await sheet
+        .locator('.go-live-checklist li[data-ready="true"]')
+        .filter({ hasText: "Bundle stopped" })
+        .waitFor();
+      await sheet
+        .getByText("Maker will trade real funds on account 1747", {
+          exact: true,
+        })
+        .waitFor();
+      assert(
+        (await sheet.getByText(/Runs on Core|Live runs on Core/).count()) === 0,
+        "The Go live sheet still says Live runs only on Core",
+      );
+      await page.waitForTimeout(400);
+      await capture(page, `ml-go-live-rewards-${tag}.png`);
+      await sheet.getByRole("button", { name: "Cancel", exact: true }).click();
+      await sheet.waitFor({ state: "detached" });
+
+      await page.getByRole("link", { name: "Strategy", exact: true }).click();
+      await goToStrategyStep(page, 4);
+      const review = page.locator(
+        '.maker-view[data-view="strategy"]:not([hidden])',
+      );
+      await review
+        .getByText(/Runs in Paper on Core\./)
+        .filter({ visible: true })
+        .waitFor();
+      await review
+        .getByRole("button", { name: "Go live with Core" })
+        .filter({ visible: true })
+        .click();
+      await page
+        .getByRole("dialog", { name: "Switch Core to Live?" })
+        .waitFor();
+    } finally {
+      await context.close();
+    }
+  }
+}
+
 async function serviceAndSessionFailures(browser) {
   const desktop = await newPage(browser, { width: 1440, height: 900 });
   try {
@@ -3671,6 +3753,8 @@ const browser = await chromium.launch({
 try {
   if (process.argv.includes("--results-only")) {
     await strategyResultBreakdown(browser);
+  } else if (process.argv.includes("--multi-live-only")) {
+    await goLiveFromAnyBundle(browser);
   } else if (process.argv.includes("--round10-kit-only")) {
     await captureRound10KitControls(browser);
   } else if (process.argv.includes("--round10-rename-only")) {
@@ -3771,6 +3855,7 @@ try {
       await renamesAccountInsideVenues(browser, { width: 390, height: 844 });
       await serviceAndSessionFailures(browser);
       await strategyResultBreakdown(browser);
+      await goLiveFromAnyBundle(browser);
       await createBundleWithFreeChoices(browser);
       await lowerWalletLimitsWhenCreating(browser);
       await editWalletLimits(browser);

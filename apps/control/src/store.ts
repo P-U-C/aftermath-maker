@@ -3284,14 +3284,6 @@ export class TenantStore {
           404,
         );
       }
-      if (bundle.name !== "Core" && config.mode === "live") {
-        throw new UserFacingError(
-          "live-core-only",
-          "Only Core can use Live mode. Switch this bundle to Paper.",
-          { kind: "bundles" },
-          409,
-        );
-      }
       const walletLimits = this.getWalletLimits();
       if (!walletLimits) {
         throw new UserFacingError(
@@ -3533,14 +3525,6 @@ export class TenantStore {
       throw new UserFacingError(
         "mode-requires-stopped",
         "Stop or pause this bundle before changing its mode.",
-        { kind: "bundles" },
-        409,
-      );
-    }
-    if (inputs.mode === "live" && bundle.name !== "Core") {
-      throw new UserFacingError(
-        "live-core-only",
-        "Only Core can use Live mode. Switch this bundle to Paper.",
         { kind: "bundles" },
         409,
       );
@@ -4085,10 +4069,11 @@ export class TenantStore {
           400,
         );
       }
+      // A bundle goes Live only through Go live, which checks readiness.
       if (inputs.config.mode === "live") {
         throw new UserFacingError(
-          "live-core-only",
-          "Only Core can use Live mode. Switch this bundle to Paper.",
+          "bundle-starts-in-paper",
+          "New bundles start in Paper. Create it in Paper, then use Go live in Bundles.",
           { kind: "bundles" },
           409,
         );
@@ -4201,10 +4186,11 @@ export class TenantStore {
           409,
         );
       }
+      // A bundle goes Live only through Go live, which checks readiness.
       if (inputs.mode === "live") {
         throw new UserFacingError(
-          "live-core-only",
-          "Only Core can use Live mode. Switch this bundle to Paper.",
+          "bundle-starts-in-paper",
+          "New bundles start in Paper. Create it in Paper, then use Go live in Bundles.",
           { kind: "bundles" },
           409,
         );
@@ -4361,14 +4347,6 @@ export class TenantStore {
           ? current.taker_account_id
           : inputs.takerAccountId;
       const mode = inputs.mode ?? current.mode;
-      if (mode === "live" && current.name !== "Core") {
-        throw new UserFacingError(
-          "live-core-only",
-          "Only Core can use Live mode. Switch this bundle to Paper.",
-          { kind: "bundles" },
-          409,
-        );
-      }
       const strategyId =
         inputs.strategyId === undefined
           ? current.strategy_id
