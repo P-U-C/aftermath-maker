@@ -295,7 +295,9 @@ export async function buildServer({
 
   await app.register(cors, { origin: false });
   await app.register(rateLimit, {
-    max: 120,
+    // A signed-in owner's dashboard polls every few seconds from each open
+    // device and view, so the owner budget is larger than the anonymous one.
+    max: (_request, key) => (key.startsWith("owner:") ? 600 : 120),
     timeWindow: "1 minute",
     keyGenerator: (request) => {
       const header = request.headers["x-maker-session"];
@@ -381,7 +383,14 @@ export async function buildServer({
     }
     const owner =
       (request as AuthenticatedRequest).makerAuth?.ownerAddress ?? null;
-    if (owner && response.status !== 401 && response.status !== 403) {
+    // A throttled poll retries on its own; it isn't something to act on, so
+    // it stays out of the owner's activity log.
+    if (
+      owner &&
+      response.status !== 401 &&
+      response.status !== 403 &&
+      response.code !== "rate-limited"
+    ) {
       try {
         const params = (request.params ?? {}) as Record<string, unknown>;
         const bundleId = safeAuditId(params.bundleId);

@@ -2338,15 +2338,23 @@ function DashboardBody() {
         loadAccessRequests(),
       ]).catch(handlePollingFailure);
     }
+    // A hidden tab doesn't poll; it catches up the moment it's shown.
     const timer = setInterval(() => {
+      if (document.visibilityState === "hidden") return;
       void refresh().catch(handlePollingFailure);
     }, 5_000);
+    const onVisible = () => {
+      if (document.visibilityState === "visible")
+        void refresh().catch(handlePollingFailure);
+    };
+    document.addEventListener("visibilitychange", onVisible);
     const performanceTimer = setInterval(() => {
       void loadPerformance().catch(() => undefined);
     }, 30_000);
     return () => {
       clearInterval(timer);
       clearInterval(performanceTimer);
+      document.removeEventListener("visibilitychange", onVisible);
     };
   }, [
     identity,

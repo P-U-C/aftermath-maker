@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   createEncryptedAgent,
+  QuoteBelowMinimumError,
   type AccountPerformanceHistory,
   type PortfolioSnapshot,
   type RewardDashboard,
@@ -1485,6 +1486,172 @@ describe("runtime execution boundaries", () => {
     );
 
     await harness.runtime.stop();
+    harness.store.close();
+  });
+
+  const hedgedHarness = (makerInventoryUsd: number) => {
+    const harness = createHarness();
+    harness.tenant.setSetup(
+      setupSchema.parse({
+        ownerAddress: `0x${"1".repeat(64)}`,
+        accountId: "43",
+        accountCapId: "0x1243",
+      }),
+    );
+    harness.tenant.confirmAgentGrant({
+      accountId: "43",
+      digest: "H".repeat(32),
+      agentCapId: "0xhedge",
+    });
+    harness.tenant.setConfig(
+      makerConfigSchema.parse({
+        markets: [{ marketId: "0x5678", symbol: "SUI" }],
+        mode: "live",
+        makerAccountId: "42",
+        hedge: {
+          enabled: true,
+          accountId: "43",
+          thresholdUsd: 25,
+          maxOrderUsd: 100,
+          maxSlippageBps: 75,
+        },
+      }),
+    );
+    harness.setPortfolioResolver((inputs) => {
+      const maker = inputs.setup.accountId === "42";
+      const inventoryUsd = maker
+        ? makerInventoryUsd
+        : -makerInventoryUsd * Math.min(1, harness.hedgeExecutions());
+      return {
+        equityUsd: 100,
+        availableCollateralUsd: 80,
+        allocatedCollateralUsd: 20,
+        freeMarginUsd: 70,
+        withdrawableCollateralUsd: 75,
+        grossExposureUsd: Math.abs(inventoryUsd),
+        unrealizedPnlUsd: 0,
+        gasSui: 1,
+        positions: inputs.marketIds.map((marketId) => ({
+          marketId,
+          baseAssetAmount: inventoryUsd / 10,
+          pendingOrderCount: 0,
+          inventoryUsd,
+          unrealizedPnlUsd: 0,
+          collateralUsd: 20,
+          freeMarginUsd: 70,
+          makerOrderIds: [],
+          hasPosition: inventoryUsd !== 0,
+        })),
+      };
+    });
+    return harness;
+  };
+
+  it("hedges a Maker fill from before a pause once the bundle resumes", async () => {
+    const harness = hedgedHarness(30);
+    harness.tenant.trackMakerOrders({
+      accountId: "42",
+      marketId: "0x5678",
+      quoteDigest: "previous-run",
+      orderIds: ["filled-before-pause"],
+    });
+    // The order was posted an hour before this run started.
+    (
+      harness.store as unknown as {
+        db: { prepare: (sql: string) => { run: (...args: string[]) => void } };
+      }
+    ).db
+      .prepare(
+        "UPDATE tenant_maker_orders SET posted_at = ? WHERE order_id = ?",
+      )
+      .run(
+        new Date(Date.now() - 60 * 60_000).toISOString(),
+        "filled-before-pause",
+      );
+    harness.setPerformanceHistory({
+      orders: [
+        {
+          timestampMs: Date.now() - 59 * 60_000,
+          txDigest: "previous-run-fill",
+          marketId: "0x5678",
+          eventType: "FilledMakerOrder",
+          side: "bid",
+          price: 10,
+          size: 3,
+          orderId: "filled-before-pause",
+          realizedPnlUsd: 0,
+          feesUsd: 0,
+          maker: true,
+        },
+      ],
+      marginHistory: [],
+    });
+    harness.runtime.start();
+    await harness.runtime.cycle({ executeLive: true });
+
+    expect(harness.hedgeExecutions()).toBe(1);
+    expect(harness.runtime.snapshot.running).toBe(true);
+    await harness.runtime.stop();
+    harness.store.close();
+  });
+
+  it("skips a market whose position Maker can't match, without pausing the bundle", async () => {
+    const harness = hedgedHarness(30);
+    const onBundleError = vi.fn();
+    const runtime = new MakerRuntime(harness.tenant, harness.gateway as never, {
+      ...harness.runtimeOptions,
+      pauseOnError: true,
+      onBundleError,
+    });
+    runtime.start();
+    await runtime.cycle({ executeLive: true });
+    // Ten seconds on, still no Maker fill explains it.
+    (
+      runtime as unknown as { awaitingFillAttribution: Map<string, number> }
+    ).awaitingFillAttribution.set("42:0x5678", Date.now() - 11_000);
+    await runtime.cycle({ executeLive: true });
+
+    expect(onBundleError).not.toHaveBeenCalled();
+    expect(runtime.snapshot.running).toBe(true);
+    expect(harness.hedgeExecutions()).toBe(0);
+    expect(harness.executionSequence).not.toContain("quote");
+    const skipped = runtime.snapshot.markets.find(
+      (market) => market.id === "0x5678",
+    );
+    expect(skipped?.skip?.code).toBe("unmatched-position");
+    expect(skipped?.skip?.message).toContain(
+      "$30.00 of position Maker can't match to its own fills",
+    );
+    await runtime.stop();
+    harness.store.close();
+  });
+
+  it("skips a market whose quote is below the venue minimum, without pausing", async () => {
+    const harness = createHarness();
+    harness.gateway.executeQuote = async () => {
+      throw new QuoteBelowMinimumError(
+        "Its quote rounds to $0.0251, below the venue's $1.00 minimum order.",
+      );
+    };
+    const onBundleError = vi.fn();
+    const runtime = new MakerRuntime(harness.tenant, harness.gateway as never, {
+      ...harness.runtimeOptions,
+      pauseOnError: true,
+      onBundleError,
+    });
+    runtime.start();
+    await runtime.cycle({ executeLive: true });
+
+    expect(onBundleError).not.toHaveBeenCalled();
+    expect(runtime.snapshot.running).toBe(true);
+    const skipped = runtime.snapshot.markets.find(
+      (market) => market.id === runtime.snapshot.market.id,
+    );
+    expect(skipped?.skip).toMatchObject({ code: "below-minimum" });
+    expect(skipped?.skip?.message).toContain(
+      "Its quote rounds to $0.0251, below the venue's $1.00 minimum order. Raise the quote size",
+    );
+    await runtime.stop();
     harness.store.close();
   });
 
