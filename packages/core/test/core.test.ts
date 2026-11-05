@@ -192,6 +192,38 @@ describe("quote strategy", () => {
   });
 });
 
+describe("strategy leverage ceiling", () => {
+  it("caps each market at its own maximum instead of rejecting the strategy", () => {
+    const parsed = makerConfigSchema.parse({
+      maxLeverage: 10,
+      markets: [
+        { marketId: "0x1", symbol: "NEAR", marketMaxLeverage: 3 },
+        { marketId: "0x2", symbol: "DRAM", marketMaxLeverage: 20 },
+      ],
+    });
+    expect(
+      parsed.markets.map(
+        (market) => resolveMarketConfig(parsed, market).maxLeverage,
+      ),
+    ).toEqual([3, 10]);
+  });
+
+  it("still rejects an explicit market override above that market's maximum", () => {
+    expect(() =>
+      makerConfigSchema.parse({
+        markets: [
+          {
+            marketId: "0x1",
+            symbol: "NEAR",
+            marketMaxLeverage: 3,
+            overrides: { maxLeverage: 5 },
+          },
+        ],
+      }),
+    ).toThrow("NEAR allows at most 3x leverage");
+  });
+});
+
 describe("risk gates", () => {
   it("caps effective leverage and scales risk thresholds above 3x", () => {
     expect(

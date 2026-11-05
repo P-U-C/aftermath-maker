@@ -548,6 +548,32 @@ describe("runtime execution boundaries", () => {
     );
   });
 
+  it("quotes around a market another Live bundle holds, without an error", async () => {
+    const harness = createHarness();
+    const onBundleError = vi.fn();
+    const runtime = new MakerRuntime(harness.tenant, harness.gateway as never, {
+      ...harness.runtimeOptions,
+      pauseOnError: true,
+      onBundleError,
+      marketHeldBy: (marketId) => (marketId === "0x5678" ? "Core" : null),
+    });
+    runtime.start();
+    await runtime.cycle({ executeLive: true });
+
+    expect(onBundleError).not.toHaveBeenCalled();
+    expect(runtime.snapshot.running).toBe(true);
+    expect(harness.executionSequence).not.toContain("quote");
+    const held = runtime.snapshot.markets.find(
+      (market) => market.id === "0x5678",
+    );
+    expect(held?.skip).toMatchObject({ code: "market-held" });
+    expect(held?.skip?.message).toContain(
+      "Core quotes it live, and one Live bundle quotes a market at a time.",
+    );
+    await runtime.stop();
+    harness.store.close();
+  });
+
   it("keeps Paper reading when an account has no confirmed trading key", async () => {
     const harness = createHarness();
     harness.tenant.setConfig(
@@ -2916,13 +2942,84 @@ describe("runtime execution boundaries", () => {
 
     harness.runtime.start();
     await vi.advanceTimersByTimeAsync(0);
+    // The first quote is confirmed resting, then the market RPC hangs.
+    (
+      harness.runtime as unknown as {
+        snapshotValue: { restingQuoteMarketIds: string[] };
+      }
+    ).snapshotValue.restingQuoteMarketIds = ["0x5678"];
+    const readBook = harness.gateway.getOrderbook.bind(harness.gateway);
     harness.gateway.getOrderbook = async () =>
       new Promise<never>(() => undefined);
     await vi.advanceTimersByTimeAsync(13_000);
 
-    expect(harness.runtime.snapshot.running).toBe(false);
+    // The quotes are cancelled, but the bundle keeps running on its own.
+    expect(harness.runtime.snapshot.running).toBe(true);
     expect(harness.runtime.snapshot.watchdog.state).toBe("tripped");
     expect(harness.cancellations()).toBeGreaterThanOrEqual(1);
+    expect(
+      harness.tenant
+        .listEvents()
+        .some((event) => event.action === "watchdog-stop"),
+    ).toBe(false);
+
+    // When the market reads again, it quotes again without anyone resuming it.
+    const quotesBefore = harness.executions();
+    harness.gateway.getOrderbook = readBook;
+    await vi.advanceTimersByTimeAsync(12_000);
+    expect(harness.runtime.snapshot.watchdog.state).toBe("armed");
+    expect(harness.executions()).toBeGreaterThan(quotesBefore);
+    await harness.runtime.stop();
+    harness.store.close();
+  });
+
+  it("cancels only the market whose quote went unchecked, and keeps quoting", async () => {
+    vi.useFakeTimers();
+    const harness = createHarness();
+    harness.tenant.setConfig(
+      makerConfigSchema.parse({
+        ...harness.tenant.getConfig()!,
+        rotationMode: "portfolio",
+        refreshMs: 2_000,
+        maxQuoteAgeMs: 10_000,
+      }),
+    );
+    const runtime = harness.runtime as unknown as {
+      snapshotValue: {
+        restingQuoteMarketIds: string[];
+        markets: Array<{ id: string; updatedAt: string | null }>;
+        lastSuccessfulCycleAt: string | null;
+      };
+      checkQuoteAges: (config: unknown) => Promise<void>;
+    };
+    harness.runtime.start();
+    await vi.advanceTimersByTimeAsync(0);
+    // SUI's quote rests but hasn't been re-checked for 20s; BTC is fresh.
+    const now = Date.now();
+    runtime.snapshotValue.restingQuoteMarketIds = ["0x5678", "0x9999"];
+    runtime.snapshotValue.lastSuccessfulCycleAt = new Date(now).toISOString();
+    runtime.snapshotValue.markets = runtime.snapshotValue.markets.map(
+      (market) => ({
+        ...market,
+        updatedAt: new Date(
+          market.id === "0x5678" ? now - 20_000 : now,
+        ).toISOString(),
+      }),
+    );
+    const before = harness.cancellations();
+    await runtime.checkQuoteAges(harness.tenant.getConfig());
+
+    expect(harness.cancellations()).toBe(before + 1);
+    expect(harness.cancelledMarketSets().at(-1)).toEqual(["0x5678"]);
+    expect(runtime.snapshotValue.restingQuoteMarketIds).toEqual(["0x9999"]);
+    expect(harness.runtime.snapshot.running).toBe(true);
+    expect(harness.runtime.snapshot.watchdog.state).toBe("armed");
+    expect(
+      harness.tenant
+        .listEvents()
+        .find((event) => event.action === "stale-quote-cancel")?.detail,
+    ).toMatchObject({ symbols: ["SUI"], maxQuoteAgeMs: 10_000 });
+    await harness.runtime.stop();
     harness.store.close();
   });
 

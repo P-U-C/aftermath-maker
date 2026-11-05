@@ -83,6 +83,57 @@ describe("desk audit events", () => {
     expect(event()).toBe("Maker cycle failed.");
   });
 
+  it("names the bundle once and keeps a market symbol's case", () => {
+    const skip = (message: string) =>
+      deskEvent(
+        {
+          id: 11,
+          occurredAt: "2026-11-05T21:47:00Z",
+          category: "paper",
+          action: "market-skip",
+          outcome: "paused",
+          detail: { symbol: "SHFL", message },
+        },
+        { bundleName: "Delta Nuetral" },
+      ).sentence;
+    expect(
+      skip(
+        "Delta Nuetral: SHFL skipped. Core quotes it live, and one Live bundle quotes a market at a time.",
+      ),
+    ).toBe(
+      "Delta Nuetral: SHFL skipped. Core quotes it live, and one Live bundle quotes a market at a time.",
+    );
+    expect(skip("Market checks resumed.")).toBe(
+      "Delta Nuetral: market checks resumed.",
+    );
+  });
+
+  it("explains stale quote cancellation without pausing the bundle", () => {
+    const event = (
+      action: string,
+      outcome: string,
+      detail: Record<string, unknown>,
+    ) =>
+      deskEvent({
+        id: 12,
+        occurredAt: "2026-11-05T21:47:00Z",
+        category: "risk",
+        action,
+        outcome,
+        detail,
+      }).sentence;
+    expect(
+      event("stale-quote-cancel", "cancelled", {
+        marketId: "0x1",
+        symbols: ["SHFL"],
+        maxQuoteAgeMs: 168_000,
+      }),
+    ).toBe(
+      "Cancelled the SHFL quote: not re-checked within 168s. It's replaced on the next visit.",
+    );
+    expect(event("stale-quote-watchdog", "tripped", {})).not.toMatch(/paused/i);
+  });
+
   it("narrates estimated Paper fills with symbols and a safe market fallback", () => {
     const base = {
       id: 7,
