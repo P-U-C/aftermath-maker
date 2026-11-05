@@ -1901,7 +1901,7 @@ describe("persistent control store", () => {
         name: "Live paper",
         config: { ...config(4), mode: "live" },
       }),
-    ).toThrow("Only Core can use Live mode");
+    ).toThrow("New bundles start in Paper");
     databaseStore.close();
   });
 });

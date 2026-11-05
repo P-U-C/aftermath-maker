@@ -636,21 +636,6 @@ const cases: Case[] = [
     }),
   },
   {
-    code: "live-core-only",
-    status: 409,
-    copy: "Only Core can use Live mode. Switch this bundle to Paper.",
-    prepare: (h) => {
-      const { tenant } = seed(h);
-      tenant.confirmWalletLimits();
-      const other = tenant.createBundle({ name: "Pilot", config });
-      return {
-        method: "POST",
-        url: `/api/bundles/${other.id}/config`,
-        payload: { config: { ...config, mode: "live" } },
-      };
-    },
-  },
-  {
     code: "account-role-taken",
     status: 409,
     copy: "This account is already assigned to a bundle. Select an unused account in Bundles.",
@@ -1130,6 +1115,19 @@ export const notReachableOverHttp: ReadonlyArray<{
           makerAccountId: "1796",
           hedge: { ...config.hedge, enabled: true, accountId: "1796" },
         },
+      });
+    },
+  },
+  {
+    code: "bundle-starts-in-paper",
+    reason:
+      "The create route's schema accepts only Paper, so the store's guard backs it up for direct callers.",
+    exercise: (h) => {
+      const { tenant } = seed(h);
+      tenant.confirmWalletLimits();
+      return tenant.createBundle({
+        name: "Pilot",
+        config: { ...config, mode: "live" },
       });
     },
   },
