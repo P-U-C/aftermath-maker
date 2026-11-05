@@ -329,11 +329,16 @@ function sameBigInts(actual: bigint[], expected: bigint[]): boolean {
   return a.length === b.length && a.every((value, index) => value === b[index]);
 }
 
+/** One per market at most; Maker supports up to 64 markets. */
+const MAX_COLLATERAL_DEALLOCATIONS = 64;
+
 function decimalRatio(value: number): {
   numerator: bigint;
   denominator: bigint;
 } {
-  if (!Number.isFinite(value) || value < 1 || value > 3) {
+  // Matches the strategy schema. Per-market venue limits are enforced before
+  // a quote is built; this guards the signed ratio's representation.
+  if (!Number.isFinite(value) || value < 1 || value > 100) {
     fail("max leverage is outside the configured range");
   }
   const serialized = JSON.stringify(value);
@@ -442,17 +447,30 @@ function assertCommonStructure(
   const capId = address(intent.accountCapId);
   const accountId = address(intent.accountObjectId);
   const trustedMutable = new Set([accountId, ...markets.keys()]);
+  // The venue's builder returns spare collateral from other markets the
+  // account has used, one call per market. Each call is checked below: its
+  // own clearing house used by nothing else, with this account and
+  // capability. Collateral stays in the account; no coin leaves the graph.
   const deallocations = calls.filter(
     (call) => call.function === "deallocate_free_collateral",
   );
-  if (deallocations.length > 1) {
-    fail("quote transaction has more than one collateral deallocation");
+  if (deallocations.length > MAX_COLLATERAL_DEALLOCATIONS) {
+    fail("quote transaction has too many collateral deallocations");
   }
   const deallocationInputIndexes = new Set(
     deallocations.map((call) =>
       inputIndex(call.arguments[0], "deallocate clearing house"),
     ),
   );
+  const deallocatedClearingHouses = [...deallocationInputIndexes].map((index) =>
+    objectId(snapshot.inputs[index]!),
+  );
+  if (
+    deallocationInputIndexes.size !== deallocations.length ||
+    new Set(deallocatedClearingHouses).size !== deallocatedClearingHouses.length
+  ) {
+    fail("two collateral deallocations use the same clearing house");
+  }
   const seenObjects = new Set<string>();
 
   snapshot.inputs.forEach((input, index) => {
