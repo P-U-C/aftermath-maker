@@ -95,7 +95,7 @@ Capital does not scale automatically. A practical validation ladder for moving f
 
 Start with an approximately equal collateral split between the dedicated Maker and hedge accounts. For each phase, begin around 0.25%-0.50% of total strategy equity per quoted side, a 10% gross-exposure cap, a 7.5% auto-rebalance line, a 1% run-drawdown stop, and 1x leverage. The dashboard shows the saved dollar limits as percentages of current Maker-account equity so stale limits are visible after deposits, withdrawals, or losses.
 
-Do not advance merely because the date arrived. Require at least 25 independently attributed fills, a clean stop-and-flatten drill, zero unresolved order or position mismatches, complete hedge coverage, reconciled gas and fee records, and drawdown inside the saved limit at the current phase. Restart a phase after any unexplained position, watchdog trip, RPC ambiguity, or manual recovery. Maker does not yet include USD-converted gas, complete funding attribution, markouts, or inventory carry in net PnL, so promotion also requires external account reconciliation.
+Do not advance merely because the date arrived. Require at least 25 independently attributed fills, a clean stop-and-flatten drill, zero unresolved order or position mismatches, complete hedge coverage, reconciled gas and fee records, and drawdown inside the saved limit at the current phase. Restart a phase after any unexplained position, watchdog trip, RPC ambiguity, or manual recovery. A strategy's trading result now includes gas priced in USD when it was spent, and Live funding from the maker account's history; it names anything it can't measure (Paper funding, hedge-account funding, Paper hedge and close gas, unpriced or pruned history) instead of counting it as zero. It still excludes markouts and inventory carry, so promotion also requires external account reconciliation.
 
 ## Strategy objectives
 
@@ -112,6 +112,8 @@ Account reward totals come from Aftermath's current-epoch endpoint. Market score
 ## Performance boundary
 
 "Net known result" means attributed realized trading PnL minus reported order fees and the deterministic builder-fee estimate. Hedge fills are reconciled from confirmed hedge transaction digests and reported separately. It is not a complete profitability figure: it still excludes gas converted to USD, position-level funding attribution, markouts, explicit slippage decomposition, and inventory carry.
+
+A strategy's **trading result** (Strategy view) is the no-rewards figure: price PnL closed and open, minus venue fees (a maker rebate is credited once), builder fees and gas, plus funding where it is measured. Paper and Live are never added together, and rewards are never added to either: estimated rewards can't pay for losses, and paid rewards are reported per wallet, not per strategy. A Paper quote fills only when the observed book trades through its price; a touch is not a fill.
 
 Attribution starts when this release records posted order IDs. Older account activity and other clients' orders remain account-wide and are not claimed as Maker performance.
 

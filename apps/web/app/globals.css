@@ -13339,7 +13339,13 @@ mysten-dapp-kit-connect-modal,
 .strategy-result {
   margin: 4px 0 20px;
   display: grid;
+  gap: 12px;
+}
+.strategy-result > dl {
+  margin: 0;
+  display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: start;
   gap: 12px 32px;
 }
 .strategy-result-stat {
@@ -13366,13 +13372,69 @@ mysten-dapp-kit-connect-modal,
 .strategy-result-stat strong.is-loss {
   color: var(--ember-text);
 }
-.strategy-result-stat small {
+.strategy-result-stat small,
+.strategy-result-rewards {
   color: var(--ink-2);
   font-size: 12.5px;
   line-height: 1.4;
 }
+.strategy-result-rewards {
+  margin: 0;
+}
+/* How the trading result adds up: a quiet ledger, signed effects that sum to
+   the total, with anything not measured named instead of shown as zero. */
+.strategy-result-breakdown {
+  margin-top: 4px;
+  font-size: 12.5px;
+}
+.strategy-result-breakdown summary {
+  width: fit-content;
+  color: var(--ink-2);
+  font-weight: 560;
+  cursor: pointer;
+}
+.strategy-result-breakdown dl {
+  max-width: 340px;
+  margin: 8px 0 0;
+  display: grid;
+  gap: 4px;
+}
+.strategy-result-breakdown dl > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+}
+.strategy-result-breakdown dt {
+  color: var(--ink-2);
+  font-size: 12.5px;
+}
+.strategy-result-breakdown dd {
+  margin: 0;
+  display: block;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+.strategy-result-breakdown dd.is-missing {
+  color: var(--ink-3);
+}
+.strategy-result-breakdown .is-total {
+  margin-top: 2px;
+  padding-top: 6px;
+  border-top: 1px solid var(--hair);
+}
+.strategy-result-breakdown .is-total :is(dt, dd) {
+  color: var(--ink);
+  font-weight: 620;
+}
+.strategy-result-breakdown ul {
+  max-width: 340px;
+  margin: 8px 0 0;
+  padding-left: 16px;
+  color: var(--ink-2);
+  line-height: 1.4;
+}
 @media (max-width: 700px) {
-  .strategy-result {
+  .strategy-result > dl {
     grid-template-columns: minmax(0, 1fr);
   }
 }

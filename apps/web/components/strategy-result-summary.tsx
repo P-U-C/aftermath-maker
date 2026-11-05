@@ -5,9 +5,18 @@ import { formatMoney, formatSignedMoney, moneyTone } from "../lib/format";
 export type StrategyResultSide = {
   fills: number;
   volumeUsd: number;
-  netUsd: number;
+  realizedPricePnlUsd: number;
+  unrealizedPricePnlUsd: number;
+  /** Signed cost: negative is a rebate. */
+  executionFeesUsd: number;
+  builderFeesUsd: number;
+  /** Signed income, or null when it isn't measured. */
+  fundingUsd: number | null;
+  gasUsd: number | null;
+  tradingNetUsd: number;
   returnPct: number | null;
   since: string | null;
+  gaps: string[];
 };
 
 export type StrategyResults = {
@@ -24,6 +33,61 @@ const sinceDate = (iso: string | null) =>
         day: "numeric",
       })
     : null;
+
+/** Gas and fees are often fractions of a cent; show enough digits to see them. */
+const part = (value: number) =>
+  formatSignedMoney(
+    value,
+    Math.abs(value) > 0 && Math.abs(value) < 1
+      ? { maximumFractionDigits: 4 }
+      : {},
+  );
+
+function Breakdown({ side }: { side: StrategyResultSide }) {
+  const rows: Array<[string, number | null, string?]> = [
+    [
+      "Price moves",
+      side.realizedPricePnlUsd + side.unrealizedPricePnlUsd,
+      `${formatSignedMoney(side.realizedPricePnlUsd)} closed, ${formatSignedMoney(side.unrealizedPricePnlUsd)} on open positions`,
+    ],
+    ["Venue fees", -side.executionFeesUsd],
+    ["Builder fees", -side.builderFeesUsd],
+    ["Funding", side.fundingUsd],
+    ["Gas", side.gasUsd === null ? null : -side.gasUsd],
+  ];
+  const missing = side.gaps.length;
+  return (
+    <details className="strategy-result-breakdown">
+      <summary>
+        How it adds up
+        {missing
+          ? ` (${missing} ${missing === 1 ? "part" : "parts"} not counted)`
+          : ""}
+      </summary>
+      <dl>
+        {rows.map(([label, value, title]) => (
+          <div key={label} title={title}>
+            <dt>{label}</dt>
+            <dd className={value === null ? "is-missing" : undefined}>
+              {value === null ? "Not counted" : part(value)}
+            </dd>
+          </div>
+        ))}
+        <div className="is-total">
+          <dt>Trading result</dt>
+          <dd>{formatSignedMoney(side.tradingNetUsd)}</dd>
+        </div>
+      </dl>
+      {missing > 0 && (
+        <ul>
+          {side.gaps.map((gap) => (
+            <li key={gap}>{gap}</li>
+          ))}
+        </ul>
+      )}
+    </details>
+  );
+}
 
 function ResultStat({
   label,
@@ -55,8 +119,8 @@ function ResultStat({
     <div className="strategy-result-stat">
       <dt>{label}</dt>
       <dd>
-        <strong className={`is-${moneyTone(side.netUsd)}`}>
-          {formatSignedMoney(side.netUsd)}
+        <strong className={`is-${moneyTone(side.tradingNetUsd)}`}>
+          {formatSignedMoney(side.tradingNetUsd)}
         </strong>
         <small>
           {percent
@@ -66,13 +130,15 @@ function ResultStat({
           {side.fills === 1 ? "fill" : "fills"}
           {side.since ? ` since ${sinceDate(side.since)}` : ""}.
         </small>
+        <Breakdown side={side} />
       </dd>
     </div>
   );
 }
 
-/** A strategy's overall result across every bundle that has run it. Paper and
- * Live sit side by side and are never added together. */
+/** A strategy's overall trading result across every bundle that has run it.
+ * Paper and Live sit side by side and are never added together, and rewards
+ * are never added to either. */
 export function StrategyResultSummary({
   results,
 }: {
@@ -80,23 +146,29 @@ export function StrategyResultSummary({
 }) {
   if (!results) return null;
   return (
-    <dl className="strategy-result" aria-label="Overall result">
-      <ResultStat
-        label="Paper result, estimated"
-        side={results.paper}
-        requiredCollateralUsd={results.requiredCollateralUsd}
-        empty="No Paper fills yet."
-      />
-      <ResultStat
-        label="Live result"
-        side={results.live}
-        requiredCollateralUsd={results.requiredCollateralUsd}
-        empty={
-          results.liveReadError
-            ? "Live fills couldn't be read just now."
-            : "No Live trades yet."
-        }
-      />
-    </dl>
+    <div className="strategy-result">
+      <dl aria-label="Overall result">
+        <ResultStat
+          label="Paper result, estimated"
+          side={results.paper}
+          requiredCollateralUsd={results.requiredCollateralUsd}
+          empty="No Paper fills yet."
+        />
+        <ResultStat
+          label="Live result"
+          side={results.live}
+          requiredCollateralUsd={results.requiredCollateralUsd}
+          empty={
+            results.liveReadError
+              ? "Live fills couldn't be read just now."
+              : "No Live trades yet."
+          }
+        />
+      </dl>
+      <p className="strategy-result-rewards">
+        Rewards aren&apos;t included. Paper doesn&apos;t earn them, and Live
+        rewards are paid per wallet with no validated estimate for this epoch.
+      </p>
+    </div>
   );
 }

@@ -437,6 +437,9 @@ export type StrategyAttachment = {
 export type StrategyPaperFillRow = {
   bundleId: string;
   role: "maker" | "hedge";
+  /** quote: a resting maker quote filled; hedge: the immediate taker hedge;
+   * close: a reduce-only taker close (Volume rotation or exposure unwind). */
+  kind: "quote" | "hedge" | "close";
   marketId: string;
   side: "bid" | "ask";
   price: number;
@@ -715,6 +718,19 @@ export class Store {
     if (!executionColumns.some((column) => column.name === "gas_used_mist")) {
       this.db.exec(
         "ALTER TABLE tenant_executions ADD COLUMN gas_used_mist INTEGER",
+      );
+    }
+    // SUI in USD when the gas was spent. Older rows have none and stay
+    // unpriced rather than being priced at today's rate.
+    if (!executionColumns.some((column) => column.name === "sui_usd")) {
+      this.db.exec("ALTER TABLE tenant_executions ADD COLUMN sui_usd REAL");
+    }
+    const hedgeExecutionColumns = this.db
+      .prepare("PRAGMA table_info(tenant_hedge_executions)")
+      .all() as Array<{ name: string }>;
+    if (!hedgeExecutionColumns.some((column) => column.name === "sui_usd")) {
+      this.db.exec(
+        "ALTER TABLE tenant_hedge_executions ADD COLUMN sui_usd REAL",
       );
     }
 
@@ -2809,7 +2825,8 @@ export class TenantStore {
     return (
       this.db
         .prepare(
-          `SELECT bundle_id, role, market_id, side, price, size_usd, occurred_at
+          `SELECT bundle_id, order_key, role, market_id, side, price, size_usd,
+                  occurred_at
            FROM tenant_paper_fills
            WHERE owner_address = ? AND bundle_id = ?
              AND occurred_at >= ?
@@ -2824,6 +2841,7 @@ export class TenantStore {
           attachment.detachedAt,
         ) as Array<{
         bundle_id: string;
+        order_key: string;
         role: "maker" | "hedge";
         market_id: string;
         side: "bid" | "ask";
@@ -2834,12 +2852,85 @@ export class TenantStore {
     ).map((row) => ({
       bundleId: row.bundle_id,
       role: row.role,
+      kind: /^(?:close|unwind):/.test(row.order_key)
+        ? ("close" as const)
+        : row.role === "hedge"
+          ? ("hedge" as const)
+          : ("quote" as const),
       marketId: row.market_id,
       side: row.side,
       price: row.price,
       sizeUsd: row.size_usd,
       occurredAt: row.occurred_at,
     }));
+  }
+
+  /**
+   * Gas a bundle spent while it ran this strategy (one attachment). Paper
+   * rows are simulated quote transactions: what Live would have paid.
+   */
+  listStrategyGas(
+    attachment: StrategyAttachment,
+    mode: "paper" | "live",
+  ): Array<{ gasUsedMist: number | null; suiUsd: number | null }> {
+    const interval = [
+      this.ownerAddress,
+      attachment.bundleId,
+      attachment.attachedAt,
+      attachment.detachedAt,
+      attachment.detachedAt,
+    ];
+    const rows = this.db
+      .prepare(
+        `SELECT gas_used_mist, sui_usd FROM tenant_executions
+         WHERE owner_address = ? AND bundle_id = ?
+           AND occurred_at >= ? AND (? IS NULL OR occurred_at < ?)
+           AND mode = ?`,
+      )
+      .all(...interval, mode) as Array<{
+      gas_used_mist: number | null;
+      sui_usd: number | null;
+    }>;
+    if (mode === "live")
+      rows.push(
+        ...(this.db
+          .prepare(
+            `SELECT gas_used_mist, sui_usd FROM tenant_hedge_executions
+             WHERE owner_address = ? AND bundle_id = ?
+               AND occurred_at >= ? AND (? IS NULL OR occurred_at < ?)`,
+          )
+          .all(...interval) as Array<{
+          gas_used_mist: number | null;
+          sui_usd: number | null;
+        }>),
+      );
+    return rows.map((row) => ({
+      gasUsedMist: row.gas_used_mist,
+      suiUsd: row.sui_usd,
+    }));
+  }
+
+  /**
+   * When a history table has reached its retention limit, the time of its
+   * oldest kept row: anything earlier was pruned. Null while nothing has been.
+   */
+  historyKeptSince(
+    table:
+      "tenant_paper_fills" | "tenant_executions" | "tenant_hedge_executions",
+  ): string | null {
+    const limit =
+      table === "tenant_paper_fills"
+        ? RETENTION_LIMITS.paperFills
+        : table === "tenant_executions"
+          ? RETENTION_LIMITS.executions
+          : RETENTION_LIMITS.hedgeExecutions;
+    const row = this.db
+      .prepare(
+        `SELECT COUNT(*) AS kept, MIN(occurred_at) AS oldest
+         FROM ${table} WHERE owner_address = ?`,
+      )
+      .get(this.ownerAddress) as { kept: number; oldest: string | null };
+    return row.kept >= limit ? row.oldest : null;
   }
 
   /**
@@ -4823,13 +4914,14 @@ export class TenantStore {
     outcome: string;
     error?: string;
     gasUsedMist?: number;
+    suiUsd?: number | null;
   }): void {
     this.db
       .prepare(
         `INSERT INTO tenant_executions
           (owner_address, bundle_id, occurred_at, mode, market_id, digest, endpoint,
-           bid_price, ask_price, size_usd, outcome, error, gas_used_mist)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           bid_price, ask_price, size_usd, outcome, error, gas_used_mist, sui_usd)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         this.ownerAddress,
@@ -4845,6 +4937,7 @@ export class TenantStore {
         inputs.outcome,
         inputs.error ?? null,
         inputs.gasUsedMist ?? null,
+        inputs.suiUsd ?? null,
       );
     this.pruneTable("tenant_executions", RETENTION_LIMITS.executions);
   }
@@ -4918,8 +5011,12 @@ export class TenantStore {
 
   /**
    * A Paper fill is an estimate only: it occurs when a later observed book
-   * crosses a simulated resting order. No chain state or real order history is
-   * ever read back as a Paper fill.
+   * trades through a simulated resting order. A book that only touches the
+   * quote's price is not a fill: real orders already rest at that price ahead
+   * of ours, and nothing shows they traded. Only a strictly better opposite
+   * price shows the level was consumed. Snapshots miss brief moves between
+   * polls, so this under-counts fills rather than over-counting them.
+   * No chain state or real order history is ever read back as a Paper fill.
    */
   matchPaperOrders(inputs: {
     trialId: string;
@@ -4951,8 +5048,8 @@ export class TenantStore {
     }>;
     const fills = rows.filter(
       (order) =>
-        (order.side === "bid" && inputs.bestAsk <= order.price) ||
-        (order.side === "ask" && inputs.bestBid >= order.price),
+        (order.side === "bid" && inputs.bestAsk < order.price) ||
+        (order.side === "ask" && inputs.bestBid > order.price),
     );
     if (!fills.length) return [];
     const now = new Date().toISOString();
@@ -5351,6 +5448,7 @@ export class TenantStore {
     side: "bid" | "ask";
     requestedNotionalUsd: number;
     gasUsedMist: number;
+    suiUsd?: number | null;
     fillKeys: string[];
   }): void {
     const occurredAt = new Date().toISOString();
@@ -5360,8 +5458,8 @@ export class TenantStore {
           `INSERT OR IGNORE INTO tenant_hedge_executions
             (owner_address, bundle_id, occurred_at, maker_account_id,
              hedge_account_id, market_id, digest, side, requested_notional_usd,
-             gas_used_mist)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+             gas_used_mist, sui_usd)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
         .run(
           this.ownerAddress,
@@ -5374,6 +5472,7 @@ export class TenantStore {
           inputs.side,
           inputs.requestedNotionalUsd,
           inputs.gasUsedMist,
+          inputs.suiUsd ?? null,
         );
       const mark = this.db.prepare(
         `INSERT OR IGNORE INTO tenant_hedged_fills

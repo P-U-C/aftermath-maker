@@ -99,6 +99,48 @@ describe("persistent control store", () => {
     databaseStore.close();
   });
 
+  it("fills a Paper quote only when the book trades through it, never on a touch", () => {
+    const directory = join(
+      process.env.TMPDIR ?? "/tmp",
+      `aftermath-maker-${randomBytes(8).toString("hex")}`,
+    );
+    mkdirSync(directory, { recursive: true });
+    const databaseStore = new Store(join(directory, "maker.db"));
+    const tenant = databaseStore.forTenant(`0x${"9".repeat(64)}`);
+    tenant.recordPaperQuote({
+      trialId: "runtime",
+      marketId: "0x9001",
+      symbol: "PAPER",
+      bidPrice: 10,
+      askPrice: 11,
+      sizeUsd: 1,
+    });
+
+    // The best ask reaches the bid and the best bid reaches the ask: a touch.
+    expect(
+      tenant.matchPaperOrders({
+        trialId: "runtime",
+        marketId: "0x9001",
+        bestBid: 11,
+        bestAsk: 10,
+      }),
+    ).toEqual([]);
+    expect(tenant.getPaperState("runtime")).toMatchObject({
+      openOrders: 2,
+      fills: 0,
+    });
+
+    // One tick through the bid consumes that level; the ask still rests.
+    const fills = tenant.matchPaperOrders({
+      trialId: "runtime",
+      marketId: "0x9001",
+      bestBid: 9.98,
+      bestAsk: 9.99,
+    });
+    expect(fills.map((fill) => fill.side)).toEqual(["bid"]);
+    databaseStore.close();
+  });
+
   it("keeps estimated Paper orders, fills, and hedges outside live order state", () => {
     const directory = join(
       process.env.TMPDIR ?? "/tmp",

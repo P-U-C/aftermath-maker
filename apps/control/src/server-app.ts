@@ -17,6 +17,7 @@ import {
   scoreRewardShare,
   requiredMakerCollateralUsd,
   setupSchema,
+  gasCostUsd,
   summarizeStrategyResult,
   USDC_COIN_TYPE,
   type BuilderFeePolicy,
@@ -652,16 +653,42 @@ export async function buildServer({
         .map((market) => [market.id, market.indexPrice]),
     );
     const builderFeeRate = builderCode()?.integratorFee ?? 0;
+    const day = (iso: string) =>
+      new Date(iso).toLocaleDateString("en-US", {
+        month: "short",
+        day: "numeric",
+        timeZone: "UTC",
+      });
     const paperFills: StrategyResultFill[] = [];
+    const paperGas: Array<{
+      gasUsedMist: number | null;
+      suiUsd: number | null;
+    }> = [];
+    const paperGaps = ["Funding isn't simulated in Paper yet."];
     const liveFills: StrategyResultFill[] = [];
+    const liveGas: Array<{
+      gasUsedMist: number | null;
+      suiUsd: number | null;
+    }> = [];
+    const liveGaps: string[] = [];
+    let liveFundingUsd: number | null = 0;
     let liveUnrealizedUsd = 0;
     let liveReadError: string | null = null;
+    const prunedSince = (
+      table: Parameters<typeof scoped.historyKeptSince>[0],
+      attachedAt: string,
+    ) => {
+      const kept = scoped.historyKeptSince(table);
+      return kept && kept > attachedAt ? kept : null;
+    };
     for (const attachment of attachments) {
       for (const fill of scoped.listStrategyPaperFills(attachment)) {
         const market = marketById.get(fill.marketId);
+        // Quotes rest as maker; hedges and closes take. Maker quotes and
+        // hedges carry the builder code; reduce-only closes don't.
         const feeRate =
-          fill.role === "maker"
-            ? (market?.makerFee ?? 0) + builderFeeRate
+          fill.kind === "quote"
+            ? (market?.makerFee ?? 0)
             : (market?.takerFee ?? 0);
         paperFills.push({
           occurredAt: fill.occurredAt,
@@ -670,19 +697,47 @@ export async function buildServer({
           side: fill.side,
           price: fill.price,
           sizeUsd: fill.sizeUsd,
-          feesUsd: fill.sizeUsd * feeRate,
+          executionFeeUsd: fill.sizeUsd * feeRate,
+          builderFeeUsd:
+            fill.kind === "close" ? 0 : fill.sizeUsd * builderFeeRate,
         });
+        if (fill.kind !== "quote")
+          paperGaps.push("Gas for Paper hedges and closes isn't estimated.");
       }
+      paperGas.push(...scoped.listStrategyGas(attachment, "paper"));
+      const paperPruned =
+        prunedSince("tenant_paper_fills", attachment.attachedAt) ??
+        prunedSince("tenant_executions", attachment.attachedAt);
+      if (paperPruned)
+        paperGaps.push(
+          `History before ${day(paperPruned)} was pruned, so earlier Paper activity isn't counted.`,
+        );
+
+      liveGas.push(...scoped.listStrategyGas(attachment, "live"));
+      const livePruned =
+        prunedSince("tenant_executions", attachment.attachedAt) ??
+        prunedSince("tenant_hedge_executions", attachment.attachedAt);
+      if (livePruned)
+        liveGaps.push(
+          `Gas before ${day(livePruned)} was pruned from history and isn't counted.`,
+        );
       const bundle = scoped.getStoredBundle(attachment.bundleId);
       if (!bundle || bundle.archivedAt) continue;
       try {
         const bundleRuntime = runtimeManager.getBundle(owner, bundle.id);
-        const performance = await bundleRuntime.performance({ period: "ALL" });
+        const performance = await bundleRuntime.performance({
+          period: "EPOCH",
+          since: attachment.attachedAt,
+        });
+        if (!performance.historyComplete)
+          liveGaps.push("Live fill history is incomplete.");
+        let attachmentLiveFills = 0;
         for (const fill of performance.fills) {
           if (fill.estimated) continue;
           if (fill.occurredAt < attachment.attachedAt) continue;
           if (attachment.detachedAt && fill.occurredAt >= attachment.detachedAt)
             continue;
+          attachmentLiveFills += 1;
           liveFills.push({
             occurredAt: fill.occurredAt,
             marketId: fill.marketId,
@@ -690,10 +745,25 @@ export async function buildServer({
             side: fill.side,
             price: fill.price,
             sizeUsd: fill.notionalUsd,
-            feesUsd: fill.protocolFeesUsd + fill.estimatedBuilderFeeUsd,
+            executionFeeUsd: fill.protocolFeesUsd,
+            builderFeeUsd: fill.estimatedBuilderFeeUsd,
             realizedPnlUsd: fill.realizedPnlUsd,
           });
         }
+        if (!attachmentLiveFills) continue;
+        // Funding comes from the maker account's history since the strategy
+        // was attached, so it can only be separated for a current attachment.
+        if (attachment.detachedAt) {
+          liveFundingUsd = null;
+          liveGaps.push("Funding from earlier runs isn't separated yet.");
+        } else if (performance.account === null) {
+          liveFundingUsd = null;
+          liveGaps.push("Account funding history couldn't be read.");
+        } else if (liveFundingUsd !== null) {
+          liveFundingUsd += performance.account.fundingPnlUsd;
+        }
+        if (performance.hedge.enabled)
+          liveGaps.push("Hedge account funding isn't read yet.");
         if (!attachment.detachedAt && bundle.mode === "live")
           liveUnrealizedUsd +=
             bundleRuntime.snapshot.portfolio.unrealizedPnlUsd ?? 0;
@@ -701,6 +771,18 @@ export async function buildServer({
         liveReadError = error instanceof Error ? error.message : String(error);
       }
     }
+    if (liveReadError) liveGaps.push("Live fills couldn't be read just now.");
+    const gasResult = (
+      rows: Array<{ gasUsedMist: number | null; suiUsd: number | null }>,
+      gaps: string[],
+    ) => {
+      const gas = gasCostUsd(rows);
+      if (gas.unpriced)
+        gaps.push(
+          `${gas.unpriced} ${gas.unpriced === 1 ? "transaction has" : "transactions have"} no SUI price, so ${gas.unpriced === 1 ? "its" : "their"} gas isn't counted.`,
+        );
+      return gas.usd;
+    };
     // Only the fields the collateral rule reads; accounts and mode don't matter.
     const requiredCollateralUsd = requiredMakerCollateralUsd({
       ...strategy.config,
@@ -713,6 +795,9 @@ export async function buildServer({
           fills: paperFills,
           marks,
           requiredCollateralUsd,
+          fundingUsd: null,
+          gasUsd: gasResult(paperGas, paperGaps),
+          gaps: paperGaps,
         }),
         live: summarizeStrategyResult({
           fills: liveFills,
@@ -720,6 +805,9 @@ export async function buildServer({
           requiredCollateralUsd,
           reportedRealized: true,
           unrealizedPnlUsd: liveUnrealizedUsd,
+          fundingUsd: liveFundingUsd,
+          gasUsd: gasResult(liveGas, liveGaps),
+          gaps: liveGaps,
         }),
         liveReadError,
       },
