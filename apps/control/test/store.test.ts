@@ -909,8 +909,16 @@ describe("persistent control store", () => {
     });
     expect(tenant.listStrategyAttachments(shared.id)).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ bundleId: core.id, strategyVersion: 2, detachedAt: null }),
-        expect.objectContaining({ bundleId: paper.id, strategyVersion: 2, detachedAt: null }),
+        expect.objectContaining({
+          bundleId: core.id,
+          strategyVersion: 2,
+          detachedAt: null,
+        }),
+        expect.objectContaining({
+          bundleId: paper.id,
+          strategyVersion: 2,
+          detachedAt: null,
+        }),
       ]),
     );
     expect(() => tenant.archiveStrategy(shared.id)).toThrow(
@@ -925,8 +933,10 @@ describe("persistent control store", () => {
     expect(
       tenant
         .listStrategyAttachments(shared.id)
-        .find((attachment) => attachment.bundleId === core.id && attachment.strategyVersion === 2)
-        ?.detachedAt,
+        .find(
+          (attachment) =>
+            attachment.bundleId === core.id && attachment.strategyVersion === 2,
+        )?.detachedAt,
     ).not.toBeNull();
     expect(
       databaseStore.forTenant(`0x${"e".repeat(64)}`).getStrategy(shared.id),

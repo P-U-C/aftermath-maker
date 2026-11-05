@@ -12,7 +12,13 @@ describe("strategy market leverage metadata", () => {
         { marketId: "0x2", symbol: "DRAM", marketMaxLeverage: 20 },
       ],
     });
-    const { markets, mode: _mode, makerAccountId: _makerAccountId, hedge, ...config } = maker;
+    const {
+      markets,
+      mode: _mode,
+      makerAccountId: _makerAccountId,
+      hedge,
+      ...config
+    } = maker;
     const { accountId: _accountId, ...sharedHedge } = hedge;
     const result = await h.app.inject({
       method: "POST",

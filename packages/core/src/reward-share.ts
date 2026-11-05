@@ -90,17 +90,24 @@ export function incrementalReward(
   return (pool * added * Math.max(0, total - own)) / (total * (total + added));
 }
 
-export function externalHourlyRate(window24: RewardShareWindow, window48: RewardShareWindow): number {
+export function externalHourlyRate(
+  window24: RewardShareWindow,
+  window48: RewardShareWindow,
+): number {
   nonnegative(window24.externalVolumeUsd, "last24h external volume");
   nonnegative(window48.externalVolumeUsd, "previous48h external volume");
   nonnegative(window24.observedHours, "last24h observed hours");
   nonnegative(window48.observedHours, "previous48h observed hours");
   if (window24.observedHours && window48.observedHours) {
-    return (0.7 * window24.externalVolumeUsd) / window24.observedHours +
-      (0.3 * window48.externalVolumeUsd) / window48.observedHours;
+    return (
+      (0.7 * window24.externalVolumeUsd) / window24.observedHours +
+      (0.3 * window48.externalVolumeUsd) / window48.observedHours
+    );
   }
-  if (window24.observedHours) return window24.externalVolumeUsd / window24.observedHours;
-  if (window48.observedHours) return window48.externalVolumeUsd / window48.observedHours;
+  if (window24.observedHours)
+    return window24.externalVolumeUsd / window24.observedHours;
+  if (window48.observedHours)
+    return window48.externalVolumeUsd / window48.observedHours;
   return 0;
 }
 
@@ -120,9 +127,12 @@ export function estimateExecutionCostUsd(
       (cost.extraCostBps ?? 0);
   nonnegative(bps, "cost bps");
   const fundingUsd = cost.fundingUsd ?? 0;
-  return volumeUsd * bps / 10_000 +
+  return (
+    (volumeUsd * bps) / 10_000 +
     (volumeUsd / fillSizeUsd) * (cost.gasUsdPerFill ?? 0) +
-    fundingUsd + (cost.fixedCostUsd ?? 0);
+    fundingUsd +
+    (cost.fixedCostUsd ?? 0)
+  );
 }
 
 export type BookLevel = { price: number; size: number };
@@ -153,17 +163,27 @@ export function bookWalkSlippageBps(inputs: {
       ? ((average - inputs.mid) / inputs.mid) * 10_000
       : ((inputs.mid - average) / inputs.mid) * 10_000;
   };
-  if (!Number.isFinite(inputs.mid) || inputs.mid <= 0 || inputs.fillSizeUsd <= 0)
+  if (
+    !Number.isFinite(inputs.mid) ||
+    inputs.mid <= 0 ||
+    inputs.fillSizeUsd <= 0
+  )
     return null;
   const buy = walk(inputs.asks, true);
   const sell = walk(inputs.bids, false);
   return buy === null || sell === null ? null : (buy + sell) / 2;
 }
 
-function configuration(snapshot: RewardShareSnapshot, settings: RewardShareSettings) {
+function configuration(
+  snapshot: RewardShareSnapshot,
+  settings: RewardShareSettings,
+) {
   if (!snapshot.markets.length) throw new Error("No reward markets supplied");
   nonnegative(snapshot.poolUsd, "poolUsd");
-  if (!Number.isInteger(snapshot.rewardMarketCount) || snapshot.rewardMarketCount <= 0)
+  if (
+    !Number.isInteger(snapshot.rewardMarketCount) ||
+    snapshot.rewardMarketCount <= 0
+  )
     throw new Error("rewardMarketCount must be positive");
   const asOf = Date.parse(snapshot.asOf);
   const end = Date.parse(snapshot.epochEnd);
@@ -185,18 +205,24 @@ function configuration(snapshot: RewardShareSnapshot, settings: RewardShareSetti
   return { ...value, remainingHours: (end - asOf) / 3_600_000 };
 }
 
-function preparedMarket(market: RewardShareMarket, remainingHours: number, forecast: RewardShareForecast) {
+function preparedMarket(
+  market: RewardShareMarket,
+  remainingHours: number,
+  forecast: RewardShareForecast,
+) {
   nonnegative(market.totalVolumeUsd, `${market.symbol} totalVolumeUsd`);
   nonnegative(market.ownTakerVolumeUsd, `${market.symbol} ownTakerVolumeUsd`);
   if (market.ownTakerVolumeUsd > market.totalVolumeUsd + 0.01)
     throw new Error(`${market.symbol}: own volume exceeds total volume`);
-  const externalHourlyRateUsd = forecast === "recent"
-    ? externalHourlyRate(market.last24h, market.previous48h)
-    : 0;
+  const externalHourlyRateUsd =
+    forecast === "recent"
+      ? externalHourlyRate(market.last24h, market.previous48h)
+      : 0;
   return {
     ...market,
     externalHourlyRateUsd,
-    projectedTotalUsd: market.totalVolumeUsd + externalHourlyRateUsd * remainingHours,
+    projectedTotalUsd:
+      market.totalVolumeUsd + externalHourlyRateUsd * remainingHours,
   };
 }
 
@@ -205,27 +231,51 @@ export function scoreRewardShare(
   settings: RewardShareSettings = {},
 ): RewardShareScore[] {
   const config = configuration(snapshot, settings);
-  const prepared = snapshot.markets.map((market) => preparedMarket(market, config.remainingHours, config.forecast));
+  const prepared = snapshot.markets.map((market) =>
+    preparedMarket(market, config.remainingHours, config.forecast),
+  );
   const poolPerMarket = snapshot.poolUsd / snapshot.rewardMarketCount;
-  const crossOwn = prepared.reduce((sum, market) => sum + market.ownTakerVolumeUsd, 0);
-  const crossTotal = prepared.reduce((sum, market) => sum + market.projectedTotalUsd, 0);
+  const crossOwn = prepared.reduce(
+    (sum, market) => sum + market.ownTakerVolumeUsd,
+    0,
+  );
+  const crossTotal = prepared.reduce(
+    (sum, market) => sum + market.projectedTotalUsd,
+    0,
+  );
   return prepared
     .filter((market) => market.projectedTotalUsd > 0)
     .map((market) => {
-      const baseReward = config.scenario === "per-market"
-        ? incrementalReward(market.ownTakerVolumeUsd, market.projectedTotalUsd, config.incrementUsd, poolPerMarket)
-        : incrementalReward(crossOwn, crossTotal, config.incrementUsd, snapshot.poolUsd);
-      const estimatedExecutionCostUsd = estimateExecutionCostUsd(config.incrementUsd, {
-        ...market.cost,
-        ...(config.fillSizeUsd === undefined
-          ? {}
-          : { fillSizeUsd: config.fillSizeUsd }),
-        extraCostBps: (market.cost?.extraCostBps ?? 0) + config.extraCostBps,
-        fixedCostUsd: (market.cost?.fixedCostUsd ?? 0) + config.fixedCostUsd,
-        historicalFourBps: config.historicalFourBps,
-      });
-      const modeledAdditionalRewardUsd = baseReward * config.volumeRewardFraction;
-      const modeledBenefitUsd = modeledAdditionalRewardUsd - estimatedExecutionCostUsd;
+      const baseReward =
+        config.scenario === "per-market"
+          ? incrementalReward(
+              market.ownTakerVolumeUsd,
+              market.projectedTotalUsd,
+              config.incrementUsd,
+              poolPerMarket,
+            )
+          : incrementalReward(
+              crossOwn,
+              crossTotal,
+              config.incrementUsd,
+              snapshot.poolUsd,
+            );
+      const estimatedExecutionCostUsd = estimateExecutionCostUsd(
+        config.incrementUsd,
+        {
+          ...market.cost,
+          ...(config.fillSizeUsd === undefined
+            ? {}
+            : { fillSizeUsd: config.fillSizeUsd }),
+          extraCostBps: (market.cost?.extraCostBps ?? 0) + config.extraCostBps,
+          fixedCostUsd: (market.cost?.fixedCostUsd ?? 0) + config.fixedCostUsd,
+          historicalFourBps: config.historicalFourBps,
+        },
+      );
+      const modeledAdditionalRewardUsd =
+        baseReward * config.volumeRewardFraction;
+      const modeledBenefitUsd =
+        modeledAdditionalRewardUsd - estimatedExecutionCostUsd;
       return {
         marketId: market.marketId,
         symbol: market.symbol,
@@ -236,17 +286,24 @@ export function scoreRewardShare(
         modeledBenefitUsd,
         benefitPerDollar: modeledBenefitUsd / config.incrementUsd,
         externalHourlyRateUsd: market.externalHourlyRateUsd,
-        forecastExternalVolumeUsd: market.externalHourlyRateUsd * config.remainingHours,
+        forecastExternalVolumeUsd:
+          market.externalHourlyRateUsd * config.remainingHours,
         flags: market.flags ?? [],
       };
     })
-    .sort((left, right) => right.benefitPerDollar - left.benefitPerDollar || left.symbol.localeCompare(right.symbol));
+    .sort(
+      (left, right) =>
+        right.benefitPerDollar - left.benefitPerDollar ||
+        left.symbol.localeCompare(right.symbol),
+    );
 }
 
 export function allocateRewardShareVolume(
   snapshot: RewardShareSnapshot,
   budgetUsd: number,
-  settings: RewardShareSettings & { maxAdditionalVolumeByMarket?: Record<string, number> } = {},
+  settings: RewardShareSettings & {
+    maxAdditionalVolumeByMarket?: Record<string, number>;
+  } = {},
 ) {
   nonnegative(budgetUsd, "budgetUsd");
   const increment = settings.incrementUsd ?? 32_000;
@@ -258,20 +315,43 @@ export function allocateRewardShareVolume(
   let unallocatedUsd = budgetUsd;
   const steps: RewardShareScore[] = [];
   while (unallocatedUsd > EPSILON) {
-    const rankings = scoreRewardShare(working, { ...settings, incrementUsd: Math.min(increment, unallocatedUsd) })
-      .filter((row) => (settings.maxAdditionalVolumeByMarket?.[row.marketId] ?? Infinity) - (allocations.get(row.marketId) ?? 0) > EPSILON);
+    const rankings = scoreRewardShare(working, {
+      ...settings,
+      incrementUsd: Math.min(increment, unallocatedUsd),
+    }).filter(
+      (row) =>
+        (settings.maxAdditionalVolumeByMarket?.[row.marketId] ?? Infinity) -
+          (allocations.get(row.marketId) ?? 0) >
+        EPSILON,
+    );
     const best = rankings[0];
     if (!best || best.modeledBenefitUsd <= 0) break;
-    const capacity = (settings.maxAdditionalVolumeByMarket?.[best.marketId] ?? Infinity) - (allocations.get(best.marketId) ?? 0);
+    const capacity =
+      (settings.maxAdditionalVolumeByMarket?.[best.marketId] ?? Infinity) -
+      (allocations.get(best.marketId) ?? 0);
     const assigned = Math.min(best.proposedAdditionalVolumeUsd, capacity);
     if (assigned <= EPSILON) break;
-    allocations.set(best.marketId, (allocations.get(best.marketId) ?? 0) + assigned);
-    const market = working.markets.find((candidate) => candidate.marketId === best.marketId)!;
+    allocations.set(
+      best.marketId,
+      (allocations.get(best.marketId) ?? 0) + assigned,
+    );
+    const market = working.markets.find(
+      (candidate) => candidate.marketId === best.marketId,
+    )!;
     market.ownTakerVolumeUsd += assigned;
     market.totalVolumeUsd += assigned;
     unallocatedUsd -= assigned;
     steps.push({ ...best, proposedAdditionalVolumeUsd: assigned });
   }
-  const allocation = [...allocations].map(([marketId, volumeUsd]) => ({ marketId, volumeUsd }));
-  return { requestedVolumeBudgetUsd: budgetUsd, allocatedVolumeUsd: budgetUsd - unallocatedUsd, unallocatedVolumeUsd: unallocatedUsd, allocations: allocation, steps };
+  const allocation = [...allocations].map(([marketId, volumeUsd]) => ({
+    marketId,
+    volumeUsd,
+  }));
+  return {
+    requestedVolumeBudgetUsd: budgetUsd,
+    allocatedVolumeUsd: budgetUsd - unallocatedUsd,
+    unallocatedVolumeUsd: unallocatedUsd,
+    allocations: allocation,
+    steps,
+  };
 }

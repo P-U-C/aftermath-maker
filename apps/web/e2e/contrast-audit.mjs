@@ -39,7 +39,6 @@ const views = [
   "markets",
   "bundles",
   "performance",
-  "accounts",
   "venues",
 ];
 const viewports = [

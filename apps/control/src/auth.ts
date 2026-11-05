@@ -355,6 +355,9 @@ export class WalletAuth {
 
   isOperator(address: string): boolean {
     const operator = this.store.getOperatorAddress();
-    return operator !== null && normalizeAddress(operator) === normalizeAddress(address);
+    return (
+      operator !== null &&
+      normalizeAddress(operator) === normalizeAddress(address)
+    );
   }
 }

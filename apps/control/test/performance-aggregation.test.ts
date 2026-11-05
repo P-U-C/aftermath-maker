@@ -2,7 +2,11 @@ import { describe, expect, it } from "vitest";
 import { aggregatePerformance } from "../src/server-app.js";
 import type { PerformanceSnapshot } from "../src/runtime.js";
 
-const report = (marketId: string, symbol: string, notionalUsd: number): PerformanceSnapshot => ({
+const report = (
+  marketId: string,
+  symbol: string,
+  notionalUsd: number,
+): PerformanceSnapshot => ({
   asOf: "2026-11-04T00:00:00.000Z",
   period: "1D",
   periodStartedAt: "2026-11-04T00:00:00.000Z",
@@ -30,30 +34,34 @@ const report = (marketId: string, symbol: string, notionalUsd: number): Performa
   },
   combinedNetAfterKnownCostsUsd: 0.87,
   paper: { estimated: true, makerFills: 1, hedgeFills: 1, notionalUsd },
-  volumeByMarket: [{
-    marketId,
-    symbol,
-    makerNotionalUsd: notionalUsd,
-    makerFills: 1,
-    takerNotionalUsd: notionalUsd / 2,
-    takerFills: 1,
-    realizedPnlUsd: 1,
-    feesUsd: 0.1,
-    marketVolumeUsd: null,
-    marketVolumeError: null,
-  }],
+  volumeByMarket: [
+    {
+      marketId,
+      symbol,
+      makerNotionalUsd: notionalUsd,
+      makerFills: 1,
+      takerNotionalUsd: notionalUsd / 2,
+      takerFills: 1,
+      realizedPnlUsd: 1,
+      feesUsd: 0.1,
+      marketVolumeUsd: null,
+      marketVolumeError: null,
+    },
+  ],
   marketVolumeLabel: null,
-  fills: [{
-    source: "paper",
-    role: "maker",
-    marketId,
-    symbol,
-    side: "bid",
-    notionalUsd,
-    price: 10,
-    occurredAt: "2026-11-04T00:00:00.000Z",
-    estimated: true,
-  }],
+  fills: [
+    {
+      source: "paper",
+      role: "maker",
+      marketId,
+      symbol,
+      side: "bid",
+      notionalUsd,
+      price: 10,
+      occurredAt: "2026-11-04T00:00:00.000Z",
+      estimated: true,
+    },
+  ],
   note: "Paper estimate",
 });
 
