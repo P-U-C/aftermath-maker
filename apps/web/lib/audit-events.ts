@@ -203,7 +203,18 @@ const copies: Record<string, AuditCopy> = {
   },
   "runtime:cycle:error": {
     severity: "error",
-    sentence: () => "Maker cycle failed.",
+    sentence: (detail) => {
+      const reason =
+        typeof detail.error === "string"
+          ? detail.error
+              .split("\n")[0]!
+              .replace(/https?:\/\/\S+/g, "the venue endpoint")
+              .trim()
+              .slice(0, 220)
+              .replace(/[.\s]+$/, "")
+          : "";
+      return reason ? `Maker cycle failed: ${reason}.` : "Maker cycle failed.";
+    },
   },
   "runtime:cycle:timeout": {
     severity: "warning",

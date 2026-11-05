@@ -1273,6 +1273,7 @@ button:disabled {
 
 .settings-panel label {
   display: grid;
+  align-content: start;
   gap: 7px;
 }
 
@@ -1527,6 +1528,16 @@ input:focus {
     Arial,
     sans-serif;
   text-align: center;
+}
+
+.input-unit.suffix.has-action {
+  grid-template-columns: 1fr 42px auto;
+}
+
+.input-unit .input-action {
+  min-height: 32px;
+  margin-right: 6px;
+  padding: 0 12px;
 }
 
 input[type="range"] {
@@ -2139,7 +2150,6 @@ input[type="range"] {
 }
 
 .reward-leader span,
-.reward-focus > span,
 .reward-count span {
   color: var(--ink-2);
   font-size: 12px;
@@ -2159,42 +2169,6 @@ input[type="range"] {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-
-.reward-focus {
-  display: grid;
-  gap: 5px;
-}
-
-.reward-focus > div {
-  height: 34px;
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  padding: 3px;
-  background: var(--fill-2);
-  border: 1px solid var(--line);
-}
-
-.reward-focus button {
-  min-width: 76px;
-  padding: 0 9px;
-  color: var(--ink-2);
-  background: transparent;
-  border: 0;
-  font-size: 12px;
-  white-space: nowrap;
-}
-
-.reward-focus button.selected {
-  color: var(--on-primary);
-  background: var(--tide-text);
-  font-weight: 700;
-}
-
-.reward-focus button:focus-visible {
-  outline: 2px solid var(--tide);
-  outline-offset: 1px;
-}
-
 .reward-count {
   display: grid;
   gap: 5px;
@@ -5687,16 +5661,14 @@ mysten-dapp-kit-connect-modal,
 .bundle-desk-lane {
   min-width: 0;
   overflow: hidden;
+  display: flex;
+  flex-direction: column;
   background: var(--surface);
   border: 1px solid var(--line);
   border-radius: 16px;
-  display: grid;
-  grid-template-rows: 72px 52px minmax(130px, auto) 160px;
-  align-items: stretch;
 }
 
 .bundle-desk-lane > header {
-  min-height: 72px;
   padding: 16px 18px 0;
   display: flex;
   align-items: flex-start;
@@ -5710,16 +5682,10 @@ mysten-dapp-kit-connect-modal,
   font-size: 18px;
 }
 
-.bundle-desk-lane dt {
-  color: var(--ink-2);
-  font-size: 12px;
-  font-weight: 620;
-}
-
 .bundle-desk-lane dl {
   margin: 0;
   display: flex;
-  gap: 12px;
+  gap: 14px;
 }
 
 .bundle-desk-lane dt,
@@ -5727,125 +5693,63 @@ mysten-dapp-kit-connect-modal,
   margin: 0;
 }
 
+.bundle-desk-lane dt {
+  color: var(--ink-2);
+  font-size: 12px;
+  font-weight: 620;
+}
+
 .bundle-desk-lane dd {
   margin-top: 3px;
   color: var(--ink);
   font-size: 13px;
   font-weight: 650;
+  white-space: nowrap;
 }
 
+.bundle-desk-lane dd small {
+  color: var(--ink-3);
+  font-weight: 500;
+}
+
+/* One line, always the same height; the full text opens in the run status. */
 .bundle-lane-notice-slot {
-  min-height: 52px;
-  padding: 10px 18px 0;
+  height: 34px;
+  margin: 12px 18px 0;
 }
 
 .bundle-lane-notice {
-  margin: 0;
-  padding: 9px 10px;
+  width: 100%;
+  height: 34px;
+  padding: 0 10px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--ink);
+  background: var(--amber-soft);
   border: 1px solid var(--amber);
   border-radius: 8px;
-  background: var(--amber-soft);
-  color: var(--ink);
+  font: inherit;
   font-size: 12px;
-  line-height: 1.45;
-  overflow-wrap: anywhere;
+  text-align: left;
+  cursor: pointer;
 }
 
-.bundle-lane-notice,
-.bundle-error {
-  display: -webkit-box;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 1;
+.bundle-lane-notice span {
+  min-width: 0;
+  flex: 1;
   overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.bundle-lane-notice b {
+  color: var(--ink-2);
+  font-weight: 620;
 }
 
 .bundle-lane-motion {
-  margin: 0;
-  min-height: 0;
-  height: 160px;
-}
-
-.bundle-desk-lane.is-flat {
-  grid-template-rows: 72px 52px 64px 160px;
-}
-
-.bundle-lane-motion .market-motion-stage,
-.bundle-lane-motion .market-motion-stage > svg {
-  width: 100%;
-  height: 100%;
-}
-
-.bundle-lane-notice details {
-  display: inline;
-  margin-left: 6px;
-}
-.bundle-lane-notice summary {
-  display: inline;
-  cursor: pointer;
-  text-decoration: underline;
-}
-.bundle-lane-notice details:not([open]) > :not(summary) {
-  display: none;
-}
-.bundle-lane-inventory {
-  padding: 7px 18px 12px;
-  min-width: 0;
-}
-.bundle-lane-inventory > header {
-  min-height: 0;
-  padding: 0;
-  display: flex;
-  justify-content: space-between;
-  color: var(--ink-2);
-  font-size: 12px;
-}
-.bundle-lane-inventory > header strong {
-  color: var(--ink);
-  font-variant-numeric: tabular-nums;
-}
-.bundle-lane-meter,
-.bundle-lane-inventory li > i {
-  display: block;
-  height: 5px;
-  overflow: hidden;
-  background: var(--fill-2);
-  border-radius: 999px;
-}
-.bundle-lane-meter {
-  margin: 7px 0;
-}
-.bundle-lane-meter i,
-.bundle-lane-inventory li > i > b {
-  display: block;
-  height: 100%;
-  background: var(--tide-text);
-  border-radius: inherit;
-}
-.bundle-lane-inventory ul {
-  margin: 0;
-  padding: 0;
-  list-style: none;
-  display: grid;
-  gap: 5px;
-}
-.bundle-lane-inventory li {
-  display: grid;
-  grid-template-columns: minmax(42px, 0.6fr) minmax(36px, 1fr) auto;
-  gap: 7px;
-  align-items: center;
-  font-size: 12px;
-}
-.bundle-lane-inventory li strong {
-  font-variant-numeric: tabular-nums;
-}
-.bundle-lane-inventory small {
-  color: var(--ink-2);
-  font-size: 12px;
-}
-.bundle-lane-more {
-  margin-top: 5px;
-  color: var(--ink-2);
-  font-size: 12px;
+  margin-top: auto;
 }
 
 @media (max-width: 700px) {
@@ -6781,7 +6685,6 @@ mysten-dapp-kit-connect-modal,
 }
 
 .reward-leader span,
-.reward-focus > span,
 .reward-count span,
 .reward-leader small {
   color: var(--ink-2);
@@ -8520,8 +8423,8 @@ mysten-dapp-kit-connect-modal,
 }
 .numeric-field-error {
   display: block;
-  flex-basis: 100%;
   color: var(--ember-text);
+  font-size: 12px;
   line-height: 1.35;
 }
 .market-policy-set {
@@ -8605,6 +8508,14 @@ mysten-dapp-kit-connect-modal,
 .workspace-strategy .input-unit input {
   min-height: 44px;
   border-radius: 0;
+}
+
+/* Same error treatment as the kit's Input: the box turns ember and the
+   message sits below it. */
+.input-unit.is-invalid,
+.workspace-strategy .input-unit.is-invalid {
+  border-color: var(--ember);
+  box-shadow: inset 0 0 0 1px var(--ember);
 }
 
 .workspace-strategy label > span,
@@ -8837,27 +8748,15 @@ mysten-dapp-kit-connect-modal,
 
 .reward-leader span,
 .reward-leader small,
-.reward-focus > span,
 .reward-count > span {
   color: var(--ink-2);
 }
 
-.reward-focus > div,
 .reward-count input {
   color: var(--ink);
   background: var(--surface);
   border-color: var(--hair);
 }
-
-.reward-focus button {
-  color: var(--ink-2);
-}
-
-.reward-focus button.selected {
-  color: var(--on-primary);
-  background: var(--primary);
-}
-
 .button.reward-stage {
   color: var(--on-primary);
   background: var(--primary);
@@ -9488,8 +9387,6 @@ mysten-dapp-kit-connect-modal,
   .objective-evidence strong,
   .reward-leader span,
   .reward-leader small,
-  .reward-focus > span,
-  .reward-focus button,
   .reward-count > span,
   .reward-method summary,
   .reward-method p {
@@ -9517,7 +9414,6 @@ mysten-dapp-kit-connect-modal,
   .reward-command > a,
   .performance-market-expand,
   .reward-claim-link,
-  .reward-focus button,
   .reward-table th button,
   .button.reward-stage,
   .reward-method summary {
@@ -11132,6 +11028,11 @@ mysten-dapp-kit-connect-modal,
 .workspace-strategy .settings-panel > .strategy-title {
   order: 3;
 }
+/* The overall result reads as part of the title, above the steps. */
+.workspace-strategy .settings-panel > .strategy-result {
+  order: 3;
+  margin: -6px 0 6px;
+}
 .workspace-strategy .settings-panel > .strategy-builder {
   order: 4;
 }
@@ -11202,7 +11103,6 @@ mysten-dapp-kit-connect-modal,
   gap: 10px;
   width: auto;
 }
-.strategy-suggestion-fields .reward-focus,
 .strategy-suggestion-fields .reward-count {
   flex: 0 1 168px;
   min-width: 0;
@@ -11211,16 +11111,27 @@ mysten-dapp-kit-connect-modal,
   align-content: stretch;
   gap: 5px;
 }
-.strategy-suggestion-fields .reward-focus > div {
-  height: 44px;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-}
-.strategy-suggestion-fields .reward-focus button {
-  white-space: normal;
-}
 .strategy-suggestion-fields .reward-count input {
   width: 100%;
   height: 44px;
+}
+.strategy-suggestion-fields .suggestion-focus {
+  flex: 0 0 auto;
+  min-width: 0;
+  display: grid;
+  grid-template-rows: auto 44px;
+  gap: 5px;
+}
+.suggestion-focus > span {
+  color: var(--ink-2);
+  font-size: 12px;
+}
+.suggestion-focus .ui-tabs {
+  height: 44px;
+  box-sizing: border-box;
+}
+.suggestion-focus .ui-tab {
+  min-height: 0;
 }
 .strategy-suggestion-actions {
   display: flex;
@@ -11282,7 +11193,6 @@ mysten-dapp-kit-connect-modal,
   .strategy-name-edit {
     gap: 4px;
   }
-  .strategy-suggestion-fields .reward-focus,
   .strategy-suggestion-fields .reward-count {
     flex: 1 1 140px;
   }
@@ -11317,20 +11227,21 @@ mysten-dapp-kit-connect-modal,
   .strategy-suggestion-actions .button {
     width: 100%;
   }
-  .strategy-suggestion-fields .reward-focus > div {
-    min-width: 0;
-    height: 132px;
-    grid-template-columns: minmax(0, 1fr);
-    grid-template-rows: repeat(3, minmax(0, 1fr));
+  .strategy-suggestion-fields .suggestion-focus {
+    flex-basis: 100%;
   }
-  .strategy-suggestion-fields .reward-focus button {
-    min-width: 0;
-    padding-inline: 0;
-    white-space: nowrap;
-    font-size: 11px;
+  .suggestion-focus .ui-tabs {
+    display: flex;
+    width: 100%;
   }
-  .strategy-suggestion-fields .reward-count input {
-    height: 88px;
+  .suggestion-focus .ui-tab {
+    flex: 1 1 0;
+    min-width: 0;
+    padding: 0 4px;
+    font-size: 12.5px;
+    line-height: 1.15;
+    white-space: normal;
+    text-align: center;
   }
   .workspace-strategy .pair-options.strategy-market-table,
   .workspace-strategy .market-select-item {
@@ -11357,7 +11268,6 @@ mysten-dapp-kit-connect-modal,
     font-size: 12px;
     overflow-wrap: normal;
   }
-  .strategy-suggestion-fields .reward-focus,
   .strategy-suggestion-fields .reward-count {
     flex-basis: 100%;
   }
@@ -12665,12 +12575,6 @@ mysten-dapp-kit-connect-modal,
 .bundle-desk-lanes > div {
   align-items: stretch;
 }
-.bundle-desk-lane {
-  height: 100%;
-}
-.bundle-desk-lane .bundle-lane-motion {
-  min-height: 160px;
-}
 @media (min-width: 701px) {
   .desk-hero-actions {
     display: none;
@@ -13427,5 +13331,60 @@ mysten-dapp-kit-connect-modal,
   .maker-view-tabs a {
     min-height: 46px;
     height: 46px;
+  }
+}
+
+/* Round 15: a strategy's overall result. Stats rule: label 13 ink-2, value
+   20/640, no boxes. Paper and Live sit side by side and are never summed. */
+.strategy-result {
+  margin: 4px 0 20px;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px 32px;
+}
+.strategy-result-stat {
+  min-width: 0;
+}
+.strategy-result-stat dt {
+  color: var(--ink-2);
+  font-size: 13px;
+}
+.strategy-result-stat dd {
+  margin: 4px 0 0;
+  display: grid;
+  gap: 3px;
+}
+.strategy-result-stat strong {
+  color: var(--ink);
+  font-size: 20px;
+  font-weight: 640;
+  font-variant-numeric: tabular-nums;
+}
+.strategy-result-stat strong.is-gain {
+  color: var(--tide-text);
+}
+.strategy-result-stat strong.is-loss {
+  color: var(--ember-text);
+}
+.strategy-result-stat small {
+  color: var(--ink-2);
+  font-size: 12.5px;
+  line-height: 1.4;
+}
+@media (max-width: 700px) {
+  .strategy-result {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 700px) {
+  /* Phone: the title row on top, the three facts in one even row below. */
+  .bundle-desk-lane > header {
+    flex-direction: column;
+    gap: 10px;
+  }
+  .bundle-desk-lane dl {
+    width: 100%;
+    justify-content: space-between;
   }
 }

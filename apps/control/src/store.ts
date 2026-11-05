@@ -434,9 +434,14 @@ export type StrategyAttachment = {
   detachedAt: string | null;
 };
 
-export type StrategyResults = {
-  paper: { fills: number; notionalUsd: number };
-  live: { executions: number; notionalUsd: number };
+export type StrategyPaperFillRow = {
+  bundleId: string;
+  role: "maker" | "hedge";
+  marketId: string;
+  side: "bid" | "ask";
+  price: number;
+  sizeUsd: number;
+  occurredAt: string;
 };
 
 type BundleRow = {
@@ -2736,8 +2741,7 @@ export class TenantStore {
          ORDER BY id DESC LIMIT 1`,
       )
       .get(this.ownerAddress, bundleId) as
-      | { strategy_id: string; strategy_version: number }
-      | undefined;
+      { strategy_id: string; strategy_version: number } | undefined;
     if (
       active?.strategy_id === strategyId &&
       active.strategy_version === strategyVersion
@@ -2798,44 +2802,44 @@ export class TenantStore {
     }));
   }
 
-  strategyResults(strategyId: string): StrategyResults {
-    const attachments = this.listStrategyAttachments(strategyId);
-    const result: StrategyResults = {
-      paper: { fills: 0, notionalUsd: 0 },
-      live: { executions: 0, notionalUsd: 0 },
-    };
-    for (const attachment of attachments) {
-      const bounds = [
-        this.ownerAddress,
-        attachment.bundleId,
-        attachment.attachedAt,
-        attachment.detachedAt,
-        attachment.detachedAt,
-      ];
-      const paper = this.db
+  /** Paper fills a bundle made while it ran this strategy (one attachment). */
+  listStrategyPaperFills(
+    attachment: StrategyAttachment,
+  ): StrategyPaperFillRow[] {
+    return (
+      this.db
         .prepare(
-          `SELECT COUNT(*) AS fills, COALESCE(SUM(size_usd), 0) AS notional_usd
+          `SELECT bundle_id, role, market_id, side, price, size_usd, occurred_at
            FROM tenant_paper_fills
            WHERE owner_address = ? AND bundle_id = ?
              AND occurred_at >= ?
-             AND (? IS NULL OR occurred_at < ?)`,
+             AND (? IS NULL OR occurred_at < ?)
+           ORDER BY occurred_at ASC, id ASC`,
         )
-        .get(...bounds) as { fills: number; notional_usd: number };
-      const live = this.db
-        .prepare(
-          `SELECT COUNT(*) AS executions, COALESCE(SUM(size_usd), 0) AS notional_usd
-           FROM tenant_executions
-           WHERE owner_address = ? AND bundle_id = ?
-             AND occurred_at >= ?
-             AND (? IS NULL OR occurred_at < ?)`,
-        )
-        .get(...bounds) as { executions: number; notional_usd: number };
-      result.paper.fills += paper.fills;
-      result.paper.notionalUsd += paper.notional_usd;
-      result.live.executions += live.executions;
-      result.live.notionalUsd += live.notional_usd;
-    }
-    return result;
+        .all(
+          this.ownerAddress,
+          attachment.bundleId,
+          attachment.attachedAt,
+          attachment.detachedAt,
+          attachment.detachedAt,
+        ) as Array<{
+        bundle_id: string;
+        role: "maker" | "hedge";
+        market_id: string;
+        side: "bid" | "ask";
+        price: number;
+        size_usd: number;
+        occurred_at: string;
+      }>
+    ).map((row) => ({
+      bundleId: row.bundle_id,
+      role: row.role,
+      marketId: row.market_id,
+      side: row.side,
+      price: row.price,
+      sizeUsd: row.size_usd,
+      occurredAt: row.occurred_at,
+    }));
   }
 
   /**
@@ -3237,7 +3241,12 @@ export class TenantStore {
         );
       this.replaceBundleMarkets(bundleId, config);
       this.replaceBundleAccountRoles(bundleId, config);
-      this.attachStrategy(bundleId, strategy.strategyId, strategy.version, updatedAt);
+      this.attachStrategy(
+        bundleId,
+        strategy.strategyId,
+        strategy.version,
+        updatedAt,
+      );
     });
     write();
   }
@@ -5049,8 +5058,7 @@ export class TenantStore {
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       );
       for (const position of positions) {
-        const side: "bid" | "ask" =
-          position.inventoryUsd > 0 ? "ask" : "bid";
+        const side: "bid" | "ask" = position.inventoryUsd > 0 ? "ask" : "bid";
         const price = side === "ask" ? inputs.bestBid : inputs.bestAsk;
         const fill: PaperFill = {
           orderKey: `${inputs.reason ?? "close"}:${position.role}:${inputs.marketId}:${now}`,

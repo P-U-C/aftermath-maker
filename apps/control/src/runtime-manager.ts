@@ -22,8 +22,20 @@ type GatewayFactory = (options: GatewayOptions) => Promise<AftermathGateway>;
 
 const ENDPOINT_REPROBE_MS = 5 * 60_000;
 
-const publicBundleError =
-  "Bundle paused after a cycle error. Review its accounts and limits, then resume it manually.";
+/** The owner sees why their bundle stopped. Raw errors are trimmed to one line
+ * and stripped of URLs so endpoint details never reach the page. */
+export function bundleCycleErrorMessage(
+  error: string | null | undefined,
+): string {
+  const reason = (error ?? "")
+    .split("\n")[0]!
+    .replace(/https?:\/\/\S+/g, "the venue endpoint")
+    .trim()
+    .slice(0, 220);
+  return reason
+    ? `Bundle paused after a cycle error: ${reason.replace(/[.\s]+$/, "")}. Fix the cause, then resume it.`
+    : "Bundle paused after a cycle error. Review its accounts and limits, then resume it.";
+}
 
 export class RuntimeManager {
   private gateway: AftermathGateway | null = null;
@@ -102,10 +114,14 @@ export class RuntimeManager {
       {
         ...this.runtimeOptions,
         pauseOnError: true,
-        onBundleError: () => {
+        onBundleError: (error) => {
           this.store
             .forTenant(owner)
-            .setBundleStatus(bundle.id, "error", publicBundleError);
+            .setBundleStatus(
+              bundle.id,
+              "error",
+              bundleCycleErrorMessage(error),
+            );
         },
         admitBundleProposal: (proposal) =>
           this.admitBundleProposal(owner, bundle.id, proposal),

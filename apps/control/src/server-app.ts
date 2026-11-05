@@ -15,9 +15,13 @@ import {
   makerConfigSchema,
   makerMarketOverridesSchema,
   scoreRewardShare,
+  requiredMakerCollateralUsd,
   setupSchema,
+  summarizeStrategyResult,
   USDC_COIN_TYPE,
   type BuilderFeePolicy,
+  type MakerConfig,
+  type StrategyResultFill,
 } from "@puc/core";
 export { AUDIT_EVENT_KINDS, PROBLEM_OUTCOMES } from "./audit-event-kinds.js";
 import type { OnchainAllowlist } from "./allowlist.js";
@@ -64,19 +68,27 @@ export function aggregatePerformance(
   if (!first) return null;
   const sum = (select: (report: PerformanceSnapshot) => number) =>
     reports.reduce((total, report) => total + select(report.performance), 0);
-  const volume = new Map<string, PerformanceSnapshot["volumeByMarket"][number]>();
+  const volume = new Map<
+    string,
+    PerformanceSnapshot["volumeByMarket"][number]
+  >();
   for (const { performance } of reports) {
     for (const row of performance.volumeByMarket) {
       const current = volume.get(row.marketId);
-      volume.set(row.marketId, current ? {
-        ...current,
-        makerNotionalUsd: current.makerNotionalUsd + row.makerNotionalUsd,
-        makerFills: current.makerFills + row.makerFills,
-        takerNotionalUsd: current.takerNotionalUsd + row.takerNotionalUsd,
-        takerFills: current.takerFills + row.takerFills,
-        realizedPnlUsd: current.realizedPnlUsd + row.realizedPnlUsd,
-        feesUsd: current.feesUsd + row.feesUsd,
-      } : { ...row });
+      volume.set(
+        row.marketId,
+        current
+          ? {
+              ...current,
+              makerNotionalUsd: current.makerNotionalUsd + row.makerNotionalUsd,
+              makerFills: current.makerFills + row.makerFills,
+              takerNotionalUsd: current.takerNotionalUsd + row.takerNotionalUsd,
+              takerFills: current.takerFills + row.takerFills,
+              realizedPnlUsd: current.realizedPnlUsd + row.realizedPnlUsd,
+              feesUsd: current.feesUsd + row.feesUsd,
+            }
+          : { ...row },
+      );
     }
   }
   return {
@@ -88,8 +100,12 @@ export function aggregatePerformance(
       notionalUsd: sum((report) => report.attributed.notionalUsd),
       realizedPnlUsd: sum((report) => report.attributed.realizedPnlUsd),
       protocolFeesUsd: sum((report) => report.attributed.protocolFeesUsd),
-      estimatedBuilderFeesUsd: sum((report) => report.attributed.estimatedBuilderFeesUsd),
-      netAfterKnownCostsUsd: sum((report) => report.attributed.netAfterKnownCostsUsd),
+      estimatedBuilderFeesUsd: sum(
+        (report) => report.attributed.estimatedBuilderFeesUsd,
+      ),
+      netAfterKnownCostsUsd: sum(
+        (report) => report.attributed.netAfterKnownCostsUsd,
+      ),
       makerVolumeCoveragePct: null,
     },
     hedge: {
@@ -101,20 +117,30 @@ export function aggregatePerformance(
       notionalUsd: sum((report) => report.hedge.notionalUsd),
       realizedPnlUsd: sum((report) => report.hedge.realizedPnlUsd),
       protocolFeesUsd: sum((report) => report.hedge.protocolFeesUsd),
-      estimatedBuilderFeesUsd: sum((report) => report.hedge.estimatedBuilderFeesUsd),
-      netAfterKnownCostsUsd: sum((report) => report.hedge.netAfterKnownCostsUsd),
+      estimatedBuilderFeesUsd: sum(
+        (report) => report.hedge.estimatedBuilderFeesUsd,
+      ),
+      netAfterKnownCostsUsd: sum(
+        (report) => report.hedge.netAfterKnownCostsUsd,
+      ),
     },
-    combinedNetAfterKnownCostsUsd: sum((report) => report.combinedNetAfterKnownCostsUsd),
+    combinedNetAfterKnownCostsUsd: sum(
+      (report) => report.combinedNetAfterKnownCostsUsd,
+    ),
     paper: {
       estimated: reports.some((report) => report.performance.paper.estimated),
       makerFills: sum((report) => report.paper.makerFills),
       hedgeFills: sum((report) => report.paper.hedgeFills),
       notionalUsd: sum((report) => report.paper.notionalUsd),
     },
-    volumeByMarket: [...volume.values()].sort((left, right) => left.symbol.localeCompare(right.symbol)),
-    fills: reports.flatMap(({ bundleName, performance }) =>
-      performance.fills.map((fill) => ({ ...fill, bundleName })),
-    ).sort((left, right) => right.occurredAt.localeCompare(left.occurredAt)),
+    volumeByMarket: [...volume.values()].sort((left, right) =>
+      left.symbol.localeCompare(right.symbol),
+    ),
+    fills: reports
+      .flatMap(({ bundleName, performance }) =>
+        performance.fills.map((fill) => ({ ...fill, bundleName })),
+      )
+      .sort((left, right) => right.occurredAt.localeCompare(left.occurredAt)),
     note: "All active bundles. Each fill is labelled with its bundle; Paper estimates and confirmed Live fills remain separate.",
   };
 }
@@ -162,7 +188,13 @@ const rewardShareSettingsSchema = z
     fillSizeUsd: z.number().positive().max(10_000_000).nullable().default(null),
     forecast: z.enum(["recent", "none"]).default("recent"),
     scenario: z.enum(["per-market", "cross-market"]).default("per-market"),
-    rewardMarketCount: z.number().int().positive().max(1_000).nullable().default(null),
+    rewardMarketCount: z
+      .number()
+      .int()
+      .positive()
+      .max(1_000)
+      .nullable()
+      .default(null),
     extraCostBps: z.number().min(0).max(1_000).default(0),
     fixedCostUsd: z.number().min(0).max(1_000_000).default(0),
   })
@@ -608,9 +640,90 @@ export async function buildServer({
         404,
       );
     }
+    const owner = requestAuth(request).ownerAddress;
+    const attachments = scoped.listStrategyAttachments(params.strategyId);
+    const markets = await runtime(request)
+      .listMarkets(USDC_COIN_TYPE)
+      .catch(() => []);
+    const marketById = new Map(markets.map((market) => [market.id, market]));
+    const marks = new Map(
+      markets
+        .filter((market) => Number.isFinite(market.indexPrice))
+        .map((market) => [market.id, market.indexPrice]),
+    );
+    const builderFeeRate = builderCode()?.integratorFee ?? 0;
+    const paperFills: StrategyResultFill[] = [];
+    const liveFills: StrategyResultFill[] = [];
+    let liveUnrealizedUsd = 0;
+    let liveReadError: string | null = null;
+    for (const attachment of attachments) {
+      for (const fill of scoped.listStrategyPaperFills(attachment)) {
+        const market = marketById.get(fill.marketId);
+        const feeRate =
+          fill.role === "maker"
+            ? (market?.makerFee ?? 0) + builderFeeRate
+            : (market?.takerFee ?? 0);
+        paperFills.push({
+          occurredAt: fill.occurredAt,
+          marketId: fill.marketId,
+          account: `${attachment.bundleId}:${fill.role}`,
+          side: fill.side,
+          price: fill.price,
+          sizeUsd: fill.sizeUsd,
+          feesUsd: fill.sizeUsd * feeRate,
+        });
+      }
+      const bundle = scoped.getStoredBundle(attachment.bundleId);
+      if (!bundle || bundle.archivedAt) continue;
+      try {
+        const bundleRuntime = runtimeManager.getBundle(owner, bundle.id);
+        const performance = await bundleRuntime.performance({ period: "ALL" });
+        for (const fill of performance.fills) {
+          if (fill.estimated) continue;
+          if (fill.occurredAt < attachment.attachedAt) continue;
+          if (attachment.detachedAt && fill.occurredAt >= attachment.detachedAt)
+            continue;
+          liveFills.push({
+            occurredAt: fill.occurredAt,
+            marketId: fill.marketId,
+            account: `${bundle.id}:${fill.role}`,
+            side: fill.side,
+            price: fill.price,
+            sizeUsd: fill.notionalUsd,
+            feesUsd: fill.protocolFeesUsd + fill.estimatedBuilderFeeUsd,
+            realizedPnlUsd: fill.realizedPnlUsd,
+          });
+        }
+        if (!attachment.detachedAt && bundle.mode === "live")
+          liveUnrealizedUsd +=
+            bundleRuntime.snapshot.portfolio.unrealizedPnlUsd ?? 0;
+      } catch (error) {
+        liveReadError = error instanceof Error ? error.message : String(error);
+      }
+    }
+    // Only the fields the collateral rule reads; accounts and mode don't matter.
+    const requiredCollateralUsd = requiredMakerCollateralUsd({
+      ...strategy.config,
+      markets: strategy.markets,
+    } as unknown as MakerConfig);
     return {
-      results: scoped.strategyResults(params.strategyId),
-      attachments: scoped.listStrategyAttachments(params.strategyId),
+      results: {
+        requiredCollateralUsd,
+        paper: summarizeStrategyResult({
+          fills: paperFills,
+          marks,
+          requiredCollateralUsd,
+        }),
+        live: summarizeStrategyResult({
+          fills: liveFills,
+          marks,
+          requiredCollateralUsd,
+          reportedRealized: true,
+          unrealizedPnlUsd: liveUnrealizedUsd,
+        }),
+        liveReadError,
+      },
+      attachments,
     };
   });
 
@@ -1473,10 +1586,12 @@ export async function buildServer({
           .filter((bundle) => !bundle.archivedAt)
           .map(async (bundle) => ({
             bundleName: bundle.name,
-            performance: await runtimeManager.getBundle(ownerAddress, bundle.id).performance({
-              period: query.period,
-              ...(query.since ? { since: query.since } : {}),
-            }),
+            performance: await runtimeManager
+              .getBundle(ownerAddress, bundle.id)
+              .performance({
+                period: query.period,
+                ...(query.since ? { since: query.since } : {}),
+              }),
           })),
       );
       return { performance: aggregatePerformance(reports) };
@@ -1523,14 +1638,21 @@ export async function buildServer({
       .object({
         accountIds: z.string().optional(),
         scenario: z.enum(["per-market", "cross-market"]).optional(),
-        volumeBudgetUsd: z.coerce.number().positive().max(100_000_000).optional(),
+        volumeBudgetUsd: z.coerce
+          .number()
+          .positive()
+          .max(100_000_000)
+          .optional(),
       })
       .parse(request.query);
-    const stored = scoped.getRewardShareSettings() ?? defaultRewardShareSettings();
-    const ownerAccounts = await runtime(request).requireGateway().listOwnerAccounts({
-      walletAddress: identity.ownerAddress,
-      collateralCoinType: USDC_COIN_TYPE,
-    });
+    const stored =
+      scoped.getRewardShareSettings() ?? defaultRewardShareSettings();
+    const ownerAccounts = await runtime(request)
+      .requireGateway()
+      .listOwnerAccounts({
+        walletAddress: identity.ownerAddress,
+        collateralCoinType: USDC_COIN_TYPE,
+      });
     const allowed = new Set(ownerAccounts.map((account) => account.accountId));
     const selectedAccountIds = query.accountIds
       ? query.accountIds.split(",").filter(Boolean)
@@ -1538,19 +1660,26 @@ export async function buildServer({
         ? stored.selectedAccountIds
         : ownerAccounts.map((account) => account.accountId);
     if (selectedAccountIds.some((accountId) => !allowed.has(accountId))) {
-      throw new AuthError(403, "Selected account does not belong to the connected wallet");
+      throw new AuthError(
+        403,
+        "Selected account does not belong to the connected wallet",
+      );
     }
     const settings = {
       ...stored,
       ...(query.scenario ? { scenario: query.scenario } : {}),
     };
-    const snapshot = await runtime(request).requireGateway().getRewardShareSnapshot({
-      walletAddress: identity.ownerAddress,
-      accountIds: selectedAccountIds,
-      collateralCoinType: USDC_COIN_TYPE,
-      poolUsd: settings.poolUsd,
-      ...(settings.rewardMarketCount ? { rewardMarketCount: settings.rewardMarketCount } : {}),
-    });
+    const snapshot = await runtime(request)
+      .requireGateway()
+      .getRewardShareSnapshot({
+        walletAddress: identity.ownerAddress,
+        accountIds: selectedAccountIds,
+        collateralCoinType: USDC_COIN_TYPE,
+        poolUsd: settings.poolUsd,
+        ...(settings.rewardMarketCount
+          ? { rewardMarketCount: settings.rewardMarketCount }
+          : {}),
+      });
     const scoreSettings = {
       scenario: settings.scenario,
       volumeRewardFraction: settings.volumeRewardFraction,
@@ -1573,10 +1702,15 @@ export async function buildServer({
       })),
     };
     const rankings = scoreRewardShare(modeledSnapshot, scoreSettings);
-    const scenarioTotals = (["per-market", "cross-market"] as const).map((scenario) => ({
-      scenario,
-      modeledIncrementalRewardUsd: scoreRewardShare(modeledSnapshot, { ...scoreSettings, scenario }).reduce((total, row) => total + row.modeledAdditionalRewardUsd, 0),
-    }));
+    const scenarioTotals = (["per-market", "cross-market"] as const).map(
+      (scenario) => ({
+        scenario,
+        modeledIncrementalRewardUsd: scoreRewardShare(modeledSnapshot, {
+          ...scoreSettings,
+          scenario,
+        }).reduce((total, row) => total + row.modeledAdditionalRewardUsd, 0),
+      }),
+    );
     return {
       settings: { ...settings, selectedAccountIds },
       snapshot: {
@@ -1592,7 +1726,13 @@ export async function buildServer({
         scenarios: scenarioTotals,
       },
       ...(query.volumeBudgetUsd
-        ? { allocation: allocateRewardShareVolume(modeledSnapshot, query.volumeBudgetUsd, scoreSettings) }
+        ? {
+            allocation: allocateRewardShareVolume(
+              modeledSnapshot,
+              query.volumeBudgetUsd,
+              scoreSettings,
+            ),
+          }
         : {}),
       fetchedAt: new Date().toISOString(),
       stale: Date.now() - Date.parse(snapshot.asOf) > 90 * 60_000,
@@ -1609,15 +1749,23 @@ export async function buildServer({
       collateralCoinType: USDC_COIN_TYPE,
     });
     const allowed = new Set(owned.map((account) => account.accountId));
-    if (settings.selectedAccountIds.some((accountId) => !allowed.has(accountId))) {
-      throw new AuthError(403, "Selected account does not belong to the connected wallet");
+    if (
+      settings.selectedAccountIds.some((accountId) => !allowed.has(accountId))
+    ) {
+      throw new AuthError(
+        403,
+        "Selected account does not belong to the connected wallet",
+      );
     }
     scoped.setRewardShareSettings(settings);
     scoped.logEvent({
       category: "rewards",
       action: "share.settings.update",
       outcome: "success",
-      detail: { scenario: settings.scenario, accountCount: settings.selectedAccountIds.length },
+      detail: {
+        scenario: settings.scenario,
+        accountCount: settings.selectedAccountIds.length,
+      },
     });
     return { settings };
   });

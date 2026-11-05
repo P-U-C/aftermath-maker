@@ -50,7 +50,7 @@ export type RuntimeOptions = {
   builderCode: () => BuilderFeePolicy | null;
   sleep?: (milliseconds: number) => Promise<void>;
   pauseOnError?: boolean;
-  onBundleError?: () => Promise<void> | void;
+  onBundleError?: (error: string) => Promise<void> | void;
   admitBundleProposal?: (proposal: {
     worstCaseGrossExposureDeltaUsd: number;
     worstCaseInventoryDeltaUsd: number;
@@ -383,7 +383,7 @@ function paperSimulationBlocker(inputs: {
   if (!inputs.setup || !inputs.account?.agentCapId || !inputs.agent) {
     return {
       code: "trading-key",
-      message: `Paper needs a trading key for ${accountLabel}. Set it up in Accounts; Maker will keep reading the market.`,
+      message: `Paper needs a trading key for ${accountLabel}. Set it up in Venues; Maker will keep reading the market.`,
     };
   }
 
@@ -591,8 +591,11 @@ export class MakerRuntime {
   private paperMarketSkips = new Map<string, { code: string; since: number }>();
   private paperAllSkippedSince: number | null = null;
   private paperAllSkippedWarningLogged = false;
-  private paperVolumeFees: { utcDate: string; usd: number; warned: boolean } | null =
-    null;
+  private paperVolumeFees: {
+    utcDate: string;
+    usd: number;
+    warned: boolean;
+  } | null = null;
 
   constructor(
     private readonly store: TenantStore,
@@ -1384,29 +1387,28 @@ export class MakerRuntime {
                 sinceMs === undefined || Date.parse(fill.occurredAt) >= sinceMs,
             )
         : [];
-    const paperMakerFills = paperRows
-      .map<MakerFill>((fill) => ({
-        occurredAt: fill.occurredAt,
-        txDigest: `paper:${fill.orderKey}`,
-        marketId: fill.marketId,
-        symbol: fill.symbol,
-        side: fill.side,
-        price: fill.price,
-        size: fill.sizeUsd / fill.price,
-        notionalUsd: fill.sizeUsd,
-        realizedPnlUsd: 0,
-        protocolFeesUsd: 0,
-        estimatedBuilderFeeUsd: 0,
-        orderId: fill.orderKey,
-        estimated: true,
-        role: fill.orderKey.startsWith("unwind:")
-          ? "Unwind"
-          : fill.orderKey.startsWith("close:")
-            ? "Close"
-            : fill.role === "hedge"
-              ? "Hedge"
-              : "Maker fill",
-      }));
+    const paperMakerFills = paperRows.map<MakerFill>((fill) => ({
+      occurredAt: fill.occurredAt,
+      txDigest: `paper:${fill.orderKey}`,
+      marketId: fill.marketId,
+      symbol: fill.symbol,
+      side: fill.side,
+      price: fill.price,
+      size: fill.sizeUsd / fill.price,
+      notionalUsd: fill.sizeUsd,
+      realizedPnlUsd: 0,
+      protocolFeesUsd: 0,
+      estimatedBuilderFeeUsd: 0,
+      orderId: fill.orderKey,
+      estimated: true,
+      role: fill.orderKey.startsWith("unwind:")
+        ? "Unwind"
+        : fill.orderKey.startsWith("close:")
+          ? "Close"
+          : fill.role === "hedge"
+            ? "Hedge"
+            : "Maker fill",
+    }));
     const fills = [...confirmedFills, ...paperMakerFills].sort((left, right) =>
       right.occurredAt.localeCompare(left.occurredAt),
     );
@@ -2321,7 +2323,10 @@ export class MakerRuntime {
       });
       this.paperSimulationBlockerKey = key;
       this.paperSimulationBlockerLastLoggedAt = now;
-      if (blocker.code === "gross-exposure" && this.paperExposurePausedAt === null)
+      if (
+        blocker.code === "gross-exposure" &&
+        this.paperExposurePausedAt === null
+      )
         this.paperExposurePausedAt = now;
     }
   }
@@ -2502,7 +2507,8 @@ export class MakerRuntime {
         if (this.marketSelectedAt === null) {
           this.marketSelectedAt = now;
         } else if (now - this.marketSelectedAt >= config.marketDwellMs) {
-          const prior = config.markets[this.marketIndex % config.markets.length];
+          const prior =
+            config.markets[this.marketIndex % config.markets.length];
           this.marketIndex = (this.marketIndex + 1) % config.markets.length;
           this.marketSelectedAt = now;
           if (
@@ -2595,7 +2601,8 @@ export class MakerRuntime {
               this.markets.find((item) => item.id === volumeRotateFromMarketId)
                 ?.makerFee ?? 0;
             this.paperVolumeFees!.usd +=
-              closes.reduce((total, fill) => total + fill.sizeUsd, 0) * priorFee;
+              closes.reduce((total, fill) => total + fill.sizeUsd, 0) *
+              priorFee;
             const state = this.store.getPaperState(paperTrialId);
             if (
               state.positions.some(
@@ -2612,7 +2619,10 @@ export class MakerRuntime {
                 trialId: paperTrialId,
                 marketId: volumeRotateFromMarketId,
                 closes: closes.length,
-                volumeUsd: closes.reduce((total, fill) => total + fill.sizeUsd, 0),
+                volumeUsd: closes.reduce(
+                  (total, fill) => total + fill.sizeUsd,
+                  0,
+                ),
               },
             });
           }
@@ -2766,13 +2776,19 @@ export class MakerRuntime {
       const bundleInventoryPositions = [
         ...portfolio.positions.map((position) => ({
           marketId: position.marketId,
-          symbol: config!.markets.find((market) => market.marketId === position.marketId)?.symbol ?? position.marketId.slice(0, 10),
+          symbol:
+            config!.markets.find(
+              (market) => market.marketId === position.marketId,
+            )?.symbol ?? position.marketId.slice(0, 10),
           account: "Maker" as const,
           inventoryUsd: position.inventoryUsd,
         })),
         ...(hedgeRiskPortfolio?.positions ?? []).map((position) => ({
           marketId: position.marketId,
-          symbol: config!.markets.find((market) => market.marketId === position.marketId)?.symbol ?? position.marketId.slice(0, 10),
+          symbol:
+            config!.markets.find(
+              (market) => market.marketId === position.marketId,
+            )?.symbol ?? position.marketId.slice(0, 10),
           account: "Hedge" as const,
           inventoryUsd: position.inventoryUsd,
         })),
@@ -2870,10 +2886,7 @@ export class MakerRuntime {
           context: agent.encryptionContext,
           encryptedSecret: agent.encryptedSecret,
         });
-        if (
-          config.strategyObjective === "volume" &&
-          config.flattenOnRotate
-        ) {
+        if (config.strategyObjective === "volume" && config.flattenOnRotate) {
           // Never submit a taker close against an owner's resting Maker
           // order.  Confirm the cancel first, then reuse the paired
           // reduce-only flattener with this one market as its scope.
@@ -2883,7 +2896,9 @@ export class MakerRuntime {
             marketIds: [switchFromMarketId],
           });
           if (!cancelled) {
-            throw new Error("Volume rotation could not confirm Maker cancellation");
+            throw new Error(
+              "Volume rotation could not confirm Maker cancellation",
+            );
           }
           this.clearActiveQuoteState();
           await this.autoRebalanceIfNeeded({
@@ -3003,8 +3018,9 @@ export class MakerRuntime {
       );
       const largestBundleQuoteUsd = Math.max(
         0,
-        ...activeConfig.markets.map((configuredMarket) =>
-          resolveMarketConfig(activeConfig, configuredMarket).quoteSizeUsd,
+        ...activeConfig.markets.map(
+          (configuredMarket) =>
+            resolveMarketConfig(activeConfig, configuredMarket).quoteSizeUsd,
         ),
       );
       const bundleWorstCaseGrossExposureUsd =
@@ -3020,10 +3036,12 @@ export class MakerRuntime {
         ) ||
         (paperState?.positions.some(
           (position) => Math.abs(position.inventoryUsd) > 0.000001,
-        ) ?? false) ||
+        ) ??
+          false) ||
         (hedgeRiskPortfolio?.positions.some(
           (position) => Math.abs(position.inventoryUsd) > 0.000001,
-        ) ?? false);
+        ) ??
+          false);
       const exposurePaused = exposureWasPaused
         ? bundleHasInventory &&
           bundleWorstCaseGrossExposureUsd >
@@ -3048,8 +3066,7 @@ export class MakerRuntime {
           liveEnabled: this.options.liveEnabled,
           mainnetAllowed: this.options.mainnetAllowed,
           portfolioGrossExposureUsd: combinedGrossExposureUsd,
-          portfolioWorstCaseExposureUsd:
-            bundleWorstCaseGrossExposureUsd,
+          portfolioWorstCaseExposureUsd: bundleWorstCaseGrossExposureUsd,
           portfolioAvailableCollateralUsd: portfolio.availableCollateralUsd,
           portfolioRequiredQuoteCollateralUsd:
             activeConfig.mode === "paper"
@@ -3259,11 +3276,19 @@ export class MakerRuntime {
           gasSui: setup ? portfolio.gasSui : null,
         },
         inventory: {
-          netUsd: bundleInventoryPositions.reduce((total, position) => total + position.inventoryUsd, 0),
-          grossUsd: bundleInventoryPositions.reduce((total, position) => total + Math.abs(position.inventoryUsd), 0),
+          netUsd: bundleInventoryPositions.reduce(
+            (total, position) => total + position.inventoryUsd,
+            0,
+          ),
+          grossUsd: bundleInventoryPositions.reduce(
+            (total, position) => total + Math.abs(position.inventoryUsd),
+            0,
+          ),
           positions: bundleInventoryPositions,
         },
-        fillSequence: (paperState?.fills ?? 0) + this.store.getExecutionStats().confirmedLiveQuotes,
+        fillSequence:
+          (paperState?.fills ?? 0) +
+          this.store.getExecutionStats().confirmedLiveQuotes,
         hedge: {
           ...this.snapshotValue.hedge,
           enabled: config.hedge.enabled,
@@ -3298,23 +3323,25 @@ export class MakerRuntime {
       const failedMarketSafety = safety.filter(
         (check) => !check.ok && check.scope === "market",
       );
-      const exposureBlocker =
-        originalGrossCheck && !originalGrossCheck.ok
-          ? {
-              code: "gross-exposure",
-              requiredUsd: Number(
-                originalGrossCheck.detail.match(/^\$(\d+(?:\.\d+)?)/)?.[1] ?? 0,
-              ),
-              message: `${this.store.bundleId ? (this.store.getStoredBundle(this.store.bundleId)?.name ?? "Maker") : "Core"}: Paper paused new exposure. One more fill could take gross exposure to $${Number(originalGrossCheck.detail.match(/^\$(\d+(?:\.\d+)?)/)?.[1] ?? 0).toFixed(2)}, over the $${marketConfig.maxGrossExposureUsd.toFixed(2)} limit. Maker quotes only the sides that reduce inventory until it's back under. Raise the limit in Strategy, or quote fewer markets.`,
-            }
-          : null;
+      // One bundle-wide state with hysteresis (exposurePaused above), never the
+      // market that happens to be selected this cycle.
+      const bundleName = this.store.bundleId
+        ? (this.store.getStoredBundle(this.store.bundleId)?.name ?? "Maker")
+        : "Core";
+      const exposureBlocker = exposurePaused
+        ? {
+            code: "gross-exposure",
+            requiredUsd: bundleWorstCaseGrossExposureUsd,
+            message: `${bundleName}: Paper paused new exposure. One more fill could take gross exposure to $${bundleWorstCaseGrossExposureUsd.toFixed(2)}, over the $${activeConfig.maxGrossExposureUsd.toFixed(2)} limit. Maker quotes only the sides that reduce inventory until it's back under. Raise the limit in Strategy, or quote fewer markets.`,
+          }
+        : null;
       if (exposurePaused) this.paperExposurePausedAt ??= Date.now();
       else this.paperExposurePausedAt = null;
       if (
         config.mode === "paper" &&
         inputs.executeLive &&
         !exposureBlocker &&
-        this.paperSimulationBlockerKey?.includes(":gross-exposure:")
+        this.snapshotValue.paperBlocker?.code === "gross-exposure"
       ) {
         this.clearPaperSimulationBlocker();
       }
@@ -3325,14 +3352,16 @@ export class MakerRuntime {
           updatedAt,
           trialId: paperTrialId,
         });
-        const pausedForMs = Date.now() - (this.paperExposurePausedAt ?? Date.now());
+        const pausedForMs =
+          Date.now() - (this.paperExposurePausedAt ?? Date.now());
         if (
           config.unwindAfterPauseMinutes > 0 &&
           pausedForMs >= config.unwindAfterPauseMinutes * 60_000 &&
           paperState?.positions.length
         ) {
           const largest = [...paperState.positions].sort(
-            (left, right) => Math.abs(right.inventoryUsd) - Math.abs(left.inventoryUsd),
+            (left, right) =>
+              Math.abs(right.inventoryUsd) - Math.abs(left.inventoryUsd),
           )[0]!;
           const closed = this.store.closePaperMarket({
             trialId: paperTrialId,
@@ -3405,7 +3434,8 @@ export class MakerRuntime {
           row.id === selected!.marketId
             ? {
                 ...row,
-                error: "Volume paused: daily fee budget reached; resumes at 00:00 UTC.",
+                error:
+                  "Volume paused: daily fee budget reached; resumes at 00:00 UTC.",
               }
             : row,
         );
@@ -3614,9 +3644,15 @@ export class MakerRuntime {
         Date.now() - (this.paperExposurePausedAt ?? Date.now()) >=
           config.unwindAfterPauseMinutes * 60_000
       ) {
-        const largest = [...portfolio.positions, ...(hedgeRiskPortfolio?.positions ?? [])]
+        const largest = [
+          ...portfolio.positions,
+          ...(hedgeRiskPortfolio?.positions ?? []),
+        ]
           .filter((position) => Math.abs(position.inventoryUsd) > 0.000001)
-          .sort((left, right) => Math.abs(right.inventoryUsd) - Math.abs(left.inventoryUsd))[0];
+          .sort(
+            (left, right) =>
+              Math.abs(right.inventoryUsd) - Math.abs(left.inventoryUsd),
+          )[0];
         if (largest) {
           const cancelled = await this.cancelOpenOrders(config, {
             attempts: 3,
@@ -3624,13 +3660,19 @@ export class MakerRuntime {
             marketIds: [largest.marketId],
           });
           if (!cancelled)
-            throw new Error("Exposure unwind could not confirm Maker order cancellation");
+            throw new Error(
+              "Exposure unwind could not confirm Maker order cancellation",
+            );
           this.clearActiveQuoteState();
           const accounts = [setup];
-          const hedgeSetup = config.hedge.enabled && config.hedge.accountId
-            ? this.store.getAccountSetup(config.hedge.accountId)
-            : null;
-          if (hedgeSetup?.agentCapId && hedgeSetup.accountId !== setup.accountId)
+          const hedgeSetup =
+            config.hedge.enabled && config.hedge.accountId
+              ? this.store.getAccountSetup(config.hedge.accountId)
+              : null;
+          if (
+            hedgeSetup?.agentCapId &&
+            hedgeSetup.accountId !== setup.accountId
+          )
             accounts.push(hedgeSetup);
           for (const unwindSetup of accounts) {
             const receipt = await this.gateway.flattenPositions({
@@ -3657,7 +3699,10 @@ export class MakerRuntime {
             category: "risk",
             action: "exposure-unwind",
             outcome: "confirmed",
-            detail: { marketId: largest.marketId, sizeUsd: Math.abs(largest.inventoryUsd) },
+            detail: {
+              marketId: largest.marketId,
+              sizeUsd: Math.abs(largest.inventoryUsd),
+            },
           });
           this.snapshotValue.execution.lastDecision = "rebalanced";
           this.snapshotValue.lastSuccessfulCycleAt = updatedAt;
@@ -3680,6 +3725,43 @@ export class MakerRuntime {
         this.snapshotValue.lastSuccessfulCycleAt = new Date().toISOString();
         return;
       }
+      // A market condition (book away from fair value, stale or crossed book,
+      // size or inventory for this one market) is routine, exactly as in
+      // Paper: pull our quotes from this market and keep the bundle running.
+      // Only bundle-wide failures stop it.
+      const liveMarketFailures = safety.filter(
+        (check) => !check.ok && check.scope === "market",
+      );
+      const liveBundleFailures = safety.filter(
+        (check) => !check.ok && check.scope !== "market",
+      );
+      if (liveMarketFailures.length && !liveBundleFailures.length) {
+        const resting = portfolio.positions.find(
+          (position) => position.marketId === selected!.marketId,
+        );
+        if (resting?.makerOrderIds.length) {
+          const cancelled = await this.cancelOpenOrders(config, {
+            attempts: 3,
+            retryDelayMs: 750,
+            marketIds: [selected.marketId],
+          });
+          if (!cancelled)
+            throw new Error(
+              `Could not confirm cancellation of ${selected.symbol} quotes after a ${liveMarketFailures[0]!.code} skip`,
+            );
+        }
+        if (this.activeQuote?.marketId === selected.marketId)
+          this.clearActiveQuoteState();
+        this.recordPaperMarketSkip({
+          selected,
+          failed: liveMarketFailures[0]!,
+          config,
+        });
+        this.snapshotValue.execution.lastDecision = "held";
+        this.snapshotValue.lastSuccessfulCycleAt = updatedAt;
+        return;
+      }
+      if (!liveMarketFailures.length) this.clearPaperMarketSkip(selected);
       assertSafe(safety);
 
       const activeQuote = this.activeQuote;
@@ -3946,7 +4028,7 @@ export class MakerRuntime {
           this.clearActiveQuoteState();
         }
         if (this.options.pauseOnError) {
-          await this.options.onBundleError?.();
+          await this.options.onBundleError?.(errorText);
         }
       }
     } finally {

@@ -639,3 +639,23 @@ describe("runtime endpoint management", () => {
     store.close();
   });
 });
+
+describe("bundle cycle error message", () => {
+  it("tells the owner the reason and strips URLs", async () => {
+    const { bundleCycleErrorMessage } =
+      await import("../src/runtime-manager.js");
+    expect(
+      bundleCycleErrorMessage("Order rejected: leverage above market max"),
+    ).toBe(
+      "Bundle paused after a cycle error: Order rejected: leverage above market max. Fix the cause, then resume it.",
+    );
+    expect(
+      bundleCycleErrorMessage("request to https://rpc.example/x failed."),
+    ).toBe(
+      "Bundle paused after a cycle error: request to the venue endpoint failed. Fix the cause, then resume it.",
+    );
+    expect(bundleCycleErrorMessage(null)).toBe(
+      "Bundle paused after a cycle error. Review its accounts and limits, then resume it.",
+    );
+  });
+});
