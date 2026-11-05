@@ -100,7 +100,7 @@ The desk separates:
 
 Historical orders created before order tracking, manual orders, and other clients' orders are not claimed. Coverage reports attributed notional as a percentage of account-wide maker volume.
 
-“Net known result” still excludes gas converted to USD, position-level funding attribution, markouts, explicit slippage decomposition, and inventory carry. Those are the next accounting fields required before calling a strategy profitable.
+“Net known result” still excludes gas converted to USD, position-level funding attribution, markouts, explicit slippage decomposition, and inventory carry. A strategy's trading result adds gas priced when it was spent and Live maker-account funding, and lists each part it can't measure; markouts and inventory carry are the next fields required before calling a strategy profitable.
 
 ## Fee economics
 

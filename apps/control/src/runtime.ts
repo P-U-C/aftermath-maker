@@ -596,6 +596,8 @@ export class MakerRuntime {
     usd: number;
     warned: boolean;
   } | null = null;
+  /** SUI in USD at the latest cycle, so gas is priced when it is spent. */
+  private suiUsd: number | null = null;
 
   constructor(
     private readonly store: TenantStore,
@@ -1010,6 +1012,7 @@ export class MakerRuntime {
           signer,
           config,
         });
+        if (receipt) this.logCancelGas(receipt, options.marketIds ?? null);
         if (receipt || attempt === attempts) {
           this.store.logEvent({
             category: "runtime",
@@ -1197,6 +1200,7 @@ export class MakerRuntime {
         sizeUsd: 0,
         outcome: residualMarketIds.length ? "flattened-partial" : "flattened",
         gasUsedMist: receipt.gasUsedMist,
+        suiUsd: this.suiUsd,
       });
     }
     const residualMarketIds = [
@@ -1710,6 +1714,7 @@ export class MakerRuntime {
           sizeUsd: 0,
           outcome: "flattened",
           gasUsedMist: receipt.gasUsedMist,
+          suiUsd: this.suiUsd,
         });
       }
 
@@ -2008,6 +2013,8 @@ export class MakerRuntime {
       signer: inputs.signer,
       config: inputs.marketConfig,
     });
+    if (cancelReceipt)
+      this.logCancelGas(cancelReceipt, [inputs.selected.marketId]);
     if (this.activeQuoteMarketId === inputs.selected.marketId) {
       this.clearActiveQuoteState();
     }
@@ -2190,6 +2197,7 @@ export class MakerRuntime {
       side: receipt.side,
       requestedNotionalUsd: receipt.requestedNotionalUsd,
       gasUsedMist: receipt.gasUsedMist,
+      suiUsd: this.suiUsd,
       fillKeys: resolved ? fillKeys : [],
     });
     const occurredAt = new Date().toISOString();
@@ -2479,6 +2487,41 @@ export class MakerRuntime {
     this.paperAllSkippedWarningLogged = true;
   }
 
+  /** A cancel spends gas like any other transaction, so it is counted. */
+  private logCancelGas(
+    receipt: { digest: string; endpoint: string; gasUsedMist: number },
+    marketIds: string[] | null,
+  ): void {
+    this.store.logExecution({
+      mode: "live",
+      marketId: marketIds?.length === 1 ? marketIds[0]! : "*",
+      digest: receipt.digest,
+      endpoint: receipt.endpoint,
+      bidPrice: 0,
+      askPrice: 0,
+      sizeUsd: 0,
+      outcome: "cancelled",
+      gasUsedMist: receipt.gasUsedMist,
+      suiUsd: this.suiUsd,
+    });
+  }
+
+  /** A failed read leaves gas unpriced for this cycle; it never blocks it. */
+  private async refreshSuiUsd(): Promise<void> {
+    const read = (this.gateway as Partial<Pick<AftermathGateway, "getSuiUsd">>)
+      .getSuiUsd;
+    if (typeof read !== "function") return;
+    try {
+      this.suiUsd = await withTimeout(
+        read.call(this.gateway),
+        2_000,
+        "SUI price read timed out",
+      );
+    } catch {
+      this.suiUsd = null;
+    }
+  }
+
   private async runCycle(inputs: {
     executeLive: boolean;
     generation: number;
@@ -2497,6 +2540,7 @@ export class MakerRuntime {
       const storedConfig = inputs.configOverride ?? this.store.getConfig();
       if (!storedConfig) return;
       config = makerConfigSchema.parse(storedConfig);
+      await this.refreshSuiUsd();
       this.syncMarketRows(config);
       usesDwellScheduler =
         inputs.executeLive &&
@@ -3609,6 +3653,7 @@ export class MakerRuntime {
           sizeUsd: quote.sizeUsd,
           outcome: "dry-run",
           gasUsedMist: receipt.gasUsedMist,
+          suiUsd: this.suiUsd,
         });
         if (!exposureBlocker) this.clearPaperSimulationBlocker();
         this.snapshotValue.execution.lastDecision = "quoted";
@@ -3693,6 +3738,7 @@ export class MakerRuntime {
               sizeUsd: Math.abs(largest.inventoryUsd),
               outcome: "exposure-unwind",
               gasUsedMist: receipt.gasUsedMist,
+              suiUsd: this.suiUsd,
             });
           }
           this.store.logEvent({
@@ -3859,6 +3905,7 @@ export class MakerRuntime {
         sizeUsd: quote.sizeUsd,
         outcome: "confirmed",
         gasUsedMist: receipt.gasUsedMist,
+        suiUsd: this.suiUsd,
       });
       this.store.trackMakerOrders({
         accountId: setup.accountId,

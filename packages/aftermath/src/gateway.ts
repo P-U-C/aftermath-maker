@@ -812,6 +812,8 @@ export class AftermathGateway {
     { expiresAt: number; value: MarketDailyVolume[] }
   >();
   private readonly mutationQueues = new Map<string, PriorityMutationQueue>();
+  private suiUsdCache: { at: number; value: number } | undefined;
+  private suiUsdFailedAt = 0;
 
   private mutationQueue(address: string): PriorityMutationQueue {
     const key = address.toLowerCase();
@@ -1227,7 +1229,9 @@ export class AftermathGateway {
     const liquidationsByMarket = new Map<string, string>();
     let historyComplete = true;
     for (const cap of caps) {
-      const { account } = await this.sdk.Perpetuals().getAccount({ accountCap: cap });
+      const { account } = await this.sdk
+        .Perpetuals()
+        .getAccount({ accountCap: cap });
       const history = await this.accountFillHistory.get({
         accountKey: `reward-share:${inputs.walletAddress.toLowerCase()}:${cap.accountId}`,
         pageSize: 200,
@@ -1254,12 +1258,23 @@ export class AftermathGateway {
       });
       historyComplete &&= history.historyComplete;
       for (const event of history.orders) {
-        if (timestampMs(event.timestamp) < startedAt || timestampMs(event.timestamp) >= asOf.getTime()) continue;
+        if (
+          timestampMs(event.timestamp) < startedAt ||
+          timestampMs(event.timestamp) >= asOf.getTime()
+        )
+          continue;
         if (event.eventType === "FilledTakerOrder") {
-          ownByMarket.set(event.marketId, (ownByMarket.get(event.marketId) ?? 0) + Math.abs((event.price ?? 0) * (event.size ?? 0)));
+          ownByMarket.set(
+            event.marketId,
+            (ownByMarket.get(event.marketId) ?? 0) +
+              Math.abs((event.price ?? 0) * (event.size ?? 0)),
+          );
         }
         if (event.eventType === "LiquidatedPosition") {
-          liquidationsByMarket.set(event.marketId, new Date(timestampMs(event.timestamp)).toISOString());
+          liquidationsByMarket.set(
+            event.marketId,
+            new Date(timestampMs(event.timestamp)).toISOString(),
+          );
         }
       }
     }
@@ -1283,29 +1298,41 @@ export class AftermathGateway {
         ),
       )
     ).flat();
-    const dailyByMarket = new Map(daily.map((row) => [row.marketId, row.volumeUsd]));
+    const dailyByMarket = new Map(
+      daily.map((row) => [row.marketId, row.volumeUsd]),
+    );
     const flags = [
       "Hourly candle history is unavailable in this SDK build; forecast and source cross-check are incomplete.",
       ...(historyComplete ? [] : ["Own history incomplete"]),
     ];
     const distribution = caps.length
-      ? await this.sdk.Rewards().getDistribution({
-          accountIds: caps.map((cap) => cap.accountId),
-          totalMakerRewards: 0,
-          totalTakerRewards: inputs.poolUsd,
-          calculationVariables: {
-            qScoreCoefficient: 1,
-            uptimeCoefficient: 1,
-            mmVolumeCoefficient: 1,
-            takerVolumeCoefficient: 1,
-            takerOiCoefficient: 0,
-          },
-        }).then((value) => ({ value, error: null as string | null })).catch((error) => ({ value: null, error: errorMessage(error) }))
+      ? await this.sdk
+          .Rewards()
+          .getDistribution({
+            accountIds: caps.map((cap) => cap.accountId),
+            totalMakerRewards: 0,
+            totalTakerRewards: inputs.poolUsd,
+            calculationVariables: {
+              qScoreCoefficient: 1,
+              uptimeCoefficient: 1,
+              mmVolumeCoefficient: 1,
+              takerVolumeCoefficient: 1,
+              takerOiCoefficient: 0,
+            },
+          })
+          .then((value) => ({ value, error: null as string | null }))
+          .catch((error) => ({ value: null, error: errorMessage(error) }))
       : { value: null, error: null };
-    const takerRewardsUsd = distribution.value?.rewards.reduce(
-      (total, row) => total + Number((row as unknown as { taker?: { rewards?: number } }).taker?.rewards ?? 0),
-      0,
-    ) ?? null;
+    const takerRewardsUsd =
+      distribution.value?.rewards.reduce(
+        (total, row) =>
+          total +
+          Number(
+            (row as unknown as { taker?: { rewards?: number } }).taker
+              ?.rewards ?? 0,
+          ),
+        0,
+      ) ?? null;
     return {
       asOf: asOf.toISOString(),
       epochEnd: epoch.cutoffAt,
@@ -1321,13 +1348,19 @@ export class AftermathGateway {
         cost: { takerFeeBps: market.takerFee * 10_000 },
         flags: [
           "market volume incomplete",
-          ...(liquidationsByMarket.has(market.id) ? [`prior liquidation: ${liquidationsByMarket.get(market.id)}`] : []),
+          ...(liquidationsByMarket.has(market.id)
+            ? [`prior liquidation: ${liquidationsByMarket.get(market.id)}`]
+            : []),
           ...(historyComplete ? [] : ["own history incomplete"]),
         ],
       })),
       flags,
       incomplete: true,
-      reconciliation: { takerRewardsUsd, refundRate: null, error: distribution.error },
+      reconciliation: {
+        takerRewardsUsd,
+        refundRate: null,
+        error: distribution.error,
+      },
     };
   }
 
@@ -1387,6 +1420,37 @@ export class AftermathGateway {
         : {}),
     });
     return result.accountCaps;
+  }
+
+  /**
+   * SUI in USD, used to price gas when it is spent. Cached for five minutes;
+   * the last good price is returned on a failed refresh until it is an hour
+   * old, then the failure surfaces so gas is recorded as unpriced, never as
+   * free.
+   */
+  async getSuiUsd(): Promise<number> {
+    const now = Date.now();
+    if (this.suiUsdCache && now - this.suiUsdCache.at < 5 * 60_000)
+      return this.suiUsdCache.value;
+    const lastGood = () => {
+      if (this.suiUsdCache && now - this.suiUsdCache.at < 60 * 60_000)
+        return this.suiUsdCache.value;
+      throw new Error("SUI price is unavailable");
+    };
+    // A failing price service is retried once a minute, not every cycle.
+    if (now - this.suiUsdFailedAt < 60_000) return lastGood();
+    try {
+      const value = await this.sdk
+        .Prices()
+        .getCoinPrice({ coin: "0x2::sui::SUI" });
+      if (!Number.isFinite(value) || value <= 0)
+        throw new Error("Aftermath returned no SUI price");
+      this.suiUsdCache = { at: now, value };
+      return value;
+    } catch {
+      this.suiUsdFailedAt = now;
+      return lastGood();
+    }
   }
 
   /** Read-only owner-funded trading-key gas balance; no signing path. */

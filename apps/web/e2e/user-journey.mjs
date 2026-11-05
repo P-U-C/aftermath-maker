@@ -1636,6 +1636,100 @@ async function depositsToTwoAccountsWithOneOwnerSignature(browser) {
   }
 }
 
+/** A strategy's trading result adds up from its parts, names what isn't
+ * counted, and never folds rewards in. */
+async function strategyResultBreakdown(browser) {
+  const side = (overrides) => ({
+    fills: 0,
+    volumeUsd: 0,
+    realizedPricePnlUsd: 0,
+    unrealizedPricePnlUsd: 0,
+    executionFeesUsd: 0,
+    builderFeesUsd: 0,
+    fundingUsd: 0,
+    gasUsd: 0,
+    tradingNetUsd: 0,
+    returnPct: null,
+    since: null,
+    gaps: [],
+    ...overrides,
+  });
+  const results = {
+    requiredCollateralUsd: 300,
+    paper: side({
+      fills: 38,
+      volumeUsd: 380,
+      realizedPricePnlUsd: 1.42,
+      unrealizedPricePnlUsd: -0.18,
+      executionFeesUsd: -0.038,
+      builderFeesUsd: 0.038,
+      fundingUsd: null,
+      gasUsd: 0.0912,
+      tradingNetUsd: 1.1488,
+      returnPct: 0.3829,
+      since: "2026-11-05T09:00:00.000Z",
+      gaps: [
+        "Funding isn't simulated in Paper yet.",
+        "Gas for Paper hedges and closes isn't estimated.",
+      ],
+    }),
+    live: side({}),
+    liveReadError: null,
+  };
+  for (const [viewport, colorScheme] of [
+    [{ width: 1440, height: 900 }, "light"],
+    [{ width: 1440, height: 900 }, "dark"],
+    [{ width: 390, height: 844 }, "light"],
+  ]) {
+    const tag = `${viewport.width > 500 ? "desktop" : "phone"}-${colorScheme}`;
+    const { context, page } = await newPage(browser, viewport, { colorScheme });
+    try {
+      await page.route("**/api/strategies/*/results", (route) =>
+        route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({ results, attachments: [] }),
+        }),
+      );
+      await goToDesk(page);
+      await page.getByRole("link", { name: "Strategy", exact: true }).click();
+      const result = page
+        .locator('.maker-view[data-view="strategy"]:not([hidden])')
+        .locator(".strategy-result")
+        .first();
+      await result.waitFor();
+      await result
+        .locator(".strategy-result-stat strong")
+        .getByText("+$1.15", { exact: true })
+        .waitFor();
+      await result.getByText("No Live trades yet.").waitFor();
+      await result.getByText(/^Rewards aren.t included\./).waitFor();
+      const breakdown = result.locator(".strategy-result-breakdown").first();
+      await breakdown
+        .getByText("How it adds up (2 parts not counted)", { exact: true })
+        .click();
+      const funding = breakdown.locator("div", { hasText: /^Funding/ });
+      assert(
+        (await funding.locator("dd").innerText()) === "Not counted",
+        "Funding that isn't measured must read Not counted, never $0",
+      );
+      assert(
+        (await breakdown.locator(".is-total dd").innerText()) === "+$1.15",
+        "The breakdown total must equal the trading result",
+      );
+      await breakdown
+        .getByText("Funding isn't simulated in Paper yet.", { exact: true })
+        .waitFor();
+      await result.scrollIntoViewIfNeeded();
+      await result.screenshot({
+        path: path.join(outputDirectory, `p1-strategy-result-${tag}.png`),
+      });
+    } finally {
+      await context.close();
+    }
+  }
+}
+
 async function serviceAndSessionFailures(browser) {
   const desktop = await newPage(browser, { width: 1440, height: 900 });
   try {
@@ -3575,7 +3669,9 @@ const browser = await chromium.launch({
 });
 
 try {
-  if (process.argv.includes("--round10-kit-only")) {
+  if (process.argv.includes("--results-only")) {
+    await strategyResultBreakdown(browser);
+  } else if (process.argv.includes("--round10-kit-only")) {
     await captureRound10KitControls(browser);
   } else if (process.argv.includes("--round10-rename-only")) {
     await renamesAccountInsideVenues(browser, { width: 1440, height: 900 });
@@ -3674,6 +3770,7 @@ try {
       await renamesAccountInsideVenues(browser, { width: 1440, height: 900 });
       await renamesAccountInsideVenues(browser, { width: 390, height: 844 });
       await serviceAndSessionFailures(browser);
+      await strategyResultBreakdown(browser);
       await createBundleWithFreeChoices(browser);
       await lowerWalletLimitsWhenCreating(browser);
       await editWalletLimits(browser);
