@@ -51,11 +51,11 @@ export VCS_REF="$sha"
 "${compose[@]}" build --build-arg "VCS_REF=$sha"
 "${compose[@]}" up -d --remove-orphans
 
-# The application is reachable only through loopback/Nginx; this checks the
-# newly selected dev stack without calling a venue or a public endpoint.
+# Compose has already waited for control's private healthcheck. This confirms
+# the publicly proxied web listener without calling a venue or public endpoint.
 for _attempt in $(seq 1 30); do
   if curl --fail --silent --show-error --max-time 3 \
-    http://127.0.0.1:8789/api/control/health >/dev/null; then
+    http://127.0.0.1:8789/ >/dev/null; then
     echo "Maker dev deployed $sha"
     exit 0
   fi
