@@ -9,6 +9,9 @@ services:
       context: .
       args:
         VCS_REF: ${VCS_REF:-unknown}
+        # Avoid Docker's slow final prune snapshot for this local-only image.
+        # The release build keeps the production default of false.
+        KEEP_DEV_DEPENDENCIES: "true"
       # Dev must turn a merged PR into a usable local build quickly. The
       # manual release gate remains responsible for SBOM/provenance evidence.
     image: puc/aftermath-maker:dev
