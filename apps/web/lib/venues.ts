@@ -16,11 +16,14 @@ export type VenueDescriptor = {
   rewardsUrl: string;
 };
 
+const suiNetwork =
+  process.env.NEXT_PUBLIC_SUI_NETWORK === "testnet" ? "testnet" : "mainnet";
+
 export const aftermathVenue: VenueDescriptor = {
   id: "aftermath",
   name: "Aftermath",
   glyph: "A",
-  network: "Sui mainnet",
+  network: `Sui ${suiNetwork}`,
   collateral: "USDC",
   feeModel: "1 bps on filled orders",
   gasUnit: "SUI",
@@ -29,11 +32,17 @@ export const aftermathVenue: VenueDescriptor = {
     hedge: "Reduces net exposure",
   },
   explorerTxUrl: (digest) =>
-    `https://suiscan.xyz/mainnet/tx/${encodeURIComponent(digest)}`,
+    `https://suiscan.xyz/${suiNetwork}/tx/${encodeURIComponent(digest)}`,
   explorerObjectUrl: (objectId) =>
-    `https://suiscan.xyz/mainnet/object/${encodeURIComponent(objectId)}`,
-  homeUrl: "https://aftermath.finance/",
-  rewardsUrl: "https://aftermath.finance/rewards",
+    `https://suiscan.xyz/${suiNetwork}/object/${encodeURIComponent(objectId)}`,
+  homeUrl:
+    suiNetwork === "testnet"
+      ? "https://testnet.aftermath.finance/"
+      : "https://aftermath.finance/",
+  rewardsUrl:
+    suiNetwork === "testnet"
+      ? "https://testnet.aftermath.finance/rewards"
+      : "https://aftermath.finance/rewards",
 };
 
 export const primaryVenue = aftermathVenue;

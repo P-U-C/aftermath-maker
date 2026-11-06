@@ -9,6 +9,7 @@ services:
       context: .
       args:
         VCS_REF: ${VCS_REF:-unknown}
+        SUI_NETWORK: testnet
         # Avoid Docker's slow final prune snapshot for this local-only image.
         # The release build keeps the production default of false.
         KEEP_DEV_DEPENDENCIES: "true"
@@ -35,6 +36,8 @@ services:
       # A bad local environment file cannot make the dev stack trade live.
       LIVE_TRADING_ENABLED: "false"
       ALLOW_MAINNET: "false"
+      SUI_NETWORK: testnet
+      TESTNET_EXECUTION_ENABLED: "true"
     volumes:
       - maker-dev-data:/data
     healthcheck:
@@ -51,6 +54,9 @@ services:
       start_period: 20s
     networks:
       - maker-dev-internal
+      # Testnet only. This is the sole dev service with venue egress; it has
+      # no Mainnet route configured and never receives a production key.
+      - maker-dev-testnet
 
   web:
     image: puc/aftermath-maker:dev
@@ -95,4 +101,6 @@ networks:
     driver: bridge
     internal: true
   maker-dev-edge:
+    driver: bridge
+  maker-dev-testnet:
     driver: bridge

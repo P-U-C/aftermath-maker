@@ -819,6 +819,8 @@ type RewardShareData = {
 type LiveGates = {
   liveTradingEnabled: boolean;
   mainnetAllowed: boolean;
+  executionNetwork: "mainnet" | "testnet";
+  testnetExecutionEnabled: boolean;
 };
 
 /** Go live readiness for one Paper bundle, judged as if it switched to Live. */
@@ -1339,6 +1341,8 @@ function DashboardBody() {
   const [liveGates, setLiveGates] = useState<LiveGates>({
     liveTradingEnabled: false,
     mainnetAllowed: false,
+    executionNetwork: "mainnet",
+    testnetExecutionEnabled: false,
   });
   const [liveReadiness, setLiveReadiness] = useState<LiveReadiness[]>([]);
   const [strategyStep, setStrategyStep] = useState(0);
@@ -10642,6 +10646,7 @@ function DashboardBody() {
           key={liveSheetBundle.id}
           open
           bundleName={liveSheetBundle.name}
+          executionNetwork={liveGates.executionNetwork}
           available={Boolean(liveSheetReadiness?.ready)}
           liveReadiness={liveSheetReadiness}
           operator={identity.operator}

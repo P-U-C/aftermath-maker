@@ -12,8 +12,7 @@ export const securityHeaders = [
   },
   {
     key: "Content-Security-Policy",
-    value:
-      "default-src 'self'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'; object-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self' https://api.slush.app https://fullnode.mainnet.sui.io:443; manifest-src 'self'; upgrade-insecure-requests",
+    value: `default-src 'self'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'; object-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self' https://api.slush.app ${process.env.NEXT_PUBLIC_SUI_GRPC_URL ?? `https://fullnode.${process.env.NEXT_PUBLIC_SUI_NETWORK === "testnet" ? "testnet" : "mainnet"}.sui.io:443`}; manifest-src 'self'; upgrade-insecure-requests`,
   },
 ];
 

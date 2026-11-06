@@ -14,7 +14,8 @@ RUN npm ci
 
 COPY . .
 ARG VCS_REF=unknown
-ENV GIT_COMMIT=$VCS_REF NEXT_PUBLIC_GIT_COMMIT=$VCS_REF
+ARG SUI_NETWORK=mainnet
+ENV GIT_COMMIT=$VCS_REF NEXT_PUBLIC_GIT_COMMIT=$VCS_REF NEXT_PUBLIC_SUI_NETWORK=$SUI_NETWORK
 RUN date -u +"%Y-%m-%dT%H:%M:%SZ" > /app/.maker-built-at \
   && BUILT_AT="$(cat /app/.maker-built-at)" NEXT_PUBLIC_BUILD_AT="$(cat /app/.maker-built-at)" npm run build
 ARG KEEP_DEV_DEPENDENCIES=false

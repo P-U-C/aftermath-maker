@@ -1,4 +1,8 @@
-import { AftermathGateway, type EndpointHealth } from "@puc/aftermath";
+import {
+  AftermathGateway,
+  type EndpointHealth,
+  type SuiExecutionNetwork,
+} from "@puc/aftermath";
 import type { MakerConfig, RuntimeSnapshot } from "@puc/core";
 import {
   admitBundleProposals,
@@ -14,6 +18,7 @@ import {
 import { UserFacingError } from "./http-error.js";
 
 type GatewayOptions = {
+  network?: SuiExecutionNetwork;
   preferredEndpoint?: string;
   fallbackEndpoint?: string;
 };

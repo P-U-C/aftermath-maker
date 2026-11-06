@@ -204,36 +204,87 @@ const rewardShareSettingsSchema = z
 const defaultRewardShareSettings = (): RewardShareSettings =>
   rewardShareSettingsSchema.parse({});
 
-export const envSchema = z.object({
-  NODE_ENV: z
-    .enum(["development", "test", "production"])
-    .default("development"),
-  CONTROL_HOST: z.string().default("127.0.0.1"),
-  CONTROL_PORT: z.coerce.number().int().positive().default(8787),
-  DATABASE_PATH: z.string().default("data/maker.db"),
-  MAKER_MASTER_KEY: z.string().optional(),
-  CONTROL_TOKEN: z.string().min(24).optional(),
-  PUBLIC_ORIGIN: z.string().url().default("http://localhost:8788"),
-  WALLET_AUTH_BOOTSTRAP: z
-    .enum(["true", "false"])
-    .default("false")
-    .transform((value) => value === "true"),
-  SUI_WHITELIST_OBJECT_ID: optionalObjectId,
-  LIVE_TRADING_ENABLED: z
-    .enum(["true", "false"])
-    .default("false")
-    .transform((value) => value === "true"),
-  ALLOW_MAINNET: z
-    .enum(["true", "false"])
-    .default("false")
-    .transform((value) => value === "true"),
-  SUI_VALIDATOR_GRPC_URL: optionalUrl,
-  SUI_FALLBACK_GRPC_URL: optionalUrl,
-  AFTERMATH_INTEGRATOR_ID: optionalIntegratorId,
-  AFTERMATH_INTEGRATOR_FEE_BPS: z.coerce.number().min(0).max(5).default(1),
-});
+export const envSchema = z
+  .object({
+    NODE_ENV: z
+      .enum(["development", "test", "production"])
+      .default("development"),
+    CONTROL_HOST: z.string().default("127.0.0.1"),
+    CONTROL_PORT: z.coerce.number().int().positive().default(8787),
+    DATABASE_PATH: z.string().default("data/maker.db"),
+    MAKER_MASTER_KEY: z.string().optional(),
+    TESTNET_MAKER_MASTER_KEY: z.string().optional(),
+    CONTROL_TOKEN: z.string().min(24).optional(),
+    PUBLIC_ORIGIN: z.string().url().default("http://localhost:8788"),
+    WALLET_AUTH_BOOTSTRAP: z
+      .enum(["true", "false"])
+      .default("false")
+      .transform((value) => value === "true"),
+    SUI_WHITELIST_OBJECT_ID: optionalObjectId,
+    LIVE_TRADING_ENABLED: z
+      .enum(["true", "false"])
+      .default("false")
+      .transform((value) => value === "true"),
+    ALLOW_MAINNET: z
+      .enum(["true", "false"])
+      .default("false")
+      .transform((value) => value === "true"),
+    SUI_NETWORK: z.enum(["mainnet", "testnet"]).default("mainnet"),
+    TESTNET_EXECUTION_ENABLED: z
+      .enum(["true", "false"])
+      .default("false")
+      .transform((value) => value === "true"),
+    SUI_VALIDATOR_GRPC_URL: optionalUrl,
+    SUI_FALLBACK_GRPC_URL: optionalUrl,
+    AFTERMATH_INTEGRATOR_ID: optionalIntegratorId,
+    AFTERMATH_INTEGRATOR_FEE_BPS: z.coerce.number().min(0).max(5).default(1),
+  })
+  .superRefine((env, context) => {
+    if (env.SUI_NETWORK === "testnet" && env.MAKER_MASTER_KEY) {
+      context.addIssue({
+        code: "custom",
+        path: ["MAKER_MASTER_KEY"],
+        message:
+          "MAKER_MASTER_KEY is forbidden on Testnet; use TESTNET_MAKER_MASTER_KEY",
+      });
+    }
+    if (env.SUI_NETWORK === "mainnet" && env.TESTNET_MAKER_MASTER_KEY) {
+      context.addIssue({
+        code: "custom",
+        path: ["TESTNET_MAKER_MASTER_KEY"],
+        message:
+          "TESTNET_MAKER_MASTER_KEY is only valid when SUI_NETWORK=testnet",
+      });
+    }
+  });
 
 export type ServerEnv = z.infer<typeof envSchema>;
+
+function executionServerEnabled(env: ServerEnv): boolean {
+  return env.SUI_NETWORK === "testnet"
+    ? env.TESTNET_EXECUTION_ENABLED
+    : env.LIVE_TRADING_ENABLED && env.ALLOW_MAINNET;
+}
+
+export function executionSigningKey(env: ServerEnv): string | undefined {
+  return env.SUI_NETWORK === "testnet"
+    ? env.TESTNET_MAKER_MASTER_KEY
+    : env.MAKER_MASTER_KEY;
+}
+
+function executionUnavailableMessage(
+  env: ServerEnv,
+  operator: boolean,
+): string {
+  if (env.SUI_NETWORK === "testnet") {
+    return operator
+      ? "Testnet execution is off on this server. Set TESTNET_EXECUTION_ENABLED=true in control's Testnet environment, then recreate control."
+      : "Testnet execution is off on this server. Ask the operator.";
+  }
+  return operator
+    ? "Live is off on this server. Set LIVE_TRADING_ENABLED=true and ALLOW_MAINNET=true in control's .env, then recreate control: docker compose up -d --no-build --force-recreate control."
+    : "Live is off on this server. The operator wallet can turn it on. If you run this server, sign in with the wallet that first set it up.";
+}
 
 function secretMatches(actual: string | undefined, expected: string): boolean {
   if (!actual) return false;
@@ -480,15 +531,12 @@ export async function buildServer({
         400,
       );
     }
-    if (
-      config.mode === "live" &&
-      (!env.LIVE_TRADING_ENABLED || !env.ALLOW_MAINNET)
-    ) {
+    if (config.mode === "live" && !executionServerEnabled(env)) {
       throw new UserFacingError(
         "live-unavailable",
         operator
-          ? "Live is off on this server. Set LIVE_TRADING_ENABLED=true and ALLOW_MAINNET=true in control's .env, then recreate control: docker compose up -d --no-build --force-recreate control."
-          : "Live is off on this server. The operator wallet can turn it on. If you run this server, sign in with the wallet that first set it up.",
+          ? executionUnavailableMessage(env, true)
+          : executionUnavailableMessage(env, false),
         { kind: "bundles" },
       );
     }
@@ -587,6 +635,8 @@ export async function buildServer({
       liveGates: {
         liveTradingEnabled: env.LIVE_TRADING_ENABLED,
         mainnetAllowed: env.ALLOW_MAINNET,
+        executionNetwork: env.SUI_NETWORK,
+        testnetExecutionEnabled: env.TESTNET_EXECUTION_ENABLED,
       },
       builderCode: builderCode(),
     };
@@ -1087,8 +1137,8 @@ export async function buildServer({
         .map((bundle) => bundle.id),
     );
     const asLive = deriveOwnerBundleReadiness(scoped, venue, paperBundleIds);
-    const serverEnabled = env.LIVE_TRADING_ENABLED && env.ALLOW_MAINNET;
-    const signerReady = Boolean(env.MAKER_MASTER_KEY);
+    const serverEnabled = executionServerEnabled(env);
+    const signerReady = Boolean(executionSigningKey(env));
     return {
       bundles: bundles.map((bundle) => ({
         ...bundle,
@@ -1452,17 +1502,17 @@ export async function buildServer({
     }
     let liveReadiness: BundleReadiness | null = null;
     if (body.mode === "live") {
-      if (!env.LIVE_TRADING_ENABLED || !env.ALLOW_MAINNET) {
+      if (!executionServerEnabled(env)) {
         throw new UserFacingError(
           "live-unavailable",
           requestAuth(request).operator
-            ? "Live is off on this server. Set LIVE_TRADING_ENABLED=true and ALLOW_MAINNET=true in control's .env, then recreate control: docker compose up -d --no-build --force-recreate control."
-            : "Live is off on this server. The operator wallet can turn it on. If you run this server, sign in with the wallet that first set it up.",
+            ? executionUnavailableMessage(env, true)
+            : executionUnavailableMessage(env, false),
           { kind: "bundles" },
           409,
         );
       }
-      if (!env.MAKER_MASTER_KEY) {
+      if (!executionSigningKey(env)) {
         throw new UserFacingError(
           "live-signer-missing",
           "The control signing key is unavailable.",

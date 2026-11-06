@@ -18,9 +18,12 @@ The dev release is deliberately independent of the production stack:
 - SQLite volume: `aftermath-maker-dev_maker-dev-data`
 - Loopback port: `127.0.0.1:8789`
 - Local image: `puc/aftermath-maker:dev`
-- `control` network: `maker-dev-internal`, with no external egress
+- `control` network: `maker-dev-internal`, plus a dedicated Testnet-only
+  egress bridge for the configured Sui/Aftermath Testnet endpoints
 - Web edge: `maker-dev-edge`, used only for Nginx's loopback listener
 - `LIVE_TRADING_ENABLED=false` and `ALLOW_MAINNET=false` are Compose literals
+- `SUI_NETWORK=testnet` and `TESTNET_EXECUTION_ENABLED=true` are Compose
+  literals. This gate authorizes Testnet only; it cannot authorize Mainnet.
 
 The dev image retains its build-only dependencies to avoid a slow Docker
 snapshot on this host. Release images keep the Dockerfile default and prune
@@ -32,9 +35,18 @@ the repository `.env`. It needs only non-production values for
 `WEB_BIND_ADDRESS=127.0.0.1`, and `DEV_WEB_PORT=8789`. Do not copy a production
 master key, account setting, whitelist object, or RPC endpoint into it.
 
-The control runtime network prevents venue egress. Until the fixture control
-profile lands, this release is for UI/authentication and
-unavailable-dependency paths; it is not a funding/Paper execution environment.
+The Testnet lane uses a separate database volume and requires a fresh,
+Testnet-only control key in `TESTNET_MAKER_MASTER_KEY`. Never put
+`MAKER_MASTER_KEY`, a production master key, account cap, allowlist object, or
+Mainnet RPC endpoint in `dev.env`; Testnet control refuses to start when either
+key name is used for the wrong network. Testnet data can be wiped, has no
+value, and must not be relied on for recovery evidence.
+
+When testing execution, connect a wallet set to Sui Testnet and create fresh
+Aftermath Testnet accounts. The page's configured wallet network and the
+control's `SUI_NETWORK` must both be Testnet. Mainnet execution remains gated
+by both `LIVE_TRADING_ENABLED` and `ALLOW_MAINNET`; the dev compose file pins
+both to `false`.
 
 ## One-time host installation
 

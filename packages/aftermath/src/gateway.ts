@@ -231,13 +231,63 @@ export type HedgeReceipt = ExecutionReceipt & {
   requestedNotionalUsd: number;
 };
 
-const PUBLIC_MAINNET_GRPC = "https://fullnode.mainnet.sui.io:443";
+export type SuiExecutionNetwork = "mainnet" | "testnet";
+
+const PUBLIC_SUI_GRPC: Record<SuiExecutionNetwork, string> = {
+  mainnet: "https://fullnode.mainnet.sui.io:443",
+  testnet: "https://fullnode.testnet.sui.io:443",
+};
 const AFTERMATH_API = "https://aftermath.finance/api";
 const AFTERMATH_MAINNET_REGISTRY =
   "0xda0bd7a60182efd662b70e0de99218bbd2b6c4bbe9de23c0bb5a87ec52b37c37";
 const AFTERMATH_MAINNET_PACKAGE =
   "0x3ec740df8428aa9c93aaef7f8cc1542ac3194fd014826b51bfe245346d64efc7";
 const REWARD_MARKET_CACHE_MS = 60_000;
+
+type ProtocolTrust = {
+  protocolPackageId: string;
+  registryObjectId: string;
+};
+
+function requiredObjectId(value: string | undefined, field: string): string {
+  if (!value || !/^0x[0-9a-f]{64}$/i.test(value)) {
+    throw new Error(
+      `Aftermath ${field} is unavailable for the selected network`,
+    );
+  }
+  return value.toLowerCase();
+}
+
+async function protocolTrustFor(
+  network: SuiExecutionNetwork,
+  sdk: Aftermath,
+): Promise<ProtocolTrust> {
+  if (network === "mainnet") {
+    return {
+      protocolPackageId: AFTERMATH_MAINNET_PACKAGE,
+      registryObjectId: AFTERMATH_MAINNET_REGISTRY,
+    };
+  }
+  // Testnet deployments deliberately move independently of mainnet. The SDK
+  // supplies its versioned Testnet address manifest; validate it onchain
+  // before accepting any owner or agent transaction.
+  const perpetuals = (await sdk.getAddresses()).perpetuals as unknown as
+    | {
+        packages?: { perpetuals?: string };
+        objects?: { registry?: string };
+      }
+    | undefined;
+  return {
+    protocolPackageId: requiredObjectId(
+      perpetuals?.packages?.perpetuals,
+      "Testnet Perpetuals package",
+    ),
+    registryObjectId: requiredObjectId(
+      perpetuals?.objects?.registry,
+      "Testnet Perpetuals registry",
+    ),
+  };
+}
 
 export const totalSuiBalance = (balance: { balance: string }) =>
   Number(BigInt(balance.balance)) / 1_000_000_000;
@@ -835,17 +885,21 @@ export class AftermathGateway {
     private readonly client: SuiGrpcClient,
     public readonly endpoint: string,
     public readonly endpointHealth: EndpointHealth[],
+    private readonly protocolTrust: ProtocolTrust,
+    public readonly network: SuiExecutionNetwork,
   ) {}
 
   static async create(
     inputs: {
+      network?: SuiExecutionNetwork;
       preferredEndpoint?: string;
       fallbackEndpoint?: string;
     } = {},
   ): Promise<AftermathGateway> {
+    const network = inputs.network ?? "mainnet";
     const candidates = [
       inputs.preferredEndpoint,
-      inputs.fallbackEndpoint ?? PUBLIC_MAINNET_GRPC,
+      inputs.fallbackEndpoint ?? PUBLIC_SUI_GRPC[network],
     ].filter((value, index, all): value is string =>
       Boolean(value && all.indexOf(value) === index),
     );
@@ -858,7 +912,7 @@ export class AftermathGateway {
     for (const [index, url] of candidates.entries()) {
       const started = Date.now();
       const client = new SuiGrpcClient({
-        network: "mainnet",
+        network,
         baseUrl: url,
       });
       try {
@@ -895,10 +949,17 @@ export class AftermathGateway {
     }
 
     const sdk = await Aftermath.create({
-      network: "MAINNET",
+      network: network.toUpperCase() as "MAINNET" | "TESTNET",
       fullnodeUrl: active.url,
     });
-    return new AftermathGateway(sdk, active.client, active.url, health);
+    return new AftermathGateway(
+      sdk,
+      active.client,
+      active.url,
+      health,
+      await protocolTrustFor(network, sdk),
+      network,
+    );
   }
 
   async listMarkets(collateralCoinType: string): Promise<MarketSummary[]> {
@@ -1376,19 +1437,18 @@ export class AftermathGateway {
   }> {
     this.ownerTrustPromise ??= this.client
       .getObject({
-        objectId: AFTERMATH_MAINNET_REGISTRY,
+        objectId: this.protocolTrust.registryObjectId,
         include: { content: true },
       })
       .then((result) => {
-        const expectedType = `${AFTERMATH_MAINNET_PACKAGE}::registry::Registry`;
+        const expectedType = `${this.protocolTrust.protocolPackageId}::registry::Registry`;
         if (result.object?.type !== expectedType) {
           throw new Error(
-            "Pinned Aftermath registry does not match the expected mainnet package",
+            "Pinned Aftermath registry does not match the selected network package",
           );
         }
         return {
-          protocolPackageId: AFTERMATH_MAINNET_PACKAGE,
-          registryObjectId: AFTERMATH_MAINNET_REGISTRY,
+          ...this.protocolTrust,
         };
       });
     return this.ownerTrustPromise;
@@ -1402,7 +1462,7 @@ export class AftermathGateway {
     }
     if (
       market.marketData.packageId.toLowerCase() !==
-      AFTERMATH_MAINNET_PACKAGE.toLowerCase()
+      this.protocolTrust.protocolPackageId.toLowerCase()
     ) {
       throw new Error("Market is not owned by the pinned Aftermath package");
     }
@@ -2313,6 +2373,9 @@ export class AftermathGateway {
     transaction: string;
     expectedIntegratorId: number;
   }> {
+    if (this.network !== "mainnet") {
+      throw new Error("Integrator registration is unavailable on Testnet");
+    }
     const response = await fetch(
       "https://aftermath.finance/api/perpetuals/builder-codes/transactions/create-integrator-registration",
       {
