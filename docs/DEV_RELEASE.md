@@ -51,8 +51,10 @@ evidence.
 
 ## Testnet smoke prerequisite
 
-The `testnet-smoke` Compose profile is a read-only prerequisite gate. Run it
-after a dev deployment with:
+The `testnet-smoke` Compose profile is a read-only prerequisite gate. The dev
+deploy helper runs it once after each changed SHA is publicly healthy; a smoke
+failure is reported in the deploy-service journal without rolling back the
+reachable development build. Run it manually with:
 
 ```bash
 sudo MAKER_DEV_ENV_FILE=/etc/aftermath-maker/dev.env \
@@ -63,10 +65,10 @@ sudo MAKER_DEV_ENV_FILE=/etc/aftermath-maker/dev.env \
 ```
 
 It fails closed unless control, Sui Testnet RPC, Aftermath's Testnet faucet,
-and at least one Testnet USDC perpetual market are all available. It never
-signs, broadcasts, creates an account, or requests faucet funds. The next,
-separate execution smoke will use a disposable Testnet owner only after this
-gate is green.
+and at least one Testnet USDC perpetual market are all available. Its error
+names the failing venue-discovery stage. It never signs, broadcasts, creates
+an account, or requests faucet funds. The separate execution smoke will use a
+disposable Testnet owner only after this gate is green.
 
 For a new Testnet volume with no allowlist, set
 `TESTNET_BOOTSTRAP_OPERATOR_ADDRESS` to the one intended Testnet wallet address

@@ -59,7 +59,18 @@ export VCS_REF="$sha"
 for _attempt in $(seq 1 30); do
   if curl --fail --silent --show-error --max-time 3 \
     http://127.0.0.1:8789/ >/dev/null; then
-    echo "Maker dev deployed $sha"
+    # This only runs after an actual new commit deploys: the early-return above
+    # keeps the one-minute timer from repeatedly consuming Testnet resources.
+    # It is deliberately read-only until the venue prerequisite proves that
+    # disposable-account execution is available.
+    if "${compose[@]}" --profile smoke run --rm --no-deps testnet-smoke; then
+      echo "Maker dev deployed $sha; Testnet prerequisite smoke passed"
+    else
+      # The web release remains reachable for diagnosis, but never claim that
+      # this SHA has passed Testnet verification when a public dependency is
+      # unavailable. A later changed SHA runs the gate again.
+      echo "Maker dev deployed $sha, but Testnet prerequisite smoke failed" >&2
+    fi
     exit 0
   fi
   sleep 2
