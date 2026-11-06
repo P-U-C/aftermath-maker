@@ -3,7 +3,7 @@
 `dev` is Maker's integration branch. Open normal pull requests against it;
 the fast `maker-dev-gate` must pass before merge. The host then polls `dev`
 once per minute and deploys a new commit to
-`https://dev.maker.permanentupperclass.com`.
+`https://maker-dev.permanentupperclass.com`.
 
 `main` remains the release branch. Promote a tested `dev` commit to `main`,
 then run the manual **Maker release gate** before a production deployment.
@@ -28,7 +28,7 @@ those dependencies.
 
 The dev environment file is `/etc/aftermath-maker/dev.env` (mode `0600`), not
 the repository `.env`. It needs only non-production values for
-`CONTROL_TOKEN`, `PUBLIC_ORIGIN=https://dev.maker.permanentupperclass.com`,
+`CONTROL_TOKEN`, `PUBLIC_ORIGIN=https://maker-dev.permanentupperclass.com`,
 `WEB_BIND_ADDRESS=127.0.0.1`, and `DEV_WEB_PORT=8789`. Do not copy a production
 master key, account setting, whitelist object, or RPC endpoint into it.
 
@@ -53,7 +53,7 @@ sudo nginx -t && sudo systemctl reload nginx
 sudo systemctl start aftermath-maker-dev-deploy.service
 ```
 
-Create the DNS record for `dev.maker.permanentupperclass.com` to this host
+Create the DNS record for `maker-dev.permanentupperclass.com` to this host
 before external verification. Keep the existing Basic Auth file in place.
 
 Use these diagnostics after a merge:
