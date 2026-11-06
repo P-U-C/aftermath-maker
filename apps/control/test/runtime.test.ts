@@ -1655,7 +1655,8 @@ describe("runtime execution boundaries", () => {
     harness.store.close();
   });
 
-  it("pauses quoting until attributed fill history appears in account positions", async () => {
+  it("cancels quotes and keeps reconciling when attributed fills arrive before account positions", async () => {
+    vi.useFakeTimers();
     const harness = createHarness();
     const hedgeSetup = setupSchema.parse({
       ownerAddress: `0x${"1".repeat(64)}`,
@@ -1740,11 +1741,23 @@ describe("runtime execution boundaries", () => {
 
     expect(harness.executions()).toBe(0);
     expect(harness.hedgeExecutions()).toBe(0);
+    const cancellationsAfterInitialReconciliation = harness.cancellations();
+    expect(cancellationsAfterInitialReconciliation).toBeGreaterThan(0);
     expect(harness.tenant.listEvents(10)).toContainEqual(
       expect.objectContaining({
         action: "position-attribution-reconciliation",
         outcome: "waiting",
       }),
+    );
+
+    await vi.advanceTimersByTimeAsync(11_000);
+    await harness.runtime.cycle({ executeLive: true });
+
+    expect(harness.runtime.snapshot.running).toBe(true);
+    expect(harness.runtime.snapshot.lastError).toBeNull();
+    expect(harness.hedgeExecutions()).toBe(0);
+    expect(harness.cancellations()).toBe(
+      cancellationsAfterInitialReconciliation,
     );
 
     makerInventoryUsd = 30;

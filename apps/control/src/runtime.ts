@@ -2064,7 +2064,10 @@ export class MakerRuntime {
         });
       }
     }
-    if (!pendingFills.length) return true;
+    if (!pendingFills.length) {
+      this.awaitingPositionAttribution.delete(attributionKey);
+      return true;
+    }
 
     const fillKeys = pendingFills.map(hedgeFillKey);
     const completionToleranceUsd = Math.min(
@@ -2082,6 +2085,22 @@ export class MakerRuntime {
         this.awaitingPositionAttribution.get(attributionKey);
       if (positionWaitingSince === undefined) {
         this.awaitingPositionAttribution.set(attributionKey, now);
+        // A confirmed Maker fill means the active quote is no longer safe to
+        // leave open, even when the account-index read has not caught up yet.
+        // Stop new exposure first, then reconcile without a short deadline.
+        const cancelled = await this.cancelOpenOrders(inputs.config, {
+          attempts: 3,
+          retryDelayMs: 750,
+          marketIds: [inputs.selected.marketId],
+        });
+        if (!cancelled) {
+          throw new Error(
+            `Could not confirm cancellation of ${inputs.selected.symbol} quotes while waiting for its filled position`,
+          );
+        }
+        if (this.activeQuote?.marketId === inputs.selected.marketId) {
+          this.clearActiveQuoteState();
+        }
         this.store.logEvent({
           category: "hedge",
           action: "position-attribution-reconciliation",
@@ -2090,12 +2109,9 @@ export class MakerRuntime {
             marketId: inputs.selected.marketId,
             combinedDeltaUsd,
             attributedDeltaUsd: pendingDeltaUsd,
+            makerQuotesCancelled: true,
           },
         });
-      } else if (now - positionWaitingSince >= 10_000) {
-        throw new Error(
-          `Hedge blocked: $${Math.abs(pendingDeltaUsd).toFixed(4)} of attributed fills is not visible in account positions`,
-        );
       }
       this.snapshotValue.hedge.state = "waiting";
       return false;

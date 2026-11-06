@@ -44,6 +44,70 @@ const result = {
 };
 
 describe("gateway execution evidence", () => {
+  it("validates a hedge against the same market snapshot used to build it", async () => {
+    let marketReads = 0;
+    let inspectedIntent:
+      import("../src/transaction-intent.js").AgentTransactionIntent | undefined;
+    const market = {
+      indexPrice: 100,
+      marketParams: { tickSize: "1" },
+      marketData: { packageId: "0xpackage" },
+      roundToValidSizeBigInt: ({ size }: { size: number }) =>
+        BigInt(Math.floor(size * 100)),
+      roundToValidPriceBigInt: ({ price }: { price: number }) =>
+        BigInt(Math.ceil(price * 100)),
+    };
+    const gateway = {
+      findAccountCap: async () => ({
+        objectId: "0xcap",
+        accountObjectId: "0xaccount",
+      }),
+      sdk: {
+        Perpetuals: () => ({
+          getAccount: async () => ({
+            account: {
+              account: { positions: [] },
+              getPlaceMarketOrderTx: async () => ({
+                tx: { setSender: () => undefined },
+              }),
+            },
+          }),
+        }),
+      },
+      getMarket: async () => {
+        marketReads += 1;
+        return market;
+      },
+      inspectTransaction: async ({
+        intent,
+      }: {
+        intent: import("../src/transaction-intent.js").AgentTransactionIntent;
+      }) => {
+        inspectedIntent = intent;
+      },
+      mutationQueue: () => ({ run: async (task: () => unknown) => task() }),
+      client: {
+        signAndExecuteTransaction: async () => result,
+      },
+      endpoint: "test",
+    };
+
+    await AftermathGateway.prototype.executeHedge.call(gateway as never, {
+      setup: { accountId: "42", collateralCoinType: "USDC" },
+      config: { maxLeverage: 1 },
+      signer: { toSuiAddress: () => `0x${"1".repeat(64)}` },
+      marketId: "0xmarket",
+      deltaUsd: -10,
+      maxOrderUsd: 20,
+      maxSlippage: 0.01,
+      builderCode: null,
+      shouldContinue: () => true,
+    });
+
+    expect(marketReads).toBe(1);
+    expect(inspectedIntent?.orders[0]).toMatchObject({ maxPrice: 10_102n });
+  });
+
   it("sums fake daily market stats once per taker-side market volume", async () => {
     const gateway = {
       dailyVolumeCache: new Map(),
