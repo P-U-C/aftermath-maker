@@ -1,0 +1,10 @@
+[Unit]
+Description=Build and deploy the Maker dev branch locally
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# Installed once from deploy/maker-dev-deploy.sh so it can bootstrap the
+# checkout before /home/ubuntu/aftermath-maker-dev exists.
+ExecStart=/usr/local/sbin/maker-dev-deploy

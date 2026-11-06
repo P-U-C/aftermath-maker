@@ -8,6 +8,9 @@ The current strategy is inventory-aware quoting with an optional fill-driven hed
 
 Hosted service: [maker.permanentupperclass.com](https://maker.permanentupperclass.com)
 
+For the isolated integration deployment and promotion path, see the
+[development release guide](docs/DEV_RELEASE.md).
+
 ## External review
 
 The repository is public for independent review. Start with the [external audit guide](docs/REVIEW_GUIDE.md), then inspect the [October 27 remediation ledger](audits/2026-10-27-external/REMEDIATION.md), [security model](SECURITY.md), [mainnet evidence](audits/2026-10-27-mainnet/EVIDENCE.md), and [latest live-testing iteration](audits/2026-10-27-mainnet/ITERATION-5.md). The immutable audited baseline is the `external-audit-v1` tag.
