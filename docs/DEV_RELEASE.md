@@ -29,6 +29,10 @@ The dev image retains its build-only dependencies to avoid a slow Docker
 snapshot on this host. Release images keep the Dockerfile default and prune
 those dependencies.
 
+The deploy service force-recreates web and control after a changed commit. The
+local `puc/aftermath-maker:dev` tag is mutable by design, so this is what makes
+the running containers advance to the just-built, SHA-labelled image.
+
 The dev environment file is `/etc/aftermath-maker/dev.env` (mode `0600`), not
 the repository `.env`. It needs only non-production values for
 `CONTROL_TOKEN`, `PUBLIC_ORIGIN=https://maker-dev.permanentupperclass.com`,
