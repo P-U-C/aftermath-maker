@@ -97,6 +97,42 @@ Stop and flatten are deliberately separate:
 
 ## Automated verification
 
+### Pull-request gate
+
+The required GitHub check is **`maker-pr-gate`**. It runs on Node 22.22.0
+with both Live gates explicitly false, installs the Chromium revision matched
+to `playwright-core`, and owns the web server used by the browser fixtures.
+It executes the clean-lockfile install, formatting, hook lint, type checks,
+all workspace tests, production build, fixture journey, contrast audit, and
+wallet pre-authorisation and screenshot audits. It runs the Move package tests
+in `mysten/sui-tools@sha256:bd90eaa5ca94d880ee4d6ac232a36b21d3b52d5ef95e3178b7fb0a148d85fe59`,
+builds the Docker image with the source SHA, and runs the production dependency
+audit.
+
+The workflow has read-only repository permission and contains no publishing,
+deployment, signing, or venue credentials. Browser artifacts are fixture-only
+and retained for seven days. Repository administrators must require
+`maker-pr-gate` and a review before merge; verify that boundary with a
+deliberately failing pull request before treating it as enforced.
+
+Run the same checks locally:
+
+```bash
+npm ci
+node node_modules/playwright-core/cli.js install chromium
+export CHROMIUM_PATH="$HOME/.cache/ms-playwright/chromium-$(node -p 'require("./node_modules/playwright-core/browsers.json").browsers.find(browser => browser.name === "chromium").revision')/chrome-linux64/chrome"
+npm run check
+npm run audit:shots
+docker build --build-arg VCS_REF="$(git rev-parse HEAD)" --tag maker:local .
+npm audit --omit=dev --audit-level=high
+```
+
+`audit:ui`, `audit:preauth`, and `audit:shots` start a built local web server
+themselves and fail rather than borrowing a process already listening on their
+port. They intercept fixture control calls in the browser; this is UI evidence,
+not proof of a deployed control service. The isolated control/fixture smoke is
+the next staging release gate.
+
 Run:
 
 ```bash

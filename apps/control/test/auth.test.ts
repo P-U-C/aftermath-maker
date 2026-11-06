@@ -66,7 +66,10 @@ describe("wallet authentication", () => {
     expect(auth.isOperator("0xabc")).toBe(true);
     expect(auth.isOperator(`0x${"0".repeat(61)}AbC`)).toBe(true);
     const { address } = zkLoginFixture();
-    store.setSystemSetting("operator_address", `0x${address.slice(2).replace(/^0+/, "")}`);
+    store.setSystemSetting(
+      "operator_address",
+      `0x${address.slice(2).replace(/^0+/, "")}`,
+    );
     expect(auth.isOperator(`0x${address.slice(2).toUpperCase()}`)).toBe(true);
     store.close();
   });

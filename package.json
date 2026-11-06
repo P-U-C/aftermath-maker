@@ -13,11 +13,13 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "lint": "eslint \"apps/**/*.{ts,tsx}\" \"packages/**/*.{ts,tsx}\"",
-    "audit:ui": "node apps/web/e2e/contrast-audit.mjs",
+    "audit:ui": "node scripts/run-web-e2e.mjs contrast",
+    "audit:preauth": "node scripts/run-web-e2e.mjs preauth",
+    "audit:shots": "node scripts/run-web-e2e.mjs shots",
     "audit:journey": "node apps/web/e2e/user-journey.mjs --spawn-server",
     "test": "npm run test -w @puc/core && npm run test -w @puc/aftermath && npm run test -w @puc/control && npm run test -w @puc/web",
     "typecheck": "tsc -b packages/core packages/aftermath apps/control --pretty false && npm run typecheck -w @puc/web",
-    "check": "npm run format:check && npm run typecheck && npm test && npm run build && npm run audit:journey"
+    "check": "npm run format:check && npm run lint && npm run typecheck && npm test && npm run build && npm run audit:journey && npm run audit:ui && npm run audit:preauth"
   },
   "engines": {
     "node": ">=22"
