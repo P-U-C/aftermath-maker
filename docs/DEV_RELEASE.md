@@ -15,15 +15,15 @@ evidence.
 The dev release is deliberately independent of the production stack:
 
 - Compose project: `aftermath-maker-dev`
-- SQLite volume: `aftermath-maker-dev_maker-dev-testnet-data`
+- SQLite volume: `aftermath-maker-dev_maker-dev-shadow-data`
 - Loopback port: `127.0.0.1:8789`
 - Local image: `puc/aftermath-maker:dev`
-- `control` network: `maker-dev-internal`, plus a dedicated Testnet-only
-  egress bridge for the configured Sui/Aftermath Testnet endpoints
+- `control` network: `maker-dev-internal`, plus a dedicated Mainnet public-data
+  egress bridge. It receives no Mainnet signing key.
 - Web edge: `maker-dev-edge`, used only for Nginx's loopback listener
 - `LIVE_TRADING_ENABLED=false` and `ALLOW_MAINNET=false` are Compose literals
-- `SUI_NETWORK=testnet` and `TESTNET_EXECUTION_ENABLED=true` are Compose
-  literals. This gate authorizes Testnet only; it cannot authorize Mainnet.
+- `SUI_NETWORK=mainnet` is a Compose literal for market-data Paper/shadow.
+  Both Mainnet Live gates remain Compose literals set to `false`.
 
 The dev image retains its build-only dependencies to avoid a slow Docker
 snapshot on this host. Release images keep the Dockerfile default and prune
@@ -33,55 +33,29 @@ The deploy service force-recreates web and control after a changed commit. The
 local `puc/aftermath-maker:dev` tag is mutable by design, so this is what makes
 the running containers advance to the just-built, SHA-labelled image.
 
-The dev environment file is `/etc/aftermath-maker/dev.env` (mode `0600`), not
-the repository `.env`. It needs only non-production values for
+The Mainnet Paper/shadow environment file is
+`/etc/aftermath-maker/dev-shadow.env` (mode `0600`), not the repository `.env`.
+It needs only non-production values for
 `CONTROL_TOKEN`, `PUBLIC_ORIGIN=https://maker-dev.permanentupperclass.com`,
 `WEB_BIND_ADDRESS=127.0.0.1`, and `DEV_WEB_PORT=8789`. Do not copy a production
 master key, account setting, whitelist object, or RPC endpoint into it.
 
-The Testnet lane uses a separate database volume and requires a fresh,
-Testnet-only control key in `TESTNET_MAKER_MASTER_KEY`. If an on-chain access
-list is used, configure only `TESTNET_SUI_WHITELIST_OBJECT_ID`. Never put
-`MAKER_MASTER_KEY`, `SUI_WHITELIST_OBJECT_ID`, a production master key, account
-cap, allowlist object, or Mainnet RPC endpoint in `dev.env`; Testnet control
-refuses to start when a Mainnet secret or allowlist is configured for Testnet.
-The prior fixture-era `maker-dev-data` volume is retained but never mounted.
-Testnet data can be wiped, has no value, and must not be relied on for recovery
-evidence.
+The shadow lane gets a fresh database volume and its environment contains no
+`MAKER_MASTER_KEY`, Testnet key, account cap, or allowlist object. The prior
+Testnet and fixture volumes are retained but never mounted. A future Mainnet
+canary uses a separate, explicitly enabled host configuration and dedicated
+wallet; it is not part of this Compose file.
 
-## Testnet smoke prerequisite
+## Testnet diagnostic
 
-The `testnet-smoke` Compose profile is a read-only prerequisite gate. The dev
-deploy helper runs it once after each changed SHA is publicly healthy; a smoke
-failure is reported in the deploy-service journal without rolling back the
-reachable development build. Run it manually with:
+Aftermath has advised that Perpetuals Testnet is not a reliable execution
+staging surface. The Testnet preflight remains a manual diagnostic only; it is
+not run by dev deploys and cannot authorize execution.
 
-```bash
-sudo MAKER_DEV_ENV_FILE=/etc/aftermath-maker/dev.env \
-  docker compose --project-name aftermath-maker-dev \
-  --env-file /etc/aftermath-maker/dev.env \
-  -f /home/ubuntu/aftermath-maker-dev/docker-compose.dev.yml \
-  --profile smoke run --rm testnet-smoke
-```
+It never signs, broadcasts, creates an account, or requests faucet funds.
 
-It fails closed unless control, Sui Testnet RPC, Aftermath's Testnet faucet,
-and at least one Testnet USDC perpetual market are all available. Its error
-names the failing venue-discovery stage. It never signs, broadcasts, creates
-an account, or requests faucet funds. The separate execution smoke will use a
-disposable Testnet owner only after this gate is green.
-
-For a new Testnet volume with no allowlist, set
-`TESTNET_BOOTSTRAP_OPERATOR_ADDRESS` to the one intended Testnet wallet address
-(a public `0x…` address). Only that wallet may claim the initial operator
-session; the service never makes the first wallet that reaches this public host
-an operator. Remove the setting after the operator has set up an on-chain
-Testnet allowlist.
-
-When testing execution, connect a wallet set to Sui Testnet and create fresh
-Aftermath Testnet accounts. The page's configured wallet network and the
-control's `SUI_NETWORK` must both be Testnet. Mainnet execution remains gated
-by both `LIVE_TRADING_ENABLED` and `ALLOW_MAINNET`; the dev compose file pins
-both to `false`.
+Mainnet execution remains gated by both `LIVE_TRADING_ENABLED` and
+`ALLOW_MAINNET`; the shadow Compose file pins both to `false`.
 
 ## One-time host installation
 

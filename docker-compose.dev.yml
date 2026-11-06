@@ -9,7 +9,7 @@ services:
       context: .
       args:
         VCS_REF: ${VCS_REF:-unknown}
-        SUI_NETWORK: testnet
+        SUI_NETWORK: mainnet
         # Avoid Docker's slow final prune snapshot for this local-only image.
         # The release build keeps the production default of false.
         KEEP_DEV_DEPENDENCIES: "true"
@@ -36,12 +36,14 @@ services:
       # A bad local environment file cannot make the dev stack trade live.
       LIVE_TRADING_ENABLED: "false"
       ALLOW_MAINNET: "false"
-      SUI_NETWORK: testnet
-      TESTNET_EXECUTION_ENABLED: "true"
+      # Development follows public Mainnet data in Paper/shadow mode only.
+      # These hard literals prevent a host environment from enabling Live.
+      SUI_NETWORK: mainnet
+      TESTNET_EXECUTION_ENABLED: "false"
     volumes:
-      # Preserve the previous fixture-era database. Testnet gets its own
-      # clean state and can never reuse a Mainnet or fixture registry.
-      - maker-dev-testnet-data:/data
+      # Shadow state is isolated from both production and the retired Testnet
+      # lane. It contains no Mainnet signing key.
+      - maker-dev-shadow-data:/data
     healthcheck:
       test:
         [
@@ -56,9 +58,9 @@ services:
       start_period: 20s
     networks:
       - maker-dev-internal
-      # Testnet only. This is the sole dev service with venue egress; it has
-      # no Mainnet route configured and never receives a production key.
-      - maker-dev-testnet
+      # The only service permitted public Mainnet market-data egress. It has
+      # no signer and both Live gates remain hard-off above.
+      - maker-dev-mainnet
 
   web:
     image: puc/aftermath-maker:dev
@@ -93,36 +95,8 @@ services:
       # loopback; control remains on the no-egress network below.
       - maker-dev-edge
 
-  # Run manually or from the post-deploy smoke service with
-  # `docker compose --profile smoke run --rm testnet-smoke`. It is not part of
-  # the normal web/control lifecycle and performs read-only prerequisite checks.
-  testnet-smoke:
-    image: puc/aftermath-maker:dev
-    profiles: ["smoke"]
-    command: ["npm", "run", "smoke:testnet:preflight", "-w", "@puc/control"]
-    restart: "no"
-    read_only: true
-    init: true
-    cap_drop:
-      - ALL
-    security_opt:
-      - no-new-privileges:true
-    tmpfs:
-      - /tmp:rw,noexec,nosuid,size=64m,mode=1777
-    env_file:
-      - ${MAKER_DEV_ENV_FILE:?MAKER_DEV_ENV_FILE is required}
-    environment:
-      SUI_NETWORK: testnet
-      CONTROL_SMOKE_URL: http://control:8787
-    depends_on:
-      control:
-        condition: service_healthy
-    networks:
-      - maker-dev-internal
-      - maker-dev-testnet
-
 volumes:
-  maker-dev-testnet-data:
+  maker-dev-shadow-data:
 
 networks:
   # Application containers can communicate with one another but cannot reach
@@ -132,5 +106,5 @@ networks:
     internal: true
   maker-dev-edge:
     driver: bridge
-  maker-dev-testnet:
+  maker-dev-mainnet:
     driver: bridge
