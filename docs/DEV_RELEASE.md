@@ -7,6 +7,8 @@ once per minute and deploys a new commit to
 
 `main` remains the release branch. Promote a tested `dev` commit to `main`,
 then run the manual **Maker release gate** before a production deployment.
+That release gate, not this fast dev path, produces SBOM and provenance
+evidence.
 
 ## Isolation
 
