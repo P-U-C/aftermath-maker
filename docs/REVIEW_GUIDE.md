@@ -97,23 +97,26 @@ Stop and flatten are deliberately separate:
 
 ## Automated verification
 
-### Pull-request gate
+### Development and release gates
 
-The required GitHub check is **`maker-pr-gate`**. It runs on Node 22.22.0
-with both Live gates explicitly false, installs the Chromium revision matched
-to `playwright-core`, and owns the web server used by the browser fixtures.
-It executes the clean-lockfile install, formatting, hook lint, type checks,
-all workspace tests, production build, fixture journey, contrast audit, and
-wallet pre-authorisation and screenshot audits. It runs the Move package tests
-in `mysten/sui-tools@sha256:bd90eaa5ca94d880ee4d6ac232a36b21d3b52d5ef95e3178b7fb0a148d85fe59`,
-builds the Docker image with the source SHA, and runs the production dependency
-audit.
+The required pull-request check is **`maker-dev-gate`**. It runs on Node
+22.22.0 with both Live gates explicitly false, then runs the clean-lockfile
+install, formatting, hook lint, type checks, all workspace tests, and the
+production build. It intentionally excludes browser fixtures, screenshots,
+Move, Docker, and dependency audit so an iteration gets feedback quickly.
 
-The workflow has read-only repository permission and contains no publishing,
+**`maker-release-gate`** is a manual workflow-dispatch release boundary. It
+adds the fixture journey, contrast, wallet pre-authorisation and screenshot
+audits, Move package tests in
+`mysten/sui-tools@sha256:bd90eaa5ca94d880ee4d6ac232a36b21d3b52d5ef95e3178b7fb0a148d85fe59`,
+immutable Docker build, and production dependency audit. Run it before a
+staging or production promotion, not for every development push.
+
+Both workflows have read-only repository permission and contain no publishing,
 deployment, signing, or venue credentials. Browser artifacts are fixture-only
 and retained for seven days. Repository administrators must require
-`maker-pr-gate` and a review before merge; verify that boundary with a
-deliberately failing pull request before treating it as enforced.
+`maker-dev-gate` before merge; verify that boundary with a deliberately failing
+pull request before treating it as enforced.
 
 Run the same checks locally:
 
