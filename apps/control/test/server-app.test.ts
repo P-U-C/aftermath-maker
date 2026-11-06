@@ -74,6 +74,51 @@ describe("injectable control app", () => {
     }
   });
 
+  it("provisions and authorizes an agent with only the Testnet key", async () => {
+    const harness = await appHarness({
+      env: {
+        SUI_NETWORK: "testnet",
+        TESTNET_MAKER_MASTER_KEY: Buffer.alloc(32).toString("base64"),
+      },
+    });
+    try {
+      const headers = harness.signedInAs();
+      const setup = {
+        ownerAddress: OWNER,
+        accountId: "1796",
+        accountCapId: `0x${"4".repeat(64)}`,
+        collateralCoinType: "0x2::sui::SUI",
+      };
+      const provision = await harness.app.inject({
+        method: "POST",
+        url: "/api/setup/provision",
+        headers,
+        payload: setup,
+      });
+      expect(provision.statusCode).toBe(200);
+
+      const grant = await harness.app.inject({
+        method: "POST",
+        url: "/api/setup/grant-transaction",
+        headers,
+        payload: { accountId: setup.accountId },
+      });
+      expect(grant.statusCode).toBe(200);
+      expect(harness.gateway.calls).toContainEqual(
+        expect.objectContaining({
+          method: "buildGrantAgentTransaction",
+          args: [
+            expect.objectContaining({
+              builderCode: null,
+            }),
+          ],
+        }),
+      );
+    } finally {
+      await harness.close();
+    }
+  });
+
   it("keeps route declarations out of the process boot file", () => {
     const boot = readFileSync(
       new URL("../src/server.ts", import.meta.url),

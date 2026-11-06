@@ -348,6 +348,17 @@ export class FakeGateway {
       this.prepare("gas-top-up", inputs),
     );
   }
+
+  async buildGrantAgentTransaction(inputs: any) {
+    return this.invoke("buildGrantAgentTransaction", [inputs], async () => {
+      const tx = new Transaction();
+      tx.setSender(inputs.setup.ownerAddress);
+      return {
+        transaction: await tx.toJSON(),
+        intent: JSON.stringify({ kind: "grant-agent" }),
+      };
+    });
+  }
 }
 
 export async function appHarness(

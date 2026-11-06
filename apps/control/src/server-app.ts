@@ -2297,8 +2297,13 @@ export async function buildServer({
   });
 
   app.post("/api/setup/provision", async (request) => {
-    if (!env.MAKER_MASTER_KEY) {
-      throw new Error("MAKER_MASTER_KEY is not configured");
+    const signingKey = executionSigningKey(env);
+    if (!signingKey) {
+      throw new Error(
+        env.SUI_NETWORK === "testnet"
+          ? "TESTNET_MAKER_MASTER_KEY is not configured"
+          : "MAKER_MASTER_KEY is not configured",
+      );
     }
     const identity = requestAuth(request);
     const scoped = tenant(request);
@@ -2308,7 +2313,7 @@ export async function buildServer({
     }
     scoped.setSetup(setup);
     const created = createEncryptedAgent({
-      masterKey: env.MAKER_MASTER_KEY,
+      masterKey: signingKey,
       context: (agentAddress) =>
         agentEncryptionContext({
           ownerAddress: identity.ownerAddress,
@@ -2356,7 +2361,7 @@ export async function buildServer({
       );
 
     const fee = builderCode();
-    if (!fee) {
+    if (!fee && env.SUI_NETWORK !== "testnet") {
       throw new UserFacingError(
         "builder-registration-required",
         "Venue fee registration is not complete. Ask the operator to complete setup before continuing.",
@@ -2397,7 +2402,7 @@ export async function buildServer({
       );
 
     const fee = builderCode();
-    if (!fee) {
+    if (!fee && env.SUI_NETWORK !== "testnet") {
       throw new UserFacingError(
         "builder-registration-required",
         "Venue fee registration is not complete. Ask the operator to complete setup before continuing.",
