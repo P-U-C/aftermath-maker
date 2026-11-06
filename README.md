@@ -106,6 +106,10 @@ Do not advance merely because the date arrived. Require at least 25 independentl
 
 Risk profile and strategy objective are separate controls. Cautious, Balanced, and Active govern execution intensity. The objective determines how eligible markets are ranked and which bounded policy is staged:
 
+**New strategy default — Inventory recycling.** New strategies start with the Balanced profile and Both objective in Paper mode. Maker posts inventory-aware quotes on both sides of the selected markets and restricts exposure through the existing per-market, gross, and drawdown limits. The current market IDs are retained when starting a new strategy, but previous per-market size, spread, inventory, and leverage overrides are cleared. A new strategy is unattached; it does not change an existing bundle or start Live trading. Review the inherited market list before attaching it. A separate account hedge is off by default.
+
+This template is informed by a historical account that traded both sides of many markets and nearly covered its execution fees before rewards. Its exact quote placement, gas bill, unfilled orders, and reward weights were not observable. The template does not copy its fill sizes, force a maker/taker ratio, assume equal rewards per market, or include predicted rewards in the trading result. Evaluate the strategy with actual wallet-paid gas and a zero-reward scenario before any Live deployment.
+
 - **Farming** favors reported turnover and reward signals per dollar of near-book capital. High turnover can rank first when the measured economics support it.
 - **Profit** favors positive half-spread after the live market maker fee and Maker's builder fee, then discounts weak depth, large price movement, and funding risk.
 - **Both** requires positive pre-risk fill edge and ranks the harmonic mean of Farming and Profit scores so one strong dimension cannot completely hide the other.

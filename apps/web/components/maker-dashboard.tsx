@@ -87,6 +87,10 @@ import {
   type RunStopState,
 } from "../lib/run-state";
 import { hedgeSizingSuggestion } from "../lib/hedge-suggestion";
+import {
+  INVENTORY_RECYCLING_NAME,
+  inventoryRecyclingDefault,
+} from "../lib/inventory-recycling-default";
 import { strategyIssueFromServer } from "../lib/strategy-validation";
 import { mergeStrategyReads } from "../lib/strategy-snapshots";
 import {
@@ -1862,12 +1866,19 @@ function DashboardBody() {
   async function createStrategy() {
     if (createStrategyInFlight.current) return;
     createStrategyInFlight.current = true;
+    const startingConfig = inventoryRecyclingDefault(
+      defaultConfig,
+      config.markets,
+    );
     const names = new Set(
       strategies.map((strategy) => strategy.name.toLowerCase()),
     );
     let sequence = 1;
-    while (names.has(`strategy ${sequence}`)) sequence += 1;
-    const sourceName = selectedStrategy?.name ?? "your current strategy";
+    const presetName = () =>
+      sequence === 1
+        ? INVENTORY_RECYCLING_NAME
+        : `${INVENTORY_RECYCLING_NAME} ${sequence}`;
+    while (names.has(presetName().toLowerCase())) sequence += 1;
     let createdId: string | null = null;
     try {
       await mutate("create-strategy", async () => {
@@ -1879,13 +1890,15 @@ function DashboardBody() {
               {
                 method: "POST",
                 body: JSON.stringify({
-                  name: `Strategy ${sequence}`,
-                  config: strategySettingsFromConfig(config),
+                  name: presetName(),
+                  config: strategySettingsFromConfig(startingConfig),
                   marketRule: {
                     kind: "preferred-list",
-                    marketIds: config.markets.map((market) => market.marketId),
+                    marketIds: startingConfig.markets.map(
+                      (market) => market.marketId,
+                    ),
                   },
-                  markets: config.markets,
+                  markets: startingConfig.markets,
                 }),
               },
             );
@@ -1896,7 +1909,7 @@ function DashboardBody() {
             )
               throw error;
             sequence += 1;
-            while (names.has(`strategy ${sequence}`)) sequence += 1;
+            while (names.has(presetName().toLowerCase())) sequence += 1;
           }
         }
         if (!result)
@@ -1907,7 +1920,10 @@ function DashboardBody() {
         setStrategies((current) => [result.strategy, ...current]);
         if (!(await selectStrategy(result.strategy.id))) return;
         createdId = result.strategy.id;
-        setNewStrategySource({ id: result.strategy.id, name: sourceName });
+        setNewStrategySource({
+          id: result.strategy.id,
+          name: INVENTORY_RECYCLING_NAME,
+        });
         setStrategyEditing(true);
         setStrategyStep(0);
         setNotice(
@@ -6810,8 +6826,10 @@ function DashboardBody() {
                   )}
                 {newStrategySource?.id === selectedStrategyId && (
                   <p className="strategy-new-context">
-                    Starts from {newStrategySource.name}&apos;s settings.
-                    Nothing changes for your bundles until you attach it.
+                    Starts from the {newStrategySource.name} Paper preset. It
+                    keeps the current market list but clears custom market
+                    settings. Rewards are unverified. Nothing changes for your
+                    bundles until you attach it.
                   </p>
                 )}
               </div>
