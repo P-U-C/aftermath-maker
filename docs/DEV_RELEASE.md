@@ -71,8 +71,8 @@ sudo systemctl restart cloudflared-radar.service
 ```
 
 In Cloudflare DNS, make the hostname a proxied CNAME to the existing tunnel
-(`8f52c6c9-8f09-4efe-b3b7-64675dfa1101.cfargotunnel.com`). Keep the existing
-Basic Auth file in place.
+(`8f52c6c9-8f09-4efe-b3b7-64675dfa1101.cfargotunnel.com`). The dev hostname is
+public; it does not use the production Maker Basic Auth file.
 
 Use these diagnostics after a merge:
 
