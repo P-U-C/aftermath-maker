@@ -18,7 +18,8 @@ The dev release is deliberately independent of the production stack:
 - SQLite volume: `aftermath-maker-dev_maker-dev-data`
 - Loopback port: `127.0.0.1:8789`
 - Local image: `puc/aftermath-maker:dev`
-- Runtime network: `maker-dev-internal`, with no external egress
+- `control` network: `maker-dev-internal`, with no external egress
+- Web edge: `maker-dev-edge`, used only for Nginx's loopback listener
 - `LIVE_TRADING_ENABLED=false` and `ALLOW_MAINNET=false` are Compose literals
 
 The dev image retains its build-only dependencies to avoid a slow Docker
@@ -31,9 +32,9 @@ the repository `.env`. It needs only non-production values for
 `WEB_BIND_ADDRESS=127.0.0.1`, and `DEV_WEB_PORT=8789`. Do not copy a production
 master key, account setting, whitelist object, or RPC endpoint into it.
 
-The runtime network prevents venue egress. Until the fixture control profile
-lands, this release is for UI/authentication and unavailable-dependency paths;
-it is not a funding/Paper execution environment.
+The control runtime network prevents venue egress. Until the fixture control
+profile lands, this release is for UI/authentication and
+unavailable-dependency paths; it is not a funding/Paper execution environment.
 
 ## One-time host installation
 

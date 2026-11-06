@@ -80,6 +80,10 @@ services:
         condition: service_healthy
     networks:
       - maker-dev-internal
+      # Docker cannot publish a port from an internal-only bridge. This edge
+      # network exists only for the web listener that Nginx reaches on
+      # loopback; control remains on the no-egress network below.
+      - maker-dev-edge
 
 volumes:
   maker-dev-data:
@@ -90,3 +94,5 @@ networks:
   maker-dev-internal:
     driver: bridge
     internal: true
+  maker-dev-edge:
+    driver: bridge
