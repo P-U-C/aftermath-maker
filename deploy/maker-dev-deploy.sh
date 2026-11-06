@@ -31,19 +31,23 @@ fi
 as_ubuntu git -C "$repo" fetch --depth=1 origin "$branch"
 current=$(as_ubuntu git -C "$repo" rev-parse HEAD)
 target=$(as_ubuntu git -C "$repo" rev-parse FETCH_HEAD)
-if [[ "$current" == "$target" ]]; then
-  echo "Maker dev already runs $current"
-  exit 0
-fi
-
-as_ubuntu git -C "$repo" reset --hard "$target"
-sha=$(as_ubuntu git -C "$repo" rev-parse HEAD)
-
 export MAKER_DEV_ENV_FILE="$env_file"
-export VCS_REF="$sha"
 compose=(docker compose --project-name aftermath-maker-dev \
   --env-file "$env_file" -f "$repo/docker-compose.dev.yml")
 
+if [[ "$current" == "$target" ]]; then
+  # A fresh clone starts at the target SHA but has no containers yet. Only
+  # skip work when the dev web service is actually running.
+  if "${compose[@]}" ps --status running --services 2>/dev/null | grep -qx web; then
+    echo "Maker dev already runs $current"
+    exit 0
+  fi
+else
+  as_ubuntu git -C "$repo" reset --hard "$target"
+fi
+
+sha=$(as_ubuntu git -C "$repo" rev-parse HEAD)
+export VCS_REF="$sha"
 "${compose[@]}" build --build-arg "VCS_REF=$sha"
 "${compose[@]}" up -d --remove-orphans
 
