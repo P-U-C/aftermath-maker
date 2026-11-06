@@ -2796,8 +2796,10 @@ export class AftermathGateway {
     }
     const { tx } = await account.getPlaceMarketOrderTx(order);
     tx.setSender(signerAddress);
-    const verifiedMarket = await this.getMarket(inputs.marketId);
-    const tick = BigInt(verifiedMarket.marketParams.tickSize);
+    // Build and validate the market order against one observation. A second
+    // market read can move the index between construction and inspection,
+    // making an otherwise valid order appear outside its own slippage cap.
+    const tick = BigInt(market.marketParams.tickSize);
     return this.mutationQueue(signerAddress).run(async () => {
       if (!inputs.shouldContinue()) {
         throw new Error("Hedge execution cancelled before signing");
@@ -2815,7 +2817,7 @@ export class AftermathGateway {
           markets: [
             {
               marketId: inputs.marketId,
-              packageId: verifiedMarket.marketData.packageId,
+              packageId: market.marketData.packageId,
             },
           ],
           builderCode: inputs.builderCode,
@@ -2827,18 +2829,16 @@ export class AftermathGateway {
               ...(side === PerpetualsOrderSide.Ask
                 ? {
                     minPrice:
-                      verifiedMarket.roundToValidPriceBigInt({
-                        price:
-                          verifiedMarket.indexPrice * (1 - inputs.maxSlippage),
+                      market.roundToValidPriceBigInt({
+                        price: market.indexPrice * (1 - inputs.maxSlippage),
                         floor: true,
                       }) -
                       tick * 2n,
                   }
                 : {
                     maxPrice:
-                      verifiedMarket.roundToValidPriceBigInt({
-                        price:
-                          verifiedMarket.indexPrice * (1 + inputs.maxSlippage),
+                      market.roundToValidPriceBigInt({
+                        price: market.indexPrice * (1 + inputs.maxSlippage),
                         ceil: true,
                       }) +
                       tick * 2n,
