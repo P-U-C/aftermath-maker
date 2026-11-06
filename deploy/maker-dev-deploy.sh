@@ -44,6 +44,13 @@ service_revision() {
     "$container_id"
 }
 
+service_health() {
+  local container_id
+  container_id=$("${compose[@]}" ps -q "$1")
+  [[ -n "$container_id" ]] || return 1
+  docker inspect --format '{{.State.Health.Status}}' "$container_id"
+}
+
 if [[ "$current" == "$target" ]]; then
   # A fresh clone starts at the target SHA but has no containers yet. The dev
   # tag is mutable, so a running service alone is not proof that the
@@ -62,12 +69,29 @@ sha=$(as_ubuntu git -C "$repo" rev-parse HEAD)
 export VCS_REF="$sha"
 "${compose[@]}" build --build-arg "VCS_REF=$sha"
 # The local dev tag is intentionally mutable. Compose does not recreate a
-# service merely because that tag now resolves to a newly built image, so force
-# both services onto this exact VCS_REF after every changed dev commit.
-"${compose[@]}" up -d --remove-orphans --force-recreate
+# service merely because that tag now resolves to a newly built image. Recreate
+# in dependency order: forcing both services together can leave control stopped
+# while Compose waits indefinitely to replace web.
+"${compose[@]}" up -d --remove-orphans --no-deps --force-recreate control
+for _attempt in $(seq 1 30); do
+  if [[ "$(service_revision control || true)" == "$sha" ]] && \
+    [[ "$(service_health control || true)" == "healthy" ]]; then
+    break
+  fi
+  sleep 2
+done
 
-# Compose has already waited for control's private healthcheck. This confirms
-# the publicly proxied web listener without calling a venue or public endpoint.
+if [[ "$(service_revision control || true)" != "$sha" ]] || \
+  [[ "$(service_health control || true)" != "healthy" ]]; then
+  echo "Maker dev control did not become healthy at $sha" >&2
+  exit 1
+fi
+
+"${compose[@]}" up -d --no-deps --force-recreate web
+
+# The control health wait above leaves the web proxy a live backend. This
+# confirms the publicly proxied web listener without calling a venue or public
+# endpoint.
 for _attempt in $(seq 1 30); do
   if curl --fail --silent --show-error --max-time 3 \
     http://127.0.0.1:8789/ >/dev/null; then
