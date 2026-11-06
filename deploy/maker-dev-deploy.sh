@@ -49,7 +49,10 @@ fi
 sha=$(as_ubuntu git -C "$repo" rev-parse HEAD)
 export VCS_REF="$sha"
 "${compose[@]}" build --build-arg "VCS_REF=$sha"
-"${compose[@]}" up -d --remove-orphans
+# The local dev tag is intentionally mutable. Compose does not recreate a
+# service merely because that tag now resolves to a newly built image, so force
+# both services onto this exact VCS_REF after every changed dev commit.
+"${compose[@]}" up -d --remove-orphans --force-recreate
 
 # Compose has already waited for control's private healthcheck. This confirms
 # the publicly proxied web listener without calling a venue or public endpoint.
