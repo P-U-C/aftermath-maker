@@ -1017,6 +1017,66 @@ describe("owner-facing error responses and audit records at real HTTP routes", (
 });
 
 describe("bundle mode route", () => {
+  it("uses the separate Testnet gate without enabling either Mainnet gate", async () => {
+    const h = await appHarness({
+      env: {
+        SUI_NETWORK: "testnet",
+        TESTNET_EXECUTION_ENABLED: "true",
+        TESTNET_MAKER_MASTER_KEY: "test-only-not-a-production-key",
+      },
+    });
+    try {
+      const { tenant } = seed(h);
+      h.gateway.account("1796", 100);
+      authorize(h);
+      tenant.setConfig({ ...config, makerAccountId: "1796" });
+      const core = tenant.listBundles()[0]!;
+      const status = await h.app.inject({
+        method: "GET",
+        url: "/api/status",
+        headers: h.signedInAs(),
+      });
+      expect(status.statusCode).toBe(200);
+      expect(status.json().liveGates).toMatchObject({
+        liveTradingEnabled: false,
+        mainnetAllowed: false,
+        executionNetwork: "testnet",
+        testnetExecutionEnabled: true,
+      });
+      const response = await h.app.inject({
+        method: "POST",
+        url: `/api/bundles/${core.id}/mode`,
+        payload: { mode: "live", confirmed: true },
+        headers: h.signedInAs(),
+      });
+      expect(response.statusCode).toBe(200);
+      expect(response.json().bundle.mode).toBe("live");
+    } finally {
+      await h.close();
+    }
+  });
+
+  it("keeps Testnet execution off until its explicit gate is enabled", async () => {
+    const h = await appHarness({ env: { SUI_NETWORK: "testnet" } });
+    try {
+      const { tenant } = seed(h);
+      const core = tenant.listBundles()[0]!;
+      const response = await h.app.inject({
+        method: "POST",
+        url: `/api/bundles/${core.id}/mode`,
+        payload: { mode: "live", confirmed: true },
+        headers: h.signedInAs(),
+      });
+      expect(response.statusCode).toBe(409);
+      expect(response.json()).toMatchObject({
+        code: "live-unavailable",
+        error: "Testnet execution is off on this server. Ask the operator.",
+      });
+    } finally {
+      await h.close();
+    }
+  });
+
   it("switches a ready stopped Core to Live without starting or signing", async () => {
     const h = await appHarness({
       env: {

@@ -1,9 +1,25 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { makerConfigSchema } from "@puc/core";
+import { envSchema } from "../src/server-app.js";
 import { appHarness, CONTROL_TEST_TOKEN, OWNER } from "./helpers/app.js";
 
 describe("injectable control app", () => {
+  it("rejects a Mainnet master key in a Testnet process", () => {
+    expect(() =>
+      envSchema.parse({
+        SUI_NETWORK: "testnet",
+        MAKER_MASTER_KEY: "not-a-testnet-key",
+      }),
+    ).toThrow("MAKER_MASTER_KEY is forbidden on Testnet");
+    expect(
+      envSchema.parse({
+        SUI_NETWORK: "testnet",
+        TESTNET_MAKER_MASTER_KEY: "test-only-key",
+      }).TESTNET_MAKER_MASTER_KEY,
+    ).toBe("test-only-key");
+  });
+
   it("GET /api/bundles accepts a stored owner session and refuses an anonymous request", async () => {
     const harness = await appHarness();
     try {

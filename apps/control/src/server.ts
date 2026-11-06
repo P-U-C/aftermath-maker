@@ -5,10 +5,11 @@ import { OnchainAllowlist } from "./allowlist.js";
 import { WalletAuth } from "./auth.js";
 import { activeBuilderCode } from "./integrator.js";
 import { RuntimeManager } from "./runtime-manager.js";
-import { buildServer, envSchema } from "./server-app.js";
+import { buildServer, envSchema, executionSigningKey } from "./server-app.js";
 import { Store } from "./store.js";
 
 const env = envSchema.parse(process.env);
+const signingKey = executionSigningKey(env);
 const store = new Store(env.DATABASE_PATH);
 if (env.SUI_WHITELIST_OBJECT_ID && !store.getRegistryObjectId()) {
   store.setRegistryObjectId(env.SUI_WHITELIST_OBJECT_ID);
@@ -34,12 +35,18 @@ const builderCode = (): BuilderFeePolicy | null =>
 const runtimeManager = new RuntimeManager(
   store,
   {
-    ...(env.MAKER_MASTER_KEY ? { masterKey: env.MAKER_MASTER_KEY } : {}),
-    liveEnabled: env.LIVE_TRADING_ENABLED,
-    mainnetAllowed: env.ALLOW_MAINNET,
+    ...(signingKey ? { masterKey: signingKey } : {}),
+    // Testnet has its own explicit gate. The two Mainnet gates remain false
+    // in development and are never treated as Testnet authorization.
+    liveEnabled:
+      env.SUI_NETWORK === "testnet"
+        ? env.TESTNET_EXECUTION_ENABLED
+        : env.LIVE_TRADING_ENABLED,
+    mainnetAllowed: env.SUI_NETWORK === "testnet" ? true : env.ALLOW_MAINNET,
     builderCode,
   },
   {
+    network: env.SUI_NETWORK,
     ...(env.SUI_VALIDATOR_GRPC_URL
       ? { preferredEndpoint: env.SUI_VALIDATOR_GRPC_URL }
       : {}),
@@ -53,9 +60,9 @@ await runtimeManager.initialize();
 const publicGrpc =
   env.SUI_VALIDATOR_GRPC_URL ??
   env.SUI_FALLBACK_GRPC_URL ??
-  "https://fullnode.mainnet.sui.io:443";
+  `https://fullnode.${env.SUI_NETWORK}.sui.io:443`;
 const publicSuiClient = new SuiGrpcClient({
-  network: "mainnet",
+  network: env.SUI_NETWORK,
   baseUrl: publicGrpc,
 });
 const allowlist = new OnchainAllowlist(publicSuiClient, store);
@@ -76,6 +83,7 @@ const auth = new WalletAuth(
   },
   env.CONTROL_TOKEN,
   publicSuiClient,
+  env.SUI_NETWORK === "testnet" ? "Testnet" : "Mainnet",
 );
 const app = await buildServer({
   env,

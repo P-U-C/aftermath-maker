@@ -63,6 +63,7 @@ export class WalletAuth {
     private readonly onAccessRevoked?: (ownerAddress: string) => Promise<void>,
     private readonly accessRequestTokenSecret?: string,
     private readonly verificationClient?: SuiGrpcClient,
+    private readonly networkLabel = "Mainnet",
   ) {}
 
   private signAccessRequestToken(payload: string): string {
@@ -169,7 +170,7 @@ export class WalletAuth {
     const message = [
       "Maker access",
       `URI: ${this.origin}`,
-      "Network: Sui Mainnet",
+      `Network: Sui ${this.networkLabel}`,
       `Address: ${ownerAddress}`,
       `Nonce: ${nonce}`,
       `Issued At: ${issuedAt.toISOString()}`,

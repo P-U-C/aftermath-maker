@@ -84,6 +84,7 @@ type GoLiveSheetProps = {
   available: boolean;
   /** The bundle that switches to Live. Any bundle can; several may run Live. */
   bundleName: string;
+  executionNetwork?: "mainnet" | "testnet";
   liveReadiness: {
     serverEnabled: boolean;
     signerReady: boolean;
@@ -144,6 +145,7 @@ export function GoLiveSheet({
   open,
   available,
   bundleName,
+  executionNetwork = "mainnet",
   liveReadiness,
   operator,
   ownerAddress,
@@ -162,11 +164,14 @@ export function GoLiveSheet({
   onFixStage,
 }: GoLiveSheetProps) {
   const [confirmed, setConfirmed] = useState(false);
+  const testnet = executionNetwork === "testnet";
+  const executionLabel = testnet ? "Testnet execution" : "Live";
+  const fundsLabel = testnet ? "test funds" : "real funds";
   return (
     <Sheet
       open={open}
-      title={`Switch ${bundleName} to Live?`}
-      description={`${bundleName} will quote with real funds after you switch and press Start Live.`}
+      title={`Switch ${bundleName} to ${executionLabel}?`}
+      description={`${bundleName} will quote with ${fundsLabel} after you switch and press Start${testnet ? " Testnet" : " Live"}.`}
       onClose={onClose}
       footer={
         <>
@@ -178,22 +183,31 @@ export function GoLiveSheet({
             onClick={onConfirm}
             disabled={!available || !confirmed}
           >
-            Switch {bundleName} to Live
+            Switch {bundleName} to {executionLabel}
           </Button>
         </>
       }
     >
-      <section className="go-live-checklist" aria-label="Live checklist">
-        <h3>Before switching {bundleName} to Live</h3>
+      <section
+        className="go-live-checklist"
+        aria-label={`${executionLabel} checklist`}
+      >
+        <h3>
+          Before switching {bundleName} to {executionLabel}
+        </h3>
         <ul>
           <li data-ready={liveReadiness?.serverEnabled ? "true" : "false"}>
             <strong>{GO_LIVE_REQUIREMENT_HEADINGS[0]}</strong>
             <span>
               {liveReadiness?.serverEnabled
                 ? "Done"
-                : operator
-                  ? "Needed — Set LIVE_TRADING_ENABLED=true and ALLOW_MAINNET=true in control's .env, then recreate control: docker compose up -d --no-build --force-recreate control."
-                  : `Needed — Live is off on this server. The operator wallet can turn it on. You're connected with ${ownerAddress.slice(0, 4)}…${ownerAddress.slice(-2)}, which isn't this server's operator wallet. If you run this server, sign in with the wallet that first set it up.`}
+                : testnet
+                  ? operator
+                    ? "Needed — Set TESTNET_EXECUTION_ENABLED=true in control's Testnet environment, then recreate control."
+                    : "Needed — Testnet execution is off on this server. Ask the operator."
+                  : operator
+                    ? "Needed — Set LIVE_TRADING_ENABLED=true and ALLOW_MAINNET=true in control's .env, then recreate control: docker compose up -d --no-build --force-recreate control."
+                    : `Needed — Live is off on this server. The operator wallet can turn it on. You're connected with ${ownerAddress.slice(0, 4)}…${ownerAddress.slice(-2)}, which isn't this server's operator wallet. If you run this server, sign in with the wallet that first set it up.`}
             </span>
           </li>
           <li data-ready={liveReadiness?.signerReady ? "true" : "false"}>
@@ -309,13 +323,13 @@ export function GoLiveSheet({
           checked={confirmed}
           onChange={(event) => setConfirmed(event.target.checked)}
         />
-        Maker will trade real funds on account {makerAccountId ?? "—"}
+        Maker will trade {fundsLabel} on account {makerAccountId ?? "—"}
       </label>
       {!available && (
         <p className="go-live-blocked" role="status">
           {liveReadiness?.serverEnabled && liveReadiness.signerReady
-            ? `Finish the steps marked Needed, then switch ${bundleName} to Live.`
-            : "Live is not ready on this server. Finish the steps marked Needed above."}
+            ? `Finish the steps marked Needed, then switch ${bundleName} to ${executionLabel}.`
+            : `${executionLabel} is not ready on this server. Finish the steps marked Needed above.`}
         </p>
       )}
     </Sheet>
