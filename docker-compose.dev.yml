@@ -93,6 +93,34 @@ services:
       # loopback; control remains on the no-egress network below.
       - maker-dev-edge
 
+  # Run manually or from the post-deploy smoke service with
+  # `docker compose --profile smoke run --rm testnet-smoke`. It is not part of
+  # the normal web/control lifecycle and performs read-only prerequisite checks.
+  testnet-smoke:
+    image: puc/aftermath-maker:dev
+    profiles: ["smoke"]
+    command: ["npm", "run", "smoke:testnet:preflight", "-w", "@puc/control"]
+    restart: "no"
+    read_only: true
+    init: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m,mode=1777
+    env_file:
+      - ${MAKER_DEV_ENV_FILE:?MAKER_DEV_ENV_FILE is required}
+    environment:
+      SUI_NETWORK: testnet
+      CONTROL_SMOKE_URL: http://control:8787
+    depends_on:
+      control:
+        condition: service_healthy
+    networks:
+      - maker-dev-internal
+      - maker-dev-testnet
+
 volumes:
   maker-dev-testnet-data:
 
