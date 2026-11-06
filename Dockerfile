@@ -17,7 +17,8 @@ ARG VCS_REF=unknown
 ENV GIT_COMMIT=$VCS_REF NEXT_PUBLIC_GIT_COMMIT=$VCS_REF
 RUN date -u +"%Y-%m-%dT%H:%M:%SZ" > /app/.maker-built-at \
   && BUILT_AT="$(cat /app/.maker-built-at)" NEXT_PUBLIC_BUILD_AT="$(cat /app/.maker-built-at)" npm run build
-RUN npm prune --omit=dev
+ARG KEEP_DEV_DEPENDENCIES=false
+RUN if [ "$KEEP_DEV_DEPENDENCIES" != "true" ]; then npm prune --omit=dev; fi
 
 FROM node:22-bookworm-slim@sha256:de170b39439eb0e5a3444ad7d60b015614a381e10fecae2e30ec9e735122f38d AS runtime
 ARG VCS_REF=unknown

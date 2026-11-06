@@ -21,6 +21,10 @@ The dev release is deliberately independent of the production stack:
 - Runtime network: `maker-dev-internal`, with no external egress
 - `LIVE_TRADING_ENABLED=false` and `ALLOW_MAINNET=false` are Compose literals
 
+The dev image retains its build-only dependencies to avoid a slow Docker
+snapshot on this host. Release images keep the Dockerfile default and prune
+those dependencies.
+
 The dev environment file is `/etc/aftermath-maker/dev.env` (mode `0600`), not
 the repository `.env`. It needs only non-production values for
 `CONTROL_TOKEN`, `PUBLIC_ORIGIN=https://dev.maker.permanentupperclass.com`,
