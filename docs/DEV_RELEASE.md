@@ -53,8 +53,26 @@ sudo nginx -t && sudo systemctl reload nginx
 sudo systemctl start aftermath-maker-dev-deploy.service
 ```
 
-Create the DNS record for `maker-dev.permanentupperclass.com` to this host
-before external verification. Keep the existing Basic Auth file in place.
+Route `maker-dev.permanentupperclass.com` through the existing Cloudflare
+Tunnel, alongside `maker.permanentupperclass.com`; do not create a public IP
+record or a router port-forward. Add this ingress rule before the tunnel's
+catch-all rule:
+
+```yaml
+- hostname: maker-dev.permanentupperclass.com
+  service: http://localhost:80
+```
+
+Then validate and restart the tunnel:
+
+```bash
+sudo cloudflared --config /etc/cloudflared/config.yml tunnel ingress validate
+sudo systemctl restart cloudflared-radar.service
+```
+
+In Cloudflare DNS, make the hostname a proxied CNAME to the existing tunnel
+(`8f52c6c9-8f09-4efe-b3b7-64675dfa1101.cfargotunnel.com`). Keep the existing
+Basic Auth file in place.
 
 Use these diagnostics after a merge:
 
