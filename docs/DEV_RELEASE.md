@@ -45,6 +45,25 @@ The prior fixture-era `maker-dev-data` volume is retained but never mounted.
 Testnet data can be wiped, has no value, and must not be relied on for recovery
 evidence.
 
+## Testnet smoke prerequisite
+
+The `testnet-smoke` Compose profile is a read-only prerequisite gate. Run it
+after a dev deployment with:
+
+```bash
+sudo MAKER_DEV_ENV_FILE=/etc/aftermath-maker/dev.env \
+  docker compose --project-name aftermath-maker-dev \
+  --env-file /etc/aftermath-maker/dev.env \
+  -f /home/ubuntu/aftermath-maker-dev/docker-compose.dev.yml \
+  --profile smoke run --rm testnet-smoke
+```
+
+It fails closed unless control, Sui Testnet RPC, Aftermath's Testnet faucet,
+and at least one Testnet USDC perpetual market are all available. It never
+signs, broadcasts, creates an account, or requests faucet funds. The next,
+separate execution smoke will use a disposable Testnet owner only after this
+gate is green.
+
 For a new Testnet volume with no allowlist, set
 `TESTNET_BOOTSTRAP_OPERATOR_ADDRESS` to the one intended Testnet wallet address
 (a public `0x…` address). Only that wallet may claim the initial operator
