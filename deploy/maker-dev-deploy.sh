@@ -55,7 +55,7 @@ export VCS_REF="$sha"
 # newly selected dev stack without calling a venue or a public endpoint.
 for _attempt in $(seq 1 30); do
   if curl --fail --silent --show-error --max-time 3 \
-    http://127.0.0.1:8789/health >/dev/null; then
+    http://127.0.0.1:8789/api/control/health >/dev/null; then
     echo "Maker dev deployed $sha"
     exit 0
   fi
