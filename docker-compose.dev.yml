@@ -1,0 +1,89 @@
+name: aftermath-maker-dev
+
+# The persistent development release. It intentionally does not extend the
+# production compose file: dev must never inherit the production .env or its
+# volume. The deployment timer supplies MAKER_DEV_ENV_FILE from /etc.
+services:
+  control:
+    build:
+      context: .
+      args:
+        VCS_REF: ${VCS_REF:-unknown}
+      sbom: true
+      provenance: mode=max
+    image: puc/aftermath-maker:dev
+    command: ["npm", "run", "start", "-w", "@puc/control"]
+    restart: unless-stopped
+    read_only: true
+    init: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m,mode=1777
+    env_file:
+      - ${MAKER_DEV_ENV_FILE:?MAKER_DEV_ENV_FILE is required}
+    environment:
+      CONTROL_HOST: 0.0.0.0
+      CONTROL_PORT: 8787
+      DATABASE_PATH: /data/maker.db
+      # These are deliberately Compose literals, not values from the dev env.
+      # A bad local environment file cannot make the dev stack trade live.
+      LIVE_TRADING_ENABLED: "false"
+      ALLOW_MAINNET: "false"
+    volumes:
+      - maker-dev-data:/data
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:8787/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))",
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 8
+      start_period: 20s
+    networks:
+      - maker-dev-internal
+
+  web:
+    image: puc/aftermath-maker:dev
+    command: ["npm", "run", "start", "-w", "@puc/web"]
+    restart: unless-stopped
+    read_only: true
+    init: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m,mode=1777
+      - /app/apps/web/.next/cache:rw,noexec,nosuid,size=64m,mode=1777
+    env_file:
+      - ${MAKER_DEV_ENV_FILE:?MAKER_DEV_ENV_FILE is required}
+    environment:
+      NODE_ENV: production
+      CONTROL_URL: http://control:8787
+      CONTROL_TOKEN: ${CONTROL_TOKEN:?CONTROL_TOKEN is required}
+      PUBLIC_ORIGIN: ${PUBLIC_ORIGIN:?PUBLIC_ORIGIN is required}
+      WEB_PORT: 8788
+    ports:
+      - "${WEB_BIND_ADDRESS:-127.0.0.1}:${DEV_WEB_PORT:-8789}:8788"
+    depends_on:
+      control:
+        condition: service_healthy
+    networks:
+      - maker-dev-internal
+
+volumes:
+  maker-dev-data:
+
+networks:
+  # Application containers can communicate with one another but cannot reach
+  # Sui, Aftermath, Hyperliquid, or any other external venue.
+  maker-dev-internal:
+    driver: bridge
+    internal: true

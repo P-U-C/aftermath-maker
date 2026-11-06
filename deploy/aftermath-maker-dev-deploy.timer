@@ -1,0 +1,11 @@
+[Unit]
+Description=Poll the Maker dev branch for a deployable commit
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=1min
+Persistent=true
+Unit=aftermath-maker-dev-deploy.service
+
+[Install]
+WantedBy=timers.target
