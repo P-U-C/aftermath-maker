@@ -64,6 +64,18 @@ async function expectOk(response: Response, label: string): Promise<void> {
   throw new Error(`${label} returned HTTP ${response.status}`);
 }
 
+async function venueStep<T>(
+  label: string,
+  operation: () => Promise<T>,
+): Promise<T> {
+  try {
+    return await operation();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`${label} failed: ${message}`);
+  }
+}
+
 /**
  * Read-only prerequisite gate for the disposable Testnet execution smoke.
  * It is intentionally independent of production credentials and never signs,
@@ -83,19 +95,28 @@ export async function runTestnetSmokePreflight(
     baseUrl: config.rpcUrl,
   });
   const chain = await client.getChainIdentifier();
-  const sdk = await Aftermath.create({ network: "TESTNET" });
-  const [addresses, supportedCoins] = await Promise.all([
+  const sdk = await venueStep("Aftermath Testnet SDK initialization", () =>
+    Aftermath.create({ network: "TESTNET" }),
+  );
+  const addresses = await venueStep("Aftermath Testnet address discovery", () =>
     sdk.getAddresses(),
-    sdk.Faucet().getSupportedCoins(),
-  ]);
+  );
+  const supportedCoins = await venueStep(
+    "Aftermath Testnet faucet supported-coin discovery",
+    () => sdk.Faucet().getSupportedCoins(),
+  );
   const usdcCoinType = selectTestnetUsdcCoin(supportedCoins);
   const registry = addresses.perpetuals?.objects.registry;
   if (!registry) {
     throw new Error("Aftermath Testnet did not publish a perpetuals registry");
   }
-  const { markets } = await sdk.Perpetuals().getAllMarkets({
-    collateralCoinType: usdcCoinType,
-  });
+  const { markets } = await venueStep(
+    "Aftermath Testnet perpetual-market discovery",
+    () =>
+      sdk.Perpetuals().getAllMarkets({
+        collateralCoinType: usdcCoinType,
+      }),
+  );
   if (!markets.length) {
     throw new Error("Aftermath Testnet returned no USDC perpetual markets");
   }
