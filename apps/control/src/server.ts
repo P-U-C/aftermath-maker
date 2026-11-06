@@ -5,14 +5,20 @@ import { OnchainAllowlist } from "./allowlist.js";
 import { WalletAuth } from "./auth.js";
 import { activeBuilderCode } from "./integrator.js";
 import { RuntimeManager } from "./runtime-manager.js";
-import { buildServer, envSchema, executionSigningKey } from "./server-app.js";
+import {
+  buildServer,
+  envSchema,
+  executionSigningKey,
+  executionWhitelistObjectId,
+} from "./server-app.js";
 import { Store } from "./store.js";
 
 const env = envSchema.parse(process.env);
 const signingKey = executionSigningKey(env);
+const whitelistObjectId = executionWhitelistObjectId(env);
 const store = new Store(env.DATABASE_PATH);
-if (env.SUI_WHITELIST_OBJECT_ID && !store.getRegistryObjectId()) {
-  store.setRegistryObjectId(env.SUI_WHITELIST_OBJECT_ID);
+if (whitelistObjectId && !store.getRegistryObjectId()) {
+  store.setRegistryObjectId(whitelistObjectId);
 }
 if (
   env.AFTERMATH_INTEGRATOR_ID !== undefined &&

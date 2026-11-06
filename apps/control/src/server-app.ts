@@ -221,6 +221,7 @@ export const envSchema = z
       .default("false")
       .transform((value) => value === "true"),
     SUI_WHITELIST_OBJECT_ID: optionalObjectId,
+    TESTNET_SUI_WHITELIST_OBJECT_ID: optionalObjectId,
     LIVE_TRADING_ENABLED: z
       .enum(["true", "false"])
       .default("false")
@@ -256,6 +257,22 @@ export const envSchema = z
           "TESTNET_MAKER_MASTER_KEY is only valid when SUI_NETWORK=testnet",
       });
     }
+    if (env.SUI_NETWORK === "testnet" && env.SUI_WHITELIST_OBJECT_ID) {
+      context.addIssue({
+        code: "custom",
+        path: ["SUI_WHITELIST_OBJECT_ID"],
+        message:
+          "SUI_WHITELIST_OBJECT_ID is forbidden on Testnet; use TESTNET_SUI_WHITELIST_OBJECT_ID",
+      });
+    }
+    if (env.SUI_NETWORK === "mainnet" && env.TESTNET_SUI_WHITELIST_OBJECT_ID) {
+      context.addIssue({
+        code: "custom",
+        path: ["TESTNET_SUI_WHITELIST_OBJECT_ID"],
+        message:
+          "TESTNET_SUI_WHITELIST_OBJECT_ID is only valid when SUI_NETWORK=testnet",
+      });
+    }
   });
 
 export type ServerEnv = z.infer<typeof envSchema>;
@@ -270,6 +287,12 @@ export function executionSigningKey(env: ServerEnv): string | undefined {
   return env.SUI_NETWORK === "testnet"
     ? env.TESTNET_MAKER_MASTER_KEY
     : env.MAKER_MASTER_KEY;
+}
+
+export function executionWhitelistObjectId(env: ServerEnv): string | undefined {
+  return env.SUI_NETWORK === "testnet"
+    ? env.TESTNET_SUI_WHITELIST_OBJECT_ID
+    : env.SUI_WHITELIST_OBJECT_ID;
 }
 
 function executionUnavailableMessage(

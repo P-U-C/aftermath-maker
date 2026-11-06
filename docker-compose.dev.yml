@@ -39,7 +39,9 @@ services:
       SUI_NETWORK: testnet
       TESTNET_EXECUTION_ENABLED: "true"
     volumes:
-      - maker-dev-data:/data
+      # Preserve the previous fixture-era database. Testnet gets its own
+      # clean state and can never reuse a Mainnet or fixture registry.
+      - maker-dev-testnet-data:/data
     healthcheck:
       test:
         [
@@ -92,7 +94,7 @@ services:
       - maker-dev-edge
 
 volumes:
-  maker-dev-data:
+  maker-dev-testnet-data:
 
 networks:
   # Application containers can communicate with one another but cannot reach

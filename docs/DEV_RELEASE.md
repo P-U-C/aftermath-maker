@@ -15,7 +15,7 @@ evidence.
 The dev release is deliberately independent of the production stack:
 
 - Compose project: `aftermath-maker-dev`
-- SQLite volume: `aftermath-maker-dev_maker-dev-data`
+- SQLite volume: `aftermath-maker-dev_maker-dev-testnet-data`
 - Loopback port: `127.0.0.1:8789`
 - Local image: `puc/aftermath-maker:dev`
 - `control` network: `maker-dev-internal`, plus a dedicated Testnet-only
@@ -36,11 +36,14 @@ the repository `.env`. It needs only non-production values for
 master key, account setting, whitelist object, or RPC endpoint into it.
 
 The Testnet lane uses a separate database volume and requires a fresh,
-Testnet-only control key in `TESTNET_MAKER_MASTER_KEY`. Never put
-`MAKER_MASTER_KEY`, a production master key, account cap, allowlist object, or
-Mainnet RPC endpoint in `dev.env`; Testnet control refuses to start when either
-key name is used for the wrong network. Testnet data can be wiped, has no
-value, and must not be relied on for recovery evidence.
+Testnet-only control key in `TESTNET_MAKER_MASTER_KEY`. If an on-chain access
+list is used, configure only `TESTNET_SUI_WHITELIST_OBJECT_ID`. Never put
+`MAKER_MASTER_KEY`, `SUI_WHITELIST_OBJECT_ID`, a production master key, account
+cap, allowlist object, or Mainnet RPC endpoint in `dev.env`; Testnet control
+refuses to start when a Mainnet secret or allowlist is configured for Testnet.
+The prior fixture-era `maker-dev-data` volume is retained but never mounted.
+Testnet data can be wiped, has no value, and must not be relied on for recovery
+evidence.
 
 When testing execution, connect a wallet set to Sui Testnet and create fresh
 Aftermath Testnet accounts. The page's configured wallet network and the

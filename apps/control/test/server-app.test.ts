@@ -1,11 +1,11 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { makerConfigSchema } from "@puc/core";
-import { envSchema } from "../src/server-app.js";
+import { envSchema, executionWhitelistObjectId } from "../src/server-app.js";
 import { appHarness, CONTROL_TEST_TOKEN, OWNER } from "./helpers/app.js";
 
 describe("injectable control app", () => {
-  it("rejects a Mainnet master key in a Testnet process", () => {
+  it("rejects Mainnet secrets in a Testnet process", () => {
     expect(() =>
       envSchema.parse({
         SUI_NETWORK: "testnet",
@@ -18,6 +18,17 @@ describe("injectable control app", () => {
         TESTNET_MAKER_MASTER_KEY: "test-only-key",
       }).TESTNET_MAKER_MASTER_KEY,
     ).toBe("test-only-key");
+    expect(() =>
+      envSchema.parse({
+        SUI_NETWORK: "testnet",
+        SUI_WHITELIST_OBJECT_ID: "0x1",
+      }),
+    ).toThrow("SUI_WHITELIST_OBJECT_ID is forbidden on Testnet");
+    const testnetEnv = envSchema.parse({
+      SUI_NETWORK: "testnet",
+      TESTNET_SUI_WHITELIST_OBJECT_ID: `0x${"2".repeat(64)}`,
+    });
+    expect(executionWhitelistObjectId(testnetEnv)).toBe(`0x${"2".repeat(64)}`);
   });
 
   it("GET /api/bundles accepts a stored owner session and refuses an anonymous request", async () => {
