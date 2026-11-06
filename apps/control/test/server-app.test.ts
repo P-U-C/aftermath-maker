@@ -1,7 +1,11 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { makerConfigSchema } from "@puc/core";
-import { envSchema, executionWhitelistObjectId } from "../src/server-app.js";
+import {
+  envSchema,
+  executionBootstrapOperatorAddress,
+  executionWhitelistObjectId,
+} from "../src/server-app.js";
 import { appHarness, CONTROL_TEST_TOKEN, OWNER } from "./helpers/app.js";
 
 describe("injectable control app", () => {
@@ -27,8 +31,12 @@ describe("injectable control app", () => {
     const testnetEnv = envSchema.parse({
       SUI_NETWORK: "testnet",
       TESTNET_SUI_WHITELIST_OBJECT_ID: `0x${"2".repeat(64)}`,
+      TESTNET_BOOTSTRAP_OPERATOR_ADDRESS: `0x${"3".repeat(64)}`,
     });
     expect(executionWhitelistObjectId(testnetEnv)).toBe(`0x${"2".repeat(64)}`);
+    expect(executionBootstrapOperatorAddress(testnetEnv)).toBe(
+      `0x${"3".repeat(64)}`,
+    );
   });
 
   it("GET /api/bundles accepts a stored owner session and refuses an anonymous request", async () => {

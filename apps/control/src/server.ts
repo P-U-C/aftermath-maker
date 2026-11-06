@@ -7,6 +7,7 @@ import { activeBuilderCode } from "./integrator.js";
 import { RuntimeManager } from "./runtime-manager.js";
 import {
   buildServer,
+  executionBootstrapOperatorAddress,
   envSchema,
   executionSigningKey,
   executionWhitelistObjectId,
@@ -16,6 +17,7 @@ import { Store } from "./store.js";
 const env = envSchema.parse(process.env);
 const signingKey = executionSigningKey(env);
 const whitelistObjectId = executionWhitelistObjectId(env);
+const bootstrapOperatorAddress = executionBootstrapOperatorAddress(env);
 const store = new Store(env.DATABASE_PATH);
 if (whitelistObjectId && !store.getRegistryObjectId()) {
   store.setRegistryObjectId(whitelistObjectId);
@@ -76,7 +78,9 @@ const auth = new WalletAuth(
   store,
   allowlist,
   env.PUBLIC_ORIGIN,
-  env.WALLET_AUTH_BOOTSTRAP,
+  env.SUI_NETWORK === "testnet"
+    ? Boolean(bootstrapOperatorAddress)
+    : env.WALLET_AUTH_BOOTSTRAP,
   12,
   30_000,
   async (ownerAddress) => {
@@ -90,6 +94,7 @@ const auth = new WalletAuth(
   env.CONTROL_TOKEN,
   publicSuiClient,
   env.SUI_NETWORK === "testnet" ? "Testnet" : "Mainnet",
+  bootstrapOperatorAddress,
 );
 const app = await buildServer({
   env,

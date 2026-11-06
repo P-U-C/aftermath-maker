@@ -45,6 +45,13 @@ The prior fixture-era `maker-dev-data` volume is retained but never mounted.
 Testnet data can be wiped, has no value, and must not be relied on for recovery
 evidence.
 
+For a new Testnet volume with no allowlist, set
+`TESTNET_BOOTSTRAP_OPERATOR_ADDRESS` to the one intended Testnet wallet address
+(a public `0x…` address). Only that wallet may claim the initial operator
+session; the service never makes the first wallet that reaches this public host
+an operator. Remove the setting after the operator has set up an on-chain
+Testnet allowlist.
+
 When testing execution, connect a wallet set to Sui Testnet and create fresh
 Aftermath Testnet accounts. The page's configured wallet network and the
 control's `SUI_NETWORK` must both be Testnet. Mainnet execution remains gated

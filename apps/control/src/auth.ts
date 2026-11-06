@@ -64,6 +64,7 @@ export class WalletAuth {
     private readonly accessRequestTokenSecret?: string,
     private readonly verificationClient?: SuiGrpcClient,
     private readonly networkLabel = "Mainnet",
+    private readonly bootstrapOperatorAddress?: string,
   ) {}
 
   private signAccessRequestToken(payload: string): string {
@@ -267,7 +268,14 @@ export class WalletAuth {
       );
     } else if (this.bootstrapEnabled) {
       const operator = this.store.getOperatorAddress();
-      if (!operator || operator === ownerAddress) {
+      const configuredBootstrapOperator = this.bootstrapOperatorAddress
+        ? normalizeAddress(this.bootstrapOperatorAddress)
+        : null;
+      if (
+        (!configuredBootstrapOperator ||
+          configuredBootstrapOperator === ownerAddress) &&
+        (!operator || operator === ownerAddress)
+      ) {
         this.store.claimBootstrapOperator(ownerAddress);
         allowed = true;
       } else {
