@@ -35,10 +35,22 @@ export MAKER_DEV_ENV_FILE="$env_file"
 compose=(docker compose --project-name aftermath-maker-dev \
   --env-file "$env_file" -f "$repo/docker-compose.dev.yml")
 
+service_revision() {
+  local container_id
+  container_id=$("${compose[@]}" ps -q "$1")
+  [[ -n "$container_id" ]] || return 1
+  docker inspect --format \
+    '{{if .State.Running}}{{index .Config.Labels "org.opencontainers.image.revision"}}{{end}}' \
+    "$container_id"
+}
+
 if [[ "$current" == "$target" ]]; then
-  # A fresh clone starts at the target SHA but has no containers yet. Only
-  # skip work when the dev web service is actually running.
-  if "${compose[@]}" ps --status running --services 2>/dev/null | grep -qx web; then
+  # A fresh clone starts at the target SHA but has no containers yet. The dev
+  # tag is mutable, so a running service alone is not proof that the
+  # containers use this revision (for example after an interrupted deploy).
+  control_revision=$(service_revision control || true)
+  web_revision=$(service_revision web || true)
+  if [[ "$control_revision" == "$current" && "$web_revision" == "$current" ]]; then
     echo "Maker dev already runs $current"
     exit 0
   fi
