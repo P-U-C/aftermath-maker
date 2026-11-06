@@ -11,7 +11,10 @@ import { describe, expect, it, vi } from "vitest";
 import { WalletAuth } from "../src/auth.js";
 import { Store } from "../src/store.js";
 
-function harness(verificationClient?: SuiGrpcClient) {
+function harness(
+  verificationClient?: SuiGrpcClient,
+  bootstrapOperatorAddress?: string,
+) {
   const directory = join(
     process.env.TMPDIR ?? "/tmp",
     "aftermath-maker-auth-" + randomBytes(8).toString("hex"),
@@ -32,6 +35,8 @@ function harness(verificationClient?: SuiGrpcClient) {
     undefined,
     "access-request-test-secret",
     verificationClient,
+    "Testnet",
+    bootstrapOperatorAddress,
   );
   return { store, auth };
 }
@@ -213,6 +218,39 @@ describe("wallet authentication", () => {
         });
       }
     }
+    store.close();
+  });
+
+  it("only lets the configured Testnet wallet claim bootstrap access", async () => {
+    const intended = new Ed25519Keypair();
+    const other = new Ed25519Keypair();
+    const { store, auth } = harness(undefined, intended.toSuiAddress());
+
+    for (const [keypair, shouldPass] of [
+      [other, false],
+      [intended, true],
+    ] as const) {
+      const address = keypair.toSuiAddress();
+      const challenge = auth.begin(address);
+      const { signature } = await keypair.signPersonalMessage(
+        new TextEncoder().encode(challenge.message),
+      );
+      const verification = auth.verify({
+        challengeId: challenge.challengeId,
+        address,
+        message: challenge.message,
+        signature,
+      });
+      if (shouldPass) {
+        await expect(verification).resolves.toMatchObject({ operator: true });
+      } else {
+        await expect(verification).rejects.toMatchObject({
+          statusCode: 503,
+          code: "access-list-not-configured",
+        });
+      }
+    }
+    expect(store.getOperatorAddress()).toBe(intended.toSuiAddress());
     store.close();
   });
 

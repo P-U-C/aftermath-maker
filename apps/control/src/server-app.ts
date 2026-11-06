@@ -57,6 +57,13 @@ const optionalObjectId = z.preprocess(
     .regex(/^0x[0-9a-fA-F]{64}$/)
     .optional(),
 );
+const optionalAddress = z.preprocess(
+  (value) => (value === "" ? undefined : value),
+  z
+    .string()
+    .regex(/^0x[0-9a-fA-F]{64}$/)
+    .optional(),
+);
 const optionalIntegratorId = z.preprocess(
   (value) => (value === "" || value === undefined ? undefined : value),
   z.coerce.number().int().nonnegative().optional(),
@@ -222,6 +229,7 @@ export const envSchema = z
       .transform((value) => value === "true"),
     SUI_WHITELIST_OBJECT_ID: optionalObjectId,
     TESTNET_SUI_WHITELIST_OBJECT_ID: optionalObjectId,
+    TESTNET_BOOTSTRAP_OPERATOR_ADDRESS: optionalAddress,
     LIVE_TRADING_ENABLED: z
       .enum(["true", "false"])
       .default("false")
@@ -273,6 +281,17 @@ export const envSchema = z
           "TESTNET_SUI_WHITELIST_OBJECT_ID is only valid when SUI_NETWORK=testnet",
       });
     }
+    if (
+      env.SUI_NETWORK === "mainnet" &&
+      env.TESTNET_BOOTSTRAP_OPERATOR_ADDRESS
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["TESTNET_BOOTSTRAP_OPERATOR_ADDRESS"],
+        message:
+          "TESTNET_BOOTSTRAP_OPERATOR_ADDRESS is only valid when SUI_NETWORK=testnet",
+      });
+    }
   });
 
 export type ServerEnv = z.infer<typeof envSchema>;
@@ -293,6 +312,18 @@ export function executionWhitelistObjectId(env: ServerEnv): string | undefined {
   return env.SUI_NETWORK === "testnet"
     ? env.TESTNET_SUI_WHITELIST_OBJECT_ID
     : env.SUI_WHITELIST_OBJECT_ID;
+}
+
+/**
+ * A fresh public Testnet database can have one pre-authorized wallet, but
+ * never an unbounded first-wallet race. Mainnet keeps its existing auth flow.
+ */
+export function executionBootstrapOperatorAddress(
+  env: ServerEnv,
+): string | undefined {
+  return env.SUI_NETWORK === "testnet"
+    ? env.TESTNET_BOOTSTRAP_OPERATOR_ADDRESS
+    : undefined;
 }
 
 function executionUnavailableMessage(
