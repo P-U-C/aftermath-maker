@@ -1,0 +1,64 @@
+name: Maker release gate
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: maker-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  maker-release-gate:
+    name: maker-release-gate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      CI: true
+      LIVE_TRADING_ENABLED: "false"
+      ALLOW_MAINNET: "false"
+      PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/.cache/ms-playwright
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: 22.22.0
+          cache: npm
+      - run: npm ci
+      - name: Install the Playwright-matched Chromium revision
+        run: |
+          node node_modules/playwright-core/cli.js install --with-deps chromium
+          REVISION="$(node -p 'require("./node_modules/playwright-core/browsers.json").browsers.find(browser => browser.name === "chromium").revision')"
+          echo "CHROMIUM_PATH=$PLAYWRIGHT_BROWSERS_PATH/chromium-$REVISION/chrome-linux64/chrome" >> "$GITHUB_ENV"
+      - name: Verify fixture guardrails
+        run: |
+          test "$LIVE_TRADING_ENABLED" = false
+          test "$ALLOW_MAINNET" = false
+      - name: Full quality and fixture-browser checks
+        run: npm run check
+      - name: Fixture screenshot matrix
+        run: npm run audit:shots -- --state paper-running --view all
+      - name: Move access-control tests
+        run: >-
+          docker run --rm
+          -v "$PWD/move/maker_access:/workspace"
+          -w /workspace
+          mysten/sui-tools@sha256:bd90eaa5ca94d880ee4d6ac232a36b21d3b52d5ef95e3178b7fb0a148d85fe59
+          sui move test
+      - name: Build immutable candidate image
+        run: docker build --build-arg VCS_REF="${GITHUB_SHA}" --tag "maker:${GITHUB_SHA}" .
+      - name: Dependency audit
+        run: npm audit --omit=dev --audit-level=high
+      - name: Upload sanitized browser evidence
+        if: always()
+        uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 # v4.6.0
+        with:
+          name: maker-release-evidence-${{ github.sha }}
+          path: |
+            apps/web/e2e/shots/audit-journey
+            apps/web/e2e/shots/wallet-preauth
+            apps/web/e2e/shots/current
+          if-no-files-found: warn
+          retention-days: 7
