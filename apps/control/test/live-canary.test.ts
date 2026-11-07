@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { makerConfigSchema, setupSchema } from "@puc/core";
 import {
   runLiveCanary,
+  withCanaryOperationTimeout,
   type LiveCanaryState,
   type LiveCanaryStateStore,
 } from "../src/live-canary.js";
@@ -201,6 +202,16 @@ function inputs(
 }
 
 describe("live canary", () => {
+  it("bounds gateway initialization before a checkpoint can exist", async () => {
+    await expect(
+      withCanaryOperationTimeout(
+        "gateway initialization",
+        1,
+        () => new Promise<never>(() => undefined),
+      ),
+    ).rejects.toThrow("Canary gateway initialization timed out after 1ms");
+  });
+
   it("simulates without signing or broadcasting unless explicitly executed", async () => {
     const fixture = createGateway();
     const state = memoryState();
