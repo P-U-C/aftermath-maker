@@ -148,7 +148,9 @@ function canaryConfig() {
     marketId,
     maxQuoteUsd: 5,
     observationWindowMs: 0,
-    pollMs: 1,
+    settlementWindowMs: 5_000,
+    pollMs: 5_000,
+    flatConfirmReads: 3,
     builderCode: { integratorId: 15, integratorFee: 0.0001 },
     config: makerConfigSchema.parse({
       mode: "live",
@@ -207,7 +209,13 @@ describe("live canary", () => {
     const fixture = createGateway();
     const state = memoryState();
     const runInputs = inputs(fixture.gateway, state);
-    runInputs.dependencies.sleep = async () => fixture.simulateFill();
+    let filled = false;
+    runInputs.dependencies.sleep = async () => {
+      if (!filled) {
+        fixture.simulateFill();
+        filled = true;
+      }
+    };
 
     const result = await runLiveCanary(runInputs);
 

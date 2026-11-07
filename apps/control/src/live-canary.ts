@@ -67,7 +67,11 @@ export type LiveCanaryConfig = {
   maxQuoteUsd: number;
   /** How long the one post-only quote may rest before forced cancellation. */
   observationWindowMs: number;
+  /** Keep observing after cancellation so index-late fills cannot be missed. */
+  settlementWindowMs: number;
   pollMs: number;
+  /** Independent flat reads required before the cycle can be marked complete. */
+  flatConfirmReads: number;
   /** The active builder policy must match the canary agent's authorization. */
   builderCode: BuilderFeePolicy;
 };
@@ -175,8 +179,12 @@ function validateConfig(input: LiveCanaryConfig): LiveCanaryConfig {
   if (
     input.observationWindowMs < 0 ||
     input.observationWindowMs > CANARY_MAX_WAIT_MS ||
+    input.settlementWindowMs < 5_000 ||
+    input.settlementWindowMs > CANARY_MAX_WAIT_MS ||
     input.pollMs <= 0 ||
-    input.pollMs > 5_000
+    input.pollMs > 5_000 ||
+    input.flatConfirmReads < 3 ||
+    input.flatConfirmReads > 10
   ) {
     throw new Error("Canary wait bounds are invalid");
   }
@@ -240,6 +248,57 @@ async function waitFor(
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     if (await predicate()) return true;
     if (attempt + 1 < attempts) await sleep(pollMs);
+  }
+  return false;
+}
+
+async function observeSettlement(inputs: {
+  gateway: AftermathGateway;
+  config: LiveCanaryConfig;
+  agentAddress: string;
+  sleep: (milliseconds: number) => Promise<void>;
+}): Promise<Positions> {
+  const attempts =
+    Math.floor(inputs.config.settlementWindowMs / inputs.config.pollMs) + 1;
+  let latest = await portfolios(
+    inputs.gateway,
+    inputs.config,
+    inputs.agentAddress,
+  );
+  for (let attempt = 1; attempt < attempts; attempt += 1) {
+    await inputs.sleep(inputs.config.pollMs);
+    latest = await portfolios(
+      inputs.gateway,
+      inputs.config,
+      inputs.agentAddress,
+    );
+  }
+  return latest;
+}
+
+async function confirmFlatReads(inputs: {
+  gateway: AftermathGateway;
+  config: LiveCanaryConfig;
+  agentAddress: string;
+  toleranceUsd: number;
+  sleep: (milliseconds: number) => Promise<void>;
+}): Promise<boolean> {
+  let confirmed = 0;
+  const attempts = inputs.config.flatConfirmReads * 3;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    const observed = await portfolios(
+      inputs.gateway,
+      inputs.config,
+      inputs.agentAddress,
+    );
+    try {
+      assertFlat(observed, inputs.config.marketId, inputs.toleranceUsd);
+      confirmed += 1;
+      if (confirmed >= inputs.config.flatConfirmReads) return true;
+    } catch {
+      confirmed = 0;
+    }
+    if (attempt + 1 < attempts) await inputs.sleep(inputs.config.pollMs);
   }
   return false;
 }
@@ -452,11 +511,15 @@ export async function runLiveCanary(inputs: {
         throw new Error("Canary cancellation could not be confirmed");
     }
 
-    const afterCancel = await portfolios(
+    // A venue may index a fill after its cancellation transaction. Keep the
+    // canary in recovery mode during that visibility window rather than
+    // calling it an unfilled run and freeing the account pair too early.
+    const afterCancel = await observeSettlement({
       gateway,
       config,
-      inputs.secrets.agentAddress,
-    );
+      agentAddress: inputs.secrets.agentAddress,
+      sleep,
+    });
     assertNoResting(afterCancel, config.marketId);
     const makerAfterCancel = positionFor(afterCancel.maker, config.marketId);
     const hedgeAfterCancel = positionFor(afterCancel.hedge, config.marketId);
@@ -535,24 +598,13 @@ export async function runLiveCanary(inputs: {
       flattenDigests: [...state.flattenDigests, ...flattenDigests],
     };
     await save();
-    const flat = await waitFor(
-      async () => {
-        const observed = await portfolios(
-          gateway,
-          config,
-          inputs.secrets.agentAddress,
-        );
-        try {
-          assertFlat(observed, config.marketId, toleranceUsd);
-          return true;
-        } catch {
-          return false;
-        }
-      },
-      CANARY_MAX_WAIT_MS,
-      config.pollMs,
+    const flat = await confirmFlatReads({
+      gateway,
+      config,
+      agentAddress: inputs.secrets.agentAddress,
+      toleranceUsd,
       sleep,
-    );
+    });
     if (!flat)
       throw new Error("Canary flatten did not prove both accounts flat");
     state = {
