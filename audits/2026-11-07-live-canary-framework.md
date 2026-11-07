@@ -43,9 +43,11 @@ new -> simulate -> post one quote -> cancel -> confirm no resting orders
   reduce-only close.
 - It observes the cancelled market for a bounded settlement window and requires
   three consecutive separate-account flat reads before reporting a clean run.
-- Every gateway read, simulation, and submission has a 15-second deadline. A
-  deadline moves the checkpoint to `recovery-required`; the one-shot CLI then
-  exits rather than leaving an idle process that could be mistaken for a run.
+- Gateway construction, every gateway read, simulation, and submission have a
+  15-second deadline. A deadline after checkpoint creation moves it to
+  `recovery-required`; an initialization deadline exits before any quote can
+  exist. The one-shot CLI then exits rather than leaving an idle process that
+  could be mistaken for a run.
 - It caps observed per-account inventory to one side and requires separately
   flat accounts—not merely a net-flat pair—before success.
 - The CLI reads root-only configuration/key files and writes an atomic,
@@ -90,11 +92,11 @@ For an explicitly bounded strategy exercise, `--cycles 1` through `--cycles
 history, realized PnL, fees, and estimated builder fees. It does not count gas
 as zero: the report labels it unavailable until receipt gas is persisted.
 
-A 2026-11-07 exercise completed nine flat quote/cancel cycles before an
-unbounded account read stalled before cycle 10. No fills, hedges, positions, or
-open orders were present when it was stopped. The operation-deadline fix is
-required before repeating that exercise; it is not counted as a completed
-ten-minute reliability result.
+An early 2026-11-07 exercise encountered a delayed attributed fill after a
+cancel. It entered recovery, cancelled the remaining order, and submitted the
+bounded hedge. It was not a cycle-10 stall; later no-fill checkpoints completed
+normally. The exercise is not counted as a clean reliability result because its
+first reduce-only close was rejected locally, as described below.
 
 After that process was stopped, a fresh preflight found a delayed attributed
 fill that had not been visible during the prior settlement reads. It refused a
@@ -109,3 +111,14 @@ flatten fix must merge before another run.
 It must be run manually on the host under the root-only account boundary. Do
 not put it in a systemd timer, the normal dev deploy service, CI, or a browser
 test.
+
+## Clean bounded reliability run
+
+At 2026-11-07T22:08Z, the fixed runner completed 12 consecutive 30-second
+post-only Mainnet observations on its dedicated $5/side account pair. Every
+cycle recorded a quote, cancellation, and separate-account flat confirmation;
+there were no timeout, recovery, residual-position, or open-order events. All
+12 were no-fill observations, so the report correctly records zero fills,
+notional, realized PnL, and fees. This proves the bounded no-fill lifecycle for
+roughly 12 minutes; it is not evidence of fill handling, profitability, or
+long-running strategy performance.

@@ -35,10 +35,17 @@ export MAKER_DEV_ENV_FILE="$env_file"
 compose=(docker compose --project-name aftermath-maker-dev \
   --env-file "$env_file" -f "$repo/docker-compose.dev.yml")
 
-service_revision() {
+service_container_id() {
   local container_id
   container_id=$("${compose[@]}" ps -q "$1")
   [[ -n "$container_id" ]] || return 1
+  [[ "$(docker inspect --format '{{index .Config.Labels "com.docker.compose.service"}}' "$container_id")" == "$1" ]] || return 1
+  printf '%s\n' "$container_id"
+}
+
+service_revision() {
+  local container_id
+  container_id=$(service_container_id "$1") || return 1
   docker inspect --format \
     '{{if .State.Running}}{{index .Config.Labels "org.opencontainers.image.revision"}}{{end}}' \
     "$container_id"
@@ -46,9 +53,13 @@ service_revision() {
 
 service_health() {
   local container_id
-  container_id=$("${compose[@]}" ps -q "$1")
-  [[ -n "$container_id" ]] || return 1
+  container_id=$(service_container_id "$1") || return 1
   docker inspect --format '{{.State.Health.Status}}' "$container_id"
+}
+
+web_ready() {
+  curl --fail --silent --show-error --max-time 3 \
+    http://127.0.0.1:8789/ >/dev/null
 }
 
 if [[ "$current" == "$target" ]]; then
@@ -57,7 +68,7 @@ if [[ "$current" == "$target" ]]; then
   # containers use this revision (for example after an interrupted deploy).
   control_revision=$(service_revision control || true)
   web_revision=$(service_revision web || true)
-  if [[ "$control_revision" == "$current" && "$web_revision" == "$current" ]]; then
+  if [[ "$control_revision" == "$current" && "$web_revision" == "$current" ]] && web_ready; then
     echo "Maker dev already runs $current"
     exit 0
   fi
@@ -93,8 +104,7 @@ fi
 # confirms the publicly proxied web listener without calling a venue or public
 # endpoint.
 for _attempt in $(seq 1 30); do
-  if curl --fail --silent --show-error --max-time 3 \
-    http://127.0.0.1:8789/ >/dev/null; then
+  if web_ready; then
     echo "Maker dev Mainnet Paper/shadow deployed $sha; Live gates remain off"
     exit 0
   fi

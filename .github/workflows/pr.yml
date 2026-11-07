@@ -31,6 +31,8 @@ jobs:
         run: |
           test "$LIVE_TRADING_ENABLED" = false
           test "$ALLOW_MAINNET" = false
+      - name: Validate dev release script
+        run: bash -n deploy/maker-dev-deploy.sh
       - name: Fast format, lint, types, tests, and build
         run: |
           npm run format:check
