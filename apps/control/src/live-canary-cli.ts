@@ -236,6 +236,9 @@ if (import.meta.url === `file://${process.argv[1]}`) {
         error: error instanceof Error ? error.message : String(error),
       }),
     );
-    process.exitCode = 1;
+    // A timed-out SDK call can leave an undici handle alive. The canary
+    // checkpoint has already been made recovery-required before this point;
+    // force the one-shot process to end rather than silently lingering.
+    process.exit(1);
   });
 }

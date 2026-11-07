@@ -40,6 +40,7 @@ function createGateway() {
   let makerPending = 0;
   let hedgePending = 0;
   let cancelClears = true;
+  let portfolioHangs = false;
   const portfolio = (accountId: string) => ({
     markedAt: "2026-11-07T00:00:00.000Z",
     equityUsd: 12.5,
@@ -81,7 +82,10 @@ function createGateway() {
     getTradingKeyGasSui: async () => 1,
     getAgentPortfolioSnapshot: async (inputs: {
       setup: { accountId: string };
-    }) => portfolio(inputs.setup.accountId),
+    }) => {
+      if (portfolioHangs) return new Promise<never>(() => undefined);
+      return portfolio(inputs.setup.accountId);
+    },
     simulateQuote: async () => {
       calls.push("simulate");
       return { endpoint: "fixture", gasUsedMist: 1 };
@@ -136,6 +140,9 @@ function createGateway() {
     },
     allowCancellation() {
       cancelClears = true;
+    },
+    hangPortfolio() {
+      portfolioHangs = true;
     },
   };
 }
@@ -272,5 +279,19 @@ describe("live canary", () => {
       `flatten:${makerSetup.accountId}`,
       `flatten:${hedgeSetup.accountId}`,
     ]);
+  });
+
+  it("fails closed when a portfolio read exceeds its operation deadline", async () => {
+    const fixture = createGateway();
+    fixture.hangPortfolio();
+    const state = memoryState();
+    const runInputs = inputs(fixture.gateway, state, false);
+    runInputs.dependencies.operationTimeoutMs = 1;
+
+    await expect(runLiveCanary(runInputs)).rejects.toThrow(
+      "Canary portfolio snapshot timed out after 1ms",
+    );
+    expect(state.value?.phase).toBe("recovery-required");
+    expect(fixture.calls).toEqual([]);
   });
 });

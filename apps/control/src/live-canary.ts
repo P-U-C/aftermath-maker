@@ -97,10 +97,13 @@ export type LiveCanaryDependencies = {
   state: LiveCanaryStateStore;
   now?: () => Date;
   sleep?: (milliseconds: number) => Promise<void>;
+  /** Test-only override; production calls are always bounded. */
+  operationTimeoutMs?: number;
 };
 
 const CANARY_MAX_WAIT_MS = 30_000;
 const CANARY_MAX_QUOTE_USD = 5;
+const CANARY_OPERATION_TIMEOUT_MS = 15_000;
 
 const errorMessage = (error: unknown) =>
   error instanceof Error ? error.message : String(error);
@@ -199,16 +202,52 @@ function validateConfig(input: LiveCanaryConfig): LiveCanaryConfig {
   return { ...input, config, makerSetup, hedgeSetup };
 }
 
+async function bounded<T>(
+  operation: string,
+  timeoutMs: number,
+  task: () => Promise<T>,
+): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      task(),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(
+          () =>
+            reject(
+              new Error(`Canary ${operation} timed out after ${timeoutMs}ms`),
+            ),
+          timeoutMs,
+        );
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 async function portfolios(
   gateway: AftermathGateway,
   config: LiveCanaryConfig,
   agentAddress: string,
+  operationTimeoutMs: number,
 ): Promise<Positions> {
   const inputs = { agentAddress, marketIds: [config.marketId] };
-  const [maker, hedge] = await Promise.all([
-    gateway.getAgentPortfolioSnapshot({ ...inputs, setup: config.makerSetup }),
-    gateway.getAgentPortfolioSnapshot({ ...inputs, setup: config.hedgeSetup }),
-  ]);
+  const [maker, hedge] = await bounded(
+    "portfolio snapshot",
+    operationTimeoutMs,
+    () =>
+      Promise.all([
+        gateway.getAgentPortfolioSnapshot({
+          ...inputs,
+          setup: config.makerSetup,
+        }),
+        gateway.getAgentPortfolioSnapshot({
+          ...inputs,
+          setup: config.hedgeSetup,
+        }),
+      ]),
+  );
   return { maker, hedge };
 }
 
@@ -257,6 +296,7 @@ async function observeSettlement(inputs: {
   config: LiveCanaryConfig;
   agentAddress: string;
   sleep: (milliseconds: number) => Promise<void>;
+  operationTimeoutMs: number;
 }): Promise<Positions> {
   const attempts =
     Math.floor(inputs.config.settlementWindowMs / inputs.config.pollMs) + 1;
@@ -264,6 +304,7 @@ async function observeSettlement(inputs: {
     inputs.gateway,
     inputs.config,
     inputs.agentAddress,
+    inputs.operationTimeoutMs,
   );
   for (let attempt = 1; attempt < attempts; attempt += 1) {
     await inputs.sleep(inputs.config.pollMs);
@@ -271,6 +312,7 @@ async function observeSettlement(inputs: {
       inputs.gateway,
       inputs.config,
       inputs.agentAddress,
+      inputs.operationTimeoutMs,
     );
   }
   return latest;
@@ -282,6 +324,7 @@ async function confirmFlatReads(inputs: {
   agentAddress: string;
   toleranceUsd: number;
   sleep: (milliseconds: number) => Promise<void>;
+  operationTimeoutMs: number;
 }): Promise<boolean> {
   let confirmed = 0;
   const attempts = inputs.config.flatConfirmReads * 3;
@@ -290,6 +333,7 @@ async function confirmFlatReads(inputs: {
       inputs.gateway,
       inputs.config,
       inputs.agentAddress,
+      inputs.operationTimeoutMs,
     );
     try {
       assertFlat(observed, inputs.config.marketId, inputs.toleranceUsd);
@@ -337,6 +381,15 @@ export async function runLiveCanary(inputs: {
   const sleep =
     inputs.dependencies.sleep ??
     ((ms) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  const operationTimeoutMs =
+    inputs.dependencies.operationTimeoutMs ?? CANARY_OPERATION_TIMEOUT_MS;
+  if (
+    !Number.isInteger(operationTimeoutMs) ||
+    operationTimeoutMs <= 0 ||
+    operationTimeoutMs > CANARY_MAX_WAIT_MS
+  ) {
+    throw new Error("Canary operation timeout is invalid");
+  }
   const { gateway, state: stateStore } = inputs.dependencies;
   let state = (await stateStore.read()) ?? initialState(config.marketId, now);
   if (state.version !== 1 || state.marketId !== config.marketId) {
@@ -375,6 +428,7 @@ export async function runLiveCanary(inputs: {
       gateway,
       config,
       inputs.secrets.agentAddress,
+      operationTimeoutMs,
     );
     const makerPosition = positionFor(current.maker, config.marketId);
     const hedgePosition = positionFor(current.hedge, config.marketId);
@@ -395,7 +449,11 @@ export async function runLiveCanary(inputs: {
       ) {
         throw new Error("Canary refuses to start with any existing position");
       }
-      const { market, orderbook } = await gateway.getOrderbook(config.marketId);
+      const { market, orderbook } = await bounded(
+        "orderbook read",
+        operationTimeoutMs,
+        () => gateway.getOrderbook(config.marketId),
+      );
       if (
         orderbook.bestBidPrice === undefined ||
         orderbook.bestAskPrice === undefined
@@ -415,8 +473,10 @@ export async function runLiveCanary(inputs: {
         inventoryUsd: makerPosition.inventoryUsd,
         unrealizedPnlUsd: makerPosition.unrealizedPnlUsd,
       });
-      const gasSui = await gateway.getTradingKeyGasSui(
-        inputs.secrets.agentAddress,
+      const gasSui = await bounded(
+        "trading-key gas read",
+        operationTimeoutMs,
+        () => gateway.getTradingKeyGasSui(inputs.secrets.agentAddress),
       );
       assertSafe(
         evaluateQuoteSafety({
@@ -432,14 +492,16 @@ export async function runLiveCanary(inputs: {
           now: now(),
         }),
       );
-      await gateway.simulateQuote({
-        setup: config.makerSetup,
-        config: config.config,
-        quote,
-        agentAddress: inputs.secrets.agentAddress,
-        builderCode: config.builderCode,
-        shouldContinue: () => true,
-      });
+      await bounded("quote simulation", operationTimeoutMs, () =>
+        gateway.simulateQuote({
+          setup: config.makerSetup,
+          config: config.config,
+          quote,
+          agentAddress: inputs.secrets.agentAddress,
+          builderCode: config.builderCode,
+          shouldContinue: () => true,
+        }),
+      );
       state = {
         ...withEvent(state, now, "preflighted", "quote-simulated", {
           sizeUsd: quote.sizeUsd,
@@ -450,14 +512,19 @@ export async function runLiveCanary(inputs: {
       if (!inputs.execute) return { state, outcome: "dry-run" };
       state = withEvent(state, now, "quoted", "quote-submit-intent");
       await save();
-      const receipt = await gateway.executeQuote({
-        setup: config.makerSetup,
-        config: config.config,
-        quote,
-        signer: inputs.secrets.signer,
-        builderCode: config.builderCode,
-        shouldContinue: () => true,
-      });
+      const receipt = await bounded(
+        "quote submission",
+        operationTimeoutMs,
+        () =>
+          gateway.executeQuote({
+            setup: config.makerSetup,
+            config: config.config,
+            quote,
+            signer: inputs.secrets.signer,
+            builderCode: config.builderCode,
+            shouldContinue: () => true,
+          }),
+      );
       state = {
         ...withEvent(state, now, "quoted", "quote-submitted", {
           digest: receipt.digest,
@@ -475,12 +542,17 @@ export async function runLiveCanary(inputs: {
     }
 
     if (state.phase === "cancelling" || state.phase === "recovery-required") {
-      const receipt = await gateway.cancelMakerOrders({
-        setup: config.makerSetup,
-        config: config.config,
-        marketIds: [config.marketId],
-        signer: inputs.secrets.signer,
-      });
+      const receipt = await bounded(
+        "maker cancellation",
+        operationTimeoutMs,
+        () =>
+          gateway.cancelMakerOrders({
+            setup: config.makerSetup,
+            config: config.config,
+            marketIds: [config.marketId],
+            signer: inputs.secrets.signer,
+          }),
+      );
       state = {
         ...withEvent(state, now, "cancelling", "cancel-submitted", {
           digest: receipt?.digest ?? null,
@@ -495,6 +567,7 @@ export async function runLiveCanary(inputs: {
             gateway,
             config,
             inputs.secrets.agentAddress,
+            operationTimeoutMs,
           );
           try {
             assertNoResting(observed, config.marketId);
@@ -519,6 +592,7 @@ export async function runLiveCanary(inputs: {
       config,
       agentAddress: inputs.secrets.agentAddress,
       sleep,
+      operationTimeoutMs,
     });
     assertNoResting(afterCancel, config.marketId);
     const makerAfterCancel = positionFor(afterCancel.maker, config.marketId);
@@ -538,17 +612,22 @@ export async function runLiveCanary(inputs: {
         deltaUsd: combinedBeforeHedge,
       });
       await save();
-      const receipt = await gateway.executeHedge({
-        setup: config.hedgeSetup,
-        config: config.config,
-        signer: inputs.secrets.signer,
-        marketId: config.marketId,
-        deltaUsd: combinedBeforeHedge,
-        maxOrderUsd: config.maxQuoteUsd,
-        maxSlippage: config.config.hedge.maxSlippageBps / 10_000,
-        builderCode: config.builderCode,
-        shouldContinue: () => true,
-      });
+      const receipt = await bounded(
+        "hedge submission",
+        operationTimeoutMs,
+        () =>
+          gateway.executeHedge({
+            setup: config.hedgeSetup,
+            config: config.config,
+            signer: inputs.secrets.signer,
+            marketId: config.marketId,
+            deltaUsd: combinedBeforeHedge,
+            maxOrderUsd: config.maxQuoteUsd,
+            maxSlippage: config.config.hedge.maxSlippageBps / 10_000,
+            builderCode: config.builderCode,
+            shouldContinue: () => true,
+          }),
+      );
       state = {
         ...withEvent(state, now, "hedging", "hedge-submitted", {
           digest: receipt.digest,
@@ -562,6 +641,7 @@ export async function runLiveCanary(inputs: {
             gateway,
             config,
             inputs.secrets.agentAddress,
+            operationTimeoutMs,
           );
           const maker = positionFor(observed.maker, config.marketId);
           const hedge = positionFor(observed.hedge, config.marketId);
@@ -581,13 +661,18 @@ export async function runLiveCanary(inputs: {
     await save();
     const flattenDigests: string[] = [];
     for (const setup of [config.makerSetup, config.hedgeSetup]) {
-      const receipt = await gateway.flattenPositions({
-        setup,
-        config: config.config,
-        signer: inputs.secrets.signer,
-        marketIds: [config.marketId],
-        maxSlippage: config.config.hedge.maxSlippageBps / 10_000,
-      });
+      const receipt = await bounded(
+        "position flatten",
+        operationTimeoutMs,
+        () =>
+          gateway.flattenPositions({
+            setup,
+            config: config.config,
+            signer: inputs.secrets.signer,
+            marketIds: [config.marketId],
+            maxSlippage: config.config.hedge.maxSlippageBps / 10_000,
+          }),
+      );
       if (receipt)
         flattenDigests.push(...(receipt.digests ?? [receipt.digest]));
     }
@@ -604,6 +689,7 @@ export async function runLiveCanary(inputs: {
       agentAddress: inputs.secrets.agentAddress,
       toleranceUsd,
       sleep,
+      operationTimeoutMs,
     });
     if (!flat)
       throw new Error("Canary flatten did not prove both accounts flat");
