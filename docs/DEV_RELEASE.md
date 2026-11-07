@@ -85,6 +85,13 @@ sudo nginx -t && sudo systemctl reload nginx
 sudo systemctl start aftermath-maker-dev-deploy.service
 ```
 
+If a later merged change updates `deploy/maker-dev-deploy.sh`, reinstall that
+single host-side launcher before relying on it for the next release:
+
+```bash
+sudo install -m 0755 deploy/maker-dev-deploy.sh /usr/local/sbin/maker-dev-deploy
+```
+
 Route `maker-dev.permanentupperclass.com` through the existing Cloudflare
 Tunnel, alongside `maker.permanentupperclass.com`; do not create a public IP
 record or a router port-forward. Add this ingress rule before the tunnel's
@@ -112,6 +119,6 @@ Use these diagnostics after a merge:
 systemctl status aftermath-maker-dev-deploy.service
 journalctl -u aftermath-maker-dev-deploy.service -n 100 --no-pager
 sudo docker compose --project-name aftermath-maker-dev \
-  --env-file /etc/aftermath-maker/dev.env \
+  --env-file /etc/aftermath-maker/dev-shadow.env \
   -f /home/ubuntu/aftermath-maker-dev/docker-compose.dev.yml ps
 ```
