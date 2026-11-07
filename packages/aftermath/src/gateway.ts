@@ -2646,9 +2646,14 @@ export class AftermathGateway {
     let tx: Transaction | undefined;
     const flattenedMarketIds: string[] = [];
     const intendedOrders: Array<{
-      marketId: string;
-      side: "bid" | "ask";
-      size: bigint;
+      authority: { marketId: string; packageId: string };
+      order: {
+        marketId: string;
+        side: "bid" | "ask";
+        size: bigint;
+        minPrice?: bigint;
+        maxPrice?: bigint;
+      };
     }> = [];
     for (const position of positions) {
       const market = await this.getMarket(position.marketId);
@@ -2677,47 +2682,40 @@ export class AftermathGateway {
         ...(tx ? { tx } : {}),
       }));
       flattenedMarketIds.push(position.marketId);
+      const side = order.side === PerpetualsOrderSide.Bid ? "bid" : "ask";
+      const tick = BigInt(market.marketParams.tickSize);
       intendedOrders.push({
-        marketId: position.marketId,
-        side: order.side === PerpetualsOrderSide.Bid ? "bid" : "ask",
-        size,
+        authority: {
+          marketId: position.marketId,
+          packageId: market.marketData.packageId,
+        },
+        order: {
+          marketId: position.marketId,
+          side,
+          size,
+          ...(side === "ask"
+            ? {
+                minPrice:
+                  market.roundToValidPriceBigInt({
+                    price: market.indexPrice * (1 - inputs.maxSlippage),
+                    floor: true,
+                  }) -
+                  tick * 2n,
+              }
+            : {
+                maxPrice:
+                  market.roundToValidPriceBigInt({
+                    price: market.indexPrice * (1 + inputs.maxSlippage),
+                    ceil: true,
+                  }) +
+                  tick * 2n,
+              }),
+        },
       });
     }
     if (!tx || !flattenedMarketIds.length) return null;
 
     tx.setSender(signerAddress);
-    const verifiedOrders = await Promise.all(
-      intendedOrders.map(async (order) => {
-        const market = await this.getMarket(order.marketId);
-        const tick = BigInt(market.marketParams.tickSize);
-        return {
-          authority: {
-            marketId: order.marketId,
-            packageId: market.marketData.packageId,
-          },
-          order: {
-            ...order,
-            ...(order.side === "ask"
-              ? {
-                  minPrice:
-                    market.roundToValidPriceBigInt({
-                      price: market.indexPrice * (1 - inputs.maxSlippage),
-                      floor: true,
-                    }) -
-                    tick * 2n,
-                }
-              : {
-                  maxPrice:
-                    market.roundToValidPriceBigInt({
-                      price: market.indexPrice * (1 + inputs.maxSlippage),
-                      ceil: true,
-                    }) +
-                    tick * 2n,
-                }),
-          },
-        };
-      }),
-    );
     try {
       return await this.mutationQueue(signerAddress).run(async () => {
         await this.inspectTransaction({
@@ -2730,9 +2728,9 @@ export class AftermathGateway {
             accountObjectId: cap.accountObjectId,
             collateralCoinType: inputs.setup.collateralCoinType,
             maxLeverage: inputs.config.maxLeverage,
-            markets: verifiedOrders.map((item) => item.authority),
+            markets: intendedOrders.map((item) => item.authority),
             builderCode: null,
-            orders: verifiedOrders.map((item) => item.order),
+            orders: intendedOrders.map((item) => item.order),
           },
         });
         const result = await this.client.signAndExecuteTransaction({
