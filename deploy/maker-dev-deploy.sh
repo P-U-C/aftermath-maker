@@ -8,6 +8,7 @@ repo=/home/ubuntu/aftermath-maker-dev
 branch=dev
 env_file=/etc/aftermath-maker/dev-shadow.env
 lock_file=/run/lock/aftermath-maker-dev-deploy.lock
+project=aftermath-maker-dev
 
 if [[ ! -r "$env_file" ]]; then
   echo "Missing $env_file; refusing to deploy dev" >&2
@@ -32,7 +33,7 @@ as_ubuntu git -C "$repo" fetch --depth=1 origin "$branch"
 current=$(as_ubuntu git -C "$repo" rev-parse HEAD)
 target=$(as_ubuntu git -C "$repo" rev-parse FETCH_HEAD)
 export MAKER_DEV_ENV_FILE="$env_file"
-compose=(docker compose --project-name aftermath-maker-dev \
+compose=(docker compose --project-name "$project" \
   --env-file "$env_file" -f "$repo/docker-compose.dev.yml")
 
 service_container_id() {
@@ -62,6 +63,30 @@ web_ready() {
     http://127.0.0.1:8789/ >/dev/null
 }
 
+# Compose's --force-recreate first renames the old container. On this host a
+# stalled Docker CLI could leave that renamed container behind and make every
+# later release conflict on its name. Remove only this project's exact service
+# containers before asking Compose to create a replacement instead.
+remove_service_containers() {
+  local service=$1
+  local container_id
+  while IFS= read -r container_id; do
+    [[ -n "$container_id" ]] || continue
+    echo "Removing stale $service container $container_id"
+    docker rm -f "$container_id"
+  done < <(
+    docker ps -aq \
+      --filter "label=com.docker.compose.project=$project" \
+      --filter "label=com.docker.compose.service=$service"
+  )
+}
+
+start_service() {
+  local service=$1
+  remove_service_containers "$service"
+  "${compose[@]}" up -d --no-deps "$service"
+}
+
 if [[ "$current" == "$target" ]]; then
   # A fresh clone starts at the target SHA but has no containers yet. The dev
   # tag is mutable, so a running service alone is not proof that the
@@ -79,11 +104,10 @@ fi
 sha=$(as_ubuntu git -C "$repo" rev-parse HEAD)
 export VCS_REF="$sha"
 "${compose[@]}" build --build-arg "VCS_REF=$sha"
-# The local dev tag is intentionally mutable. Compose does not recreate a
-# service merely because that tag now resolves to a newly built image. Recreate
-# in dependency order: forcing both services together can leave control stopped
-# while Compose waits indefinitely to replace web.
-"${compose[@]}" up -d --remove-orphans --no-deps --force-recreate control
+# The local dev tag is intentionally mutable. Recreate in dependency order;
+# start_service removes only this exact project's old service container first,
+# avoiding Compose's rename race during --force-recreate.
+start_service control
 for _attempt in $(seq 1 30); do
   if [[ "$(service_revision control || true)" == "$sha" ]] && \
     [[ "$(service_health control || true)" == "healthy" ]]; then
@@ -98,13 +122,13 @@ if [[ "$(service_revision control || true)" != "$sha" ]] || \
   exit 1
 fi
 
-"${compose[@]}" up -d --no-deps --force-recreate web
+start_service web
 
 # The control health wait above leaves the web proxy a live backend. This
 # confirms the publicly proxied web listener without calling a venue or public
 # endpoint.
 for _attempt in $(seq 1 30); do
-  if web_ready; then
+  if [[ "$(service_revision web || true)" == "$sha" ]] && web_ready; then
     echo "Maker dev Mainnet Paper/shadow deployed $sha; Live gates remain off"
     exit 0
   fi
