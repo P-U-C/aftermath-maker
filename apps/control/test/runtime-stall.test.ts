@@ -371,7 +371,7 @@ describe("Paper cycle freshness under a stalled venue read", () => {
     }
   });
 
-  it("replays filled Volume loops across markets and closes both accounts before each rotation", async () => {
+  it("replays a filled Volume loop through every configured market, recovers a close read, and returns flat", async () => {
     const h = await paperRuntime({ hedge: true, makerFreeUsd: 300 });
     h.gateway.balance("1802", 300);
     h.tenant.setConfig(
@@ -390,13 +390,13 @@ describe("Paper cycle freshness under a stalled venue read", () => {
           maxOrderUsd: 10,
           maxSlippageBps: 75,
         },
-        markets: [
-          { marketId: "0x1", symbol: "ONE" },
-          { marketId: "0x2", symbol: "TWO" },
-          { marketId: "0x3", symbol: "THREE" },
-        ],
+        markets: Array.from({ length: 15 }, (_, index) => ({
+          marketId: `0x${index + 1}`,
+          symbol: `M${index + 1}`,
+        })),
       }),
     );
+    const markets = h.tenant.getConfig()!.markets;
     let crossedMarketId: string | null = null;
     let rejectedMarketId: string | null = null;
     h.gateway.when("getOrderbook", async (marketId: string) => {
@@ -407,7 +407,8 @@ describe("Paper cycle freshness under a stalled venue read", () => {
         market: {
           metadata: {
             symbol:
-              marketId === "0x1" ? "ONE" : marketId === "0x2" ? "TWO" : "THREE",
+              markets.find((candidate) => candidate.marketId === marketId)
+                ?.symbol ?? marketId,
           },
           indexPrice: 10,
           marketState: { openInterest: 1_000 },
@@ -463,26 +464,31 @@ describe("Paper cycle freshness under a stalled venue read", () => {
       expect(h.tenant.listPaperFills({ trialId: "runtime" })).toHaveLength(4);
       expect(h.runtime.snapshot.market.id).toBe("0x2");
 
-      // TWO is deliberately no-fill.  THREE is the second filled loop: this
-      // proves a prior flat rotation cannot strand the state machine.
-      await vi.advanceTimersByTimeAsync(5 * 60_000);
-      await h.runtime.cycle({ executeLive: true });
-      expect(h.runtime.snapshot.market.id).toBe("0x3");
-      crossedMarketId = "0x3";
-      await vi.advanceTimersByTimeAsync(5_000);
-      crossedMarketId = null;
-      await vi.advanceTimersByTimeAsync(5 * 60_000);
-      await h.runtime.cycle({ executeLive: true });
+      // Every remaining market receives one simulated post-only fill, its
+      // immediate hedge, then both reduce-only closes. This is a full
+      // single-slot lap, not merely a three-market representative sample.
+      for (const [index, market] of markets.entries()) {
+        if (index === 0) continue;
+        expect(h.runtime.snapshot.market.id).toBe(market.marketId);
+        crossedMarketId = market.marketId;
+        await vi.advanceTimersByTimeAsync(5_000);
+        crossedMarketId = null;
+        await vi.advanceTimersByTimeAsync(5 * 60_000);
+        await h.runtime.cycle({ executeLive: true });
+        expect(h.tenant.getPaperState("runtime").positions).toEqual([]);
+      }
       expect(h.tenant.getPaperState("runtime").positions).toEqual([]);
       const fills = h.tenant.listPaperFills({ trialId: "runtime" });
-      expect(fills).toHaveLength(8);
-      expect(fills.reduce((total, fill) => total + fill.sizeUsd, 0)).toBe(80);
+      expect(fills).toHaveLength(15 * 4);
+      expect(fills.reduce((total, fill) => total + fill.sizeUsd, 0)).toBe(
+        15 * 4 * 10,
+      );
       expect(h.runtime.snapshot.market.id).toBe("0x1");
       expect(
         h.tenant
           .listEvents(100)
           .filter((event) => event.action === "volume-close"),
-      ).toHaveLength(2);
+      ).toHaveLength(15);
     } finally {
       await h.runtime.stop();
       vi.useRealTimers();
