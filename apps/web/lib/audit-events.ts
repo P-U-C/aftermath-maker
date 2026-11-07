@@ -216,6 +216,10 @@ const copies: Record<string, AuditCopy> = {
       return reason ? `Maker cycle failed: ${reason}.` : "Maker cycle failed.";
     },
   },
+  "runtime:cycle:retry": {
+    severity: "warning",
+    sentence: () => "Maker could not read venue data and will retry.",
+  },
   "runtime:cycle:timeout": {
     severity: "warning",
     sentence: (detail) =>
