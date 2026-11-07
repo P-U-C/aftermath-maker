@@ -16,6 +16,7 @@ import {
 import { makerConfigSchema, setupSchema } from "@puc/core";
 import {
   runLiveCanary,
+  withCanaryOperationTimeout,
   type LiveCanaryConfig,
   type LiveCanaryState,
   type LiveCanaryStateStore,
@@ -157,7 +158,14 @@ async function main(): Promise<void> {
         "Canary agent key does not match its configured public address",
       );
     }
-    const gateway = await AftermathGateway.create({ network: "mainnet" });
+    // Gateway construction can contact the SDK endpoint before the first
+    // state-machine checkpoint exists. Bound it as well as every subsequent
+    // operation; the outer catch force-exits a one-shot process on timeout.
+    const gateway = await withCanaryOperationTimeout(
+      "gateway initialization",
+      15_000,
+      () => AftermathGateway.create({ network: "mainnet" }),
+    );
     const startedAt = Date.now();
     const results = [];
     for (let cycle = 1; cycle <= cycles; cycle += 1) {
