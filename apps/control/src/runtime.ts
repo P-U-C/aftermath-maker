@@ -6,6 +6,7 @@ import {
   type EndpointHealth,
   type MarketSummary,
   type MarketDailyVolume,
+  type OwnerAccountSummary,
   type PerformanceOrder,
   type PortfolioSnapshot,
 } from "@puc/aftermath";
@@ -30,6 +31,7 @@ import {
   type RuntimeSnapshot,
   type SafetyCheck,
   type Setup,
+  USDC_COIN_TYPE,
 } from "@puc/core";
 import type { TenantStore } from "./store.js";
 import {
@@ -328,6 +330,29 @@ const emptyPortfolio = (): PortfolioSnapshot => ({
   positions: [],
 });
 
+/**
+ * Paper can use a public, owner-scoped account read without an agent
+ * capability.  It deliberately carries no positions: a non-flat account is
+ * rejected before this conversion, because a summary cannot safely attribute
+ * a live position to an estimated Paper run.
+ */
+const ownerSummaryPortfolio = (
+  account: OwnerAccountSummary,
+  markedAt: string,
+): PortfolioSnapshot => ({
+  markedAt,
+  equityUsd: account.equityUsd,
+  availableCollateralUsd: account.availableCollateralUsd,
+  allocatedCollateralUsd: account.allocatedCollateralUsd,
+  freeMarginUsd: account.freeMarginUsd,
+  withdrawableCollateralUsd: account.withdrawableCollateralUsd,
+  grossExposureUsd: account.exposureUsd ?? 0,
+  unrealizedPnlUsd: account.unrealizedPnlUsd ?? 0,
+  // No transaction is constructed or dry-run in this mode.
+  gasSui: Number.POSITIVE_INFINITY,
+  positions: [],
+});
+
 const paperSnapshot = (paper: {
   openOrders: number;
   fills: number;
@@ -368,6 +393,7 @@ function paperSimulationBlocker(inputs: {
   symbol: string;
   observedAt?: string;
   requiredGasSui: number;
+  localPaper: boolean;
   hedgeCollateral?: {
     accountId: string;
     availableUsd: number;
@@ -388,7 +414,10 @@ function paperSimulationBlocker(inputs: {
   const accountLabel = inputs.setup
     ? `account ${inputs.setup.accountId}`
     : "this account";
-  if (!inputs.setup || !inputs.account?.agentCapId || !inputs.agent) {
+  if (
+    !inputs.localPaper &&
+    (!inputs.setup || !inputs.account?.agentCapId || !inputs.agent)
+  ) {
     return {
       code: "trading-key",
       message: `Paper needs a trading key for ${accountLabel}. Set it up in Venues; Maker will keep reading the market.`,
@@ -404,10 +433,10 @@ function paperSimulationBlocker(inputs: {
   ) {
     return { code: first.code, message: first.detail };
   }
-  if (first.code === "gas") {
+  if (first.code === "gas" && !inputs.localPaper && inputs.agent) {
     return {
       code: "gas",
-      accountId: inputs.setup?.accountId,
+      ...(inputs.setup ? { accountId: inputs.setup.accountId } : {}),
       agentAddress: inputs.agent.address,
       requiredGasSui: inputs.requiredGasSui,
       ...(inputs.observedAt ? { observedAt: inputs.observedAt } : {}),
@@ -430,7 +459,7 @@ function paperSimulationBlocker(inputs: {
   if (first.code === "collateral") {
     return {
       code: "collateral",
-      accountId: inputs.setup?.accountId,
+      ...(inputs.setup ? { accountId: inputs.setup.accountId } : {}),
       ...(inputs.collateral ?? {}),
       message: inputs.collateral
         ? `Paper is waiting on ${accountLabel}. It has $${inputs.collateral.availableUsd.toFixed(2)} free collateral, and quoting ${inputs.collateral.concurrentMarkets} ${inputs.collateral.concurrentMarkets === 1 ? "market" : "markets"} at $${inputs.collateral.quoteSizeUsd.toFixed(2)} a side needs $${inputs.collateral.requiredUsd.toFixed(2)}. Deposit at least $${Math.max(0, inputs.collateral.requiredUsd - inputs.collateral.availableUsd).toFixed(2)}${inputs.collateral.concurrentMarkets > 1 ? `, or quote one market at a time (needs $${((inputs.collateral.quoteSizeUsd * 2) / Math.max(1, inputs.collateral.leverage)).toFixed(2)})` : ""}.`
@@ -2728,7 +2757,14 @@ export class MakerRuntime {
       }
       selected = config.markets[this.marketIndex % config.markets.length]!;
       const marketConfig = resolveMarketConfig(config, selected);
-      const setup = this.store.getSetup();
+      const savedSetup = this.store.getSetup();
+      // `getSetup()` falls back to the owner's authorized account for legacy
+      // callers. A Paper config may deliberately select another owned account
+      // without a trading key, so never substitute that old agent account.
+      const setup =
+        config.makerAccountId && savedSetup?.accountId !== config.makerAccountId
+          ? null
+          : savedSetup;
       const account = setup
         ? this.store.getAccountSetup(setup.accountId)
         : null;
@@ -2738,6 +2774,7 @@ export class MakerRuntime {
         this.generation === inputs.generation &&
         (config?.mode !== "paper" || this.cycleToken === inputs.cycleToken);
       const liveExecution = config.mode === "live" && inputs.executeLive;
+      const paperMakerAccountId = setup?.accountId ?? config.makerAccountId;
 
       if (liveExecution) {
         if (!this.singleSlotSwept) {
@@ -2898,6 +2935,7 @@ export class MakerRuntime {
       let hedgeRiskPortfolio: PortfolioSnapshot | null = config.hedge.enabled
         ? null
         : emptyPortfolio();
+      let localPaper = false;
       if (setup && account?.agentCapId && agent) {
         portfolio = await this.venueRead(
           this.gateway.getAgentPortfolioSnapshot({
@@ -2925,6 +2963,49 @@ export class MakerRuntime {
             if (inputs.executeLive && !executionIsCurrent()) return;
           }
         }
+      } else if (config.mode === "paper" && paperMakerAccountId) {
+        // This is intentionally a read-only, locally simulated Paper path.
+        // Never use it to infer live positions or to construct an Aftermath
+        // transaction: the owner summary has only aggregate account state.
+        const ownerAccounts = await this.venueRead(
+          this.gateway.listOwnerAccounts({
+            walletAddress: this.store.ownerAddress,
+            collateralCoinType: setup?.collateralCoinType ?? USDC_COIN_TYPE,
+          }),
+          "Owner account read",
+        );
+        if (inputs.executeLive && !executionIsCurrent()) return;
+        const makerSummary = ownerAccounts.find(
+          (candidate) => candidate.accountId === paperMakerAccountId,
+        );
+        const hedgeSummary = config!.hedge.enabled
+          ? ownerAccounts.find(
+              (candidate) => candidate.accountId === config!.hedge.accountId,
+            )
+          : null;
+        const unsettled = [makerSummary, hedgeSummary]
+          .filter((summary): summary is OwnerAccountSummary => Boolean(summary))
+          .find(
+            (summary) =>
+              summary.positionCount > 0 || summary.openMakerOrderCount > 0,
+          );
+        if (!makerSummary || (config!.hedge.enabled && !hedgeSummary)) {
+          throw new Error(
+            "Selected Paper account is no longer owned by this wallet",
+          );
+        }
+        if (unsettled) {
+          throw new Error(
+            `Paper estimates require a flat account; account ${unsettled.accountId} has ${unsettled.positionCount} position(s) and ${unsettled.openMakerOrderCount} resting Maker order(s)`,
+          );
+        }
+        const markedAt = new Date().toISOString();
+        portfolio = ownerSummaryPortfolio(makerSummary, markedAt);
+        hedgeRiskPortfolio = config!.hedge.enabled
+          ? ownerSummaryPortfolio(hedgeSummary!, markedAt)
+          : emptyPortfolio();
+        localPaper = true;
+        this.snapshotValue.accountReadAt = markedAt;
       }
       if (paperState) {
         const virtualPortfolio = (
@@ -3007,7 +3088,7 @@ export class MakerRuntime {
           inventoryUsd: position.inventoryUsd,
         })),
       ].filter((position) => Math.abs(position.inventoryUsd) > 0.000001);
-      if (setup && account?.agentCapId && agent) {
+      if (localPaper || (setup && account?.agentCapId && agent)) {
         this.runPeakEquityUsd = Math.max(
           this.runPeakEquityUsd ?? combinedEquityUsd,
           combinedEquityUsd,
@@ -3304,12 +3385,16 @@ export class MakerRuntime {
           config: marketConfig,
           quote: intent,
           now: new Date(),
-          setupComplete: Boolean(setup && account?.agentCapId && agent),
+          setupComplete:
+            localPaper || Boolean(setup && account?.agentCapId && agent),
           // Paper needs the authorized agent address to build and dry-run the
           // transaction, not its private signing material.
-          hasAgentKey: Boolean(
-            agent && (activeConfig.mode === "paper" || this.options.masterKey),
-          ),
+          hasAgentKey:
+            localPaper ||
+            Boolean(
+              agent &&
+              (activeConfig.mode === "paper" || this.options.masterKey),
+            ),
           liveEnabled: this.options.liveEnabled,
           mainnetAllowed: this.options.mainnetAllowed,
           portfolioGrossExposureUsd: combinedGrossExposureUsd,
@@ -3432,9 +3517,10 @@ export class MakerRuntime {
           config.mode === "paper"
             ? (this.snapshotValue.paperBlocker?.message ?? null)
             : null,
-        setupComplete: Boolean(setup && account?.agentCapId && agent),
+        setupComplete:
+          localPaper || Boolean(setup && account?.agentCapId && agent),
         agentAddress: agent?.address ?? null,
-        accountId: setup?.accountId ?? null,
+        accountId: paperMakerAccountId,
         market: {
           id: selected.marketId,
           symbol: market.metadata?.symbol ?? selected.symbol,
@@ -3446,12 +3532,17 @@ export class MakerRuntime {
         },
         risk: {
           runDrawdownUsd:
-            setup && account?.agentCapId && agent ? runDrawdownUsd : null,
+            localPaper || (setup && account?.agentCapId && agent)
+              ? runDrawdownUsd
+              : null,
           runHighEquityUsd:
-            setup && account?.agentCapId && agent
+            localPaper || (setup && account?.agentCapId && agent)
               ? this.runPeakEquityUsd
               : null,
-          measuredAt: setup && account?.agentCapId && agent ? updatedAt : null,
+          measuredAt:
+            localPaper || (setup && account?.agentCapId && agent)
+              ? updatedAt
+              : null,
         },
         restingQuoteMarketIds:
           config.mode === "live" && setup
@@ -3508,23 +3599,32 @@ export class MakerRuntime {
           selectedMarkets: config.markets.length,
           grossExposureUsd: combinedGrossExposureUsd,
           unrealizedPnlUsd: combinedUnrealizedPnlUsd,
-          availableCollateralUsd: setup
-            ? portfolio.availableCollateralUsd
-            : null,
-          allocatedCollateralUsd: setup
-            ? portfolio.allocatedCollateralUsd
-            : null,
-          freeMarginUsd: setup ? portfolio.freeMarginUsd : null,
-          withdrawableCollateralUsd: setup
-            ? portfolio.withdrawableCollateralUsd
-            : null,
+          availableCollateralUsd:
+            localPaper || (setup && account?.agentCapId)
+              ? portfolio.availableCollateralUsd
+              : null,
+          allocatedCollateralUsd:
+            localPaper || (setup && account?.agentCapId)
+              ? portfolio.allocatedCollateralUsd
+              : null,
+          freeMarginUsd:
+            localPaper || (setup && account?.agentCapId)
+              ? portfolio.freeMarginUsd
+              : null,
+          withdrawableCollateralUsd:
+            localPaper || (setup && account?.agentCapId)
+              ? portfolio.withdrawableCollateralUsd
+              : null,
         },
         balances: {
           ...this.snapshotValue.balances,
-          equityUsd: setup ? combinedEquityUsd : null,
+          equityUsd:
+            localPaper || (setup && account?.agentCapId)
+              ? combinedEquityUsd
+              : null,
           inventoryUsd,
           unrealizedPnlUsd: combinedUnrealizedPnlUsd,
-          gasSui: setup ? portfolio.gasSui : null,
+          gasSui: localPaper ? null : setup ? portfolio.gasSui : null,
         },
         inventory: {
           netUsd: bundleInventoryPositions.reduce(
@@ -3736,6 +3836,7 @@ export class MakerRuntime {
           setup,
           account,
           agent,
+          localPaper,
           safety: safety.filter((check) => check.scope === "bundle"),
           symbol: market.metadata?.symbol ?? selected.symbol,
           requiredGasSui: config.maxGasMist / 1_000_000_000,
@@ -3800,18 +3901,20 @@ export class MakerRuntime {
 
         let receipt: { endpoint: string; gasUsedMist: number };
         try {
-          receipt = await withTimeout(
-            this.gateway.simulateQuote({
-              setup: setup!,
-              config: marketConfig,
-              quote,
-              agentAddress: agent!.address,
-              builderCode: this.options.builderCode(),
-              shouldContinue: executionIsCurrent,
-            }),
-            VENUE_READ_TIMEOUT_MS,
-            "Paper simulation read timed out",
-          );
+          receipt = localPaper
+            ? { endpoint: "local-paper-estimate", gasUsedMist: 0 }
+            : await withTimeout(
+                this.gateway.simulateQuote({
+                  setup: setup!,
+                  config: marketConfig,
+                  quote,
+                  agentAddress: agent!.address,
+                  builderCode: this.options.builderCode(),
+                  shouldContinue: executionIsCurrent,
+                }),
+                VENUE_READ_TIMEOUT_MS,
+                "Paper simulation read timed out",
+              );
         } catch (error) {
           if (!executionIsCurrent()) return;
           if (error instanceof QuoteBelowMinimumError) {

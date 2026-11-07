@@ -51,7 +51,7 @@ describe("access request notification email", () => {
       });
     }
     const emails: string[] = [];
-    const now = new Date();
+    const now = new Date("2026-11-07T12:00:00.000Z");
 
     const result = deliverAccessRequestNotifications({
       store,
@@ -111,7 +111,7 @@ describe("access request notification email", () => {
       walletAddress: `0x${"4".repeat(64)}`,
       twitterHandle: "@maker_4",
     });
-    const now = new Date();
+    const now = new Date("2026-11-07T12:00:00.000Z");
 
     expect(
       deliverAccessRequestNotifications({

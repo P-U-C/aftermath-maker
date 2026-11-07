@@ -574,6 +574,11 @@ export async function buildServer({
     scoped: TenantStore,
     config: ReturnType<typeof makerConfigSchema.parse>,
   ): void {
+    // Paper estimates use the owner's read-only account summaries.  Requiring
+    // an agent capability here would turn creating a disposable Paper strategy
+    // into an on-chain authorization flow.  Live continues to require the
+    // confirmed account capability below.
+    if (config.mode === "paper") return;
     if (config.makerAccountId) {
       const makerAccount = scoped.getAccountSetup(config.makerAccountId);
       if (!makerAccount?.agentCapId) {
@@ -1364,22 +1369,9 @@ export async function buildServer({
                   400,
                 );
               }
-              for (const accountId of [
-                body.makerAccountId,
-                body.takerAccountId,
-              ]) {
-                if (
-                  accountId &&
-                  !scoped.getAccountSetup(accountId)?.agentCapId
-                ) {
-                  throw new UserFacingError(
-                    "account-not-authorized",
-                    "Authorize the selected account in Venues before continuing.",
-                    { kind: "venues" },
-                    400,
-                  );
-                }
-              }
+              // Paper allocation is read-only until Start, where owner
+              // account discovery validates the selected account.  Do not
+              // require a persistent agent capability just to save a draft.
               return scoped.createAllocatedBundle({
                 name: body.name,
                 makerAccountId: body.makerAccountId,
@@ -1502,16 +1494,8 @@ export async function buildServer({
         "Choose at least one bundle field to update",
       )
       .parse(request.body);
-    for (const accountId of [body.makerAccountId, body.takerAccountId]) {
-      if (accountId && !scoped.getAccountSetup(accountId)?.agentCapId) {
-        throw new UserFacingError(
-          "account-not-authorized",
-          "Authorize the selected account in Venues before continuing.",
-          { kind: "venues" },
-          400,
-        );
-      }
-    }
+    // This endpoint updates a Paper allocation only.  Account ownership is
+    // checked by the owner-scoped venue read at Start, not by an agent key.
     const bundle = await runtimeManager.updateBundleAllocation({
       ownerAddress: requestAuth(request).ownerAddress,
       bundleId: params.bundleId,

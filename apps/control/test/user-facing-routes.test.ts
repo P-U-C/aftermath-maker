@@ -224,8 +224,16 @@ const cases: Case[] = [
     code: "bundle-not-ready-trading-keys",
     status: 409,
     copy: "Authorize trading key before starting Core.",
+    harness: () =>
+      appHarness({
+        env: { LIVE_TRADING_ENABLED: "true", ALLOW_MAINNET: "true" },
+      }),
     prepare: (h) => {
-      h.store.forTenant(OWNER).setConfig({ ...config, makerAccountId: "1796" });
+      h.store.forTenant(OWNER).setConfig({
+        ...config,
+        mode: "live",
+        makerAccountId: "1796",
+      });
       h.gateway.account("1796", 100);
       const core = h.store.forTenant(OWNER).listBundles()[0]!;
       return {
@@ -239,8 +247,16 @@ const cases: Case[] = [
     code: "bundle-not-ready-gas",
     status: 409,
     copy: "Add gas to Core's trading key before starting it.",
+    harness: () =>
+      appHarness({
+        env: { LIVE_TRADING_ENABLED: "true", ALLOW_MAINNET: "true" },
+      }),
     prepare: (h) => {
-      h.store.forTenant(OWNER).setConfig({ ...config, makerAccountId: "1796" });
+      h.store.forTenant(OWNER).setConfig({
+        ...config,
+        mode: "live",
+        makerAccountId: "1796",
+      });
       authorize(h);
       h.gateway.gasSui = 0;
       const core = h.store.forTenant(OWNER).listBundles()[0]!;
@@ -351,10 +367,14 @@ const cases: Case[] = [
     code: "account-not-authorized",
     status: 409,
     copy: "Authorize the selected Maker account in Venues before continuing.",
+    harness: () =>
+      appHarness({
+        env: { LIVE_TRADING_ENABLED: "true", ALLOW_MAINNET: "true" },
+      }),
     prepare: () => ({
       method: "POST",
       url: "/api/config",
-      payload: { ...config, makerAccountId: "1796" },
+      payload: { ...config, mode: "live", makerAccountId: "1796" },
     }),
   },
   {
@@ -1014,6 +1034,24 @@ describe("owner-facing error responses and audit records at real HTTP routes", (
       }
     },
   );
+
+  it("saves a Paper strategy for an owned account without creating a trading key", async () => {
+    const h = await appHarness();
+    try {
+      h.gateway.account("1796", 100);
+      const response = await h.app.inject({
+        method: "POST",
+        url: "/api/config",
+        headers: h.signedInAs(),
+        payload: { ...config, mode: "paper", makerAccountId: "1796" },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(h.store.forTenant(OWNER).getAccountSetup("1796")).toBeNull();
+    } finally {
+      await h.close();
+    }
+  });
 });
 
 describe("bundle mode route", () => {
