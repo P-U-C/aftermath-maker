@@ -34,6 +34,7 @@ import {
 import type { TenantStore } from "./store.js";
 import {
   VENUE_READ_TIMEOUT_MS,
+  VenueReadError,
   VenueReadTimeoutError,
   withTimeout,
 } from "./venue-read.js";
@@ -587,6 +588,9 @@ export class MakerRuntime {
     placedAt: number;
   } | null = null;
   private marketSelectedAt: number | null = null;
+  /** A Volume rotation cannot open the next market until this paired Paper
+   * position has been cancelled and closed.  Retain it across read retries. */
+  private pendingPaperVolumeCloseMarketId: string | null = null;
   private awaitingFillAttribution = new Map<string, number>();
   private awaitingPositionAttribution = new Map<string, number>();
   private autoRebalancedOrderIds = new Set<string>();
@@ -726,8 +730,17 @@ export class MakerRuntime {
     this.snapshotValue.restingQuoteVerifiedAt = null;
   }
 
-  private venueRead<T>(task: Promise<T>, label: string): Promise<T> {
-    return withTimeout(task, VENUE_READ_TIMEOUT_MS, `${label} timed out`);
+  private async venueRead<T>(task: Promise<T>, label: string): Promise<T> {
+    try {
+      return await withTimeout(
+        task,
+        VENUE_READ_TIMEOUT_MS,
+        `${label} timed out`,
+      );
+    } catch (error) {
+      if (error instanceof VenueReadTimeoutError) throw error;
+      throw new VenueReadError(`${label} failed: ${message(error)}`);
+    }
   }
 
   async listMarkets(collateralCoinType: string): Promise<MarketSummary[]> {
@@ -818,6 +831,7 @@ export class MakerRuntime {
     this.runPeakEquityUsd = null;
     this.clearActiveQuoteState();
     this.marketSelectedAt = null;
+    this.pendingPaperVolumeCloseMarketId = null;
     this.awaitingFillAttribution.clear();
     this.awaitingPositionAttribution.clear();
     this.autoRebalancedOrderIds.clear();
@@ -2687,7 +2701,10 @@ export class MakerRuntime {
         const now = Date.now();
         if (this.marketSelectedAt === null) {
           this.marketSelectedAt = now;
-        } else if (now - this.marketSelectedAt >= config.marketDwellMs) {
+        } else if (
+          this.pendingPaperVolumeCloseMarketId === null &&
+          now - this.marketSelectedAt >= config.marketDwellMs
+        ) {
           const prior =
             config.markets[this.marketIndex % config.markets.length];
           this.marketIndex = (this.marketIndex + 1) % config.markets.length;
@@ -2698,8 +2715,16 @@ export class MakerRuntime {
             config.flattenOnRotate
           ) {
             volumeRotateFromMarketId = prior?.marketId ?? null;
+            this.pendingPaperVolumeCloseMarketId = volumeRotateFromMarketId;
           }
         }
+      }
+      if (
+        config.mode === "paper" &&
+        config.strategyObjective === "volume" &&
+        config.flattenOnRotate
+      ) {
+        volumeRotateFromMarketId = this.pendingPaperVolumeCloseMarketId;
       }
       selected = config.markets[this.marketIndex % config.markets.length]!;
       const marketConfig = resolveMarketConfig(config, selected);
@@ -2737,10 +2762,9 @@ export class MakerRuntime {
         }
       }
 
-      const { market, orderbook } = await withTimeout(
+      const { market, orderbook } = await this.venueRead(
         this.gateway.getOrderbook(selected.marketId),
-        VENUE_READ_TIMEOUT_MS,
-        "Venue orderbook read timed out",
+        "Venue orderbook read",
       );
       if (inputs.executeLive && !executionIsCurrent()) return;
       const bestBid = orderbook.bestBidPrice;
@@ -2756,10 +2780,9 @@ export class MakerRuntime {
           // market.  These are simulator records only; no live order path is
           // reachable from this branch.
           this.store.cancelPaperOrders(paperTrialId, volumeRotateFromMarketId);
-          const priorBook = await withTimeout(
+          const priorBook = await this.venueRead(
             this.gateway.getOrderbook(volumeRotateFromMarketId),
-            VENUE_READ_TIMEOUT_MS,
-            "Volume close orderbook read timed out",
+            "Volume close orderbook read",
           );
           const priorBid = priorBook.orderbook.bestBidPrice;
           const priorAsk = priorBook.orderbook.bestAskPrice;
@@ -2807,6 +2830,18 @@ export class MakerRuntime {
               },
             });
           }
+          const remaining = this.store
+            .getPaperState(paperTrialId)
+            .positions.some(
+              (position) => position.marketId === volumeRotateFromMarketId,
+            );
+          if (remaining) {
+            throw new Error("Volume close did not leave both accounts flat");
+          }
+          this.pendingPaperVolumeCloseMarketId = null;
+          // The next market gets its full dwell after recovery, rather than
+          // immediately rotating again because a close retry took time.
+          this.marketSelectedAt = Date.now();
         }
         const estimatedFills = this.store.matchPaperOrders({
           trialId: paperTrialId,
@@ -2864,14 +2899,13 @@ export class MakerRuntime {
         ? null
         : emptyPortfolio();
       if (setup && account?.agentCapId && agent) {
-        portfolio = await withTimeout(
+        portfolio = await this.venueRead(
           this.gateway.getAgentPortfolioSnapshot({
             setup,
             agentAddress: agent.address,
             marketIds: config.markets.map((item) => item.marketId),
           }),
-          VENUE_READ_TIMEOUT_MS,
-          "Maker account read timed out",
+          "Maker account read",
         );
         if (inputs.executeLive && !executionIsCurrent()) return;
         this.snapshotValue.accountReadAt = portfolio.markedAt;
@@ -2880,14 +2914,13 @@ export class MakerRuntime {
             config.hedge.accountId,
           );
           if (hedgeAccount?.agentCapId) {
-            hedgeRiskPortfolio = await withTimeout(
+            hedgeRiskPortfolio = await this.venueRead(
               this.gateway.getAgentPortfolioSnapshot({
                 setup: hedgeAccount,
                 agentAddress: agent.address,
                 marketIds: config.markets.map((item) => item.marketId),
               }),
-              VENUE_READ_TIMEOUT_MS,
-              "Hedge account read timed out",
+              "Hedge account read",
             );
             if (inputs.executeLive && !executionIsCurrent()) return;
           }
@@ -4204,14 +4237,15 @@ export class MakerRuntime {
         (config?.mode === "paper" && inputs.cycleToken !== this.cycleToken);
       if (
         !cancelled &&
-        error instanceof VenueReadTimeoutError &&
+        (error instanceof VenueReadTimeoutError ||
+          error instanceof VenueReadError) &&
         config?.mode === "paper"
       ) {
         this.snapshotValue.lastError = errorText;
         this.store.logEvent({
           category: "runtime",
           action: "cycle",
-          outcome: "timeout",
+          outcome: "retry",
           detail: {
             error: errorText,
             accountReadAt: this.snapshotValue.accountReadAt,
