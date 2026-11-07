@@ -46,6 +46,17 @@ Testnet and fixture volumes are retained but never mounted. A future Mainnet
 canary uses a separate, explicitly enabled host configuration and dedicated
 wallet; it is not part of this Compose file.
 
+## Bounded Mainnet canary
+
+The separate canary is a manual, root-only single-lifecycle test for the
+dedicated disposable account pair. It never runs during deployment, from the
+browser, or from a timer. It accepts one market and a maximum $5 quote/hedge,
+simulates first, then cancels before any hedge or flatten. Its durable
+checkpoint resumes recovery after an interruption rather than quoting again.
+
+See [the live-canary audit](../audits/2026-11-07-live-canary-framework.md) for
+the exact command shape, evidence boundary, and remaining Mainnet proof.
+
 ## Testnet diagnostic
 
 Aftermath has advised that Perpetuals Testnet is not a reliable execution
