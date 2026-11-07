@@ -33,7 +33,9 @@ new -> simulate -> post one quote -> cancel -> confirm no resting orders
 
 - The runner accepts Mainnet only, exactly one configured market, a distinct
   authorized account pair, Live config, $5 maximum quote/hedge, and a 30-second
-  maximum resting/reconciliation window.
+  maximum resting/reconciliation window. Its required builder policy matches
+  the agent's authorization, so simulation and execution use the same order
+  shape as Live.
 - It simulates the exact quote before execution. Without the explicit execute
   and confirmation flags, it cannot sign or broadcast.
 - It refuses an existing position or resting order before opening.

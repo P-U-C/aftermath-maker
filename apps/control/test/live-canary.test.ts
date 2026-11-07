@@ -149,6 +149,7 @@ function canaryConfig() {
     maxQuoteUsd: 5,
     observationWindowMs: 0,
     pollMs: 1,
+    builderCode: { integratorId: 15, integratorFee: 0.0001 },
     config: makerConfigSchema.parse({
       mode: "live",
       rotationMode: "single-slot",

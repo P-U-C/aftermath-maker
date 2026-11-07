@@ -10,6 +10,7 @@ import {
   evaluateQuoteSafety,
   makerConfigSchema,
   setupSchema,
+  type BuilderFeePolicy,
   type MakerConfig,
   type QuoteIntent,
   type Setup,
@@ -67,6 +68,8 @@ export type LiveCanaryConfig = {
   /** How long the one post-only quote may rest before forced cancellation. */
   observationWindowMs: number;
   pollMs: number;
+  /** The active builder policy must match the canary agent's authorization. */
+  builderCode: BuilderFeePolicy;
 };
 
 export type LiveCanarySecrets = {
@@ -176,6 +179,14 @@ function validateConfig(input: LiveCanaryConfig): LiveCanaryConfig {
     input.pollMs > 5_000
   ) {
     throw new Error("Canary wait bounds are invalid");
+  }
+  if (
+    !Number.isInteger(input.builderCode.integratorId) ||
+    input.builderCode.integratorId < 0 ||
+    !Number.isFinite(input.builderCode.integratorFee) ||
+    input.builderCode.integratorFee < 0
+  ) {
+    throw new Error("Canary requires a valid builder fee policy");
   }
   return { ...input, config, makerSetup, hedgeSetup };
 }
@@ -367,7 +378,7 @@ export async function runLiveCanary(inputs: {
         config: config.config,
         quote,
         agentAddress: inputs.secrets.agentAddress,
-        builderCode: null,
+        builderCode: config.builderCode,
         shouldContinue: () => true,
       });
       state = {
@@ -385,7 +396,7 @@ export async function runLiveCanary(inputs: {
         config: config.config,
         quote,
         signer: inputs.secrets.signer,
-        builderCode: null,
+        builderCode: config.builderCode,
         shouldContinue: () => true,
       });
       state = {
@@ -472,7 +483,7 @@ export async function runLiveCanary(inputs: {
         deltaUsd: combinedBeforeHedge,
         maxOrderUsd: config.maxQuoteUsd,
         maxSlippage: config.config.hedge.maxSlippageBps / 10_000,
-        builderCode: null,
+        builderCode: config.builderCode,
         shouldContinue: () => true,
       });
       state = {
