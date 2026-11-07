@@ -227,6 +227,10 @@ export const envSchema = z
       .enum(["true", "false"])
       .default("false")
       .transform((value) => value === "true"),
+    SHADOW_PAPER_MODE: z
+      .enum(["true", "false"])
+      .default("false")
+      .transform((value) => value === "true"),
     SUI_WHITELIST_OBJECT_ID: optionalObjectId,
     TESTNET_SUI_WHITELIST_OBJECT_ID: optionalObjectId,
     TESTNET_BOOTSTRAP_OPERATOR_ADDRESS: optionalAddress,
@@ -292,6 +296,20 @@ export const envSchema = z
           "TESTNET_BOOTSTRAP_OPERATOR_ADDRESS is only valid when SUI_NETWORK=testnet",
       });
     }
+    if (
+      env.SHADOW_PAPER_MODE &&
+      (env.SUI_NETWORK !== "mainnet" ||
+        env.MAKER_MASTER_KEY ||
+        env.LIVE_TRADING_ENABLED ||
+        env.ALLOW_MAINNET)
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["SHADOW_PAPER_MODE"],
+        message:
+          "SHADOW_PAPER_MODE requires Mainnet reads with no signing key and both Live gates off",
+      });
+    }
   });
 
 export type ServerEnv = z.infer<typeof envSchema>;
@@ -324,6 +342,11 @@ export function executionBootstrapOperatorAddress(
   return env.SUI_NETWORK === "testnet"
     ? env.TESTNET_BOOTSTRAP_OPERATOR_ADDRESS
     : undefined;
+}
+
+/** A fresh public Paper shadow has no on-chain registry to read. */
+export function shadowPaperBootstrapEnabled(env: ServerEnv): boolean {
+  return env.SHADOW_PAPER_MODE && env.WALLET_AUTH_BOOTSTRAP;
 }
 
 function executionUnavailableMessage(

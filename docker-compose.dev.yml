@@ -39,6 +39,9 @@ services:
       # Development follows public Mainnet data in Paper/shadow mode only.
       # These hard literals prevent a host environment from enabling Live.
       SUI_NETWORK: mainnet
+      # This is the only Mainnet context where a fresh local database may
+      # bootstrap its first wallet operator without an on-chain registry.
+      SHADOW_PAPER_MODE: "true"
       TESTNET_EXECUTION_ENABLED: "false"
     volumes:
       # Shadow state is isolated from both production and the retired Testnet
