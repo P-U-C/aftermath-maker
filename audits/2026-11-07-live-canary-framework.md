@@ -96,6 +96,16 @@ open orders were present when it was stopped. The operation-deadline fix is
 required before repeating that exercise; it is not counted as a completed
 ten-minute reliability result.
 
+After that process was stopped, a fresh preflight found a delayed attributed
+fill that had not been visible during the prior settlement reads. It refused a
+new quote, cancelled, and sent the bounded hedge. The first reduce-only close
+was rejected locally because `flattenPositions` built from one market snapshot
+and inspected against a later one. The hedge account was then manually
+reduce-only flattened at the same 75 bps cap, and three independent reads
+confirmed both accounts flat with no orders. This is a real late-fill/recovery
+exercise, but not a clean ten-minute strategy result; the single-observation
+flatten fix must merge before another run.
+
 It must be run manually on the host under the root-only account boundary. Do
 not put it in a systemd timer, the normal dev deploy service, CI, or a browser
 test.
