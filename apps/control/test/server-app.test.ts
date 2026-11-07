@@ -5,6 +5,7 @@ import {
   envSchema,
   executionBootstrapOperatorAddress,
   executionWhitelistObjectId,
+  shadowPaperBootstrapEnabled,
 } from "../src/server-app.js";
 import { appHarness, CONTROL_TEST_TOKEN, OWNER } from "./helpers/app.js";
 
@@ -37,6 +38,30 @@ describe("injectable control app", () => {
     expect(executionBootstrapOperatorAddress(testnetEnv)).toBe(
       `0x${"3".repeat(64)}`,
     );
+  });
+
+  it("allows wallet bootstrap only for the no-key Mainnet Paper shadow", () => {
+    const shadow = envSchema.parse({
+      SUI_NETWORK: "mainnet",
+      SHADOW_PAPER_MODE: "true",
+      WALLET_AUTH_BOOTSTRAP: "true",
+    });
+    expect(shadowPaperBootstrapEnabled(shadow)).toBe(true);
+    expect(shadowPaperBootstrapEnabled(envSchema.parse({}))).toBe(false);
+
+    expect(() =>
+      envSchema.parse({
+        SUI_NETWORK: "mainnet",
+        SHADOW_PAPER_MODE: "true",
+        MAKER_MASTER_KEY: "not-a-shadow-key",
+      }),
+    ).toThrow("SHADOW_PAPER_MODE requires Mainnet reads");
+    expect(() =>
+      envSchema.parse({
+        SUI_NETWORK: "testnet",
+        SHADOW_PAPER_MODE: "true",
+      }),
+    ).toThrow("SHADOW_PAPER_MODE requires Mainnet reads");
   });
 
   it("GET /api/bundles accepts a stored owner session and refuses an anonymous request", async () => {

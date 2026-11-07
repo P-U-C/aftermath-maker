@@ -37,8 +37,13 @@ The Mainnet Paper/shadow environment file is
 `/etc/aftermath-maker/dev-shadow.env` (mode `0600`), not the repository `.env`.
 It needs only non-production values for
 `CONTROL_TOKEN`, `PUBLIC_ORIGIN=https://maker-dev.permanentupperclass.com`,
-`WEB_BIND_ADDRESS=127.0.0.1`, and `DEV_WEB_PORT=8789`. Do not copy a production
-master key, account setting, whitelist object, or RPC endpoint into it.
+`WEB_BIND_ADDRESS=127.0.0.1`, `DEV_WEB_PORT=8789`, and
+`WALLET_AUTH_BOOTSTRAP=true`. The bootstrap setting is valid only because the
+Compose file pins `SHADOW_PAPER_MODE=true`, both Live gates off, and supplies no
+Mainnet signing key. On a fresh shadow database, the first wallet that signs in
+becomes the sole dev operator; no on-chain access-list deployment or transaction
+is required. Do not copy a production master key, account setting, whitelist
+object, or RPC endpoint into it.
 
 The shadow lane gets a fresh database volume and its environment contains no
 `MAKER_MASTER_KEY`, Testnet key, account cap, or allowlist object. The prior

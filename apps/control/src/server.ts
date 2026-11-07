@@ -11,6 +11,7 @@ import {
   envSchema,
   executionSigningKey,
   executionWhitelistObjectId,
+  shadowPaperBootstrapEnabled,
 } from "./server-app.js";
 import { Store } from "./store.js";
 
@@ -80,7 +81,7 @@ const auth = new WalletAuth(
   env.PUBLIC_ORIGIN,
   env.SUI_NETWORK === "testnet"
     ? Boolean(bootstrapOperatorAddress)
-    : env.WALLET_AUTH_BOOTSTRAP,
+    : shadowPaperBootstrapEnabled(env),
   12,
   30_000,
   async (ownerAddress) => {
