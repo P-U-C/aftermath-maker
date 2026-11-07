@@ -30,6 +30,16 @@ function requiredArgument(name: string): string {
   return value;
 }
 
+function optionalPositiveInteger(name: string, fallback: number): number {
+  const index = process.argv.indexOf(name);
+  if (index < 0) return fallback;
+  const value = Number(process.argv[index + 1]);
+  if (!Number.isInteger(value) || value < 1 || value > 12) {
+    throw new Error(`${name} must be an integer between 1 and 12`);
+  }
+  return value;
+}
+
 async function requirePrivateFile(path: string): Promise<void> {
   const metadata = await stat(path);
   if ((metadata.mode & 0o077) !== 0)
@@ -78,6 +88,7 @@ function fileState(path: string): LiveCanaryStateStore {
 async function main(): Promise<void> {
   const configPath = requiredArgument("--config");
   const statePath = requiredArgument("--state");
+  const cycles = optionalPositiveInteger("--cycles", 1);
   const execute = process.argv.includes("--execute");
   if (execute && !process.argv.includes("--confirm-live-canary")) {
     throw new Error("--execute requires --confirm-live-canary");
@@ -98,15 +109,72 @@ async function main(): Promise<void> {
     );
   }
   const gateway = await AftermathGateway.create({ network: "mainnet" });
-  const result = await runLiveCanary({
-    config,
-    secrets: { agentAddress: config.agent.address, signer },
-    execute,
-    dependencies: { gateway, state: fileState(statePath) },
-  });
+  const startedAt = Date.now();
+  const results = [];
+  for (let cycle = 1; cycle <= cycles; cycle += 1) {
+    const cycleStatePath = cycles === 1 ? statePath : `${statePath}.${cycle}`;
+    const result = await runLiveCanary({
+      config,
+      secrets: { agentAddress: config.agent.address, signer },
+      execute,
+      dependencies: { gateway, state: fileState(cycleStatePath) },
+    });
+    results.push({
+      cycle,
+      outcome: result.outcome,
+      statePath: cycleStatePath,
+      quoteDigest: result.state.quoteDigest,
+      hedgeDigest: result.state.hedgeDigest,
+      flattenDigests: result.state.flattenDigests,
+    });
+  }
+  const [makerHistory, hedgeHistory] = await Promise.all([
+    gateway.getAccountPerformanceHistory({
+      setup: config.makerSetup,
+      agentAddress: config.agent.address,
+      sinceMs: startedAt,
+      limit: 200,
+    }),
+    gateway.getAccountPerformanceHistory({
+      setup: config.hedgeSetup,
+      agentAddress: config.agent.address,
+      sinceMs: startedAt,
+      limit: 200,
+    }),
+  ]);
+  const orders = [...makerHistory.orders, ...hedgeHistory.orders];
+  const notionalUsd = orders.reduce(
+    (sum, order) => sum + Math.abs(order.price * order.size),
+    0,
+  );
+  const feesUsd = orders.reduce((sum, order) => sum + order.feesUsd, 0);
+  const realizedPnlUsd = orders.reduce(
+    (sum, order) => sum + order.realizedPnlUsd,
+    0,
+  );
+  const estimatedBuilderFeesUsd =
+    notionalUsd * config.builderCode.integratorFee;
   // Deliberately contains only public digests and the state-machine outcome.
   console.log(
-    JSON.stringify({ ok: true, outcome: result.outcome, state: result.state }),
+    JSON.stringify({
+      ok: true,
+      cycles: results,
+      performance: {
+        since: new Date(startedAt).toISOString(),
+        fills: orders.length,
+        notionalUsd,
+        realizedPnlUsd,
+        feesUsd,
+        estimatedBuilderFeesUsd,
+        netAfterKnownTradingCostsUsd:
+          realizedPnlUsd - feesUsd - estimatedBuilderFeesUsd,
+        gasUsd: null,
+        note: "Gas is intentionally not counted until every execution receipt is persisted in the canary checkpoint.",
+        historyComplete:
+          (makerHistory.historyComplete ?? true) &&
+          (hedgeHistory.historyComplete ?? true),
+      },
+    }),
   );
 }
 
