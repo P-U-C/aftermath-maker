@@ -8,6 +8,15 @@ export class VenueReadTimeoutError extends Error {
   }
 }
 
+/** A rejected public read is retryable in Paper for the same reason as a
+ * timeout.  Live callers still decide whether to pause their bundle. */
+export class VenueReadError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "VenueReadError";
+  }
+}
+
 export async function withTimeout<T>(
   task: Promise<T>,
   milliseconds: number,

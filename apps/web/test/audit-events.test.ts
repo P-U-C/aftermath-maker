@@ -83,6 +83,19 @@ describe("desk audit events", () => {
     expect(event()).toBe("Maker cycle failed.");
   });
 
+  it("labels a recoverable Paper venue read without calling it a failure", () => {
+    expect(
+      deskEvent({
+        id: 10,
+        occurredAt: "2026-11-04T21:22:00Z",
+        category: "runtime",
+        action: "cycle",
+        outcome: "retry",
+        detail: { error: "Volume close orderbook read failed" },
+      }).sentence,
+    ).toBe("Maker could not read venue data and will retry.");
+  });
+
   it("names the bundle once and keeps a market symbol's case", () => {
     const skip = (message: string) =>
       deskEvent(

@@ -371,7 +371,7 @@ describe("Paper cycle freshness under a stalled venue read", () => {
     }
   });
 
-  it("rotates a Volume loop only after simulated maker and hedge accounts are flat", async () => {
+  it("replays filled Volume loops across markets and closes both accounts before each rotation", async () => {
     const h = await paperRuntime({ hedge: true, makerFreeUsd: 300 });
     h.gateway.balance("1802", 300);
     h.tenant.setConfig(
@@ -397,31 +397,92 @@ describe("Paper cycle freshness under a stalled venue read", () => {
         ],
       }),
     );
+    let crossedMarketId: string | null = null;
+    let rejectedMarketId: string | null = null;
+    h.gateway.when("getOrderbook", async (marketId: string) => {
+      if (rejectedMarketId === marketId) {
+        throw new Error("temporary fixture orderbook outage");
+      }
+      return {
+        market: {
+          metadata: {
+            symbol:
+              marketId === "0x1" ? "ONE" : marketId === "0x2" ? "TWO" : "THREE",
+          },
+          indexPrice: 10,
+          marketState: { openInterest: 1_000 },
+          marketParams: { maxOpenInterest: 10_000 },
+          estimatedFundingRate: () => 0.0001,
+          tickSize: () => 0.01,
+        },
+        // The ask trades through the existing bid but remains above the best
+        // bid, so it is a valid two-sided book. The runtime must create the
+        // opposite-account hedge itself; this test never writes a fill.
+        orderbook:
+          crossedMarketId === marketId
+            ? { bestBidPrice: 9.96, bestAskPrice: 9.97, bids: [], asks: [] }
+            : {
+                bestBidPrice: 9.99,
+                bestAskPrice: 10.01,
+                bids: [],
+                asks: [],
+              },
+      };
+    });
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-10-31T01:11:55.000Z"));
     try {
       h.runtime.start();
       await vi.advanceTimersByTimeAsync(1);
-      const [makerFill] = h.tenant.matchPaperOrders({
-        trialId: "runtime",
-        marketId: "0x1",
-        bestBid: 9.9,
-        bestAsk: 9.8,
-      });
-      h.tenant.recordPaperHedge({ trialId: "runtime", makerFill: makerFill! });
-      // The next cycle records the immediate hedge; the dwell transition
-      // cancels, closes both roles at touch, verifies flat, then quotes TWO.
+      expect(h.runtime.snapshot.market.id).toBe("0x1");
+
+      crossedMarketId = "0x1";
       await vi.advanceTimersByTimeAsync(5_000);
+      crossedMarketId = null;
+      // The close-leg book can fail after a maker fill.  It must not pause
+      // Paper, free the paired inventory, or start the next market early.
+      rejectedMarketId = "0x1";
       await vi.advanceTimersByTimeAsync(5 * 60_000);
+      await h.runtime.cycle({ executeLive: true });
+      expect(h.runtime.snapshot.running).toBe(true);
+      expect(h.tenant.getPaperState("runtime").positions).toHaveLength(2);
+      expect(
+        h.tenant
+          .listEvents(100)
+          .some(
+            (event) =>
+              event.category === "runtime" &&
+              event.action === "cycle" &&
+              event.outcome === "retry",
+          ),
+      ).toBe(true);
+      rejectedMarketId = null;
+      await h.runtime.cycle({ executeLive: true });
       const state = h.tenant.getPaperState("runtime");
       expect(state.positions).toEqual([]);
       expect(h.tenant.listPaperFills({ trialId: "runtime" })).toHaveLength(4);
       expect(h.runtime.snapshot.market.id).toBe("0x2");
+
+      // TWO is deliberately no-fill.  THREE is the second filled loop: this
+      // proves a prior flat rotation cannot strand the state machine.
+      await vi.advanceTimersByTimeAsync(5 * 60_000);
+      await h.runtime.cycle({ executeLive: true });
+      expect(h.runtime.snapshot.market.id).toBe("0x3");
+      crossedMarketId = "0x3";
+      await vi.advanceTimersByTimeAsync(5_000);
+      crossedMarketId = null;
+      await vi.advanceTimersByTimeAsync(5 * 60_000);
+      await h.runtime.cycle({ executeLive: true });
+      expect(h.tenant.getPaperState("runtime").positions).toEqual([]);
+      const fills = h.tenant.listPaperFills({ trialId: "runtime" });
+      expect(fills).toHaveLength(8);
+      expect(fills.reduce((total, fill) => total + fill.sizeUsd, 0)).toBe(80);
+      expect(h.runtime.snapshot.market.id).toBe("0x1");
       expect(
         h.tenant
           .listEvents(100)
-          .some((event) => event.action === "volume-close"),
-      ).toBe(true);
+          .filter((event) => event.action === "volume-close"),
+      ).toHaveLength(2);
     } finally {
       await h.runtime.stop();
       vi.useRealTimers();
