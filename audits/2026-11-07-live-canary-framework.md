@@ -43,6 +43,9 @@ new -> simulate -> post one quote -> cancel -> confirm no resting orders
   reduce-only close.
 - It observes the cancelled market for a bounded settlement window and requires
   three consecutive separate-account flat reads before reporting a clean run.
+- Every gateway read, simulation, and submission has a 15-second deadline. A
+  deadline moves the checkpoint to `recovery-required`; the one-shot CLI then
+  exits rather than leaving an idle process that could be mistaken for a run.
 - It caps observed per-account inventory to one side and requires separately
   flat accounts—not merely a net-flat pair—before success.
 - The CLI reads root-only configuration/key files and writes an atomic,
@@ -50,18 +53,18 @@ new -> simulate -> post one quote -> cancel -> confirm no resting orders
 
 ## Audit findings and status
 
-| Finding                                         | Status                                             | Required proof                                                                                                                                                                                |
-| ----------------------------------------------- | -------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Quote construction and exact no-sign simulation | Proven                                             | Existing Mainnet simulation plus `live-canary.test.ts` dry-run case.                                                                                                                          |
-| Post-only quote and cancellation                | Proven                                             | Existing bounded Mainnet canary; framework now checkpoints the action.                                                                                                                        |
-| Fill attribution before account indexing        | Guarded in runtime; unproven live                  | Runtime waits and cancels rather than hedging unobserved position state. The canary has a deterministic recovery test; a real canary fill is still required.                                  |
-| Hedge quote price/slippage error                | Fixed in the gateway path, pending live fill proof | Gateway inspects against the same market observation used to construct the order. Canary test exercises capped hedge call-order, but does not claim a venue fill.                             |
-| No taker while a Maker order rests              | Covered                                            | Runtime confirmation loop and canary call-order test require cancellation first.                                                                                                              |
-| Flatten after a filled hedge                    | Deterministically covered; unproven live           | Canary test proves both account flatten calls and separate-flat check. A future bounded fill must supply receipt/evidence.                                                                    |
-| Crash/restart during cancellation               | Covered                                            | Canary checkpoint test resumes recovery and never re-quotes.                                                                                                                                  |
-| RPC timeout/unknown transaction outcome         | Open                                               | The runner fails into `recovery-required`; it does not yet reconcile a transaction digest with venue transaction status before retry. Add that before unattended repetition.                  |
-| Partial fills / late fills after cancellation   | Bounded detection added; unproven live             | The canary now watches a post-cancel settlement window and routes any late visible fill through the capped hedge/flatten path. A real late-fill fixture remains required before raising size. |
-| Long-running strategy behavior                  | Open                                               | This canary validates one lifecycle only. It must not be used as profitability, uptime, fee, or scale evidence.                                                                               |
+| Finding                                         | Status                                             | Required proof                                                                                                                                                                                                                                     |
+| ----------------------------------------------- | -------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Quote construction and exact no-sign simulation | Proven                                             | Existing Mainnet simulation plus `live-canary.test.ts` dry-run case.                                                                                                                                                                               |
+| Post-only quote and cancellation                | Proven                                             | Existing bounded Mainnet canary; framework now checkpoints the action.                                                                                                                                                                             |
+| Fill attribution before account indexing        | Guarded in runtime; unproven live                  | Runtime waits and cancels rather than hedging unobserved position state. The canary has a deterministic recovery test; a real canary fill is still required.                                                                                       |
+| Hedge quote price/slippage error                | Fixed in the gateway path, pending live fill proof | Gateway inspects against the same market observation used to construct the order. Canary test exercises capped hedge call-order, but does not claim a venue fill.                                                                                  |
+| No taker while a Maker order rests              | Covered                                            | Runtime confirmation loop and canary call-order test require cancellation first.                                                                                                                                                                   |
+| Flatten after a filled hedge                    | Deterministically covered; unproven live           | Canary test proves both account flatten calls and separate-flat check. A future bounded fill must supply receipt/evidence.                                                                                                                         |
+| Crash/restart during cancellation               | Covered                                            | Canary checkpoint test resumes recovery and never re-quotes.                                                                                                                                                                                       |
+| RPC timeout/unknown transaction outcome         | Guarded; digest reconciliation remains open        | Each gateway operation has a 15-second deadline and the fixture proves a hung portfolio read persists `recovery-required` before any action. A timed-out signed request remains an unknown outcome and requires venue reconciliation before retry. |
+| Partial fills / late fills after cancellation   | Bounded detection added; unproven live             | The canary now watches a post-cancel settlement window and routes any late visible fill through the capped hedge/flatten path. A real late-fill fixture remains required before raising size.                                                      |
+| Long-running strategy behavior                  | Open                                               | This canary validates one lifecycle only. It must not be used as profitability, uptime, fee, or scale evidence.                                                                                                                                    |
 
 ## Operator contract
 
@@ -86,6 +89,12 @@ For an explicitly bounded strategy exercise, `--cycles 1` through `--cycles
 12` creates a separate checkpoint for every cycle and emits attributed account
 history, realized PnL, fees, and estimated builder fees. It does not count gas
 as zero: the report labels it unavailable until receipt gas is persisted.
+
+A 2026-11-07 exercise completed nine flat quote/cancel cycles before an
+unbounded account read stalled before cycle 10. No fills, hedges, positions, or
+open orders were present when it was stopped. The operation-deadline fix is
+required before repeating that exercise; it is not counted as a completed
+ten-minute reliability result.
 
 It must be run manually on the host under the root-only account boundary. Do
 not put it in a systemd timer, the normal dev deploy service, CI, or a browser
