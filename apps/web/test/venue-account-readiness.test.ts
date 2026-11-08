@@ -48,4 +48,21 @@ describe("venue account readiness copy", () => {
       }),
     ).toMatchObject({ stage: "Needs trading key", tradingKey: "required" });
   });
+
+  it("does not offer to duplicate a key delegated to another Maker control", () => {
+    expect(
+      venueAccountReadiness({
+        mode: "live",
+        authorized: false,
+        existingTradingKeyCount: 4,
+        shortfallUsd: 0,
+        gasSui: null,
+        readiness: null,
+      }),
+    ).toMatchObject({
+      stage: "Existing key not connected",
+      tradingKey: "existing-other-control",
+      ready: false,
+    });
+  });
 });

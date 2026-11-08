@@ -6,6 +6,7 @@ import { z } from "zod";
 import {
   agentEncryptionContext,
   createEncryptedAgent,
+  type AgentAccountCapability,
   type OwnerAccountSummary,
 } from "@puc/aftermath";
 import {
@@ -1099,29 +1100,48 @@ export async function buildServer({
   ): Promise<{
     accounts: OwnerAccountSummary[] | null;
     gasSui: number | null;
+    agentCapabilities: AgentAccountCapability[] | null;
   }> {
     const agent = scoped.getAgent();
     let accounts: OwnerAccountSummary[] | null = null;
     let gasSui: number | null = null;
+    let agentCapabilities: AgentAccountCapability[] | null = null;
     try {
       const gateway = runtimeManager.get(ownerAddress).requireGateway();
-      [accounts, gasSui] = await Promise.all([
-        withTimeout(
-          gateway.listOwnerAccounts({
-            walletAddress: ownerAddress,
-            collateralCoinType: USDC_COIN_TYPE,
-          }),
-          VENUE_READ_TIMEOUT_MS,
-          "Owner account read timed out",
-        ),
-        agent
-          ? withTimeout(
-              gateway.getTradingKeyGasSui(agent.address),
-              VENUE_READ_TIMEOUT_MS,
-              "Trading key gas read timed out",
-            )
-          : Promise.resolve(null),
-      ]);
+      accounts = await withTimeout(
+        gateway.listOwnerAccounts({
+          walletAddress: ownerAddress,
+          collateralCoinType: USDC_COIN_TYPE,
+        }),
+        VENUE_READ_TIMEOUT_MS,
+        "Owner account read timed out",
+      );
+      if (agent) {
+        const [gas, capabilities] = await Promise.allSettled([
+          withTimeout(
+            gateway.getTradingKeyGasSui(agent.address),
+            VENUE_READ_TIMEOUT_MS,
+            "Trading key gas read timed out",
+          ),
+          withTimeout(
+            gateway.listAgentAccountCapabilities({
+              agentAddress: agent.address,
+              collateralCoinType: USDC_COIN_TYPE,
+            }),
+            VENUE_READ_TIMEOUT_MS,
+            "Trading-key capability read timed out",
+          ),
+        ]);
+        gasSui = gas.status === "fulfilled" ? gas.value : null;
+        agentCapabilities =
+          capabilities.status === "fulfilled" ? capabilities.value : null;
+        if (agentCapabilities) {
+          scoped.reconcileAgentGrants({
+            accounts,
+            agentCapabilities,
+          });
+        }
+      }
     } catch {
       if (strict) {
         throw new UserFacingError(
@@ -1133,7 +1153,7 @@ export async function buildServer({
       }
       // Bundles still renders waiting stages during an unavailable venue read.
     }
-    return { accounts, gasSui };
+    return { accounts, gasSui, agentCapabilities };
   }
 
   /**
@@ -1995,7 +2015,12 @@ export async function buildServer({
   });
 
   app.get("/api/setup", async (request) => {
+    const identity = requestAuth(request);
     const scoped = tenant(request);
+    // A deployment can retain Maker's encrypted signer while losing the
+    // account-to-cap cache. Refresh that cache from the signer's address
+    // before telling the client that a key is missing.
+    await readOwnerVenue(scoped, identity.ownerAddress, false);
     const setup = scoped.getSetup();
     const accounts = scoped.listAccountSetups();
     const active = setup
@@ -2032,8 +2057,13 @@ export async function buildServer({
     return {
       accounts: accounts.map((account) => {
         const saved = metadata.get(account.accountId);
+        // Capability IDs are used only to prove a locally held signer still
+        // has access. The browser needs the count for clear status copy, not
+        // the IDs themselves.
+        const { delegatedTradingKeyIds: _delegatedTradingKeyIds, ...visible } =
+          account;
         return {
-          ...account,
+          ...visible,
           label: saved?.label ?? null,
           tags: saved?.tags ?? [],
         };

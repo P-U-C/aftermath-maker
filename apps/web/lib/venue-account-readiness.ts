@@ -9,13 +9,19 @@ type VenueAccountMode = "observe" | "paper" | "live" | null;
 export function venueAccountReadiness(inputs: {
   mode: VenueAccountMode;
   authorized: boolean;
+  existingTradingKeyCount?: number | undefined;
   shortfallUsd: number;
   gasSui: number | null;
   readiness: BundleReadiness | null;
 }): {
   stage: string;
   ready: boolean;
-  tradingKey: "authorized" | "not-needed-paper" | "optional-live" | "required";
+  tradingKey:
+    | "authorized"
+    | "not-needed-paper"
+    | "optional-live"
+    | "existing-other-control"
+    | "required";
   needsGas: boolean;
 } {
   const needsLiveKey = inputs.mode === "live";
@@ -25,6 +31,14 @@ export function venueAccountReadiness(inputs: {
     inputs.readiness?.stages[3].status === "todo";
 
   if (needsLiveKey && !inputs.authorized) {
+    if ((inputs.existingTradingKeyCount ?? 0) > 0) {
+      return {
+        stage: "Existing key not connected",
+        ready: false,
+        tradingKey: "existing-other-control",
+        needsGas: false,
+      };
+    }
     return {
       stage: "Needs trading key",
       ready: false,

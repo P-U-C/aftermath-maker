@@ -45,6 +45,8 @@ export type VenueAccountRow = {
   shortfallUsd: number;
   suggestedDepositUsdc?: number | undefined;
   authorized: boolean;
+  /** Delegated caps visible from the account's admin capability. */
+  existingTradingKeyCount?: number | undefined;
   gasSui: number | null;
   readiness: import("../../lib/bundle-readiness").BundleReadiness | null;
 };
@@ -349,6 +351,8 @@ export function VenueBoard({
                       const readiness = venueAccountReadiness({
                         mode: account.bundleMode,
                         authorized: account.authorized,
+                        existingTradingKeyCount:
+                          account.existingTradingKeyCount,
                         shortfallUsd: account.shortfallUsd,
                         gasSui: account.gasSui,
                         readiness: account.readiness,
@@ -385,6 +389,13 @@ export function VenueBoard({
                               "Not needed for Paper"
                             ) : readiness.tradingKey === "optional-live" ? (
                               "Optional for Live"
+                            ) : readiness.tradingKey ===
+                              "existing-other-control" ? (
+                              <span
+                                title={`${account.existingTradingKeyCount ?? 0} delegated trading key${account.existingTradingKeyCount === 1 ? "" : "s"} are on-chain, but none belongs to this Maker control.`}
+                              >
+                                Existing key elsewhere
+                              </span>
                             ) : (
                               <Button
                                 variant={

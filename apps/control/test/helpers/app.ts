@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { Transaction } from "@mysten/sui/transactions";
 import {
   serializeOwnerTransactionIntent,
+  type AgentAccountCapability,
   type AftermathGateway,
   type OwnerAccountSummary,
   type OwnerTransactionIntent,
@@ -59,6 +60,7 @@ export class FakeGateway {
     },
   ];
   accounts: OwnerAccountSummary[] = [];
+  agentCapabilities: AgentAccountCapability[] = [];
   gasSui = 2;
   portfolio: unknown = null;
   readonly calls: Array<{ method: string; args: unknown[] }> = [];
@@ -78,6 +80,7 @@ export class FakeGateway {
       accountId,
       accountCapId: `0x${Number(accountId).toString(16).padStart(64, "0")}`,
       collateralCoinType: USDC_COIN_TYPE,
+      tradingKeyCount: 0,
       equityUsd: freeUsd,
       availableCollateralUsd: freeUsd,
       availableCollateral: options.availableCollateral,
@@ -151,6 +154,14 @@ export class FakeGateway {
   async listOwnerAccounts(inputs: unknown): Promise<OwnerAccountSummary[]> {
     return this.invoke("listOwnerAccounts", [inputs], () =>
       structuredClone(this.accounts),
+    );
+  }
+
+  async listAgentAccountCapabilities(
+    inputs: unknown,
+  ): Promise<AgentAccountCapability[]> {
+    return this.invoke("listAgentAccountCapabilities", [inputs], () =>
+      structuredClone(this.agentCapabilities),
     );
   }
 
