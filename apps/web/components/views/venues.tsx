@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import { Check, MoreHorizontal } from "lucide-react";
 
 import { formatMoney } from "../../lib/format";
+import { venueAccountReadiness } from "../../lib/venue-account-readiness";
 import type { VenueDescriptor } from "../../lib/venues";
 import {
   Button,
@@ -271,7 +272,7 @@ export function VenueBoard({
             </span>
           </span>
         }
-        subtitle="Each account needs a trading key, gas for that key, and enough free collateral for its bundle’s strategy."
+        subtitle="Paper reads your account data without a trading key. Live needs a trading key, gas, and enough free collateral."
         action={
           <div className="venue-kit-actions">
             <Button variant="secondary" size="small" onClick={onNewAccount}>
@@ -345,16 +346,13 @@ export function VenueBoard({
                       </th>
                     </tr>
                     {groupedAccounts.map((account) => {
-                      const stage = !account.authorized
-                        ? "Needs trading key"
-                        : account.shortfallUsd > 0
-                          ? `Needs ${formatMoney(account.shortfallUsd)}`
-                          : account.gasSui !== null &&
-                              account.readiness?.stages[3].status === "todo"
-                            ? "Needs gas"
-                            : account.readiness
-                              ? "Ready"
-                              : "Checking";
+                      const readiness = venueAccountReadiness({
+                        mode: account.bundleMode,
+                        authorized: account.authorized,
+                        shortfallUsd: account.shortfallUsd,
+                        gasSui: account.gasSui,
+                        readiness: account.readiness,
+                      });
                       return (
                         <tr
                           key={account.accountId}
@@ -378,11 +376,15 @@ export function VenueBoard({
                             {formatMoney(account.freeUsd)}
                           </td>
                           <td>
-                            {account.authorized ? (
+                            {readiness.tradingKey === "authorized" ? (
                               <>
                                 <Check size={14} aria-hidden="true" />{" "}
                                 Authorized
                               </>
+                            ) : readiness.tradingKey === "not-needed-paper" ? (
+                              "Not needed for Paper"
+                            ) : readiness.tradingKey === "optional-live" ? (
+                              "Optional for Live"
                             ) : (
                               <Button
                                 variant={
@@ -414,9 +416,9 @@ export function VenueBoard({
                           </td>
                           <td>
                             <span
-                              className={`venue-stage ${stage === "Ready" ? "is-ready" : "is-short"}`}
+                              className={`venue-stage ${readiness.ready ? "is-ready" : "is-short"}`}
                             >
-                              {stage}
+                              {readiness.stage}
                             </span>
                           </td>
                           <td className="venue-account-actions">
@@ -472,15 +474,17 @@ export function VenueBoard({
                                   >
                                     Withdraw
                                   </button>
-                                  <button
-                                    type="button"
-                                    onClick={() => {
-                                      setAccountMenu(null);
-                                      onFund(account, "gas");
-                                    }}
-                                  >
-                                    Add gas
-                                  </button>
+                                  {account.authorized && (
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        setAccountMenu(null);
+                                        onFund(account, "gas");
+                                      }}
+                                    >
+                                      Add gas
+                                    </button>
+                                  )}
                                   <button
                                     type="button"
                                     onClick={() => {
@@ -533,7 +537,9 @@ export function VenueBoard({
           </div>
           <div>
             <dt>Trading keys</dt>
-            <dd>{tradingKeyReady ? "Trades only" : "Not authorized"}</dd>
+            <dd>
+              {tradingKeyReady ? "Live trades only" : "Optional for Paper"}
+            </dd>
           </div>
           <div>
             <dt>Venue fee</dt>
