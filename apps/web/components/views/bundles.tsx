@@ -191,21 +191,29 @@ export function BundlesView({
   );
   const [editStrategyId, setEditStrategyId] = useState("");
   const authorizedAccounts = accounts.filter((account) => account.authorized);
+  // New bundles always start in Paper, and a Paper allocation is validated
+  // from the connected owner's read-only account list at Start. Do not hide
+  // an owned account merely because it has no Live trading-key capability.
+  const paperAssignableAccounts = accounts;
   const availableMakerAccounts = availableBundleAccounts(
-    authorizedAccounts,
+    paperAssignableAccounts,
     visible,
   );
   const availableTakerAccounts = availableBundleAccounts(
-    authorizedAccounts,
+    paperAssignableAccounts,
     visible,
     makerAccountId || null,
   );
+  const editAssignableAccounts =
+    editingBundle?.mode === "paper"
+      ? paperAssignableAccounts
+      : authorizedAccounts;
   const editAvailableAccounts = editingBundle
     ? accounts.filter(
         (account) =>
           account.accountId === editingBundle.makerAccountId ||
           account.accountId === editingBundle.takerAccountId ||
-          availableBundleAccounts(authorizedAccounts, visible).some(
+          availableBundleAccounts(editAssignableAccounts, visible).some(
             (available) => available.accountId === account.accountId,
           ),
       )
@@ -536,7 +544,13 @@ export function BundlesView({
                             <Button
                               variant="primary"
                               size="small"
-                              onClick={() => onFixStage(bundle, stage.id)}
+                              onClick={() => {
+                                if (stage.id === "accounts") {
+                                  openEditBundle(bundle);
+                                  return;
+                                }
+                                onFixStage(bundle, stage.id);
+                              }}
                             >
                               {fixLabel}
                             </Button>
@@ -671,17 +685,15 @@ export function BundlesView({
                           : "Go live…"}
                       </Button>
                     )}
-                  {bundle.name !== "Core" && (
-                    <Button
-                      variant="secondary"
-                      size="small"
-                      onClick={() => openEditBundle(bundle)}
-                      disabled={busy || editing}
-                    >
-                      <Pencil size={15} aria-hidden="true" />
-                      Edit
-                    </Button>
-                  )}
+                  <Button
+                    variant="secondary"
+                    size="small"
+                    onClick={() => openEditBundle(bundle)}
+                    disabled={busy || editing}
+                  >
+                    <Pencil size={15} aria-hidden="true" />
+                    Edit
+                  </Button>
                   {bundle.name !== "Core" && (
                     <Button
                       variant="secondary"
@@ -750,7 +762,7 @@ export function BundlesView({
           )}
           {!availableMakerAccounts.length && (
             <div className="bundle-create-note" role="status">
-              No authorized unassigned Maker account is available.
+              No unassigned Maker account is available.
               <Button
                 variant="quiet"
                 onClick={() => {
@@ -852,15 +864,14 @@ export function BundlesView({
           {chosenCreateStrategy?.requiresHedge && !takerAccountId && (
             <p className="bundle-create-note" role="status">
               This applied strategy offsets fills with a hedge account. Choose a
-              distinct authorized Taker account; creating without it would fail
-              validation.
+              distinct Taker account; creating without it would fail validation.
             </p>
           )}
           {chosenCreateStrategy?.requiresHedge &&
             !availableTakerAccounts.length && (
               <p className="bundle-create-note" role="status">
-                No unassigned authorized hedge account is available. Set one up
-                in Venues before creating this bundle.
+                No unassigned hedge account is available. Add another account in
+                Venues before creating this bundle.
               </p>
             )}
         </Sheet>

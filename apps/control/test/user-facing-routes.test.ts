@@ -449,7 +449,7 @@ const cases: Case[] = [
   {
     code: "account-required",
     status: 400,
-    copy: "Select an authorized Maker account in Venues before creating this bundle.",
+    copy: "Select a Maker account in Bundles before creating this bundle.",
     prepare: (h) => {
       const { strategy } = seed(h);
       return {
@@ -468,7 +468,7 @@ const cases: Case[] = [
   {
     code: "hedge-account-required",
     status: 400,
-    copy: "Authorize a separate hedge account in Venues before creating this bundle.",
+    copy: "Choose a separate hedge account in Bundles before creating this bundle.",
     prepare: (h) => {
       const { tenant, strategy } = seed(h);
       const hedged = tenant.createStrategy({
