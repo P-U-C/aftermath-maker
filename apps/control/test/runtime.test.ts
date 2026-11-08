@@ -133,6 +133,22 @@ function createHarness(options: { configured?: boolean } = {}) {
     marginHistory: [],
   };
   let marketDailyVolumes: Array<{ marketId: string; volumeUsd: number }> = [];
+  let ownerAccounts = [
+    {
+      accountId: "42",
+      accountCapId: "0x1234",
+      collateralCoinType: "usdc",
+      equityUsd: 100,
+      availableCollateralUsd: 80,
+      allocatedCollateralUsd: 20,
+      freeMarginUsd: 70,
+      positionCount: 0,
+      withdrawableCollateralUsd: 75,
+      openMakerOrderCount: 0,
+      exposureUsd: 0,
+      unrealizedPnlUsd: 0,
+    },
+  ];
   let orderbook: {
     bestBidPrice: number;
     bestAskPrice: number;
@@ -211,6 +227,7 @@ function createHarness(options: { configured?: boolean } = {}) {
         })),
       };
     },
+    listOwnerAccounts: async () => ownerAccounts,
     cancelMakerOrders: async (inputs: { marketIds: string[] }) => {
       cancellationCount += 1;
       cancelledMarketSets.push([...inputs.marketIds]);
@@ -327,6 +344,9 @@ function createHarness(options: { configured?: boolean } = {}) {
     },
     setOrderbook: (value: typeof orderbook) => {
       orderbook = value;
+    },
+    setOwnerAccounts: (value: typeof ownerAccounts) => {
+      ownerAccounts = value;
     },
   };
 }
@@ -575,7 +595,7 @@ describe("runtime execution boundaries", () => {
     harness.store.close();
   });
 
-  it("keeps Paper reading when an account has no confirmed trading key", async () => {
+  it("runs local Paper estimates without authorizing a trading key", async () => {
     const harness = createHarness();
     harness.tenant.setConfig(
       makerConfigSchema.parse({
@@ -595,23 +615,49 @@ describe("runtime execution boundaries", () => {
     await runtime.cycle();
 
     expect(runtime.snapshot.running).toBe(true);
-    expect(runtime.snapshot.lastError).toBe(
-      "Paper needs a trading key for account 42. Set it up in Venues; Maker will keep reading the market.",
-    );
-    expect(runtime.snapshot.lastSuccessfulCycleAt).toBeNull();
+    expect(runtime.snapshot.lastError).toBeNull();
+    expect(runtime.snapshot.lastSuccessfulCycleAt).not.toBeNull();
     expect(onBundleError).not.toHaveBeenCalled();
     expect(harness.executionSequence).toEqual([]);
-    expect(
-      harness.tenant
-        .listEvents()
-        .find(
-          (event) =>
-            event.category === "paper" &&
-            event.action === "simulation" &&
-            event.outcome === "blocked",
-        )?.detail,
-    ).toMatchObject({ code: "trading-key" });
+    expect(runtime.snapshot.quote).not.toBeNull();
+    expect(runtime.snapshot.portfolio.availableCollateralUsd).toBe(80);
     await runtime.stop();
+    harness.store.close();
+  });
+
+  it("does not substitute a different authorized account for local Paper", async () => {
+    const harness = createHarness();
+    harness.tenant.setConfig(
+      makerConfigSchema.parse({
+        ...harness.tenant.getConfig()!,
+        mode: "paper",
+        makerAccountId: "43",
+      }),
+    );
+    harness.setOwnerAccounts([
+      {
+        accountId: "43",
+        accountCapId: "0x4321",
+        collateralCoinType: "usdc",
+        equityUsd: 150,
+        availableCollateralUsd: 120,
+        allocatedCollateralUsd: 30,
+        freeMarginUsd: 110,
+        positionCount: 0,
+        withdrawableCollateralUsd: 115,
+        openMakerOrderCount: 0,
+        exposureUsd: 0,
+        unrealizedPnlUsd: 0,
+      },
+    ]);
+
+    harness.runtime.start();
+    await harness.runtime.cycle();
+
+    expect(harness.executionSequence).not.toContain("paper-dry-run");
+    expect(harness.runtime.snapshot.accountId).toBe("43");
+    expect(harness.runtime.snapshot.portfolio.availableCollateralUsd).toBe(120);
+    await harness.runtime.stop();
     harness.store.close();
   });
 
@@ -848,17 +894,8 @@ describe("runtime execution boundaries", () => {
     await runtime.cycle();
 
     expect(runtime.snapshot.running).toBe(true);
-    expect(runtime.snapshot.lastError).toContain("Paper needs a trading key");
-    expect(
-      migrated
-        .listEvents()
-        .some(
-          (event) =>
-            event.category === "paper" &&
-            event.action === "simulation" &&
-            event.outcome === "blocked",
-        ),
-    ).toBe(true);
+    expect(runtime.snapshot.lastError).toBeNull();
+    expect(runtime.snapshot.quote).not.toBeNull();
     await runtime.stop();
     migratedStore.close();
   });

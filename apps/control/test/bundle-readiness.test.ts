@@ -138,15 +138,22 @@ describe("five ordered bundle readiness stages", () => {
     expect(result.stages[0].status).toBe("todo");
     expect(result.stages[1].status).toBe("waiting");
   });
-  it("distinguishes missing authorization from unassigned accounts", () => {
+  it("requires authorization for Live, but not read-only Paper estimates", () => {
     const result = deriveBundleReadiness({
       ...base,
       authorizedAccountIds: new Set<string>(),
     });
     expect(result.stages[2]).toMatchObject({
-      status: "todo",
-      detail: "Authorize trading key",
+      status: "done",
+      detail: "Not required for Paper estimates",
     });
+    expect(
+      deriveBundleReadiness({
+        ...base,
+        config: makerConfigSchema.parse({ ...config, mode: "live" }),
+        authorizedAccountIds: new Set<string>(),
+      }).stages[2],
+    ).toMatchObject({ status: "todo", detail: "Authorize trading key" });
     expect(
       deriveBundleReadiness({
         ...base,
@@ -214,11 +221,12 @@ describe("five ordered bundle readiness stages", () => {
       }).stages[3].detail,
     ).toBe("Needs 0.01 SUI gas");
   });
-  it("uses one Paper simulation budget and the unchanged Live gas reserve", () => {
+  it("does not require agent gas for local Paper estimates and preserves Live reserve", () => {
     const paper = deriveBundleReadiness({ ...base, gasSui: 0.01 });
     expect(paper.stages[3]).toMatchObject({
-      status: "todo",
-      requiredGasSui: 0.05,
+      status: "done",
+      detail: "Not required for Paper estimates",
+      requiredGasSui: 0,
     });
     const live = makerConfigSchema.parse({ ...config, mode: "live" });
     const liveResult = deriveBundleReadiness({

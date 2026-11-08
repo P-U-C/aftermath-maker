@@ -99,7 +99,12 @@ describe("runtime endpoint management", () => {
       markets: [{ marketId: "0xf001", symbol: "DRAFT" }],
       strategyId: null,
     });
-    const manager = new RuntimeManager(store, {} as never, {});
+    const manager = new RuntimeManager(
+      store,
+      {} as never,
+      {},
+      vi.fn().mockResolvedValue(gateway("https://fixture.example")),
+    );
 
     expect(bundle).toMatchObject({ status: "paused", needsStrategy: true });
     expect(() => manager.startBundle(ownerAddress, bundle.id)).toThrow(
@@ -233,7 +238,12 @@ describe("runtime endpoint management", () => {
     const core = tenant.listBundles().find((bundle) => bundle.name === "Core")!;
     tenant.setBundleStatus(core.id, "running");
     tenant.setBundleStatus(other.id, "running");
-    const manager = new RuntimeManager(store, {} as never, {});
+    const manager = new RuntimeManager(
+      store,
+      {} as never,
+      {},
+      vi.fn().mockResolvedValue(gateway("https://fixture.example")),
+    );
     await manager.initialize();
 
     await manager.pauseBundle(ownerAddress, core.id);

@@ -182,17 +182,23 @@ export function deriveBundleReadiness(inputs: {
           status: "waiting",
           detail: "After accounts are assigned",
         }
-      : authorized
+      : config?.mode === "paper"
         ? {
             id: "tradingKeys",
             status: "done",
-            detail: `${accountIds.length} authorized`,
+            detail: "Not required for Paper estimates",
           }
-        : {
-            id: "tradingKeys",
-            status: "todo",
-            detail: "Authorize trading key",
-          };
+        : authorized
+          ? {
+              id: "tradingKeys",
+              status: "done",
+              detail: `${accountIds.length} authorized`,
+            }
+          : {
+              id: "tradingKeys",
+              status: "todo",
+              detail: "Authorize trading key",
+            };
   const requiredGasSui = config
     ? requiredBundleGasMist(liveConfigs, config) / 1_000_000_000
     : 0;
@@ -213,36 +219,44 @@ export function deriveBundleReadiness(inputs: {
       ) / 1_000_000_000
     : 0;
   const gas: BundleStage =
-    tradingKeys.status !== "done"
+    config?.mode === "paper"
       ? {
           id: "gas",
-          status: "waiting",
-          detail: "After the trading key is authorized",
-          requiredGasSui,
+          status: "done",
+          detail: "Not required for Paper estimates",
+          requiredGasSui: 0,
+          ...(gasSui === null ? {} : { availableGasSui: gasSui }),
         }
-      : gasSui === null
+      : tradingKeys.status !== "done"
         ? {
             id: "gas",
             status: "waiting",
-            detail: "Checking trading key gas",
+            detail: "After the trading key is authorized",
             requiredGasSui,
           }
-        : gasSui >= requiredGasSui
+        : gasSui === null
           ? {
               id: "gas",
-              status: "done",
-              detail: `${gasSui.toFixed(2)} SUI available`,
+              status: "waiting",
+              detail: "Checking trading key gas",
               requiredGasSui,
-              availableGasSui: gasSui,
             }
-          : {
-              id: "gas",
-              status: "todo",
-              // Rounded up: a shortfall under a cent of SUI still needs gas.
-              detail: `Needs ${(Math.ceil((requiredGasSui - gasSui) * 100 - 1e-9) / 100).toFixed(2)} SUI gas`,
-              requiredGasSui,
-              availableGasSui: gasSui,
-            };
+          : gasSui >= requiredGasSui
+            ? {
+                id: "gas",
+                status: "done",
+                detail: `${gasSui.toFixed(2)} SUI available`,
+                requiredGasSui,
+                availableGasSui: gasSui,
+              }
+            : {
+                id: "gas",
+                status: "todo",
+                // Rounded up: a shortfall under a cent of SUI still needs gas.
+                detail: `Needs ${(Math.ceil((requiredGasSui - gasSui) * 100 - 1e-9) / 100).toFixed(2)} SUI gas`,
+                requiredGasSui,
+                availableGasSui: gasSui,
+              };
   gas.requiredGasPaperSui = requiredGasPaperSui;
   gas.requiredGasLiveSui = requiredGasLiveSui;
   const makerRequirement = config ? requiredMakerCollateralUsd(config) : 0;

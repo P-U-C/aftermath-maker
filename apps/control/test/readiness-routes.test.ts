@@ -103,26 +103,6 @@ describe("Start route and server-owned readiness", () => {
       },
     },
     {
-      stage: "trading-keys",
-      setup: (h: Awaited<ReturnType<typeof appHarness>>) => {
-        const tenant = h.store.forTenant(OWNER);
-        tenant.setConfig(wideConfig("1796"));
-        h.gateway.account("1796", 300);
-        return tenant.listBundles()[0]!.id;
-      },
-    },
-    {
-      stage: "gas",
-      setup: (h: Awaited<ReturnType<typeof appHarness>>) => {
-        const tenant = h.store.forTenant(OWNER);
-        tenant.setConfig(wideConfig("1796"));
-        h.gateway.account("1796", 300);
-        authorize(h, "1796");
-        h.gateway.gasSui = 0;
-        return tenant.listBundles()[0]!.id;
-      },
-    },
-    {
       stage: "collateral",
       setup: (h: Awaited<ReturnType<typeof appHarness>>) => {
         const tenant = h.store.forTenant(OWNER);
@@ -171,6 +151,45 @@ describe("Start route and server-owned readiness", () => {
       }
     },
   );
+
+  it("starts a funded Paper bundle without an agent authorization or gas", async () => {
+    const h = await appHarness();
+    try {
+      const tenant = h.store.forTenant(OWNER);
+      tenant.setConfig(wideConfig("1796", { marketCount: 1 }));
+      h.gateway.account("1796", 20);
+      h.gateway.gasSui = 0;
+      const bundleId = tenant.listBundles()[0]!.id;
+
+      const response = await start(h, bundleId);
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json().bundle.status).toBe("running");
+      const readiness = (
+        await h.app.inject({
+          method: "GET",
+          url: "/api/bundles",
+          headers: h.signedInAs(),
+        })
+      )
+        .json()
+        .bundles.find((bundle: any) => bundle.id === bundleId).readiness;
+      expect(
+        readiness.stages.find((stage: any) => stage.id === "tradingKeys"),
+      ).toMatchObject({
+        status: "done",
+        detail: "Not required for Paper estimates",
+      });
+      expect(
+        readiness.stages.find((stage: any) => stage.id === "gas"),
+      ).toMatchObject({
+        status: "done",
+        detail: "Not required for Paper estimates",
+      });
+    } finally {
+      await h.close();
+    }
+  });
 
   it("re-reads $0 then $300 account state without a restart or cached readiness", async () => {
     const h = await appHarness();
