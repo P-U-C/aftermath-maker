@@ -3714,11 +3714,31 @@ export class MakerRuntime {
             (left, right) =>
               Math.abs(right.inventoryUsd) - Math.abs(left.inventoryUsd),
           )[0]!;
+          // The selected market can be different from the largest simulated
+          // position. A Paper unwind must use the held market's own touch,
+          // never the selected market's book.
+          let unwindBestBid = bestBid;
+          let unwindBestAsk = bestAsk;
+          if (largest.marketId !== selected?.marketId) {
+            const unwindBook = await this.venueRead(
+              this.gateway.getOrderbook(largest.marketId),
+              "Paper exposure unwind orderbook read",
+            );
+            const unwindBid = unwindBook.orderbook.bestBidPrice;
+            const unwindAsk = unwindBook.orderbook.bestAskPrice;
+            if (unwindBid === undefined || unwindAsk === undefined) {
+              throw new Error(
+                "Paper exposure unwind orderbook has no two-sided price",
+              );
+            }
+            unwindBestBid = unwindBid;
+            unwindBestAsk = unwindAsk;
+          }
           const closed = this.store.closePaperMarket({
             trialId: paperTrialId,
             marketId: largest.marketId,
-            bestBid,
-            bestAsk,
+            bestBid: unwindBestBid,
+            bestAsk: unwindBestAsk,
             reason: "unwind",
           });
           if (closed.length) {
@@ -3730,7 +3750,10 @@ export class MakerRuntime {
                 trialId: paperTrialId,
                 marketId: largest.marketId,
                 symbol: largest.symbol,
-                sizeUsd: Math.abs(largest.inventoryUsd),
+                sizeUsd: closed.reduce(
+                  (total, fill) => total + fill.sizeUsd,
+                  0,
+                ),
               },
             });
             this.snapshotValue.execution.lastDecision = "rebalanced";

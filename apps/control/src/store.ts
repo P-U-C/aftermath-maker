@@ -367,6 +367,8 @@ export type PaperPosition = {
   role: "maker" | "hedge";
   marketId: string;
   symbol: string;
+  /** Signed base quantity. Used for exact reduce-only Paper closes. */
+  baseAssetAmount: number;
   inventoryUsd: number;
 };
 
@@ -715,6 +717,33 @@ export class Store {
       CREATE INDEX IF NOT EXISTS access_requests_notification
         ON access_requests(notified_at, requested_at);
     `);
+
+    // Earlier Paper exposure unwinds recorded the selected market's touch
+    // price and a USD amount, rather than the held market's base quantity.
+    // Those rows are estimates only (never venue activity) and can create a
+    // fictional residual position and PnL. Discard them exactly once before
+    // writing corrected unwind records.
+    this.db.exec(
+      `CREATE TABLE IF NOT EXISTS store_migrations (
+         id TEXT PRIMARY KEY,
+         applied_at TEXT NOT NULL
+       )`,
+    );
+    const paperUnwindMigration = "paper-unwind-base-accounting-v1";
+    this.db.transaction(() => {
+      const claimed = this.db
+        .prepare(
+          "INSERT OR IGNORE INTO store_migrations (id, applied_at) VALUES (?, ?)",
+        )
+        .run(paperUnwindMigration, new Date().toISOString());
+      if (claimed.changes) {
+        this.db
+          .prepare(
+            "DELETE FROM tenant_paper_fills WHERE order_key LIKE 'unwind:%'",
+          )
+          .run();
+      }
+    })();
 
     const executionColumns = this.db
       .prepare("PRAGMA table_info(tenant_executions)")
@@ -5127,7 +5156,8 @@ export class TenantStore {
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       );
       for (const position of positions) {
-        const side: "bid" | "ask" = position.inventoryUsd > 0 ? "ask" : "bid";
+        const side: "bid" | "ask" =
+          position.baseAssetAmount > 0 ? "ask" : "bid";
         const price = side === "ask" ? inputs.bestBid : inputs.bestAsk;
         const fill: PaperFill = {
           orderKey: `${inputs.reason ?? "close"}:${position.role}:${inputs.marketId}:${now}`,
@@ -5136,7 +5166,10 @@ export class TenantStore {
           symbol: position.symbol,
           side,
           price,
-          sizeUsd: Math.abs(position.inventoryUsd),
+          // A close must reverse the exact base held by that simulated
+          // account. Reusing its old USD notional would flip inventory when
+          // the touch price moved between entry and exit.
+          sizeUsd: Math.abs(position.baseAssetAmount * price),
           occurredAt: now,
         };
         insert.run(
@@ -5188,33 +5221,65 @@ export class TenantStore {
            AND role = 'hedge'`,
       )
       .get(this.ownerAddress, bundleId, trialId) as { count: number };
-    const positions = this.db
+    const positionRows = this.db
       .prepare(
-        `SELECT role, market_id, symbol,
-                SUM(CASE WHEN side = 'bid' THEN size_usd ELSE -size_usd END)
-                  AS inventory_usd
+        `SELECT id, role, market_id, symbol, side, price, size_usd
          FROM tenant_paper_fills
          WHERE owner_address = ? AND bundle_id = ? AND trial_id = ?
-         GROUP BY role, market_id, symbol
-         HAVING ABS(inventory_usd) > 0.000001
-         ORDER BY market_id ASC, role ASC`,
+         ORDER BY occurred_at ASC, id ASC`,
       )
       .all(this.ownerAddress, bundleId, trialId) as Array<{
+      id: number;
       role: "maker" | "hedge";
       market_id: string;
       symbol: string;
-      inventory_usd: number;
+      side: "bid" | "ask";
+      price: number;
+      size_usd: number;
     }>;
+    const positionTotals = new Map<
+      string,
+      {
+        role: "maker" | "hedge";
+        marketId: string;
+        symbol: string;
+        baseAssetAmount: number;
+        lastPrice: number;
+      }
+    >();
+    for (const row of positionRows) {
+      const key = `${row.role}:${row.market_id}`;
+      const current = positionTotals.get(key) ?? {
+        role: row.role,
+        marketId: row.market_id,
+        symbol: row.symbol,
+        baseAssetAmount: 0,
+        lastPrice: row.price,
+      };
+      current.baseAssetAmount +=
+        (row.side === "bid" ? 1 : -1) * (row.size_usd / row.price);
+      current.lastPrice = row.price;
+      positionTotals.set(key, current);
+    }
+    const positions = [...positionTotals.values()]
+      .filter((position) => Math.abs(position.baseAssetAmount) > 0.000001)
+      .map((position) => ({
+        role: position.role,
+        marketId: position.marketId,
+        symbol: position.symbol,
+        baseAssetAmount: position.baseAssetAmount,
+        inventoryUsd: position.baseAssetAmount * position.lastPrice,
+      }))
+      .sort(
+        (left, right) =>
+          left.marketId.localeCompare(right.marketId) ||
+          left.role.localeCompare(right.role),
+      );
     return {
       openOrders: open.count,
       fills: fills.count,
       hedges: hedges.count,
-      positions: positions.map((position) => ({
-        role: position.role,
-        marketId: position.market_id,
-        symbol: position.symbol,
-        inventoryUsd: position.inventory_usd,
-      })),
+      positions,
     };
   }
 

@@ -214,11 +214,50 @@ describe("persistent control store", () => {
 
     expect(closes).toHaveLength(2);
     expect(closes.map((fill) => fill.side).sort()).toEqual(["ask", "bid"]);
+    expect(closes.find((fill) => fill.role === "maker")?.sizeUsd).toBeCloseTo(
+      9.7,
+      9,
+    );
+    expect(closes.find((fill) => fill.role === "hedge")?.sizeUsd).toBeCloseTo(
+      9.9,
+      9,
+    );
     expect(closes.every((fill) => fill.orderKey.startsWith("close:"))).toBe(
       true,
     );
     expect(tenant.getPaperState("volume").positions).toEqual([]);
     databaseStore.close();
+  });
+
+  it("discards legacy Paper exposure-unwind estimates once", () => {
+    const directory = join(
+      process.env.TMPDIR ?? "/tmp",
+      `aftermath-maker-${randomBytes(8).toString("hex")}`,
+    );
+    mkdirSync(directory, { recursive: true });
+    const path = join(directory, "maker.db");
+    const owner = `0x${"b".repeat(64)}`;
+    const databaseStore = new Store(path);
+    databaseStore.close();
+
+    const database = new Database(path);
+    database
+      .prepare("DELETE FROM store_migrations WHERE id = ?")
+      .run("paper-unwind-base-accounting-v1");
+    database
+      .prepare(
+        `INSERT INTO tenant_paper_fills
+          (owner_address, bundle_id, trial_id, order_key, role, market_id,
+           symbol, side, price, size_usd, occurred_at)
+         VALUES (?, '', 'runtime', 'unwind:maker:0x1:legacy', 'maker', '0x1',
+                 'PAPER', 'ask', 0.01, 10, ?)`,
+      )
+      .run(owner, new Date().toISOString());
+    database.close();
+
+    const reopened = new Store(path);
+    expect(reopened.forTenant(owner).listPaperFills()).toEqual([]);
+    reopened.close();
   });
 
   it("does not coerce user strings that look like legacy bigint values", () => {
