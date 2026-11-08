@@ -591,6 +591,7 @@ type AccountCap = {
   accountId: string;
   accountCapId: string;
   collateralCoinType: string;
+  tradingKeyCount?: number;
   equityUsd: number;
   availableCollateralUsd: number;
   withdrawableCollateralUsd?: number;
@@ -2507,17 +2508,32 @@ function DashboardBody() {
     onboardingRouteOwner.current = identity.ownerAddress;
     const makerAccountId =
       config.makerAccountId ?? setup.setup?.accountId ?? null;
-    const onboardingComplete = Boolean(
+    const liveKeyReady = Boolean(
       setup.agent &&
       setup.accounts.some(
         (managed) =>
           managed.accountId === makerAccountId && Boolean(managed.agentCapId),
       ),
     );
+    const paperAccountReady = Boolean(
+      config.mode === "paper" &&
+      makerAccountId &&
+      accounts.some((owned) => owned.accountId === makerAccountId),
+    );
+    const onboardingComplete =
+      config.mode === "paper" ? paperAccountReady : liveKeyReady;
     if (!onboardingComplete && !window.location.hash) {
       selectView("venues");
     }
-  }, [config.makerAccountId, identity, savedConfig, selectView, setup]);
+  }, [
+    accounts,
+    config.makerAccountId,
+    config.mode,
+    identity,
+    savedConfig,
+    selectView,
+    setup,
+  ]);
 
   const selectedCap = useMemo(
     () => accounts.find((candidate) => candidate.accountId === selectedAccount),
@@ -4281,6 +4297,10 @@ function DashboardBody() {
   const authorizedAccounts = setup.accounts.filter(
     (managed) => managed.agentCapId,
   );
+  const selectableStrategyAccountIds =
+    config.mode === "paper"
+      ? accounts.map((account) => account.accountId)
+      : authorizedAccounts.map((account) => account.accountId);
   const activeMakerAccountId =
     config.makerAccountId ?? setup.setup?.accountId ?? null;
   const activeMakerAccount = setup.accounts.find(
@@ -4308,9 +4328,14 @@ function DashboardBody() {
     activeMakerCap?.availableCollateralUsd ??
     null;
   const agentGasSui = activeMakerSnapshot?.balances.gasSui ?? null;
-  const onboardingComplete = Boolean(
+  const liveOnboardingComplete = Boolean(
     setup.agent && activeMakerAccount?.agentCapId,
   );
+  const paperOnboardingComplete = Boolean(
+    config.mode === "paper" && activeMakerAccountId && activeMakerCap,
+  );
+  const onboardingComplete =
+    config.mode === "paper" ? paperOnboardingComplete : liveOnboardingComplete;
   const trialBlocker = Boolean(busy)
     ? "Maker is finishing another action."
     : configDirty
@@ -5486,6 +5511,7 @@ function DashboardBody() {
         setup.accounts.find((entry) => entry.accountId === owned.accountId)
           ?.agentCapId,
       ),
+      existingTradingKeyCount: owned.tradingKeyCount,
       gasSui:
         assignedBundle?.readiness?.stages[3].availableGasSui ?? agentGasSui,
       requiredUsd,
@@ -5845,10 +5871,22 @@ function DashboardBody() {
           <section className="onboarding">
             <div className="section-heading">
               <div>
-                <h1>Authorize once. Run unattended.</h1>
+                <h1>
+                  {config.mode === "paper"
+                    ? "Choose a Paper account."
+                    : "Authorize once. Run unattended."}
+                </h1>
               </div>
               <span className="step-count">
-                {setup.agent ? "2 / 2" : account ? "1 / 2" : "0 / 2"}
+                {config.mode === "paper"
+                  ? account
+                    ? "1 / 1"
+                    : "0 / 1"
+                  : setup.agent
+                    ? "2 / 2"
+                    : account
+                      ? "1 / 2"
+                      : "0 / 2"}
               </span>
             </div>
             <div className="onboarding-grid">
@@ -5878,9 +5916,49 @@ function DashboardBody() {
                   <KeyRound size={19} />
                 </span>
                 <div className="setup-body">
-                  <strong>Trading key</strong>
+                  <strong>
+                    {config.mode === "paper" ? "Paper account" : "Trading key"}
+                  </strong>
                   {!account ? (
                     <p>Connect the owner wallet to continue.</p>
+                  ) : config.mode === "paper" ? (
+                    <>
+                      <p>
+                        Paper reads this owner account only. It does not create,
+                        fund, or use a trading key.
+                      </p>
+                      <div className="inline-controls account-controls">
+                        <Select
+                          value={activeMakerAccountId ?? ""}
+                          onChange={(event) =>
+                            setConfig((current) => ({
+                              ...current,
+                              makerAccountId: event.target.value || null,
+                            }))
+                          }
+                          disabled={!accounts.length}
+                          aria-label={`${primaryVenue.name} Paper account`}
+                        >
+                          <option value="">Select account</option>
+                          {accounts.map((item) => (
+                            <option key={item.accountId} value={item.accountId}>
+                              {accountReference(item.accountId)} /{" "}
+                              {item.equityUsd.toFixed(2)} equity
+                            </option>
+                          ))}
+                        </Select>
+                        <Button
+                          variant="secondary"
+                          onClick={() => void createVenueAccount()}
+                          disabled={Boolean(busy)}
+                          type="button"
+                        >
+                          {busy === "create-account"
+                            ? "Check wallet..."
+                            : "New account"}
+                        </Button>
+                      </div>
+                    </>
                   ) : !setup.agent ? (
                     <>
                       <p>
@@ -7324,8 +7402,8 @@ function DashboardBody() {
             <fieldset className="account-pair-control strategy-section strategy-hedging strategy-step strategy-step-hedging">
               <legend>Hedging</legend>
               <p className="strategy-section-copy">
-                Use a separate account to offset fills without giving either
-                trading key withdrawal authority.
+                Use a separate account to offset fills. Live uses trading keys
+                without withdrawal authority; Paper reads the owner accounts.
               </p>
               <div
                 className={
@@ -7355,9 +7433,9 @@ function DashboardBody() {
                     }}
                   >
                     <option value="">Select account</option>
-                    {authorizedAccounts.map((managed) => (
-                      <option key={managed.accountId} value={managed.accountId}>
-                        {accountReference(managed.accountId)}
+                    {selectableStrategyAccountIds.map((accountId) => (
+                      <option key={accountId} value={accountId}>
+                        {accountReference(accountId)}
                       </option>
                     ))}
                   </Select>
@@ -7378,16 +7456,11 @@ function DashboardBody() {
                     }
                   >
                     <option value="">Select account</option>
-                    {authorizedAccounts
-                      .filter(
-                        (managed) => managed.accountId !== activeMakerAccountId,
-                      )
-                      .map((managed) => (
-                        <option
-                          key={managed.accountId}
-                          value={managed.accountId}
-                        >
-                          {accountReference(managed.accountId)}
+                    {selectableStrategyAccountIds
+                      .filter((accountId) => accountId !== activeMakerAccountId)
+                      .map((accountId) => (
+                        <option key={accountId} value={accountId}>
+                          {accountReference(accountId)}
                         </option>
                       ))}
                   </Select>
@@ -7405,7 +7478,8 @@ function DashboardBody() {
                 checked={config.hedge.enabled}
                 disabled={
                   !selectedStrategy &&
-                  (!activeMakerAccountId || authorizedAccounts.length < 2)
+                  (!activeMakerAccountId ||
+                    selectableStrategyAccountIds.length < 2)
                 }
                 onChange={(event) => {
                   const enabled = event.target.checked;

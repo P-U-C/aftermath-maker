@@ -75,6 +75,66 @@ async function start(
 }
 
 describe("Start route and server-owned readiness", () => {
+  it("reconciles four existing account grants for Maker's stored signer without a transaction", async () => {
+    const h = await appHarness();
+    try {
+      const tenant = h.store.forTenant(OWNER);
+      const signer = createEncryptedAgent({
+        masterKey: randomBytes(32).toString("base64"),
+        context: "existing-grants",
+      });
+      tenant.createAgent({ ...signer, encryptionContext: "existing-grants" });
+      const accountIds = ["1796", "1797", "1798", "1799"];
+      h.gateway.agentCapabilities = accountIds.map((accountId, index) => ({
+        accountId,
+        agentCapId: `0x${(index + 5).toString(16).repeat(64)}`,
+        collateralCoinType: USDC_COIN_TYPE,
+      }));
+      h.gateway.agentCapabilities.push({
+        accountId: "1796",
+        agentCapId: `0x${"f".repeat(64)}`,
+        collateralCoinType: USDC_COIN_TYPE,
+      });
+      for (const capability of h.gateway.agentCapabilities.slice(
+        0,
+        accountIds.length,
+      )) {
+        const account = h.gateway.account(capability.accountId, 100);
+        account.tradingKeyCount = 1;
+        account.delegatedTradingKeyIds = [capability.agentCapId];
+      }
+
+      const response = await h.app.inject({
+        method: "GET",
+        url: "/api/setup",
+        headers: h.signedInAs(),
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json().accounts).toEqual(
+        expect.arrayContaining(
+          accountIds.map((accountId) =>
+            expect.objectContaining({
+              accountId,
+              agentCapId: expect.stringMatching(/^0x/),
+            }),
+          ),
+        ),
+      );
+      expect(tenant.listAccountSetups()).toHaveLength(4);
+      expect(tenant.getAccountSetup("1796")?.agentCapId).toBe(
+        h.gateway.agentCapabilities[0]?.agentCapId,
+      );
+      expect(
+        h.gateway.calls.filter((call) =>
+          /transaction|simulate|execute|sign/i.test(call.method),
+        ),
+      ).toEqual([]);
+    } finally {
+      await h.close();
+    }
+  });
+
   it.each([
     {
       stage: "strategy",

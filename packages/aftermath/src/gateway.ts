@@ -156,6 +156,10 @@ export type OwnerAccountSummary = {
   accountId: string;
   accountCapId: string;
   collateralCoinType: string;
+  /** Number of delegated trading capabilities currently whitelisted on-chain. */
+  tradingKeyCount?: number;
+  /** Capability object IDs currently whitelisted by the account admin cap. */
+  delegatedTradingKeyIds?: string[];
   equityUsd: number;
   availableCollateralUsd: number;
   allocatedCollateralUsd: number;
@@ -166,6 +170,13 @@ export type OwnerAccountSummary = {
   /** Current venue-marked notional of this account's open positions. */
   exposureUsd?: number;
   unrealizedPnlUsd?: number;
+};
+
+/** A delegated account capability owned by Maker's currently stored signer. */
+export type AgentAccountCapability = {
+  accountId: string;
+  agentCapId: string;
+  collateralCoinType: string;
 };
 
 export type PerformanceOrder = {
@@ -1489,6 +1500,31 @@ export class AftermathGateway {
   }
 
   /**
+   * Read the account capabilities that belong to one known Maker signer.
+   * This is intentionally a read-only recovery path: a capability proves that
+   * this signer can trade for an account, but never exposes or recreates a
+   * signer whose encrypted key is absent from control's database.
+   */
+  async listAgentAccountCapabilities(inputs: {
+    agentAddress: string;
+    collateralCoinType?: string;
+  }): Promise<AgentAccountCapability[]> {
+    const caps = await this.getOwnedAccountCaps({
+      walletAddress: inputs.agentAddress,
+      ...(inputs.collateralCoinType
+        ? { collateralCoinType: inputs.collateralCoinType }
+        : {}),
+    });
+    return caps
+      .filter((cap) => cap.isAgent)
+      .map((cap) => ({
+        accountId: cap.accountId.toString(),
+        agentCapId: cap.objectId,
+        collateralCoinType: cap.collateralCoinType,
+      }));
+  }
+
+  /**
    * SUI in USD, used to price gas when it is spent. Cached for five minutes;
    * the last good price is returned on a failed refresh until it is an hour
    * old, then the failure surfaces so gas is recorded as unpriced, never as
@@ -1568,6 +1604,9 @@ export class AftermathGateway {
         const { account } = await this.sdk.Perpetuals().getAccount({
           accountCap: cap,
         });
+        // Older indexer responses did not include this newly documented field.
+        // Missing means no verifiable delegated keys, never an inferred grant.
+        const delegatedTradingKeyIds = cap.whitelistedAgentCapIds ?? [];
         const allocatedCollateralUsd = account.account.positions.reduce(
           (sum, position) => sum + position.collateralUsd,
           0,
@@ -1600,6 +1639,8 @@ export class AftermathGateway {
           accountId: cap.accountId.toString(),
           accountCapId: cap.objectId,
           collateralCoinType: cap.collateralCoinType,
+          tradingKeyCount: delegatedTradingKeyIds.length,
+          delegatedTradingKeyIds,
           equityUsd: account.account.totalEquityUsd,
           availableCollateralUsd: account.account.availableCollateralUsd,
           availableCollateral: account.account.availableCollateral,

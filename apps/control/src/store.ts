@@ -5,7 +5,11 @@ import Database from "better-sqlite3";
 import { PROBLEM_OUTCOMES } from "./audit-event-kinds.js";
 import { UserFacingError } from "./http-error.js";
 import { z } from "zod";
-import type { EncryptedSecret } from "@puc/aftermath";
+import type {
+  AgentAccountCapability,
+  EncryptedSecret,
+  OwnerAccountSummary,
+} from "@puc/aftermath";
 import {
   makerConfigSchema,
   makerMarketSchema,
@@ -4743,6 +4747,61 @@ export class TenantStore {
           : account,
       ),
     );
+  }
+
+  /**
+   * Restore local account-to-cap bindings from capabilities the currently
+   * stored Maker signer still owns on-chain. This never creates a signer or
+   * adopts another agent's capability: callers supply only caps read for the
+   * encrypted signer already held by this tenant.
+   */
+  reconcileAgentGrants(inputs: {
+    accounts: ReadonlyArray<OwnerAccountSummary>;
+    agentCapabilities: ReadonlyArray<AgentAccountCapability>;
+  }): number {
+    const owned = new Map(
+      inputs.accounts.map((account) => [account.accountId, account]),
+    );
+    const discovered = inputs.agentCapabilities.filter((capability) => {
+      const account = owned.get(capability.accountId);
+      return Boolean(
+        account &&
+        account.collateralCoinType === capability.collateralCoinType &&
+        account.delegatedTradingKeyIds?.some(
+          (id) => id.toLowerCase() === capability.agentCapId.toLowerCase(),
+        ),
+      );
+    });
+    if (!discovered.length) return 0;
+
+    const previous = this.listAccountSetups();
+    let changed = 0;
+    const next = [...previous];
+    for (const capability of discovered) {
+      const account = owned.get(capability.accountId)!;
+      const index = next.findIndex(
+        (entry) => entry.accountId === capability.accountId,
+      );
+      if (index === -1) {
+        next.push({
+          ownerAddress: this.ownerAddress,
+          accountId: account.accountId,
+          accountCapId: account.accountCapId,
+          collateralCoinType: account.collateralCoinType,
+          addedAt: new Date().toISOString(),
+          grantDigest: null,
+          agentCapId: capability.agentCapId,
+        });
+        changed += 1;
+        continue;
+      }
+      if (next[index]!.agentCapId !== capability.agentCapId) {
+        next[index] = { ...next[index]!, agentCapId: capability.agentCapId };
+        changed += 1;
+      }
+    }
+    if (changed) this.setSetting("account_setups", next);
+    return changed;
   }
 
   logEvent(inputs: {
