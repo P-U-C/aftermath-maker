@@ -2082,7 +2082,8 @@ async function plainControlLog(browser) {
       ...state.fixture.events.events,
     ];
     await goToDesk(page);
-    const audit = page.locator(".desk-log-card");
+    const audit = page.locator(".desk-log-card:visible");
+    await audit.waitFor();
     await page.waitForTimeout(200);
     const auditText = await audit.textContent();
     assert(
@@ -2305,7 +2306,7 @@ async function paperSimulationBlockerStaysVisible(browser) {
     const box = await notice.boundingBox();
     assert(
       box && box.height <= 36,
-      "The paper blocker notice wrapped past one line",
+      `The paper blocker notice wrapped past one line (${box?.height ?? 0}px)`,
     );
     await lane
       .getByRole("button", {
@@ -3289,6 +3290,51 @@ async function paperVenuesDoNotRequireTradingKeys(browser) {
   }
 }
 
+async function paperCoreAllocationUsesOwnerAccounts(browser) {
+  const { context, page, state } = await newPage(browser, {
+    width: 1440,
+    height: 900,
+  });
+  try {
+    // A fresh Paper owner has account summaries but no locally held Live
+    // trading-key capability. Core must still let them assign those accounts.
+    state.fixture.setup.accounts = state.fixture.setup.accounts.map(
+      (account) => ({ ...account, agentCapId: null }),
+    );
+    const core = state.fixture.bundles.bundles[0];
+    const coreStatus = state.fixture.status.bundles[0];
+    core.status = "stopped";
+    coreStatus.bundle.status = "stopped";
+    coreStatus.snapshot.running = false;
+    state.fixture.status.snapshot.running = false;
+
+    await goToDesk(page);
+    await page.getByRole("link", { name: "Bundles", exact: true }).click();
+    const coreCard = page.locator(".bundle-card").filter({ hasText: "Core" });
+    await coreCard.getByRole("button", { name: "Edit", exact: true }).click();
+
+    const editor = page.getByRole("dialog", { name: "Edit Core" });
+    await editor.waitFor();
+    const maker = editor.getByLabel("Maker account");
+    assert(
+      (await maker.locator("option").allTextContents()).some((option) =>
+        option.includes("Reserve"),
+      ),
+      "Paper Core hid an owned account because it lacks a Live trading key",
+    );
+    await maker.selectOption("1749");
+    await editor.getByLabel("Taker account").selectOption("1745");
+    await editor.getByRole("button", { name: "Save allocation" }).click();
+    await page.getByText("Bundle allocation saved.").waitFor();
+    assert(
+      core.makerAccountId === "1749" && core.takerAccountId === "1745",
+      "Paper Core allocation did not save the selected owner accounts",
+    );
+  } finally {
+    await context.close();
+  }
+}
+
 async function strategyPolishFlow(browser) {
   const { context, page, state } = await newPage(browser, {
     width: 1440,
@@ -3814,6 +3860,8 @@ try {
     await strategyResultBreakdown(browser);
   } else if (process.argv.includes("--paper-venues-only")) {
     await paperVenuesDoNotRequireTradingKeys(browser);
+  } else if (process.argv.includes("--paper-core-allocation-only")) {
+    await paperCoreAllocationUsesOwnerAccounts(browser);
   } else if (process.argv.includes("--multi-live-only")) {
     await goLiveFromAnyBundle(browser);
   } else if (process.argv.includes("--round10-kit-only")) {
@@ -3878,6 +3926,7 @@ try {
     if (!process.argv.includes("--polish-only")) {
       await v7BundleDeskAndStrategy(browser);
       await paperVenuesDoNotRequireTradingKeys(browser);
+      await paperCoreAllocationUsesOwnerAccounts(browser);
       await revokeWithoutWallet(browser);
       await depositsToTwoAccountsWithOneOwnerSignature(browser);
       await depositsWhilePaperBundleRuns(browser, { width: 1440, height: 900 });

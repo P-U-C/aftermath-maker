@@ -1368,8 +1368,8 @@ export async function buildServer({
               if (body.strategyId && !body.makerAccountId) {
                 throw new UserFacingError(
                   "account-required",
-                  "Select an authorized Maker account in Venues before creating this bundle.",
-                  { kind: "venues" },
+                  "Select a Maker account in Bundles before creating this bundle.",
+                  { kind: "bundles" },
                   400,
                 );
               }
@@ -1384,8 +1384,8 @@ export async function buildServer({
               ) {
                 throw new UserFacingError(
                   "hedge-account-required",
-                  "Authorize a separate hedge account in Venues before creating this bundle.",
-                  { kind: "venues" },
+                  "Choose a separate hedge account in Bundles before creating this bundle.",
+                  { kind: "bundles" },
                   400,
                 );
               }
