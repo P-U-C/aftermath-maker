@@ -349,7 +349,7 @@ export function DeskView({
                 <span>
                   Paper estimate{" "}
                   <b>
-                    {paper.openOrders} orders / {paper.fills} fills /{" "}
+                    {paper.openOrders} open orders / {paper.fills} Maker fills /{" "}
                     {paper.hedges} hedges
                   </b>
                 </span>

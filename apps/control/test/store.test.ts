@@ -141,7 +141,7 @@ describe("persistent control store", () => {
     databaseStore.close();
   });
 
-  it("keeps estimated Paper orders, fills, and hedges outside live order state", () => {
+  it("reports Maker fills separately from simulated hedges in Paper state", () => {
     const directory = join(
       process.env.TMPDIR ?? "/tmp",
       `aftermath-maker-${randomBytes(8).toString("hex")}`,
@@ -169,7 +169,7 @@ describe("persistent control store", () => {
 
     expect(tenant.getPaperState("runtime")).toMatchObject({
       openOrders: 1,
-      fills: 2,
+      fills: 1,
       hedges: 1,
       positions: expect.arrayContaining([
         expect.objectContaining({ role: "maker", inventoryUsd: 1 }),

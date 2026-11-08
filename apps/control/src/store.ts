@@ -5177,7 +5177,8 @@ export class TenantStore {
     const fills = this.db
       .prepare(
         `SELECT COUNT(*) AS count FROM tenant_paper_fills
-         WHERE owner_address = ? AND bundle_id = ? AND trial_id = ?`,
+         WHERE owner_address = ? AND bundle_id = ? AND trial_id = ?
+           AND role = 'maker'`,
       )
       .get(this.ownerAddress, bundleId, trialId) as { count: number };
     const hedges = this.db
