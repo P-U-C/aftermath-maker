@@ -3127,7 +3127,7 @@ async function v7BundleDeskAndStrategy(browser) {
     await page.getByRole("link", { name: "Venues", exact: true }).click();
     await page
       .locator(".venue-accounts-card")
-      .getByText(/Each account needs a trading key/)
+      .getByText(/Paper reads your account data without a trading key/)
       .waitFor();
     await page.locator(".venue-kit-table").waitFor();
     await page.locator(".venue-accounts-card").scrollIntoViewIfNeeded();
@@ -3245,6 +3245,45 @@ async function v7BundleDeskAndStrategy(browser) {
     );
     await page.waitForTimeout(420);
     await capture(page, "r8-strategy-market-policy-desktop.png");
+  } finally {
+    await context.close();
+  }
+}
+
+async function paperVenuesDoNotRequireTradingKeys(browser) {
+  const { context, page, state } = await newPage(browser, {
+    width: 1440,
+    height: 900,
+  });
+  try {
+    // Paper uses owner reads. Remove every agent grant while retaining the
+    // fully funded Paper bundles, just as a newly connected owner would see.
+    state.fixture.setup.accounts = state.fixture.setup.accounts.map(
+      (account) => ({
+        ...account,
+        agentCapId: null,
+      }),
+    );
+    await page.goto(`${baseUrl}#accounts`, { waitUntil: "domcontentloaded" });
+    await page
+      .locator('.maker-view[data-view="venues"]:not([hidden])')
+      .waitFor();
+    const table = page.locator(".venue-kit-table");
+    await table.waitFor();
+    const tableText = await table.innerText();
+    assert(
+      tableText.includes("Not needed for Paper"),
+      `Paper account still requires a trading key: ${tableText}`,
+    );
+    assert(
+      (await table.getByRole("button", { name: "Authorize" }).count()) === 0,
+      "Paper account offered a trading-key authorization",
+    );
+    await page
+      .locator(".venue-facts-strip")
+      .getByText("Optional for Paper", { exact: true })
+      .waitFor();
+    await capture(page, "paper-venues-no-trading-key-desktop.png");
   } finally {
     await context.close();
   }
@@ -3773,6 +3812,8 @@ const browser = await chromium.launch({
 try {
   if (process.argv.includes("--results-only")) {
     await strategyResultBreakdown(browser);
+  } else if (process.argv.includes("--paper-venues-only")) {
+    await paperVenuesDoNotRequireTradingKeys(browser);
   } else if (process.argv.includes("--multi-live-only")) {
     await goLiveFromAnyBundle(browser);
   } else if (process.argv.includes("--round10-kit-only")) {
@@ -3836,6 +3877,7 @@ try {
     await strategyApplyRaceAndAttach(browser);
     if (!process.argv.includes("--polish-only")) {
       await v7BundleDeskAndStrategy(browser);
+      await paperVenuesDoNotRequireTradingKeys(browser);
       await revokeWithoutWallet(browser);
       await depositsToTwoAccountsWithOneOwnerSignature(browser);
       await depositsWhilePaperBundleRuns(browser, { width: 1440, height: 900 });
