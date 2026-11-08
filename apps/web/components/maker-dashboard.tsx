@@ -4420,12 +4420,18 @@ function DashboardBody() {
         name: used.name,
         makerAccountId: maker,
         hedgeAccountId: hedge,
-        authorizedMaker: Boolean(
-          setup.accounts.find((item) => item.accountId === maker)?.agentCapId,
-        ),
-        authorizedHedge: Boolean(
-          setup.accounts.find((item) => item.accountId === hedge)?.agentCapId,
-        ),
+        // Paper reads the owner's accounts at runtime; an agent capability is
+        // a Live-only requirement.
+        authorizedMaker:
+          bundle?.mode === "paper" ||
+          Boolean(
+            setup.accounts.find((item) => item.accountId === maker)?.agentCapId,
+          ),
+        authorizedHedge:
+          bundle?.mode === "paper" ||
+          Boolean(
+            setup.accounts.find((item) => item.accountId === hedge)?.agentCapId,
+          ),
         hedgeAvailableUsd:
           accounts.find((item) => item.accountId === hedge)
             ?.availableCollateralUsd ?? null,
@@ -4505,16 +4511,17 @@ function DashboardBody() {
             !bundle?.makerAccountId ||
             !bundle.takerAccountId ||
             bundle.makerAccountId === bundle.takerAccountId ||
-            !setup.accounts.some(
-              (account) =>
-                account.accountId === bundle.makerAccountId &&
-                account.agentCapId,
-            ) ||
-            !setup.accounts.some(
-              (account) =>
-                account.accountId === bundle.takerAccountId &&
-                account.agentCapId,
-            ),
+            (bundle.mode !== "paper" &&
+              (!setup.accounts.some(
+                (account) =>
+                  account.accountId === bundle.makerAccountId &&
+                  account.agentCapId,
+              ) ||
+                !setup.accounts.some(
+                  (account) =>
+                    account.accountId === bundle.takerAccountId &&
+                    account.agentCapId,
+                ))),
         )
     : null;
   const strategySaveBlocker =
@@ -4556,7 +4563,7 @@ function DashboardBody() {
                 }
               : incompatibleHedgeBundle
                 ? {
-                    message: `${incompatibleHedgeBundle.name} needs two distinct authorized Maker/hedge accounts before this hedge can be applied. Fix the bundle allocation in Bundles.`,
+                    message: `${incompatibleHedgeBundle.name} needs two distinct ${incompatibleHedgeBundle.mode === "paper" ? "Maker/hedge" : "authorized Maker/hedge"} accounts before this hedge can be applied. Fix the bundle allocation in Bundles.`,
                     step: 3,
                   }
                 : schemaIssue
@@ -7531,8 +7538,10 @@ function DashboardBody() {
                         {maker ? `account ${maker}` : "account missing"} → hedge{" "}
                         {hedge ? `account ${hedge}` : "account missing"};{" "}
                         {maker && hedge && maker !== hedge
-                          ? "confirm collateral and authorization in Bundles"
-                          : "cannot activate without two distinct authorized accounts"}
+                          ? bundle?.mode === "paper"
+                            ? "confirm collateral in Bundles"
+                            : "confirm collateral and authorization in Bundles"
+                          : `cannot activate without two distinct ${bundle?.mode === "paper" ? "accounts" : "authorized accounts"}`}
                         . Hedge available collateral: {money(hedgeBalance)}{" "}
                         (latest loaded; timestamp not provided). Last observed
                         combined net exposure:{" "}

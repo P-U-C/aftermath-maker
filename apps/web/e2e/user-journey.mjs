@@ -3330,6 +3330,14 @@ async function paperCoreAllocationUsesOwnerAccounts(browser) {
       core.makerAccountId === "1749" && core.takerAccountId === "1745",
       "Paper Core allocation did not save the selected owner accounts",
     );
+    await page.getByRole("link", { name: "Strategy", exact: true }).click();
+    await goToStrategyStep(page, 3);
+    assert(
+      (await page
+        .getByText(/two distinct authorized Maker\/hedge accounts/)
+        .count()) === 0,
+      "Paper hedge validation still required Live trading-key authorization",
+    );
   } finally {
     await context.close();
   }
