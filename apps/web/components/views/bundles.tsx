@@ -825,7 +825,7 @@ export function BundlesView({
               >
                 <option value="">
                   {chosenCreateStrategy?.requiresHedge
-                    ? "Choose a distinct authorized hedge account"
+                    ? "Choose a distinct hedge account"
                     : "Off"}
                 </option>
                 {availableTakerAccounts.map((account) => (
