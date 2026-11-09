@@ -71,3 +71,11 @@ strategy unless a separate verified allocation source exists.
 | Trading-only P&L; rewards/transfers excluded            | `Inventory recycling accounting contracts > keeps rewards and transfers outside reconciled trading P&L`        |
 | Epoch 4/5 replay totals                                 | Blocked pending sanitized source fixtures; the specification alone is not a replay fixture                     |
 | Runtime risk admission and UI ranking                   | Pending the read-only source adapters and a complete reconciliation feed                                       |
+
+Paper preserves the existing strict book-through estimate: a touch is never a
+fill. The shared contract now also rejects incomplete book evidence and models
+side-aware markouts only after their requested horizon. Attached strategies
+named `Inventory recycling` reject risk-increasing quotes until a durable
+reconciliation is `reconciled`; passive reduction, Stop, and Flatten remain
+available. This is a conservative admission boundary, not proof of reward
+eligibility or actual market fills.

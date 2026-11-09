@@ -682,6 +682,27 @@ export class MakerRuntime {
     });
   }
 
+  /**
+   * Inventory recycling is an existing named preset rather than a new runtime
+   * mode. Attached instances therefore use its durable reconciliation state
+   * as an admission gate. An unattached draft has no runtime and remains
+   * reviewable; Stop and Flatten do not call this gate.
+   */
+  private inventoryRecyclingReconciliation() {
+    if (!this.store.bundleId) return undefined;
+    const bundle = this.store.getStoredBundle(this.store.bundleId);
+    if (
+      !bundle?.strategyName ||
+      !bundle.strategyName
+        .trim()
+        .toLowerCase()
+        .startsWith("inventory recycling")
+    ) {
+      return undefined;
+    }
+    return this.store.latestInventoryReconciliation();
+  }
+
   get snapshot(): RuntimeSnapshot {
     const snapshot = structuredClone(this.snapshotValue);
     const execution = this.store.getExecutionStats();
@@ -3483,6 +3504,27 @@ export class MakerRuntime {
           // while another market is bringing the bundle back below its cap.
           holdNewExposure = true;
         }
+      }
+      const inventoryReconciliation = this.inventoryRecyclingReconciliation();
+      // Data uncertainty stops a new Inventory recycling quote, but it never
+      // prevents an already-held position from using the existing passive
+      // reduce-only path. Stop and Flatten remain separate controls.
+      if (
+        !reducingOnly &&
+        inventoryReconciliation !== undefined &&
+        (!inventoryReconciliation ||
+          inventoryReconciliation.state !== "reconciled")
+      ) {
+        const reasons = inventoryReconciliation?.reasons.length
+          ? inventoryReconciliation.reasons.join(", ")
+          : "no reconciliation has been recorded";
+        safety.push({
+          code: "inventory-reconciliation",
+          label: "Inventory reconciliation",
+          ok: false,
+          scope: "bundle",
+          detail: `Risk-increasing quotes require reconciled fills, ownership, and positions; ${reasons}`,
+        });
       }
       const portfolioQuoteRisk = portfolioRiskFor(quote);
       const marketSymbols = new Map(
