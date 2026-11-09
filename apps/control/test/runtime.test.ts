@@ -440,7 +440,9 @@ describe("runtime execution boundaries", () => {
       makerFills: 1,
       hedgeFills: 0,
       notionalUsd: 10,
+      estimatedBuilderFeesUsd: 0.001,
     });
+    expect(performance.fills[0]?.estimatedBuilderFeeUsd).toBe(0.001);
     expect(performance.fills[0]).toMatchObject({ estimated: true });
     expect(harness.executionSequence).toEqual(["paper-dry-run"]);
     await harness.runtime.stop();
@@ -621,6 +623,34 @@ describe("runtime execution boundaries", () => {
     expect(harness.executionSequence).toEqual([]);
     expect(runtime.snapshot.quote).not.toBeNull();
     expect(runtime.snapshot.portfolio.availableCollateralUsd).toBe(80);
+    harness.tenant.recordPaperQuote({
+      trialId: "runtime",
+      marketId: "0x5678",
+      symbol: "SUI",
+      bidPrice: 10,
+      askPrice: 10.1,
+      sizeUsd: 10,
+      sides: "bid",
+    });
+    const [paperFill] = harness.tenant.matchPaperOrders({
+      trialId: "runtime",
+      marketId: "0x5678",
+      bestBid: 9.9,
+      bestAsk: 9.9,
+    });
+    harness.tenant.recordPaperHedge({
+      trialId: "runtime",
+      makerFill: paperFill!,
+    });
+    const performance = await runtime.performance();
+    expect(performance.paper).toMatchObject({
+      estimated: true,
+      makerFills: 1,
+      hedgeFills: 1,
+      notionalUsd: 20,
+      estimatedBuilderFeesUsd: 0.002,
+    });
+    expect(performance.fills).toHaveLength(2);
     await runtime.stop();
     harness.store.close();
   });

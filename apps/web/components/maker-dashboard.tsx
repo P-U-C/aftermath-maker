@@ -702,6 +702,8 @@ type Performance = {
     makerFills: number;
     hedgeFills: number;
     notionalUsd: number;
+    estimatedVenueFeesUsd: number;
+    estimatedBuilderFeesUsd: number;
   };
   volumeByMarket: Array<{
     marketId: string;
@@ -5461,6 +5463,7 @@ function DashboardBody() {
       realizedPnlUsd: fill.realizedPnlUsd,
       txDigest: fill.txDigest,
       estimated: fill.estimated,
+      estimatedFeesUsd: fill.protocolFeesUsd + fill.estimatedBuilderFeeUsd,
       role: fill.role,
       ...(fill.bundleName ? { bundleName: fill.bundleName } : {}),
     })) ?? [];
@@ -9684,8 +9687,13 @@ function DashboardBody() {
             <p className="performance-before-bundles" role="status">
               Paper estimates: {performance.paper.makerFills} Maker fills and{" "}
               {performance.paper.hedgeFills} hedges across{" "}
-              {money(performance.paper.notionalUsd)}. They are sampled
-              book-crossing estimates, not exchange executions.
+              {money(performance.paper.notionalUsd)}, with{" "}
+              {money(
+                performance.paper.estimatedVenueFeesUsd +
+                  performance.paper.estimatedBuilderFeesUsd,
+              )}{" "}
+              estimated fees. They are sampled book-crossing estimates, not
+              exchange executions.
             </p>
           )}
           <div className="performance-v3-stats">

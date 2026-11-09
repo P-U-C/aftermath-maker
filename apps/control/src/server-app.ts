@@ -141,6 +141,12 @@ export function aggregatePerformance(
       makerFills: sum((report) => report.paper.makerFills),
       hedgeFills: sum((report) => report.paper.hedgeFills),
       notionalUsd: sum((report) => report.paper.notionalUsd),
+      estimatedVenueFeesUsd: sum(
+        (report) => report.paper.estimatedVenueFeesUsd,
+      ),
+      estimatedBuilderFeesUsd: sum(
+        (report) => report.paper.estimatedBuilderFeesUsd,
+      ),
     },
     volumeByMarket: [...volume.values()].sort((left, right) =>
       left.symbol.localeCompare(right.symbol),
