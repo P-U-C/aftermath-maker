@@ -13,7 +13,12 @@ import type {
 import {
   makerConfigSchema,
   makerMarketSchema,
+  type AttributedFill,
+  type Coverage,
   type MakerConfig,
+  type InventoryMarketObservation,
+  type RewardAllocation,
+  type SourceCheckpoint,
   type Setup,
 } from "@puc/core";
 
@@ -29,6 +34,11 @@ export type RewardShareSettings = {
   extraCostBps: number;
   fixedCostUsd: number;
 };
+
+export type StoredAttributedFill = AttributedFill;
+export type StoredMarketObservation = InventoryMarketObservation;
+export type StoredRewardAllocation = RewardAllocation;
+export type StoredSourceCheckpoint = SourceCheckpoint;
 
 const BIGINT_TAG = "__maker_bigint__";
 
@@ -662,6 +672,91 @@ export class Store {
         PRIMARY KEY (owner_address, maker_account_id, fill_key)
       );
 
+      -- Inventory-recycling evidence is source-aware and independent from the
+      -- existing runtime tables. Values are decimal strings so ingest never
+      -- loses source precision to SQLite REAL or JavaScript number rounding.
+      CREATE TABLE IF NOT EXISTS tenant_source_checkpoints (
+        owner_address TEXT NOT NULL,
+        source TEXT NOT NULL,
+        network TEXT NOT NULL,
+        cursor TEXT,
+        coverage TEXT NOT NULL CHECK (coverage IN ('complete', 'partial', 'stale', 'unavailable')),
+        observed_at_ms INTEGER NOT NULL,
+        missing_reason TEXT,
+        PRIMARY KEY (owner_address, source, network)
+      );
+
+      CREATE TABLE IF NOT EXISTS tenant_market_observations (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        owner_address TEXT NOT NULL,
+        market_id TEXT NOT NULL,
+        observed_at_ms INTEGER NOT NULL,
+        source_timestamp_ms INTEGER,
+        index_usd TEXT NOT NULL,
+        best_bid_usd TEXT NOT NULL,
+        best_ask_usd TEXT NOT NULL,
+        depth_bid_50bps_usd TEXT NOT NULL,
+        depth_ask_50bps_usd TEXT NOT NULL,
+        volume_24h_usd TEXT NOT NULL,
+        open_interest_usd TEXT NOT NULL,
+        funding_rate_raw TEXT NOT NULL,
+        funding_period_ms INTEGER NOT NULL,
+        maker_fee_rate TEXT NOT NULL,
+        taker_fee_rate TEXT NOT NULL,
+        session_open INTEGER NOT NULL CHECK (session_open IN (0, 1)),
+        source TEXT NOT NULL,
+        network TEXT NOT NULL,
+        coverage TEXT NOT NULL CHECK (coverage IN ('complete', 'partial', 'stale', 'unavailable')),
+        raw TEXT NOT NULL,
+        UNIQUE (owner_address, source, network, market_id, observed_at_ms)
+      );
+
+      CREATE TABLE IF NOT EXISTS tenant_attributed_fills (
+        owner_address TEXT NOT NULL,
+        source_event_key TEXT NOT NULL,
+        run_id TEXT NOT NULL,
+        account_id TEXT NOT NULL,
+        market_id TEXT NOT NULL,
+        order_id TEXT,
+        tx_digest TEXT NOT NULL,
+        event_index INTEGER,
+        timestamp_ms INTEGER NOT NULL,
+        side TEXT NOT NULL CHECK (side IN ('buy', 'sell')),
+        liquidity TEXT NOT NULL CHECK (liquidity IN ('maker', 'taker')),
+        size_base TEXT NOT NULL,
+        price_usd TEXT NOT NULL,
+        notional_usd TEXT NOT NULL,
+        venue_fee_usd TEXT NOT NULL,
+        builder_fee_usd TEXT,
+        realized_pnl_usd TEXT NOT NULL,
+        counterparty_class TEXT NOT NULL CHECK (counterparty_class IN ('known_same_parent', 'verified_other_parent', 'unresolved')),
+        classification_evidence TEXT NOT NULL,
+        source TEXT NOT NULL,
+        network TEXT NOT NULL,
+        coverage TEXT NOT NULL CHECK (coverage IN ('complete', 'partial', 'stale', 'unavailable')),
+        raw TEXT NOT NULL,
+        PRIMARY KEY (owner_address, source_event_key)
+      );
+
+      CREATE TABLE IF NOT EXISTS tenant_reward_allocations (
+        owner_address TEXT NOT NULL,
+        epoch INTEGER NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('estimate', 'final_export', 'paid_verified')),
+        maker_reward_usd TEXT NOT NULL,
+        taker_reward_usd TEXT NOT NULL,
+        maker_volume_rebate_usd TEXT NOT NULL,
+        maker_fee_rebate_usd TEXT NOT NULL,
+        taker_fee_rebate_usd TEXT NOT NULL,
+        referral_usd TEXT NOT NULL,
+        integrator_usd TEXT NOT NULL,
+        source_fetched_at_ms INTEGER NOT NULL,
+        source TEXT NOT NULL,
+        network TEXT NOT NULL,
+        coverage TEXT NOT NULL CHECK (coverage IN ('complete', 'partial', 'stale', 'unavailable')),
+        raw TEXT NOT NULL,
+        PRIMARY KEY (owner_address, epoch, source, network)
+      );
+
       CREATE TABLE IF NOT EXISTS auth_challenges (
         id TEXT PRIMARY KEY,
         owner_address TEXT NOT NULL,
@@ -706,6 +801,14 @@ export class Store {
         ON tenant_hedge_executions(owner_address, occurred_at DESC);
       CREATE INDEX IF NOT EXISTS tenant_hedged_fills_owner_time
         ON tenant_hedged_fills(owner_address, processed_at DESC);
+      CREATE INDEX IF NOT EXISTS tenant_market_observations_owner_market_time
+        ON tenant_market_observations(owner_address, market_id, observed_at_ms DESC);
+      CREATE INDEX IF NOT EXISTS tenant_attributed_fills_owner_run_time
+        ON tenant_attributed_fills(owner_address, run_id, timestamp_ms DESC);
+      CREATE INDEX IF NOT EXISTS tenant_attributed_fills_owner_market_time
+        ON tenant_attributed_fills(owner_address, market_id, timestamp_ms DESC);
+      CREATE INDEX IF NOT EXISTS tenant_reward_allocations_owner_epoch
+        ON tenant_reward_allocations(owner_address, epoch DESC);
       CREATE INDEX IF NOT EXISTS auth_sessions_owner
         ON auth_sessions(owner_address);
       CREATE INDEX IF NOT EXISTS auth_sessions_expiry
@@ -2491,6 +2594,301 @@ export class TenantStore {
       this.pruneTable("tenant_hedge_executions", applied.hedgeExecutions);
       this.pruneTable("tenant_hedged_fills", applied.hedgedFills);
     })();
+  }
+
+  /** Source cursors record an incomplete range as incomplete, never as zero. */
+  upsertSourceCheckpoint(checkpoint: SourceCheckpoint): void {
+    this.db
+      .prepare(
+        `INSERT INTO tenant_source_checkpoints
+          (owner_address, source, network, cursor, coverage, observed_at_ms, missing_reason)
+         VALUES (?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(owner_address, source, network) DO UPDATE SET
+           cursor = excluded.cursor,
+           coverage = excluded.coverage,
+           observed_at_ms = excluded.observed_at_ms,
+           missing_reason = excluded.missing_reason`,
+      )
+      .run(
+        this.ownerAddress,
+        checkpoint.source,
+        checkpoint.network,
+        checkpoint.cursor,
+        checkpoint.coverage,
+        checkpoint.observedAtMs,
+        checkpoint.missingReason,
+      );
+  }
+
+  getSourceCheckpoint(
+    source: string,
+    network: string,
+  ): StoredSourceCheckpoint | null {
+    const row = this.db
+      .prepare(
+        `SELECT source, network, cursor, coverage, observed_at_ms, missing_reason
+         FROM tenant_source_checkpoints
+         WHERE owner_address = ? AND source = ? AND network = ?`,
+      )
+      .get(this.ownerAddress, source, network) as
+      | {
+          source: string;
+          network: string;
+          cursor: string | null;
+          coverage: Coverage;
+          observed_at_ms: number;
+          missing_reason: string | null;
+        }
+      | undefined;
+    return row
+      ? {
+          source: row.source,
+          network: row.network,
+          cursor: row.cursor,
+          coverage: row.coverage,
+          observedAtMs: row.observed_at_ms,
+          missingReason: row.missing_reason,
+        }
+      : null;
+  }
+
+  recordMarketObservation(observation: InventoryMarketObservation): void {
+    this.db
+      .prepare(
+        `INSERT INTO tenant_market_observations
+          (owner_address, market_id, observed_at_ms, source_timestamp_ms,
+           index_usd, best_bid_usd, best_ask_usd, depth_bid_50bps_usd,
+           depth_ask_50bps_usd, volume_24h_usd, open_interest_usd,
+           funding_rate_raw, funding_period_ms, maker_fee_rate, taker_fee_rate,
+           session_open, source, network, coverage, raw)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(owner_address, source, network, market_id, observed_at_ms)
+         DO UPDATE SET raw = excluded.raw, coverage = excluded.coverage`,
+      )
+      .run(
+        this.ownerAddress,
+        observation.marketId,
+        observation.observedAtMs,
+        observation.sourceTimestampMs,
+        observation.indexUsd,
+        observation.bestBidUsd,
+        observation.bestAskUsd,
+        observation.depthBid50BpsUsd,
+        observation.depthAsk50BpsUsd,
+        observation.volume24hUsd,
+        observation.openInterestUsd,
+        observation.fundingRateRaw,
+        observation.fundingPeriodMs,
+        observation.makerFeeRate,
+        observation.takerFeeRate,
+        observation.sessionOpen ? 1 : 0,
+        observation.source,
+        observation.network,
+        observation.coverage,
+        stringify(observation.raw),
+      );
+  }
+
+  recordAttributedFills(fills: readonly AttributedFill[]): void {
+    const insert = this.db.prepare(
+      `INSERT INTO tenant_attributed_fills
+        (owner_address, source_event_key, run_id, account_id, market_id, order_id,
+         tx_digest, event_index, timestamp_ms, side, liquidity, size_base,
+         price_usd, notional_usd, venue_fee_usd, builder_fee_usd,
+         realized_pnl_usd, counterparty_class, classification_evidence, source,
+         network, coverage, raw)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(owner_address, source_event_key) DO UPDATE SET
+         counterparty_class = excluded.counterparty_class,
+         classification_evidence = excluded.classification_evidence,
+         coverage = excluded.coverage,
+         raw = excluded.raw`,
+    );
+    this.db.transaction(() => {
+      for (const fill of fills) {
+        if (normalizeAddress(fill.ownerWallet) !== this.ownerAddress) {
+          throw new Error("Attributed fill owner does not match this tenant");
+        }
+        insert.run(
+          this.ownerAddress,
+          fill.sourceEventKey,
+          fill.runId,
+          fill.accountId,
+          fill.marketId,
+          fill.orderId,
+          fill.txDigest,
+          fill.eventIndex,
+          fill.timestampMs,
+          fill.side,
+          fill.liquidity,
+          fill.sizeBase,
+          fill.priceUsd,
+          fill.notionalUsd,
+          fill.venueFeeUsd,
+          fill.builderFeeUsd,
+          fill.realizedPnlUsd,
+          fill.counterpartyClass,
+          stringify(fill.classificationEvidence),
+          fill.source,
+          fill.network,
+          fill.coverage,
+          stringify(fill.raw),
+        );
+      }
+    })();
+  }
+
+  listAttributedFills(runId?: string): StoredAttributedFill[] {
+    const rows = this.db
+      .prepare(
+        `SELECT source_event_key, run_id, account_id, market_id, order_id,
+                tx_digest, event_index, timestamp_ms, side, liquidity,
+                size_base, price_usd, notional_usd, venue_fee_usd,
+                builder_fee_usd, realized_pnl_usd, counterparty_class,
+                classification_evidence, source, network, coverage, raw
+         FROM tenant_attributed_fills
+         WHERE owner_address = ? AND (? IS NULL OR run_id = ?)
+         ORDER BY timestamp_ms ASC, source_event_key ASC`,
+      )
+      .all(this.ownerAddress, runId ?? null, runId ?? null) as Array<{
+      source_event_key: string;
+      run_id: string;
+      account_id: string;
+      market_id: string;
+      order_id: string | null;
+      tx_digest: string;
+      event_index: number | null;
+      timestamp_ms: number;
+      side: "buy" | "sell";
+      liquidity: "maker" | "taker";
+      size_base: string;
+      price_usd: string;
+      notional_usd: string;
+      venue_fee_usd: string;
+      builder_fee_usd: string | null;
+      realized_pnl_usd: string;
+      counterparty_class: StoredAttributedFill["counterpartyClass"];
+      classification_evidence: string;
+      source: string;
+      network: string;
+      coverage: Coverage;
+      raw: string;
+    }>;
+    return rows.map((row) => ({
+      sourceEventKey: row.source_event_key,
+      runId: row.run_id,
+      accountId: row.account_id,
+      ownerWallet: this.ownerAddress,
+      marketId: row.market_id,
+      orderId: row.order_id,
+      txDigest: row.tx_digest,
+      eventIndex: row.event_index,
+      timestampMs: row.timestamp_ms,
+      side: row.side,
+      liquidity: row.liquidity,
+      sizeBase: row.size_base,
+      priceUsd: row.price_usd,
+      notionalUsd: row.notional_usd,
+      venueFeeUsd: row.venue_fee_usd,
+      builderFeeUsd: row.builder_fee_usd,
+      realizedPnlUsd: row.realized_pnl_usd,
+      counterpartyClass: row.counterparty_class,
+      classificationEvidence: parse<string[]>(row.classification_evidence),
+      source: row.source,
+      network: row.network,
+      coverage: row.coverage,
+      raw: parse(row.raw),
+    }));
+  }
+
+  upsertRewardAllocation(allocation: RewardAllocation): void {
+    if (normalizeAddress(allocation.ownerWallet) !== this.ownerAddress) {
+      throw new Error("Reward allocation owner does not match this tenant");
+    }
+    this.db
+      .prepare(
+        `INSERT INTO tenant_reward_allocations
+          (owner_address, epoch, status, maker_reward_usd, taker_reward_usd,
+           maker_volume_rebate_usd, maker_fee_rebate_usd, taker_fee_rebate_usd,
+           referral_usd, integrator_usd, source_fetched_at_ms, source, network,
+           coverage, raw)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(owner_address, epoch, source, network) DO UPDATE SET
+           status = excluded.status,
+           maker_reward_usd = excluded.maker_reward_usd,
+           taker_reward_usd = excluded.taker_reward_usd,
+           maker_volume_rebate_usd = excluded.maker_volume_rebate_usd,
+           maker_fee_rebate_usd = excluded.maker_fee_rebate_usd,
+           taker_fee_rebate_usd = excluded.taker_fee_rebate_usd,
+           referral_usd = excluded.referral_usd,
+           integrator_usd = excluded.integrator_usd,
+           source_fetched_at_ms = excluded.source_fetched_at_ms,
+           coverage = excluded.coverage,
+           raw = excluded.raw`,
+      )
+      .run(
+        this.ownerAddress,
+        allocation.epoch,
+        allocation.status,
+        allocation.makerRewardUsd,
+        allocation.takerRewardUsd,
+        allocation.makerVolumeRebateUsd,
+        allocation.makerFeeRebateUsd,
+        allocation.takerFeeRebateUsd,
+        allocation.referralUsd,
+        allocation.integratorUsd,
+        allocation.sourceFetchedAtMs,
+        allocation.source,
+        allocation.network,
+        allocation.coverage,
+        stringify(allocation.raw),
+      );
+  }
+
+  listRewardAllocations(): StoredRewardAllocation[] {
+    const rows = this.db
+      .prepare(
+        `SELECT epoch, status, maker_reward_usd, taker_reward_usd,
+                maker_volume_rebate_usd, maker_fee_rebate_usd,
+                taker_fee_rebate_usd, referral_usd, integrator_usd,
+                source_fetched_at_ms, source, network, coverage, raw
+         FROM tenant_reward_allocations
+         WHERE owner_address = ?
+         ORDER BY epoch DESC, source_fetched_at_ms DESC`,
+      )
+      .all(this.ownerAddress) as Array<{
+      epoch: number;
+      status: StoredRewardAllocation["status"];
+      maker_reward_usd: string;
+      taker_reward_usd: string;
+      maker_volume_rebate_usd: string;
+      maker_fee_rebate_usd: string;
+      taker_fee_rebate_usd: string;
+      referral_usd: string;
+      integrator_usd: string;
+      source_fetched_at_ms: number;
+      source: string;
+      network: string;
+      coverage: Coverage;
+      raw: string;
+    }>;
+    return rows.map((row) => ({
+      epoch: row.epoch,
+      ownerWallet: this.ownerAddress,
+      status: row.status,
+      makerRewardUsd: row.maker_reward_usd,
+      takerRewardUsd: row.taker_reward_usd,
+      makerVolumeRebateUsd: row.maker_volume_rebate_usd,
+      makerFeeRebateUsd: row.maker_fee_rebate_usd,
+      takerFeeRebateUsd: row.taker_fee_rebate_usd,
+      referralUsd: row.referral_usd,
+      integratorUsd: row.integrator_usd,
+      sourceFetchedAtMs: row.source_fetched_at_ms,
+      source: row.source,
+      network: row.network,
+      coverage: row.coverage,
+      raw: parse(row.raw),
+    }));
   }
 
   private getSetting<T>(key: string): T | null {

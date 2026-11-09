@@ -99,6 +99,127 @@ describe("persistent control store", () => {
     databaseStore.close();
   });
 
+  it("persists Inventory recycling evidence idempotently and keeps rewards wallet-level", () => {
+    const directory = join(
+      process.env.TMPDIR ?? "/tmp",
+      `aftermath-maker-${randomBytes(8).toString("hex")}`,
+    );
+    mkdirSync(directory, { recursive: true });
+    const databaseStore = new Store(join(directory, "maker.db"));
+    const owner = `0x${"c".repeat(64)}`;
+    const tenant = databaseStore.forTenant(owner);
+
+    tenant.upsertSourceCheckpoint({
+      source: "fixture-order-history",
+      network: "mainnet",
+      cursor: "page-2",
+      coverage: "partial",
+      observedAtMs: 1_700_000_000_000,
+      missingReason: "Older page unavailable",
+    });
+    tenant.recordMarketObservation({
+      marketId: "0x9001",
+      observedAtMs: 1_700_000_000_000,
+      sourceTimestampMs: 1_700_000_000_000,
+      indexUsd: "10.00000001",
+      bestBidUsd: "9.99",
+      bestAskUsd: "10.01",
+      depthBid50BpsUsd: "100.00",
+      depthAsk50BpsUsd: "100.00",
+      volume24hUsd: "10000.00",
+      openInterestUsd: "1000.00",
+      fundingRateRaw: "-0.0001",
+      fundingPeriodMs: 3_600_000,
+      makerFeeRate: "-0.00005",
+      takerFeeRate: "0.0002",
+      sessionOpen: true,
+      source: "fixture-market",
+      network: "mainnet",
+      coverage: "complete",
+      raw: { fixture: true },
+    });
+    const fill = {
+      sourceEventKey: "mainnet:0xdigest:7",
+      runId: "run-paper-1",
+      accountId: "1",
+      ownerWallet: owner,
+      marketId: "0x9001",
+      orderId: "maker-1",
+      txDigest: "0xdigest",
+      eventIndex: 7,
+      timestampMs: 1_700_000_000_000,
+      side: "buy" as const,
+      liquidity: "maker" as const,
+      sizeBase: "1.00000001",
+      priceUsd: "10.00000001",
+      notionalUsd: "10.0000001100000001",
+      venueFeeUsd: "-0.0005",
+      builderFeeUsd: "0.001",
+      realizedPnlUsd: "0",
+      counterpartyClass: "unresolved" as const,
+      classificationEvidence: ["counterparty account unavailable"],
+      source: "fixture-order-history",
+      network: "mainnet",
+      coverage: "partial" as const,
+      raw: { sequence: 1 },
+    };
+    tenant.recordAttributedFills([fill]);
+    tenant.recordAttributedFills([
+      {
+        ...fill,
+        counterpartyClass: "verified_other_parent",
+        classificationEvidence: ["both parent caps observed"],
+        raw: { sequence: 2 },
+      },
+    ]);
+    tenant.upsertRewardAllocation({
+      epoch: 5,
+      ownerWallet: owner,
+      status: "final_export",
+      makerRewardUsd: "0",
+      takerRewardUsd: "4289.25",
+      makerVolumeRebateUsd: "0",
+      makerFeeRebateUsd: "0",
+      takerFeeRebateUsd: "487.09",
+      referralUsd: "389.86",
+      integratorUsd: "0",
+      sourceFetchedAtMs: 1_700_000_010_000,
+      source: "fixture-reward-csv",
+      network: "mainnet",
+      coverage: "complete",
+      raw: { walletOnly: true },
+    });
+
+    expect(
+      tenant.getSourceCheckpoint("fixture-order-history", "mainnet"),
+    ).toMatchObject({
+      coverage: "partial",
+      missingReason: "Older page unavailable",
+    });
+    expect(tenant.listAttributedFills("run-paper-1")).toEqual([
+      expect.objectContaining({
+        notionalUsd: "10.0000001100000001",
+        counterpartyClass: "verified_other_parent",
+        classificationEvidence: ["both parent caps observed"],
+      }),
+    ]);
+    expect(tenant.listRewardAllocations()).toEqual([
+      expect.objectContaining({
+        epoch: 5,
+        ownerWallet: owner,
+        status: "final_export",
+        takerRewardUsd: "4289.25",
+      }),
+    ]);
+    const otherTenant = databaseStore.forTenant(`0x${"d".repeat(64)}`);
+    expect(
+      otherTenant.getSourceCheckpoint("fixture-order-history", "mainnet"),
+    ).toBeNull();
+    expect(otherTenant.listAttributedFills()).toEqual([]);
+    expect(otherTenant.listRewardAllocations()).toEqual([]);
+    databaseStore.close();
+  });
+
   it("fills a Paper quote only when the book trades through it, never on a touch", () => {
     const directory = join(
       process.env.TMPDIR ?? "/tmp",
