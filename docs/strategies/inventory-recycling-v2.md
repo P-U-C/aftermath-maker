@@ -45,7 +45,7 @@ strategy unless a separate verified allocation source exists.
 
 | Item                                                   | Status                                                                                              |
 | ------------------------------------------------------ | --------------------------------------------------------------------------------------------------- |
-| Durable source-aware observation/fill/reward contracts | In implementation                                                                                   |
+| Durable source-aware observation/fill/reward contracts | Implemented; effects and reconciliation records are append-only and tenant-scoped                   |
 | Actual epoch replay                                    | Blocked: sanitized raw Epoch 4/5 source fixtures are not in this repository or the provided handoff |
 | Independent-fill sample and markouts                   | Not yet collected                                                                                   |
 | Wallet-paid gas reconciliation                         | Not yet collected                                                                                   |
@@ -61,3 +61,13 @@ strategy unless a separate verified allocation source exists.
 4. Present complete coverage, no same-parent matches, gas, markouts and a
    zero-reward result for human review. Live requires its independent existing
    go-live process and explicit approval.
+
+## Delivery checklist
+
+| Spec acceptance                                         | Evidence or limitation                                                                                         |
+| ------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
+| Source-aware, idempotent accounting records             | `persistent control store > persists Inventory recycling evidence idempotently and keeps rewards wallet-level` |
+| Fail closed on incomplete fills, ownership or positions | `Inventory recycling accounting contracts > fails closed until fills, ownership and positions reconcile`       |
+| Trading-only P&L; rewards/transfers excluded            | `Inventory recycling accounting contracts > keeps rewards and transfers outside reconciled trading P&L`        |
+| Epoch 4/5 replay totals                                 | Blocked pending sanitized source fixtures; the specification alone is not a replay fixture                     |
+| Runtime risk admission and UI ranking                   | Pending the read-only source adapters and a complete reconciliation feed                                       |

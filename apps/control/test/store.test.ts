@@ -141,6 +141,7 @@ describe("persistent control store", () => {
     const fill = {
       sourceEventKey: "mainnet:0xdigest:7",
       runId: "run-paper-1",
+      configVersion: 1,
       accountId: "1",
       ownerWallet: owner,
       marketId: "0x9001",
@@ -211,12 +212,48 @@ describe("persistent control store", () => {
         takerRewardUsd: "4289.25",
       }),
     ]);
+    tenant.recordInventoryLedgerEffects([
+      {
+        sourceEventKey: "mainnet:0xdigest:funding:1",
+        runId: "run-paper-1",
+        configVersion: 1,
+        accountId: "1",
+        marketId: "0x9001",
+        timestampMs: 1_700_000_020_000,
+        kind: "funding",
+        fundingUsd: "0.01",
+        gasUsedMist: null,
+        gasUsd: null,
+        externalTransferUsd: null,
+        source: "fixture-funding",
+        network: "mainnet",
+        coverage: "complete",
+        raw: { sequence: 3 },
+      },
+    ]);
+    tenant.recordInventoryReconciliation({
+      runId: "run-paper-1",
+      observedAtMs: 1_700_000_030_000,
+      state: "unresolved",
+      reasons: ["unresolved_counterparty"],
+      coverage: "partial",
+      raw: { position: "unavailable" },
+    });
+    expect(tenant.listInventoryLedgerEffects("run-paper-1")).toEqual([
+      expect.objectContaining({ fundingUsd: "0.01", kind: "funding" }),
+    ]);
+    expect(tenant.latestInventoryReconciliation("run-paper-1")).toMatchObject({
+      state: "unresolved",
+      reasons: ["unresolved_counterparty"],
+    });
     const otherTenant = databaseStore.forTenant(`0x${"d".repeat(64)}`);
     expect(
       otherTenant.getSourceCheckpoint("fixture-order-history", "mainnet"),
     ).toBeNull();
     expect(otherTenant.listAttributedFills()).toEqual([]);
     expect(otherTenant.listRewardAllocations()).toEqual([]);
+    expect(otherTenant.listInventoryLedgerEffects()).toEqual([]);
+    expect(otherTenant.latestInventoryReconciliation()).toBeNull();
     databaseStore.close();
   });
 

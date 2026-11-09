@@ -15,6 +15,7 @@ import {
   makerMarketSchema,
   type AttributedFill,
   type Coverage,
+  type InventoryLedgerEffect,
   type MakerConfig,
   type InventoryMarketObservation,
   type RewardAllocation,
@@ -36,6 +37,7 @@ export type RewardShareSettings = {
 };
 
 export type StoredAttributedFill = AttributedFill;
+export type StoredInventoryLedgerEffect = InventoryLedgerEffect;
 export type StoredMarketObservation = InventoryMarketObservation;
 export type StoredRewardAllocation = RewardAllocation;
 export type StoredSourceCheckpoint = SourceCheckpoint;
@@ -715,6 +717,7 @@ export class Store {
         owner_address TEXT NOT NULL,
         source_event_key TEXT NOT NULL,
         run_id TEXT NOT NULL,
+        config_version INTEGER,
         account_id TEXT NOT NULL,
         market_id TEXT NOT NULL,
         order_id TEXT,
@@ -736,6 +739,39 @@ export class Store {
         coverage TEXT NOT NULL CHECK (coverage IN ('complete', 'partial', 'stale', 'unavailable')),
         raw TEXT NOT NULL,
         PRIMARY KEY (owner_address, source_event_key)
+      );
+
+      -- Funding, gas and close effects have their own source key. Transfers
+      -- may be retained for reconciliation, but never enter strategy P&L.
+      CREATE TABLE IF NOT EXISTS tenant_inventory_ledger_effects (
+        owner_address TEXT NOT NULL,
+        source_event_key TEXT NOT NULL,
+        run_id TEXT,
+        config_version INTEGER,
+        account_id TEXT NOT NULL,
+        market_id TEXT,
+        timestamp_ms INTEGER NOT NULL,
+        kind TEXT NOT NULL CHECK (kind IN ('funding', 'gas', 'hedge', 'unwind', 'transfer')),
+        funding_usd TEXT,
+        gas_used_mist TEXT,
+        gas_usd TEXT,
+        external_transfer_usd TEXT,
+        source TEXT NOT NULL,
+        network TEXT NOT NULL,
+        coverage TEXT NOT NULL CHECK (coverage IN ('complete', 'partial', 'stale', 'unavailable')),
+        raw TEXT NOT NULL,
+        PRIMARY KEY (owner_address, source_event_key)
+      );
+
+      CREATE TABLE IF NOT EXISTS tenant_inventory_reconciliations (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        owner_address TEXT NOT NULL,
+        run_id TEXT,
+        observed_at_ms INTEGER NOT NULL,
+        state TEXT NOT NULL CHECK (state IN ('reconciled', 'unresolved')),
+        reasons TEXT NOT NULL,
+        coverage TEXT NOT NULL CHECK (coverage IN ('complete', 'partial', 'stale', 'unavailable')),
+        raw TEXT NOT NULL
       );
 
       CREATE TABLE IF NOT EXISTS tenant_reward_allocations (
@@ -807,6 +843,10 @@ export class Store {
         ON tenant_attributed_fills(owner_address, run_id, timestamp_ms DESC);
       CREATE INDEX IF NOT EXISTS tenant_attributed_fills_owner_market_time
         ON tenant_attributed_fills(owner_address, market_id, timestamp_ms DESC);
+      CREATE INDEX IF NOT EXISTS tenant_inventory_ledger_effects_owner_run_time
+        ON tenant_inventory_ledger_effects(owner_address, run_id, timestamp_ms DESC);
+      CREATE INDEX IF NOT EXISTS tenant_inventory_reconciliations_owner_run_time
+        ON tenant_inventory_reconciliations(owner_address, run_id, observed_at_ms DESC);
       CREATE INDEX IF NOT EXISTS tenant_reward_allocations_owner_epoch
         ON tenant_reward_allocations(owner_address, epoch DESC);
       CREATE INDEX IF NOT EXISTS auth_sessions_owner
@@ -876,6 +916,17 @@ export class Store {
     if (!makerOrderColumns.some((column) => column.name === "account_id")) {
       this.db.exec(
         "ALTER TABLE tenant_maker_orders ADD COLUMN account_id TEXT NOT NULL DEFAULT ''",
+      );
+    }
+
+    const attributedFillColumns = this.db
+      .prepare("PRAGMA table_info(tenant_attributed_fills)")
+      .all() as Array<{ name: string }>;
+    if (
+      !attributedFillColumns.some((column) => column.name === "config_version")
+    ) {
+      this.db.exec(
+        "ALTER TABLE tenant_attributed_fills ADD COLUMN config_version INTEGER",
       );
     }
 
@@ -2692,12 +2743,12 @@ export class TenantStore {
   recordAttributedFills(fills: readonly AttributedFill[]): void {
     const insert = this.db.prepare(
       `INSERT INTO tenant_attributed_fills
-        (owner_address, source_event_key, run_id, account_id, market_id, order_id,
+        (owner_address, source_event_key, run_id, config_version, account_id, market_id, order_id,
          tx_digest, event_index, timestamp_ms, side, liquidity, size_base,
          price_usd, notional_usd, venue_fee_usd, builder_fee_usd,
          realized_pnl_usd, counterparty_class, classification_evidence, source,
          network, coverage, raw)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(owner_address, source_event_key) DO UPDATE SET
          counterparty_class = excluded.counterparty_class,
          classification_evidence = excluded.classification_evidence,
@@ -2713,6 +2764,7 @@ export class TenantStore {
           this.ownerAddress,
           fill.sourceEventKey,
           fill.runId,
+          fill.configVersion,
           fill.accountId,
           fill.marketId,
           fill.orderId,
@@ -2741,7 +2793,7 @@ export class TenantStore {
   listAttributedFills(runId?: string): StoredAttributedFill[] {
     const rows = this.db
       .prepare(
-        `SELECT source_event_key, run_id, account_id, market_id, order_id,
+        `SELECT source_event_key, run_id, config_version, account_id, market_id, order_id,
                 tx_digest, event_index, timestamp_ms, side, liquidity,
                 size_base, price_usd, notional_usd, venue_fee_usd,
                 builder_fee_usd, realized_pnl_usd, counterparty_class,
@@ -2753,6 +2805,7 @@ export class TenantStore {
       .all(this.ownerAddress, runId ?? null, runId ?? null) as Array<{
       source_event_key: string;
       run_id: string;
+      config_version: number | null;
       account_id: string;
       market_id: string;
       order_id: string | null;
@@ -2777,6 +2830,7 @@ export class TenantStore {
     return rows.map((row) => ({
       sourceEventKey: row.source_event_key,
       runId: row.run_id,
+      configVersion: row.config_version,
       accountId: row.account_id,
       ownerWallet: this.ownerAddress,
       marketId: row.market_id,
@@ -2799,6 +2853,151 @@ export class TenantStore {
       coverage: row.coverage,
       raw: parse(row.raw),
     }));
+  }
+
+  recordInventoryLedgerEffects(
+    effects: readonly InventoryLedgerEffect[],
+  ): void {
+    const insert = this.db.prepare(
+      `INSERT INTO tenant_inventory_ledger_effects
+        (owner_address, source_event_key, run_id, config_version, account_id,
+         market_id, timestamp_ms, kind, funding_usd, gas_used_mist, gas_usd,
+         external_transfer_usd, source, network, coverage, raw)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(owner_address, source_event_key) DO UPDATE SET
+         coverage = excluded.coverage,
+         raw = excluded.raw`,
+    );
+    this.db.transaction(() => {
+      for (const effect of effects) {
+        insert.run(
+          this.ownerAddress,
+          effect.sourceEventKey,
+          effect.runId,
+          effect.configVersion,
+          effect.accountId,
+          effect.marketId,
+          effect.timestampMs,
+          effect.kind,
+          effect.fundingUsd,
+          effect.gasUsedMist,
+          effect.gasUsd,
+          effect.externalTransferUsd,
+          effect.source,
+          effect.network,
+          effect.coverage,
+          stringify(effect.raw),
+        );
+      }
+    })();
+  }
+
+  listInventoryLedgerEffects(runId?: string): StoredInventoryLedgerEffect[] {
+    const rows = this.db
+      .prepare(
+        `SELECT source_event_key, run_id, config_version, account_id, market_id,
+                timestamp_ms, kind, funding_usd, gas_used_mist, gas_usd,
+                external_transfer_usd, source, network, coverage, raw
+         FROM tenant_inventory_ledger_effects
+         WHERE owner_address = ? AND (? IS NULL OR run_id = ?)
+         ORDER BY timestamp_ms ASC, source_event_key ASC`,
+      )
+      .all(this.ownerAddress, runId ?? null, runId ?? null) as Array<{
+      source_event_key: string;
+      run_id: string | null;
+      config_version: number | null;
+      account_id: string;
+      market_id: string | null;
+      timestamp_ms: number;
+      kind: StoredInventoryLedgerEffect["kind"];
+      funding_usd: string | null;
+      gas_used_mist: string | null;
+      gas_usd: string | null;
+      external_transfer_usd: string | null;
+      source: string;
+      network: string;
+      coverage: Coverage;
+      raw: string;
+    }>;
+    return rows.map((row) => ({
+      sourceEventKey: row.source_event_key,
+      runId: row.run_id,
+      configVersion: row.config_version,
+      accountId: row.account_id,
+      marketId: row.market_id,
+      timestampMs: row.timestamp_ms,
+      kind: row.kind,
+      fundingUsd: row.funding_usd,
+      gasUsedMist: row.gas_used_mist,
+      gasUsd: row.gas_usd,
+      externalTransferUsd: row.external_transfer_usd,
+      source: row.source,
+      network: row.network,
+      coverage: row.coverage,
+      raw: parse(row.raw),
+    }));
+  }
+
+  recordInventoryReconciliation(input: {
+    runId: string | null;
+    observedAtMs: number;
+    state: "reconciled" | "unresolved";
+    reasons: readonly string[];
+    coverage: Coverage;
+    raw: unknown;
+  }): void {
+    this.db
+      .prepare(
+        `INSERT INTO tenant_inventory_reconciliations
+          (owner_address, run_id, observed_at_ms, state, reasons, coverage, raw)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        this.ownerAddress,
+        input.runId,
+        input.observedAtMs,
+        input.state,
+        stringify(input.reasons),
+        input.coverage,
+        stringify(input.raw),
+      );
+  }
+
+  latestInventoryReconciliation(runId?: string): {
+    runId: string | null;
+    observedAtMs: number;
+    state: "reconciled" | "unresolved";
+    reasons: string[];
+    coverage: Coverage;
+    raw: unknown;
+  } | null {
+    const row = this.db
+      .prepare(
+        `SELECT run_id, observed_at_ms, state, reasons, coverage, raw
+         FROM tenant_inventory_reconciliations
+         WHERE owner_address = ? AND (? IS NULL OR run_id = ?)
+         ORDER BY observed_at_ms DESC, id DESC LIMIT 1`,
+      )
+      .get(this.ownerAddress, runId ?? null, runId ?? null) as
+      | {
+          run_id: string | null;
+          observed_at_ms: number;
+          state: "reconciled" | "unresolved";
+          reasons: string;
+          coverage: Coverage;
+          raw: string;
+        }
+      | undefined;
+    return row
+      ? {
+          runId: row.run_id,
+          observedAtMs: row.observed_at_ms,
+          state: row.state,
+          reasons: parse<string[]>(row.reasons),
+          coverage: row.coverage,
+          raw: parse(row.raw),
+        }
+      : null;
   }
 
   upsertRewardAllocation(allocation: RewardAllocation): void {
