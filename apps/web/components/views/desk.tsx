@@ -55,6 +55,7 @@ export type DeskFill = {
   realizedPnlUsd: number;
   txDigest: string;
   estimated: boolean;
+  estimatedFeesUsd?: number;
   role: "Maker fill" | "Hedge" | "Close" | "Unwind";
   bundleName?: string;
 };
@@ -609,6 +610,9 @@ export function DeskView({
                         {fill.bundleName ? `${fill.bundleName} · ` : ""}
                         {fill.role}
                         {fill.estimated ? " · Estimated" : ""}
+                        {fill.estimated
+                          ? ` · Fee est. ${formatMoney(fill.estimatedFeesUsd ?? 0)}`
+                          : ""}
                       </small>
                       <span className={`desk-fill-side is-${fill.side}`}>
                         {fill.estimated ? "Estimated " : ""}
@@ -621,7 +625,7 @@ export function DeskView({
                 ))
               ) : (
                 <div className="desk-empty">
-                  Confirmed fills will appear here.
+                  Paper estimates and confirmed fills will appear here.
                 </div>
               )}
             </div>

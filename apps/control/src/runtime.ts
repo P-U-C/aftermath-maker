@@ -171,6 +171,8 @@ export type PerformanceSnapshot = {
     makerFills: number;
     hedgeFills: number;
     notionalUsd: number;
+    estimatedVenueFeesUsd: number;
+    estimatedBuilderFeesUsd: number;
   };
   volumeByMarket: Array<{
     marketId: string;
@@ -1395,6 +1397,60 @@ export class MakerRuntime {
       ? this.store.getAccountSetup(setup.accountId)
       : null;
     const agent = this.store.getAgent();
+    const paperRows =
+      config?.mode === "paper"
+        ? this.store
+            .listPaperFills({ trialId: "runtime", limit: 2_000 })
+            .filter(
+              (fill) =>
+                sinceMs === undefined || Date.parse(fill.occurredAt) >= sinceMs,
+            )
+        : [];
+    const builderFeeRate = this.options.builderCode()?.integratorFee ?? 0;
+    const paperFills = paperRows.map<MakerFill>((fill) => {
+      const closing =
+        fill.orderKey.startsWith("unwind:") ||
+        fill.orderKey.startsWith("close:");
+      const role = closing
+        ? fill.orderKey.startsWith("unwind:")
+          ? "Unwind"
+          : "Close"
+        : fill.role === "hedge"
+          ? "Hedge"
+          : "Maker fill";
+      const market = this.markets.find((item) => item.id === fill.marketId);
+      const feeRate =
+        role === "Maker fill"
+          ? (market?.makerFee ?? 0)
+          : (market?.takerFee ?? 0);
+      return {
+        occurredAt: fill.occurredAt,
+        txDigest: `paper:${fill.orderKey}`,
+        marketId: fill.marketId,
+        symbol: fill.symbol,
+        side: fill.side,
+        price: fill.price,
+        size: fill.sizeUsd / fill.price,
+        notionalUsd: fill.sizeUsd,
+        realizedPnlUsd: 0,
+        protocolFeesUsd: fill.sizeUsd * feeRate,
+        estimatedBuilderFeeUsd: closing ? 0 : fill.sizeUsd * builderFeeRate,
+        orderId: fill.orderKey,
+        estimated: true,
+        role,
+      };
+    });
+    const paperMakerFills = paperFills.filter(
+      (fill) => fill.role === "Maker fill",
+    );
+    const paperVenueFeesUsd = paperFills.reduce(
+      (total, fill) => total + fill.protocolFeesUsd,
+      0,
+    );
+    const paperBuilderFeesUsd = paperFills.reduce(
+      (total, fill) => total + fill.estimatedBuilderFeeUsd,
+      0,
+    );
     if (!setup || !accountSetup?.agentCapId || !agent) {
       return {
         asOf: new Date().toISOString(),
@@ -1424,15 +1480,22 @@ export class MakerRuntime {
         },
         combinedNetAfterKnownCostsUsd: 0,
         paper: {
-          estimated: false,
-          makerFills: 0,
-          hedgeFills: 0,
-          notionalUsd: 0,
+          estimated: paperRows.length > 0,
+          makerFills: paperMakerFills.length,
+          hedgeFills: paperRows.filter((fill) => fill.role === "hedge").length,
+          notionalUsd: paperRows.reduce(
+            (total, fill) => total + fill.sizeUsd,
+            0,
+          ),
+          estimatedVenueFeesUsd: paperVenueFeesUsd,
+          estimatedBuilderFeesUsd: paperBuilderFeesUsd,
         },
         volumeByMarket: [],
         marketVolumeLabel: null,
-        fills: [],
-        note: "Authorize an agent to begin account and fill reconciliation.",
+        fills: paperFills,
+        note: paperRows.length
+          ? "Paper fills are book-crossing estimates, including estimated venue and builder fees. Authorize an agent to add confirmed Live fill reconciliation."
+          : "Authorize an agent to begin account and fill reconciliation.",
       };
     }
 
@@ -1483,7 +1546,6 @@ export class MakerRuntime {
       current.feesUsd += order.feesUsd;
       volumeByMarket.set(order.marketId, current);
     }
-    const builderFeeRate = this.options.builderCode()?.integratorFee ?? 0;
     const confirmedFills = history.orders
       .filter(
         (order) =>
@@ -1510,40 +1572,6 @@ export class MakerRuntime {
       })
       .sort((left, right) => right.occurredAt.localeCompare(left.occurredAt));
 
-    const paperRows =
-      config?.mode === "paper"
-        ? this.store
-            .listPaperFills({ trialId: "runtime", limit: 2_000 })
-            .filter(
-              (fill) =>
-                sinceMs === undefined || Date.parse(fill.occurredAt) >= sinceMs,
-            )
-        : [];
-    const paperFills = paperRows.map<MakerFill>((fill) => ({
-      occurredAt: fill.occurredAt,
-      txDigest: `paper:${fill.orderKey}`,
-      marketId: fill.marketId,
-      symbol: fill.symbol,
-      side: fill.side,
-      price: fill.price,
-      size: fill.sizeUsd / fill.price,
-      notionalUsd: fill.sizeUsd,
-      realizedPnlUsd: 0,
-      protocolFeesUsd: 0,
-      estimatedBuilderFeeUsd: 0,
-      orderId: fill.orderKey,
-      estimated: true,
-      role: fill.orderKey.startsWith("unwind:")
-        ? "Unwind"
-        : fill.orderKey.startsWith("close:")
-          ? "Close"
-          : fill.role === "hedge"
-            ? "Hedge"
-            : "Maker fill",
-    }));
-    const paperMakerFills = paperFills.filter(
-      (fill) => fill.role === "Maker fill",
-    );
     const fills = [...confirmedFills, ...paperFills].sort((left, right) =>
       right.occurredAt.localeCompare(left.occurredAt),
     );
@@ -1703,6 +1731,8 @@ export class MakerRuntime {
         makerFills: paperMakerFills.length,
         hedgeFills: paperRows.filter((fill) => fill.role === "hedge").length,
         notionalUsd: paperRows.reduce((total, fill) => total + fill.sizeUsd, 0),
+        estimatedVenueFeesUsd: paperVenueFeesUsd,
+        estimatedBuilderFeesUsd: paperBuilderFeesUsd,
       },
       volumeByMarket: [...volumeByMarket.values()]
         .map((row) => ({

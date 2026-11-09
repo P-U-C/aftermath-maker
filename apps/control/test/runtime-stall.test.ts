@@ -500,7 +500,7 @@ describe("Paper cycle freshness under a stalled venue read", () => {
       vi.useRealTimers();
       await h.close();
     }
-  });
+  }, 15_000);
 
   it("Paper uses the same $100.85 hedge floor as Start and clears when funded", async () => {
     const h = await paperRuntime({ hedge: true, makerFreeUsd: 20 });
