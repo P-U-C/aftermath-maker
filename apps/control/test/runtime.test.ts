@@ -929,6 +929,45 @@ describe("runtime execution boundaries", () => {
     migratedStore.close();
   });
 
+  it("fails closed on an attached Inventory recycling strategy without reconciliation", async () => {
+    const harness = createHarness();
+    harness.tenant.setConfig(
+      makerConfigSchema.parse({
+        ...harness.tenant.getConfig()!,
+        mode: "paper",
+      }),
+    );
+    const core = harness.tenant
+      .listBundles()
+      .find((bundle) => bundle.name === "Core")!;
+    const strategy = harness.tenant.getStrategy(core.strategyId!)!;
+    harness.tenant.updateStrategy({
+      strategyId: strategy.id,
+      name: "Inventory recycling",
+      config: strategy.config,
+      marketRule: strategy.marketRule,
+      markets: strategy.markets,
+      expectedVersion: strategy.version,
+    });
+    const runtime = new MakerRuntime(
+      harness.store.forBundle(harness.tenant.ownerAddress, core.id),
+      harness.gateway as never,
+      harness.runtimeOptions,
+    );
+
+    runtime.start();
+    await runtime.cycle({ executeLive: true });
+
+    expect(
+      runtime.snapshot.safety.find(
+        (check) => check.code === "inventory-reconciliation",
+      ),
+    ).toMatchObject({ ok: false, scope: "bundle" });
+    expect(harness.executionSequence).not.toContain("paper-dry-run");
+    await runtime.stop();
+    harness.store.close();
+  });
+
   it("submits byte-identical Core quote intents and gateway payloads", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-10-28T20:00:00.000Z"));

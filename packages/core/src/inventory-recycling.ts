@@ -241,6 +241,43 @@ export type InventoryRecyclingScore = {
   rewardSignal: DecimalString | null;
 };
 
+/**
+ * The Paper model accepts a book observation only after a quote was resting.
+ * A touch is deliberately not a fill: the queue in front of Maker's quote is
+ * unknown.  A strict trade-through is conservative evidence that the level
+ * was consumed.  This model remains entirely simulated and has no reward
+ * field by design.
+ */
+export type InventoryPaperQuote = {
+  side: "bid" | "ask";
+  priceUsd: DecimalString;
+  restingAtMs: number;
+};
+
+export type InventoryPaperBookObservation = {
+  bestBidUsd: DecimalString | null;
+  bestAskUsd: DecimalString | null;
+  observedAtMs: number;
+  coverage: Coverage;
+};
+
+export type InventoryPaperFillDecision = {
+  estimatedFill: boolean;
+  reason:
+    | "trade_through"
+    | "quote_not_resting"
+    | "book_unavailable"
+    | "book_not_proven";
+};
+
+/** A source-aware Markout record. Positive USD is favorable to the maker. */
+export type InventoryPaperMarkout = {
+  horizonMs: number;
+  observedAtMs: number;
+  markoutUsd: DecimalString | null;
+  coverage: Coverage;
+};
+
 const DECIMAL_SCALE = 100_000_000n;
 
 function decimalToUnits(value: DecimalString): bigint {
@@ -273,6 +310,115 @@ function multiplyUnits(left: bigint, right: bigint): bigint {
 
 function absoluteUnits(value: bigint): bigint {
   return value < 0n ? -value : value;
+}
+
+/**
+ * Decide a simulated fill from a later observed top of book. The observation
+ * must be complete and strictly cross the resting quote; equality is merely a
+ * touch and cannot establish queue consumption.
+ */
+export function decideInventoryPaperFill(inputs: {
+  quote: InventoryPaperQuote;
+  observation: InventoryPaperBookObservation;
+}): InventoryPaperFillDecision {
+  // SQLite/JS timestamps are millisecond-resolution. An observation invoked
+  // after a quote can legitimately share its millisecond, so only a strictly
+  // earlier observation is disqualified here.
+  if (inputs.observation.observedAtMs < inputs.quote.restingAtMs) {
+    return { estimatedFill: false, reason: "quote_not_resting" };
+  }
+  if (
+    inputs.observation.coverage !== "complete" ||
+    inputs.observation.bestBidUsd === null ||
+    inputs.observation.bestAskUsd === null
+  ) {
+    return {
+      estimatedFill: false,
+      reason:
+        inputs.observation.bestBidUsd === null ||
+        inputs.observation.bestAskUsd === null
+          ? "book_unavailable"
+          : "book_not_proven",
+    };
+  }
+  const quotePrice = decimalToUnits(inputs.quote.priceUsd);
+  const crosses =
+    inputs.quote.side === "bid"
+      ? decimalToUnits(inputs.observation.bestAskUsd) < quotePrice
+      : decimalToUnits(inputs.observation.bestBidUsd) > quotePrice;
+  return crosses
+    ? { estimatedFill: true, reason: "trade_through" }
+    : { estimatedFill: false, reason: "book_not_proven" };
+}
+
+/**
+ * Computes a side-aware Paper markout from a later index/book reference. A
+ * missing or incomplete observation stays visible as null rather than a zero
+ * markout. `baseAssetAmount` is positive for the simulated maker fill's
+ * absolute base size; direction is taken from the quote side.
+ */
+export function inventoryPaperMarkout(inputs: {
+  quote: Pick<InventoryPaperQuote, "side" | "priceUsd">;
+  baseAssetAmount: DecimalString;
+  fillAtMs: number;
+  horizonMs: number;
+  referenceUsd: DecimalString | null;
+  referenceObservedAtMs: number | null;
+  coverage: Coverage;
+}): InventoryPaperMarkout {
+  if (!Number.isInteger(inputs.horizonMs) || inputs.horizonMs <= 0) {
+    throw new Error("Markout horizon must be a positive integer");
+  }
+  const expectedAtMs = inputs.fillAtMs + inputs.horizonMs;
+  const usable =
+    inputs.coverage === "complete" &&
+    inputs.referenceUsd !== null &&
+    inputs.referenceObservedAtMs !== null &&
+    inputs.referenceObservedAtMs >= expectedAtMs;
+  if (!usable) {
+    return {
+      horizonMs: inputs.horizonMs,
+      observedAtMs: inputs.referenceObservedAtMs ?? expectedAtMs,
+      markoutUsd: null,
+      coverage: inputs.coverage,
+    };
+  }
+  const entry = decimalToUnits(inputs.quote.priceUsd);
+  const reference = decimalToUnits(inputs.referenceUsd!);
+  const base = decimalToUnits(inputs.baseAssetAmount);
+  if (base < 0n) throw new Error("Paper base amount must not be negative");
+  const direction = inputs.quote.side === "bid" ? 1n : -1n;
+  return {
+    horizonMs: inputs.horizonMs,
+    observedAtMs: inputs.referenceObservedAtMs!,
+    markoutUsd: unitsToDecimal(
+      (direction * base * (reference - entry)) / DECIMAL_SCALE,
+    ),
+    coverage: "complete",
+  };
+}
+
+/** Splits timestamped observations before scoring so an evaluation never
+ * silently uses a fill/markout from its own future. */
+export function splitInventoryRecyclingHistory<
+  T extends { observedAtMs: number },
+>(
+  observations: readonly T[],
+  asOfMs: number,
+): { training: T[]; evaluation: T[] } {
+  if (!Number.isInteger(asOfMs) || asOfMs < 0) {
+    throw new Error("History split timestamp must be a non-negative integer");
+  }
+  const training: T[] = [];
+  const evaluation: T[] = [];
+  for (const observation of observations) {
+    if (!Number.isInteger(observation.observedAtMs)) {
+      throw new Error("Observation timestamp must be an integer");
+    }
+    if (observation.observedAtMs < asOfMs) training.push(observation);
+    else evaluation.push(observation);
+  }
+  return { training, evaluation };
 }
 
 /**

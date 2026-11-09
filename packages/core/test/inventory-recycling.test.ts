@@ -1,10 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
   classifyCounterparty,
+  decideInventoryPaperFill,
+  inventoryPaperMarkout,
   isDecimalString,
   rankInventoryRecyclingMarkets,
   reconcileInventoryRecycling,
   scoreInventoryRecyclingMarket,
+  splitInventoryRecyclingHistory,
   sourceEventKey,
   summarizeInventoryTradingLedger,
 } from "../src/inventory-recycling.js";
@@ -282,6 +285,77 @@ describe("Inventory recycling accounting contracts", () => {
       gasUsd: "0.03",
       tradingNetUsd: "0.09",
       gaps: [],
+    });
+  });
+
+  it("estimates Paper fills only after a complete strict trade-through", () => {
+    const quote = { side: "bid" as const, priceUsd: "10", restingAtMs: 100 };
+    expect(
+      decideInventoryPaperFill({
+        quote,
+        observation: {
+          bestBidUsd: "9.99",
+          bestAskUsd: "10",
+          observedAtMs: 101,
+          coverage: "complete",
+        },
+      }),
+    ).toEqual({ estimatedFill: false, reason: "book_not_proven" });
+    expect(
+      decideInventoryPaperFill({
+        quote,
+        observation: {
+          bestBidUsd: "9.98",
+          bestAskUsd: "9.99",
+          observedAtMs: 101,
+          coverage: "complete",
+        },
+      }),
+    ).toEqual({ estimatedFill: true, reason: "trade_through" });
+    expect(
+      decideInventoryPaperFill({
+        quote,
+        observation: {
+          bestBidUsd: "9.98",
+          bestAskUsd: "9.99",
+          observedAtMs: 101,
+          coverage: "partial",
+        },
+      }),
+    ).toEqual({ estimatedFill: false, reason: "book_not_proven" });
+  });
+
+  it("calculates Paper markouts after the horizon and avoids lookahead", () => {
+    expect(
+      inventoryPaperMarkout({
+        quote: { side: "ask", priceUsd: "10" },
+        baseAssetAmount: "2",
+        fillAtMs: 1_000,
+        horizonMs: 60_000,
+        referenceUsd: "9.5",
+        referenceObservedAtMs: 61_000,
+        coverage: "complete",
+      }),
+    ).toMatchObject({ markoutUsd: "1", coverage: "complete" });
+    expect(
+      inventoryPaperMarkout({
+        quote: { side: "bid", priceUsd: "10" },
+        baseAssetAmount: "2",
+        fillAtMs: 1_000,
+        horizonMs: 60_000,
+        referenceUsd: "11",
+        referenceObservedAtMs: 60_999,
+        coverage: "complete",
+      }),
+    ).toMatchObject({ markoutUsd: null });
+    expect(
+      splitInventoryRecyclingHistory(
+        [{ observedAtMs: 10 }, { observedAtMs: 20 }, { observedAtMs: 30 }],
+        20,
+      ),
+    ).toEqual({
+      training: [{ observedAtMs: 10 }],
+      evaluation: [{ observedAtMs: 20 }, { observedAtMs: 30 }],
     });
   });
 });

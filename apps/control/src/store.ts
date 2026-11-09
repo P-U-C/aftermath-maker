@@ -11,6 +11,7 @@ import type {
   OwnerAccountSummary,
 } from "@puc/aftermath";
 import {
+  decideInventoryPaperFill,
   makerConfigSchema,
   makerMarketSchema,
   type AttributedFill,
@@ -5625,7 +5626,7 @@ export class TenantStore {
     const bundleId = this.paperBundleId();
     const rows = this.db
       .prepare(
-        `SELECT order_key, market_id, symbol, side, price, size_usd
+        `SELECT order_key, market_id, symbol, side, price, size_usd, created_at
          FROM tenant_paper_orders
          WHERE owner_address = ? AND bundle_id = ? AND trial_id = ?
            AND market_id = ? AND status = 'open'
@@ -5643,11 +5644,24 @@ export class TenantStore {
       side: "bid" | "ask";
       price: number;
       size_usd: number;
+      created_at: string;
     }>;
+    const observedAtMs = Date.now();
     const fills = rows.filter(
       (order) =>
-        (order.side === "bid" && inputs.bestAsk < order.price) ||
-        (order.side === "ask" && inputs.bestBid > order.price),
+        decideInventoryPaperFill({
+          quote: {
+            side: order.side,
+            priceUsd: String(order.price),
+            restingAtMs: Date.parse(order.created_at),
+          },
+          observation: {
+            bestBidUsd: String(inputs.bestBid),
+            bestAskUsd: String(inputs.bestAsk),
+            observedAtMs,
+            coverage: "complete",
+          },
+        }).estimatedFill,
     );
     if (!fills.length) return [];
     const now = new Date().toISOString();
