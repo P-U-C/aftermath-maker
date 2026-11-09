@@ -23,8 +23,8 @@ describe("strategy results", () => {
       },
     ]);
 
-    // A $10 bid at 2 fills when the book trades through it; a reduce-only
-    // close then sells that $10 at the 2.2 best bid.
+    // A $10 bid at 2 fills when the book trades through it; its reduce-only
+    // close sells the exact 5 base at the 2.2 best bid ($11 notional).
     tenant.recordPaperQuote({
       trialId: "runtime",
       marketId: "0x1",
@@ -68,15 +68,16 @@ describe("strategy results", () => {
     });
     expect(response.statusCode).toBe(200);
     const { paper, live } = response.json().results;
-    // Maker rebate on the quote, taker fee on the close; no builder code.
-    expect(paper.executionFeesUsd).toBeCloseTo(-0.001 + 0.005, 9);
+    // Maker rebate on the quote, taker fee on the base-exact close; no builder
+    // code.
+    expect(paper.executionFeesUsd).toBeCloseTo(-0.001 + 0.0055, 9);
     expect(paper.builderFeesUsd).toBe(0);
     expect(paper.gasUsd).toBeCloseTo(0.006, 9);
     expect(paper.fundingUsd).toBeNull();
-    // Bought 5 at 2; sold $10 at 2.2 (4.545 base), the rest marked at 2.2.
+    // Bought 5 at 2 and sold the exact 5 base at 2.2.
     const pricePnl = paper.realizedPricePnlUsd + paper.unrealizedPricePnlUsd;
     expect(pricePnl).toBeCloseTo(1, 9);
-    expect(paper.tradingNetUsd).toBeCloseTo(1 - 0.004 - 0.006, 9);
+    expect(paper.tradingNetUsd).toBeCloseTo(1 - 0.0045 - 0.006, 9);
     expect(paper.gaps).toEqual([
       "Funding isn't simulated in Paper yet.",
       "Gas for Paper hedges and closes isn't estimated.",

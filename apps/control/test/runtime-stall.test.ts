@@ -480,9 +480,15 @@ describe("Paper cycle freshness under a stalled venue read", () => {
       expect(h.tenant.getPaperState("runtime").positions).toEqual([]);
       const fills = h.tenant.listPaperFills({ trialId: "runtime" });
       expect(fills).toHaveLength(15 * 4);
-      expect(fills.reduce((total, fill) => total + fill.sizeUsd, 0)).toBe(
-        15 * 4 * 10,
+      // Entry and hedge are $10 each; base-exact closes use the later touch
+      // notional, so total simulated volume stays near (rather than exactly)
+      // four times the quote size per filled loop.
+      const simulatedVolume = fills.reduce(
+        (total, fill) => total + fill.sizeUsd,
+        0,
       );
+      expect(simulatedVolume).toBeGreaterThan(15 * 4 * 9.9);
+      expect(simulatedVolume).toBeLessThan(15 * 4 * 10.1);
       expect(h.runtime.snapshot.market.id).toBe("0x1");
       expect(
         h.tenant

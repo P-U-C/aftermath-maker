@@ -2144,6 +2144,81 @@ describe("runtime execution boundaries", () => {
     harness.store.close();
   });
 
+  it("uses the held Paper market's touch for an exposure unwind", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-11-08T00:00:00.000Z"));
+    const harness = createHarness();
+    const selected = { marketId: "0x0001", symbol: "SELECTED" };
+    const held = { marketId: "0x0002", symbol: "HELD" };
+    harness.tenant.setConfig(
+      makerConfigSchema.parse({
+        ...harness.tenant.getConfig()!,
+        mode: "paper",
+        rotationMode: "portfolio",
+        hedge: {
+          enabled: false,
+          accountId: null,
+          thresholdUsd: 25,
+          maxOrderUsd: 100,
+          maxSlippageBps: 75,
+        },
+        markets: [selected, held],
+        quoteSizeUsd: 10,
+        maxInventoryUsd: 10,
+        maxGrossExposureUsd: 10,
+        unwindAfterPauseMinutes: 10,
+      }),
+    );
+    harness.tenant.recordPaperQuote({
+      trialId: "runtime",
+      marketId: held.marketId,
+      symbol: held.symbol,
+      bidPrice: 10,
+      askPrice: 10.1,
+      sizeUsd: 10,
+      sides: "bid",
+    });
+    harness.tenant.matchPaperOrders({
+      trialId: "runtime",
+      marketId: held.marketId,
+      bestBid: 9.9,
+      bestAsk: 9.9,
+    });
+
+    const books = new Map([
+      [selected.marketId, { bestBidPrice: 1, bestAskPrice: 1.01 }],
+      [held.marketId, { bestBidPrice: 9, bestAskPrice: 9.1 }],
+    ]);
+    harness.gateway.getOrderbook = async (marketId: string) => ({
+      market: {
+        metadata: { symbol: marketId === held.marketId ? "HELD" : "SELECTED" },
+        indexPrice: marketId === held.marketId ? 10 : 1,
+        marketState: { openInterest: 1_000 },
+        marketParams: { maxOpenInterest: 10_000 },
+        estimatedFundingRate: () => 0.0001,
+        tickSize: () => 0.01,
+      },
+      orderbook: books.get(marketId)!,
+    });
+
+    harness.runtime.start();
+    await harness.runtime.cycle({ executeLive: true });
+    vi.setSystemTime(new Date("2026-11-08T00:10:00.000Z"));
+    await harness.runtime.cycle({ executeLive: true });
+
+    const unwind = harness.tenant
+      .listPaperFills({ trialId: "runtime" })
+      .find((fill) => fill.orderKey.startsWith("unwind:"));
+    expect(unwind).toMatchObject({
+      marketId: held.marketId,
+      price: 9,
+      sizeUsd: 9,
+    });
+    expect(harness.tenant.getPaperState("runtime").positions).toEqual([]);
+    await harness.runtime.stop();
+    harness.store.close();
+  });
+
   it("clears the exposure pause below the limit even while positions remain", async () => {
     // Production: "Paper paused new exposure" never cleared because the clear
     // check looked for a key shape that no longer existed.
