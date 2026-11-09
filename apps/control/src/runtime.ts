@@ -1519,7 +1519,7 @@ export class MakerRuntime {
                 sinceMs === undefined || Date.parse(fill.occurredAt) >= sinceMs,
             )
         : [];
-    const paperMakerFills = paperRows.map<MakerFill>((fill) => ({
+    const paperFills = paperRows.map<MakerFill>((fill) => ({
       occurredAt: fill.occurredAt,
       txDigest: `paper:${fill.orderKey}`,
       marketId: fill.marketId,
@@ -1541,7 +1541,10 @@ export class MakerRuntime {
             ? "Hedge"
             : "Maker fill",
     }));
-    const fills = [...confirmedFills, ...paperMakerFills].sort((left, right) =>
+    const paperMakerFills = paperFills.filter(
+      (fill) => fill.role === "Maker fill",
+    );
+    const fills = [...confirmedFills, ...paperFills].sort((left, right) =>
       right.occurredAt.localeCompare(left.occurredAt),
     );
 
@@ -3319,9 +3322,7 @@ export class MakerRuntime {
         ),
       );
       const bundleWorstCaseGrossExposureUsd =
-        bundleQuoteRisk.worstCaseGrossExposureUsd +
-        unselectedGrossExposureUsd +
-        (hedgeRiskPortfolio?.grossExposureUsd ?? 0);
+        bundleQuoteRisk.worstCaseGrossExposureUsd + unselectedGrossExposureUsd;
       const exposureWasPaused =
         this.snapshotValue.paperBlocker?.code === "gross-exposure" ||
         this.paperSimulationBlockerKey === `${paperTrialId}:gross-exposure`;
@@ -3397,7 +3398,10 @@ export class MakerRuntime {
             ),
           liveEnabled: this.options.liveEnabled,
           mainnetAllowed: this.options.mainnetAllowed,
-          portfolioGrossExposureUsd: combinedGrossExposureUsd,
+          // Gross exposure is the Maker quote envelope. A paired hedge has
+          // its own collateral and account-risk checks below; adding it here
+          // double-counts one delta-neutral Paper fill against this limit.
+          portfolioGrossExposureUsd: portfolio.grossExposureUsd,
           portfolioWorstCaseExposureUsd: bundleWorstCaseGrossExposureUsd,
           portfolioAvailableCollateralUsd:
             activeConfig.mode === "paper"
@@ -3597,7 +3601,10 @@ export class MakerRuntime {
         }),
         portfolio: {
           selectedMarkets: config.markets.length,
-          grossExposureUsd: combinedGrossExposureUsd,
+          // Keep the Risk card aligned with the bundle quote limit. The
+          // separate inventory panel continues to show both Maker and Hedge
+          // legs so a residual hedge is never hidden.
+          grossExposureUsd: portfolio.grossExposureUsd,
           unrealizedPnlUsd: combinedUnrealizedPnlUsd,
           availableCollateralUsd:
             localPaper || (setup && account?.agentCapId)

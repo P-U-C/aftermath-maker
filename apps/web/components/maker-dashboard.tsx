@@ -5434,10 +5434,22 @@ function DashboardBody() {
             deskReportConfig.markets.length
         ]
       : null;
+  // This is the configured bundle envelope, not the subset of rows refreshed
+  // in the last rotation. Using only "healthy" rows made a 13-market $10
+  // strategy display $40 simply because nine rows had not just been visited.
   const worstSideFillUsd =
-    deskReportSnapshot?.markets
-      .filter((market) => market.status === "healthy")
-      .reduce((total, market) => total + market.effectiveQuoteSizeUsd, 0) ?? 0;
+    deskReportConfig.rotationMode === "single-slot"
+      ? Math.max(
+          0,
+          ...deskReportConfig.markets.map(
+            (market) =>
+              market.overrides?.quoteSizeUsd ?? deskReportConfig.quoteSizeUsd,
+          ),
+        )
+      : quoteExposureUsed(
+          deskReportConfig.markets,
+          deskReportConfig.quoteSizeUsd,
+        );
   const deskFills =
     performance?.fills.map((fill) => ({
       id: `${fill.txDigest}:${fill.orderId}`,
@@ -9702,7 +9714,8 @@ function DashboardBody() {
               <strong>
                 {money(
                   (performance?.attributed.notionalUsd ?? 0) +
-                    (performance?.hedge.notionalUsd ?? 0),
+                    (performance?.hedge.notionalUsd ?? 0) +
+                    (performance?.paper.notionalUsd ?? 0),
                 )}
               </strong>
             </div>
@@ -9710,7 +9723,9 @@ function DashboardBody() {
               <span>Fills</span>
               <strong>
                 {(performance?.attributed.fills ?? 0) +
-                  (performance?.hedge.fills ?? 0)}
+                  (performance?.hedge.fills ?? 0) +
+                  (performance?.paper.makerFills ?? 0) +
+                  (performance?.paper.hedgeFills ?? 0)}
               </strong>
             </div>
             <div>

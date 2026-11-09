@@ -456,14 +456,14 @@ export function DeskView({
                 </p>
               ) : (
                 <Meter
-                  label="Gross exposure"
+                  label="Current Maker exposure"
                   value={risk.grossExposureUsd}
                   max={risk.grossExposureLimitUsd}
                   valueText={`${formatMoney(risk.grossExposureUsd)} of ${formatMoney(risk.grossExposureLimitUsd)}`}
                 />
               )}
               <Meter
-                label="Worst-side fills"
+                label="Configured quote envelope"
                 value={risk.worstSideFillUsd}
                 max={risk.grossExposureLimitUsd}
                 valueText={`${formatMoney(risk.worstSideFillUsd)} of ${formatMoney(risk.grossExposureLimitUsd)}`}

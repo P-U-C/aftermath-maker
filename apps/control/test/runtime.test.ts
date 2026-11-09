@@ -650,7 +650,6 @@ describe("runtime execution boundaries", () => {
         unrealizedPnlUsd: 0,
       },
     ]);
-
     harness.runtime.start();
     await harness.runtime.cycle();
 
@@ -1980,7 +1979,7 @@ describe("runtime execution boundaries", () => {
     harness.store.close();
   });
 
-  it("keeps Paper reducing filled markets when a $200 bundle limit reserves $230 of quote risk", async () => {
+  it("keeps Paper reducing filled markets without double-counting paired hedges", async () => {
     const harness = createHarness();
     const markets = Array.from({ length: 15 }, (_, index) => ({
       marketId: `0x${(index + 1).toString(16).padStart(4, "0")}`,
@@ -1990,10 +1989,11 @@ describe("runtime execution boundaries", () => {
       makerConfigSchema.parse({
         ...harness.tenant.getConfig()!,
         mode: "paper",
+        makerAccountId: "42",
         rotationMode: "portfolio",
         hedge: {
-          enabled: false,
-          accountId: null,
+          enabled: true,
+          accountId: "43",
           thresholdUsd: 25,
           maxOrderUsd: 100,
           maxSlippageBps: 75,
@@ -2006,6 +2006,17 @@ describe("runtime execution boundaries", () => {
         maxQuoteAgeMs: 128_000,
       }),
     );
+    const hedgeSetup = setupSchema.parse({
+      ownerAddress: `0x${"1".repeat(64)}`,
+      accountId: "43",
+      accountCapId: "0x4321",
+    });
+    harness.tenant.setSetup(hedgeSetup);
+    harness.tenant.confirmAgentGrant({
+      accountId: "43",
+      digest: "H".repeat(32),
+      agentCapId: "0x9877",
+    });
 
     // Eight prior simulated bid fills contribute $160 of inventory. With the
     // seven remaining flat markets reserved at $10 each, a two-sided refresh
@@ -2021,11 +2032,15 @@ describe("runtime execution boundaries", () => {
         sizeUsd: 10,
         sides: "bid",
       });
-      harness.tenant.matchPaperOrders({
+      const [makerFill] = harness.tenant.matchPaperOrders({
         trialId: "runtime",
         marketId: market.marketId,
         bestBid: 9.99,
         bestAsk: 9.99,
+      });
+      harness.tenant.recordPaperHedge({
+        trialId: "runtime",
+        makerFill: makerFill!,
       });
     }
 
@@ -2036,12 +2051,22 @@ describe("runtime execution boundaries", () => {
       code: "gross-exposure",
       requiredUsd: 230,
     });
+    // The risk cap covers the Maker quote envelope: $160 of Maker inventory
+    // plus seven flat $10 markets. The opposite $80 hedge leg remains visible
+    // in inventory, but must not double-count against the same quote limit.
+    expect(harness.runtime.snapshot.portfolio.grossExposureUsd).toBe(80);
+    expect(harness.runtime.snapshot.inventory?.grossUsd).toBe(160);
     expect(harness.runtime.snapshot.quote).toMatchObject({
       sides: "ask",
       sizeUsd: 10,
     });
     expect(harness.executionSequence).toContain("paper-dry-run");
     expect(harness.runtime.snapshot.execution.lastDecision).toBe("quoted");
+    const performance = await harness.runtime.performance();
+    expect(performance.paper).toMatchObject({
+      makerFills: 8,
+      hedgeFills: 8,
+    });
     await harness.runtime.stop();
     harness.store.close();
   });
