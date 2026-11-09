@@ -1,0 +1,29 @@
+{
+  "epoch4": {
+    "filledEvents": 463,
+    "takerNotionalUsd": 417118.9881052147,
+    "makerNotionalUsd": 414355.2051333293,
+    "realizedCostUsd": 1133.6278480521466,
+    "olderSuiPositionCostUsd": 914.0220578886364,
+    "pairedPeriodCostUsd": 219.60579016351033,
+    "csvPerpsUsd": 253.72198,
+    "uiPerpsUsdDisplayed": 893.63
+  },
+  "epoch5": {
+    "filledEvents": 1329,
+    "takerNotionalUsd": 9724267.918063039,
+    "makerNotionalUsd": 9686801.725858904,
+    "netExecutionFeesUsd": 3891.580476835423,
+    "realizedPnlUsd": -109.54841078439999,
+    "settledFundingUsd": 5.055604601448414,
+    "realizedCostUsd": 3996.0732830183742,
+    "matchedOwnedTakerDigests": 663,
+    "uniqueTakerDigests": 666,
+    "allMarketMatchedVolumeUsd": 120931022.53488894,
+    "takerSharePct": 8.04116901869209,
+    "csvPerpsUsd": 4776.346896,
+    "csvTotalUsd": 5166.209858,
+    "claimableUsd": 3683.526368,
+    "unexplainedExportMinusClaimableUsd": 1482.68349
+  }
+}

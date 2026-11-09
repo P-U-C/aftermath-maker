@@ -1,0 +1,19 @@
+{
+  "parentAlias": "sample_parent",
+  "epochCsvRowUsd": {
+    "maker_reward": "0.000000",
+    "taker_reward": "4289.252462",
+    "maker_volume_rebate": "0.000000",
+    "maker_fee_rebate": "0.000000",
+    "taker_fee_rebate": "487.094434",
+    "referral": "389.862962",
+    "integrator": "0.000000"
+  },
+  "uiPerpsUsdDisplayed": "3293.66",
+  "uiReferralUsdDisplayed": "389.86",
+  "uiPoints": 128006,
+  "claimableAtomic": "3683526368",
+  "claimableDecimals": 6,
+  "claimableObservedAtUtc": "2026-11-09 (exact observation time not retained)",
+  "notes": "Claimable is one aggregate balance, not intrinsically epoch-specific. Its match to this UI screenshot is evidence for the sampled wallet only. CSV differs by 1482.683490 USD."
+}

@@ -20,6 +20,7 @@ import {
   setupSchema,
   gasCostUsd,
   summarizeStrategyResult,
+  summarizeInventoryTradingLedger,
   USDC_COIN_TYPE,
   type BuilderFeePolicy,
   type MakerConfig,
@@ -1878,6 +1879,25 @@ export async function buildServer({
         query.collateralCoinType,
         query.objective,
       ),
+    };
+  });
+
+  /** Read-only Inventory recycling evidence. Rewards intentionally remain a
+   * separate wallet-level collection and are never folded into this ledger. */
+  app.get("/api/inventory-recycling", async (request) => {
+    const scoped = tenant(request);
+    const query = z
+      .object({ runId: z.string().min(1).max(200).optional() })
+      .strict()
+      .parse(request.query);
+    const fills = scoped.listAttributedFills(query.runId);
+    const effects = scoped.listInventoryLedgerEffects(query.runId);
+    return {
+      ledger: summarizeInventoryTradingLedger({ fills, effects }),
+      reconciliation: scoped.latestInventoryReconciliation(query.runId),
+      fills,
+      effects,
+      rewards: scoped.listRewardAllocations(),
     };
   });
 
