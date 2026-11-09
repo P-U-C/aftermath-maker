@@ -3,8 +3,10 @@ import {
   classifyCounterparty,
   isDecimalString,
   rankInventoryRecyclingMarkets,
+  reconcileInventoryRecycling,
   scoreInventoryRecyclingMarket,
   sourceEventKey,
+  summarizeInventoryTradingLedger,
 } from "../src/inventory-recycling.js";
 
 const policy = {
@@ -149,5 +151,137 @@ describe("Inventory recycling accounting contracts", () => {
       "0xnegative",
       "0xunknown",
     ]);
+  });
+
+  it("fails closed until fills, ownership and positions reconcile", () => {
+    expect(
+      reconcileInventoryRecycling({
+        coverage: "complete",
+        expectedFillKeys: ["mainnet:tx:1"],
+        observedFillKeys: ["mainnet:tx:1"],
+        fills: [{ counterpartyClass: "verified_other_parent" }],
+        ownership: [{ accountId: "1", parentCapId: "0xparent" }],
+        positions: [
+          {
+            accountId: "1",
+            marketId: "0xmarket",
+            expectedBase: "0",
+            observedBase: "0",
+          },
+        ],
+        positionToleranceBase: "0.000001",
+      }),
+    ).toEqual({
+      state: "reconciled",
+      riskIncreasingAllowed: true,
+      reasons: [],
+    });
+
+    expect(
+      reconcileInventoryRecycling({
+        coverage: "partial",
+        expectedFillKeys: ["mainnet:tx:1", "mainnet:tx:2"],
+        observedFillKeys: ["mainnet:tx:1"],
+        fills: [{ counterpartyClass: "unresolved" }],
+        ownership: [{ accountId: "1", parentCapId: null }],
+        positions: [
+          {
+            accountId: "1",
+            marketId: "0xmarket",
+            expectedBase: "1",
+            observedBase: null,
+          },
+        ],
+        positionToleranceBase: "0.000001",
+      }),
+    ).toEqual({
+      state: "unresolved",
+      riskIncreasingAllowed: false,
+      reasons: [
+        "source_coverage_incomplete",
+        "missing_attributed_fill",
+        "unresolved_counterparty",
+        "ownership_unresolved",
+        "position_unresolved",
+      ],
+    });
+  });
+
+  it("keeps rewards and transfers outside reconciled trading P&L", () => {
+    expect(
+      summarizeInventoryTradingLedger({
+        fills: [
+          {
+            notionalUsd: "10",
+            venueFeeUsd: "-0.01",
+            builderFeeUsd: "0.01",
+            realizedPnlUsd: "0.1",
+            coverage: "complete",
+          },
+        ],
+        effects: [
+          {
+            sourceEventKey: "mainnet:funding:1",
+            runId: "run-1",
+            configVersion: 1,
+            accountId: "1",
+            marketId: "0xmarket",
+            timestampMs: 1,
+            kind: "funding",
+            fundingUsd: "0.02",
+            gasUsedMist: null,
+            gasUsd: null,
+            externalTransferUsd: null,
+            source: "fixture",
+            network: "mainnet",
+            coverage: "complete",
+            raw: {},
+          },
+          {
+            sourceEventKey: "mainnet:gas:1",
+            runId: "run-1",
+            configVersion: 1,
+            accountId: "1",
+            marketId: null,
+            timestampMs: 2,
+            kind: "gas",
+            fundingUsd: null,
+            gasUsedMist: "1",
+            gasUsd: "0.03",
+            externalTransferUsd: null,
+            source: "fixture",
+            network: "mainnet",
+            coverage: "complete",
+            raw: {},
+          },
+          {
+            sourceEventKey: "mainnet:transfer:1",
+            runId: "run-1",
+            configVersion: 1,
+            accountId: "1",
+            marketId: null,
+            timestampMs: 3,
+            kind: "transfer",
+            fundingUsd: null,
+            gasUsedMist: null,
+            gasUsd: null,
+            externalTransferUsd: "1000",
+            source: "fixture",
+            network: "mainnet",
+            coverage: "complete",
+            raw: {},
+          },
+        ],
+      }),
+    ).toMatchObject({
+      makerNotionalUsd: "10",
+      venueFeesUsd: "-0.01",
+      builderFeesUsd: "0.01",
+      realizedPnlUsd: "0.1",
+      fundingUsd: "0.02",
+      gasUsd: "0.03",
+      tradingNetUsd: "0.09",
+      gaps: [],
+    });
   });
 });

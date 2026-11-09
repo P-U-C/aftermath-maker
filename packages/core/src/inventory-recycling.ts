@@ -46,6 +46,8 @@ export type InventoryMarketObservation = {
 export type AttributedFill = {
   sourceEventKey: string;
   runId: string;
+  /** Null only for historical data recorded before strategy versioning. */
+  configVersion: number | null;
   accountId: string;
   ownerWallet: string;
   marketId: string;
@@ -67,6 +69,54 @@ export type AttributedFill = {
   network: string;
   coverage: Coverage;
   raw: unknown;
+};
+
+/** Non-fill effects remain separate from the fill ledger so a transfer or a
+ * reward cannot accidentally become trading P&L. Signed USD values are income
+ * when positive and costs when negative. */
+export type InventoryLedgerEffect = {
+  sourceEventKey: string;
+  runId: string | null;
+  configVersion: number | null;
+  accountId: string;
+  marketId: string | null;
+  timestampMs: number;
+  kind: "funding" | "gas" | "hedge" | "unwind" | "transfer";
+  fundingUsd: DecimalString | null;
+  gasUsedMist: string | null;
+  gasUsd: DecimalString | null;
+  externalTransferUsd: DecimalString | null;
+  source: string;
+  network: string;
+  coverage: Coverage;
+  raw: unknown;
+};
+
+export type InventoryPositionReconciliation = {
+  accountId: string;
+  marketId: string;
+  expectedBase: DecimalString;
+  observedBase: DecimalString | null;
+};
+
+export type InventoryOwnershipObservation = {
+  accountId: string;
+  parentCapId: string | null;
+};
+
+export type InventoryReconciliationReason =
+  | "source_coverage_incomplete"
+  | "missing_attributed_fill"
+  | "unresolved_counterparty"
+  | "known_same_parent"
+  | "ownership_unresolved"
+  | "position_unresolved";
+
+export type InventoryReconciliation = {
+  state: "reconciled" | "unresolved";
+  /** Risk-increasing actions must use this, not merely a stale last success. */
+  riskIncreasingAllowed: boolean;
+  reasons: InventoryReconciliationReason[];
 };
 
 export type RewardAllocation = {
@@ -219,6 +269,139 @@ function unitsToDecimal(value: bigint): DecimalString {
 
 function multiplyUnits(left: bigint, right: bigint): bigint {
   return (left * right) / DECIMAL_SCALE;
+}
+
+function absoluteUnits(value: bigint): bigint {
+  return value < 0n ? -value : value;
+}
+
+/**
+ * The admission boundary for Inventory recycling. This is deliberately more
+ * conservative than a reporting summary: incomplete source coverage, an
+ * unobserved counterparty or owner, a missing expected fill, and a position
+ * that cannot be proved flat/matched all prohibit a new quote.
+ */
+export function reconcileInventoryRecycling(inputs: {
+  coverage: Coverage;
+  expectedFillKeys: readonly string[];
+  observedFillKeys: readonly string[];
+  fills: readonly Pick<AttributedFill, "counterpartyClass">[];
+  ownership: readonly InventoryOwnershipObservation[];
+  positions: readonly InventoryPositionReconciliation[];
+  positionToleranceBase: DecimalString;
+}): InventoryReconciliation {
+  const reasons = new Set<InventoryReconciliationReason>();
+  if (inputs.coverage !== "complete") reasons.add("source_coverage_incomplete");
+  const observed = new Set(inputs.observedFillKeys);
+  if (inputs.expectedFillKeys.some((key) => !observed.has(key))) {
+    reasons.add("missing_attributed_fill");
+  }
+  if (inputs.fills.some((fill) => fill.counterpartyClass === "unresolved")) {
+    reasons.add("unresolved_counterparty");
+  }
+  if (
+    inputs.fills.some((fill) => fill.counterpartyClass === "known_same_parent")
+  ) {
+    reasons.add("known_same_parent");
+  }
+  if (inputs.ownership.some((account) => account.parentCapId === null)) {
+    reasons.add("ownership_unresolved");
+  }
+  const tolerance = decimalToUnits(inputs.positionToleranceBase);
+  if (tolerance < 0n) {
+    throw new Error("Position tolerance must not be negative");
+  }
+  if (
+    inputs.positions.some((position) => {
+      if (position.observedBase === null) return true;
+      return (
+        absoluteUnits(
+          decimalToUnits(position.expectedBase) -
+            decimalToUnits(position.observedBase),
+        ) > tolerance
+      );
+    })
+  ) {
+    reasons.add("position_unresolved");
+  }
+  return {
+    state: reasons.size ? "unresolved" : "reconciled",
+    riskIncreasingAllowed: reasons.size === 0,
+    reasons: [...reasons],
+  };
+}
+
+/**
+ * A trading-only result. Rewards and transfers are excluded by type, and an
+ * incomplete effect source returns a visible gap instead of a fabricated net.
+ */
+export function summarizeInventoryTradingLedger(inputs: {
+  fills: readonly Pick<
+    AttributedFill,
+    | "notionalUsd"
+    | "venueFeeUsd"
+    | "builderFeeUsd"
+    | "realizedPnlUsd"
+    | "coverage"
+  >[];
+  effects: readonly InventoryLedgerEffect[];
+}): {
+  makerNotionalUsd: DecimalString;
+  venueFeesUsd: DecimalString;
+  builderFeesUsd: DecimalString;
+  realizedPnlUsd: DecimalString;
+  fundingUsd: DecimalString | null;
+  gasUsd: DecimalString | null;
+  tradingNetUsd: DecimalString | null;
+  gaps: string[];
+} {
+  let makerNotional = 0n;
+  let venueFees = 0n;
+  let builderFees = 0n;
+  let realizedPnl = 0n;
+  const gaps = new Set<string>();
+  for (const fill of inputs.fills) {
+    makerNotional += decimalToUnits(fill.notionalUsd);
+    venueFees += decimalToUnits(fill.venueFeeUsd);
+    builderFees += decimalToUnits(fill.builderFeeUsd ?? "0");
+    realizedPnl += decimalToUnits(fill.realizedPnlUsd);
+    if (fill.coverage !== "complete") gaps.add("Fill coverage is incomplete.");
+  }
+  let funding = 0n;
+  let gas = 0n;
+  let fundingKnown = true;
+  let gasKnown = true;
+  for (const effect of inputs.effects) {
+    if (effect.coverage !== "complete") {
+      gaps.add("Effect coverage is incomplete.");
+      if (effect.kind === "funding") fundingKnown = false;
+      if (effect.kind === "gas") gasKnown = false;
+    }
+    if (effect.kind === "funding") {
+      if (effect.fundingUsd === null) fundingKnown = false;
+      else funding += decimalToUnits(effect.fundingUsd);
+    }
+    if (effect.kind === "gas") {
+      if (effect.gasUsd === null) gasKnown = false;
+      else gas += decimalToUnits(effect.gasUsd);
+    }
+  }
+  const fundingUsd = fundingKnown ? unitsToDecimal(funding) : null;
+  const gasUsd = gasKnown ? unitsToDecimal(gas) : null;
+  const tradingNetUsd =
+    fundingUsd !== null && gasUsd !== null && gaps.size === 0
+      ? unitsToDecimal(realizedPnl + funding - venueFees - builderFees - gas)
+      : null;
+  return {
+    makerNotionalUsd: unitsToDecimal(makerNotional),
+    venueFeesUsd: unitsToDecimal(venueFees),
+    builderFeesUsd: unitsToDecimal(builderFees),
+    realizedPnlUsd: unitsToDecimal(realizedPnl),
+    fundingUsd,
+    gasUsd,
+    tradingNetUsd,
+    gaps: [...gaps],
+  };
 }
 
 function allFiniteCounts(...counts: number[]): boolean {
