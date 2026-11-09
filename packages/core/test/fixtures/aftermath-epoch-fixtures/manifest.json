@@ -1,0 +1,26 @@
+{
+  "schema": "maker-sanitized-epoch-fixtures-v1",
+  "parentAlias": "sample_parent",
+  "accountIds": [613, 1706],
+  "utcWindows": {
+    "epoch4": [1791781200000, 1792990800000],
+    "epoch5": [1792990800000, 1794200400000]
+  },
+  "source": {
+    "filledOrders": "/api/perpetuals/account/order-history",
+    "collateralEvents": "/api/perpetuals/account/collateral-history",
+    "epoch5HourlyCandles": "/api/perpetuals/market/candle-history",
+    "marketDiscovery": "/api/perpetuals/all-markets",
+    "rewardExport": "/api/rewards/epoch-csv",
+    "claimable": "/api/rewards/claimable",
+    "ui": "User-provided Rewards screenshots, rounded to cents"
+  },
+  "provenance": "Captured in the prior audit; Epoch 4 orders/collateral through 2026-11-03 archive, Epoch 5 final account and candle refresh on 2026-11-09.",
+  "limitations": [
+    "This is the sampled parent's two accounts, not a protocol-wide raw export.",
+    "Epoch 4 hourly market candles and historical order book/quotes were not retained.",
+    "Wallet-paid gas, builder charges, and any unrelated account activity are not included.",
+    "Epoch CSV is not payment proof, and claimable balances may cover multiple epochs.",
+    "Market and transaction IDs are stable pseudonyms only within this package."
+  ]
+}

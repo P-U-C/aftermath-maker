@@ -14,10 +14,12 @@ trading. New instances remain unattached, Paper, Balanced, Both, unhedged, and
 
 ## Evidence and decision rule
 
-The historical review shows high known paired activity and rewards that are
-wallet-level allocations. It is evidence for investigating independent maker
-economics, not a reward forecast and not evidence that rapid paired turnover
-is profitable.
+Accounts #613/#1706 are a **negative control**: their Epoch 5 perps result
+was about −$702 before gas, excluding referrals. Their high known paired
+turnover, volume, and wallet-level rewards must not tune, rank, or otherwise
+justify the Core Inventory recycling default. They are accounting and
+same-parent-matching evidence only, not a reward forecast or proof that rapid
+paired turnover is profitable.
 
 Admission ranking uses observed no-reward economics only:
 
@@ -43,13 +45,13 @@ strategy unless a separate verified allocation source exists.
 
 ## Current evidence status
 
-| Item                                                   | Status                                                                                              |
-| ------------------------------------------------------ | --------------------------------------------------------------------------------------------------- |
-| Durable source-aware observation/fill/reward contracts | Implemented; effects and reconciliation records are append-only and tenant-scoped                   |
-| Actual epoch replay                                    | Blocked: sanitized raw Epoch 4/5 source fixtures are not in this repository or the provided handoff |
-| Independent-fill sample and markouts                   | Not yet collected                                                                                   |
-| Wallet-paid gas reconciliation                         | Not yet collected                                                                                   |
-| Per-strategy reward allocation                         | Unavailable by design without a verified allocation source                                          |
+| Item                                                   | Status                                                                                               |
+| ------------------------------------------------------ | ---------------------------------------------------------------------------------------------------- |
+| Durable source-aware observation/fill/reward contracts | Implemented; effects and reconciliation records are append-only and tenant-scoped                    |
+| Epoch 4/5 accounting targets                           | Sanitized fixture verifier and fixture-backed regression test; no historical quote replay is claimed |
+| Independent-fill sample and markouts                   | Not yet collected                                                                                    |
+| Wallet-paid gas reconciliation                         | Not yet collected                                                                                    |
+| Per-strategy reward allocation                         | Unavailable by design without a verified allocation source                                           |
 
 ## Next evidence
 
@@ -69,7 +71,7 @@ strategy unless a separate verified allocation source exists.
 | Source-aware, idempotent accounting records             | `persistent control store > persists Inventory recycling evidence idempotently and keeps rewards wallet-level` |
 | Fail closed on incomplete fills, ownership or positions | `Inventory recycling accounting contracts > fails closed until fills, ownership and positions reconcile`       |
 | Trading-only P&L; rewards/transfers excluded            | `Inventory recycling accounting contracts > keeps rewards and transfers outside reconciled trading P&L`        |
-| Epoch 4/5 replay totals                                 | Blocked pending sanitized source fixtures; the specification alone is not a replay fixture                     |
+| Epoch 4/5 accounting targets                            | Sanitized fixture verifier and fixture-backed regression test; no historical quote replay is claimed           |
 | Runtime risk admission and UI ranking                   | Pending the read-only source adapters and a complete reconciliation feed                                       |
 
 Paper preserves the existing strict book-through estimate: a touch is never a
@@ -79,3 +81,19 @@ named `Inventory recycling` reject risk-increasing quotes until a durable
 reconciliation is `reconciled`; passive reduction, Stop, and Flatten remain
 available. This is a conservative admission boundary, not proof of reward
 eligibility or actual market fills.
+
+## Supplied Epoch accounting fixtures
+
+The sanitized Epoch 4/5 package is a Phase A accounting fixture, not a quote
+placement replay. Its verifier is run by
+`Inventory recycling sanitized Epoch 4/5 accounting fixtures`; it validates
+the published fill, fee, funding, cost, matched-digest, and candle-volume
+targets without querying a venue. The CSV reward row, rounded UI observation,
+and claimable balance are kept as three separate sources. Their mismatch is
+unresolved and no strategy or market reward is inferred from it.
+
+Epoch 5 candles support the aggregate market-volume check only. Historical
+order books, wallet-paid gas, builder charges, and the competitor's fill-level
+evidence are absent. Strategy replay and parameter calibration are therefore
+`insufficient_evidence`; they cannot authorize a risk-increasing quote or
+change the Paper-only preset.

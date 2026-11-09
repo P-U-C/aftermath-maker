@@ -1,0 +1,262 @@
+[
+  {
+    "marketAlias": "market_001",
+    "symbol": "AAPLUSD"
+  },
+  {
+    "marketAlias": "market_002",
+    "symbol": "AMCUSD"
+  },
+  {
+    "marketAlias": "market_003",
+    "symbol": "ANTUSD"
+  },
+  {
+    "marketAlias": "market_004",
+    "symbol": "BATUSD"
+  },
+  {
+    "marketAlias": "market_005",
+    "symbol": "BNBUSD"
+  },
+  {
+    "marketAlias": "market_006",
+    "symbol": "BOCUSD"
+  },
+  {
+    "marketAlias": "market_007",
+    "symbol": "BPUSD"
+  },
+  {
+    "marketAlias": "market_008",
+    "symbol": "BRENTUSD"
+  },
+  {
+    "marketAlias": "market_009",
+    "symbol": "BTCUSD"
+  },
+  {
+    "marketAlias": "market_010",
+    "symbol": "BYDUSD"
+  },
+  {
+    "marketAlias": "market_011",
+    "symbol": "CARDSUSD"
+  },
+  {
+    "marketAlias": "market_012",
+    "symbol": "CBRSUSD"
+  },
+  {
+    "marketAlias": "market_013",
+    "symbol": "CHIPUSD"
+  },
+  {
+    "marketAlias": "market_014",
+    "symbol": "CRCLUSD"
+  },
+  {
+    "marketAlias": "market_015",
+    "symbol": "CRVUSD"
+  },
+  {
+    "marketAlias": "market_016",
+    "symbol": "CYPHUSD"
+  },
+  {
+    "marketAlias": "market_017",
+    "symbol": "DATAUSD"
+  },
+  {
+    "marketAlias": "market_018",
+    "symbol": "DRAMUSD"
+  },
+  {
+    "marketAlias": "market_019",
+    "symbol": "ETHUSD"
+  },
+  {
+    "marketAlias": "market_020",
+    "symbol": "FLUIDUSD"
+  },
+  {
+    "marketAlias": "market_021",
+    "symbol": "GOOGLUSD"
+  },
+  {
+    "marketAlias": "market_022",
+    "symbol": "HYPEUSD"
+  },
+  {
+    "marketAlias": "market_023",
+    "symbol": "INDIA50USD"
+  },
+  {
+    "marketAlias": "market_024",
+    "symbol": "INTCUSD"
+  },
+  {
+    "marketAlias": "market_025",
+    "symbol": "IOVAUSD"
+  },
+  {
+    "marketAlias": "market_026",
+    "symbol": "JP225USD"
+  },
+  {
+    "marketAlias": "market_027",
+    "symbol": "KNTQUSD"
+  },
+  {
+    "marketAlias": "market_028",
+    "symbol": "KR200USD"
+  },
+  {
+    "marketAlias": "market_029",
+    "symbol": "LITUSD"
+  },
+  {
+    "marketAlias": "market_030",
+    "symbol": "LLYUSD"
+  },
+  {
+    "marketAlias": "market_031",
+    "symbol": "LTCUSD"
+  },
+  {
+    "marketAlias": "market_032",
+    "symbol": "METAUSD"
+  },
+  {
+    "marketAlias": "market_033",
+    "symbol": "MONUSD"
+  },
+  {
+    "marketAlias": "market_034",
+    "symbol": "MRVLUSD"
+  },
+  {
+    "marketAlias": "market_035",
+    "symbol": "MUUSD"
+  },
+  {
+    "marketAlias": "market_036",
+    "symbol": "NEARUSD"
+  },
+  {
+    "marketAlias": "market_037",
+    "symbol": "NINTENDOUSD"
+  },
+  {
+    "marketAlias": "market_038",
+    "symbol": "NVDAUSD"
+  },
+  {
+    "marketAlias": "market_039",
+    "symbol": "ORBIOUSD"
+  },
+  {
+    "marketAlias": "market_040",
+    "symbol": "PLTRUSD"
+  },
+  {
+    "marketAlias": "market_041",
+    "symbol": "PRLUSD"
+  },
+  {
+    "marketAlias": "market_042",
+    "symbol": "PUMPUSD"
+  },
+  {
+    "marketAlias": "market_043",
+    "symbol": "QNTUSD"
+  },
+  {
+    "marketAlias": "market_044",
+    "symbol": "SAMSUNGUSD"
+  },
+  {
+    "marketAlias": "market_045",
+    "symbol": "SHFLUSD"
+  },
+  {
+    "marketAlias": "market_046",
+    "symbol": "SKHYNIXUSD"
+  },
+  {
+    "marketAlias": "market_047",
+    "symbol": "SNDKUSD"
+  },
+  {
+    "marketAlias": "market_048",
+    "symbol": "SOLUSD"
+  },
+  {
+    "marketAlias": "market_049",
+    "symbol": "SPCXUSD"
+  },
+  {
+    "marketAlias": "market_050",
+    "symbol": "SPXUSD"
+  },
+  {
+    "marketAlias": "market_051",
+    "symbol": "SUIUSD"
+  },
+  {
+    "marketAlias": "market_052",
+    "symbol": "TSLAUSD"
+  },
+  {
+    "marketAlias": "market_053",
+    "symbol": "UNIUSD"
+  },
+  {
+    "marketAlias": "market_054",
+    "symbol": "US100USD"
+  },
+  {
+    "marketAlias": "market_055",
+    "symbol": "US500USD"
+  },
+  {
+    "marketAlias": "market_056",
+    "symbol": "USDBRLUSD"
+  },
+  {
+    "marketAlias": "market_057",
+    "symbol": "USDKRWUSD"
+  },
+  {
+    "marketAlias": "market_058",
+    "symbol": "WLDUSD"
+  },
+  {
+    "marketAlias": "market_059",
+    "symbol": "WTIUSD"
+  },
+  {
+    "marketAlias": "market_060",
+    "symbol": "XAGUSD"
+  },
+  {
+    "marketAlias": "market_061",
+    "symbol": "XAUTUSD"
+  },
+  {
+    "marketAlias": "market_062",
+    "symbol": "XIAOMIUSD"
+  },
+  {
+    "marketAlias": "market_063",
+    "symbol": "XMRUSD"
+  },
+  {
+    "marketAlias": "market_064",
+    "symbol": "XRPUSD"
+  },
+  {
+    "marketAlias": "market_065",
+    "symbol": "ZECUSD"
+  }
+]

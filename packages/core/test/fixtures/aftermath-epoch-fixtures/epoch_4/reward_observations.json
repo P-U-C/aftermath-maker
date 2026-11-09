@@ -1,0 +1,17 @@
+{
+  "parentAlias": "sample_parent",
+  "epochCsvRowUsd": {
+    "maker_reward": "0.000000",
+    "taker_reward": "253.721980",
+    "maker_volume_rebate": "0.000000",
+    "maker_fee_rebate": "0.000000",
+    "taker_fee_rebate": "0.000000",
+    "referral": "7.996832",
+    "integrator": "0.000000"
+  },
+  "uiPerpsUsdDisplayed": "893.63",
+  "uiReferralUsdDisplayed": "8.00",
+  "uiPoints": 7991,
+  "claimableAtomic": null,
+  "notes": "UI values are screenshot observations; CSV and UI differ. No epoch-specific claimable snapshot is available."
+}
