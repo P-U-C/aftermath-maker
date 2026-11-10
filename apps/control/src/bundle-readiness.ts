@@ -16,6 +16,8 @@ type AccountRead = {
   /** Collateral the venue moved into markets for resting orders. */
   allocatedCollateralUsd?: number;
   positionCount?: number;
+  /** Open Maker orders mean Paper cannot safely establish a simulated baseline. */
+  openMakerOrderCount?: number;
 };
 export const DEPOSIT_HEADROOM_USDC = 0.1;
 const ceilToCent = (value: number) => Math.ceil(value * 100 - 1e-9) / 100;
@@ -147,6 +149,20 @@ export function deriveBundleReadiness(inputs: {
     accountIds.every((id) =>
       accounts.some((account) => account.accountId === id),
     );
+  // A Paper run only has owner-scoped account summaries, not attributed
+  // positions. Starting over a live position or resting order would make its
+  // estimates include exposure it cannot reconcile. Reject it before the
+  // runtime starts; runtime.ts keeps the same check as a recovery backstop.
+  const paperAccountWithExposure =
+    config?.mode === "paper" && accounts !== null && found
+      ? accountIds
+          .map((id) => accounts.find((account) => account.accountId === id))
+          .find(
+            (account) =>
+              (account?.positionCount ?? 0) > 0 ||
+              (account?.openMakerOrderCount ?? 0) > 0,
+          )
+      : undefined;
   const accountStage: BundleStage =
     strategy.status !== "done"
       ? {
@@ -162,17 +178,23 @@ export function deriveBundleReadiness(inputs: {
               status: "waiting",
               detail: "Checking owner accounts",
             }
-          : found
+          : paperAccountWithExposure
             ? {
                 id: "accounts",
-                status: "done",
-                detail: `${accountIds.length} assigned`,
-              }
-            : {
-                id: "accounts",
                 status: "todo",
-                detail: "Choose accounts owned by this wallet",
-              };
+                detail: `Paper needs flat accounts: account ${paperAccountWithExposure.accountId} has ${paperAccountWithExposure.positionCount ?? 0} position(s) and ${paperAccountWithExposure.openMakerOrderCount ?? 0} resting Maker order(s). Flatten or cancel them in Venues`,
+              }
+            : found
+              ? {
+                  id: "accounts",
+                  status: "done",
+                  detail: `${accountIds.length} assigned`,
+                }
+              : {
+                  id: "accounts",
+                  status: "todo",
+                  detail: "Choose accounts owned by this wallet",
+                };
   const authorized =
     found && accountIds.every((id) => authorizedAccountIds.has(id!));
   const tradingKeys: BundleStage =
