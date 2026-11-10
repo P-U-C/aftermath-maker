@@ -45,13 +45,14 @@ strategy unless a separate verified allocation source exists.
 
 ## Current evidence status
 
-| Item                                                   | Status                                                                                               |
-| ------------------------------------------------------ | ---------------------------------------------------------------------------------------------------- |
-| Durable source-aware observation/fill/reward contracts | Implemented; effects and reconciliation records are append-only and tenant-scoped                    |
-| Epoch 4/5 accounting targets                           | Sanitized fixture verifier and fixture-backed regression test; no historical quote replay is claimed |
-| Independent-fill sample and markouts                   | Not yet collected                                                                                    |
-| Wallet-paid gas reconciliation                         | Not yet collected                                                                                    |
-| Per-strategy reward allocation                         | Unavailable by design without a verified allocation source                                           |
+| Item                                                   | Status                                                                                                |
+| ------------------------------------------------------ | ----------------------------------------------------------------------------------------------------- |
+| Durable source-aware observation/fill/reward contracts | Implemented; effects and reconciliation records are append-only and tenant-scoped                     |
+| Epoch 4/5 accounting targets                           | Sanitized fixture verifier and fixture-backed regression test; no historical quote replay is claimed  |
+| Paper fixed-horizon markouts and decisions             | Durable tenant-scoped 1/5/30/60-minute index-reference records; missing references remain unavailable |
+| Independent-fill sample and markouts                   | Not yet collected                                                                                     |
+| Wallet-paid gas reconciliation                         | Not yet collected                                                                                     |
+| Per-strategy reward allocation                         | Unavailable by design without a verified allocation source                                            |
 
 ## Next evidence
 
@@ -75,8 +76,10 @@ strategy unless a separate verified allocation source exists.
 | Runtime risk admission and UI ranking                   | Pending the read-only source adapters and a complete reconciliation feed                                       |
 
 Paper preserves the existing strict book-through estimate: a touch is never a
-fill. The shared contract now also rejects incomplete book evidence and models
-side-aware markouts only after their requested horizon. Attached strategies
+fill. The shared contract now also rejects incomplete book evidence and retains
+side-aware Paper markouts only after their requested horizon, alongside an
+append-only fixed-policy quote/pause decision log. Index-reference marks are
+explanatory evidence, not realised P&L or a reward estimate. Attached strategies
 named `Inventory recycling` reject risk-increasing quotes until a durable
 reconciliation is `reconciled`; passive reduction, Stop, and Flatten remain
 available. This is a conservative admission boundary, not proof of reward

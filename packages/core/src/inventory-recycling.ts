@@ -278,6 +278,42 @@ export type InventoryPaperMarkout = {
   coverage: Coverage;
 };
 
+/**
+ * A retained Paper markout is evidence about the simulated fill, not P&L. It
+ * records exactly which later reference price was available at the requested
+ * horizon so a missing mark can never be rendered as a zero loss.
+ */
+export type InventoryPaperMarkoutObservation = InventoryPaperMarkout & {
+  sourceEventKey: string;
+  runId: string;
+  orderKey: string;
+  marketId: string;
+  fillAtMs: number;
+  fillPriceUsd: DecimalString;
+  side: "bid" | "ask";
+  baseAssetAmount: DecimalString;
+  referenceUsd: DecimalString | null;
+  source: string;
+  network: string;
+  raw: unknown;
+};
+
+/**
+ * A policy decision is append-only evidence. It explains a changed quote or
+ * a pause without pretending a simulated fill was independently observed.
+ */
+export type InventoryQuoteDecision = {
+  decisionKey: string;
+  runId: string;
+  marketId: string;
+  observedAtMs: number;
+  action: "quote" | "resize" | "widen" | "skew" | "pause";
+  reason: string;
+  policy: "fixed" | "adaptive";
+  coverage: Coverage;
+  detail: Record<string, unknown>;
+};
+
 const DECIMAL_SCALE = 100_000_000n;
 
 function decimalToUnits(value: DecimalString): bigint {

@@ -2940,6 +2940,23 @@ export class MakerRuntime {
           bestBid,
           bestAsk,
         });
+        // Index is an independently maintained reference from the venue, not
+        // a derived midpoint of the quoted book.  It is retained only as
+        // Paper markout evidence and never turns a simulated fill into P&L.
+        this.store.refreshPaperMarkouts({
+          trialId: paperTrialId,
+          marketId: selected.marketId,
+          referenceUsd: Number.isFinite(market.indexPrice)
+            ? market.indexPrice
+            : null,
+          observedAtMs: Date.now(),
+          coverage: Number.isFinite(market.indexPrice)
+            ? "complete"
+            : "unavailable",
+          source: "aftermath-index-paper-reference",
+          network: "paper",
+          raw: { indexPrice: market.indexPrice },
+        });
         if (estimatedFills.length && config.hedge.enabled) {
           for (const fill of estimatedFills) {
             this.store.recordPaperHedge({
@@ -3840,6 +3857,22 @@ export class MakerRuntime {
         }
       }
       if (holdNewExposure) {
+        if (config.mode === "paper") {
+          this.store.recordInventoryQuoteDecision({
+            decisionKey: `paper:${paperTrialId}:${selected.marketId}:${Date.parse(updatedAt)}:pause`,
+            runId: paperTrialId,
+            marketId: selected.marketId,
+            observedAtMs: Date.parse(updatedAt),
+            action: "pause",
+            reason: "gross_exposure_reduce_only",
+            policy: "fixed",
+            coverage: "complete",
+            detail: {
+              inventoryUsd,
+              targetUsd: marketConfig.inventoryTargetUsd,
+            },
+          });
+        }
         if (config.mode === "paper" && inputs.executeLive && exposureBlocker) {
           this.recordPaperSimulationBlocker({
             blocker: exposureBlocker,
@@ -3986,6 +4019,17 @@ export class MakerRuntime {
             updatedAt,
             trialId: paperTrialId,
           });
+          this.store.recordInventoryQuoteDecision({
+            decisionKey: `paper:${paperTrialId}:${selected.marketId}:${Date.parse(updatedAt)}:pause`,
+            runId: paperTrialId,
+            marketId: selected.marketId,
+            observedAtMs: Date.parse(updatedAt),
+            action: "pause",
+            reason: blocker.code,
+            policy: "fixed",
+            coverage: "partial",
+            detail: { message: blocker.message },
+          });
           return;
         }
 
@@ -4069,6 +4113,24 @@ export class MakerRuntime {
           askPrice: quote.askPrice,
           sizeUsd: quote.sizeUsd,
           sides: quote.sides,
+        });
+        this.store.recordInventoryQuoteDecision({
+          decisionKey: `paper:${paperTrialId}:${selected.marketId}:${Date.parse(updatedAt)}:quote`,
+          runId: paperTrialId,
+          marketId: selected.marketId,
+          observedAtMs: Date.parse(updatedAt),
+          action: "quote",
+          reason: reducingOnly ? "inventory_reduce_only" : "fixed_policy",
+          policy: "fixed",
+          coverage: "complete",
+          detail: {
+            bidPrice: quote.bidPrice,
+            askPrice: quote.askPrice,
+            sizeUsd: quote.sizeUsd,
+            sides: quote.sides,
+            inventoryUsd,
+            targetUsd: marketConfig.inventoryTargetUsd,
+          },
         });
         this.paperAllSkippedSince = null;
         this.paperAllSkippedWarningLogged = false;
