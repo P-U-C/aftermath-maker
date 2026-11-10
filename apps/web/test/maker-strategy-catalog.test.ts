@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  customStrategyName,
   makerStrategyCatalog,
   makerStrategyPreset,
 } from "../lib/maker-strategy-catalog";
@@ -8,6 +9,7 @@ import {
 describe("Maker strategy bench", () => {
   it("preloads the seven declared strategy families without misrepresenting research as executable", () => {
     expect(makerStrategyCatalog.map((preset) => preset.id)).toEqual([
+      "custom",
       "inventory-recycling",
       "fill-driven-aftermath-hedge",
       "selective-rotation",
@@ -29,6 +31,7 @@ describe("Maker strategy bench", () => {
         .filter((preset) => preset.state === "research")
         .every((preset) => preset.mode === "Observe"),
     ).toBe(true);
+    expect(makerStrategyPreset("custom").state).toBe("custom");
   });
 
   it("returns a concrete preset and rejects unknown catalog entries", () => {
@@ -38,5 +41,13 @@ describe("Maker strategy bench", () => {
     expect(() => makerStrategyPreset("not-a-strategy" as never)).toThrow(
       "Unknown Maker strategy preset",
     );
+  });
+
+  it("gives Custom drafts short entropy names without reusing an existing name", () => {
+    expect(customStrategyName([], () => 0)).toBe("Custom Cinder Arc");
+    expect(customStrategyName(["custom cinder arc"], () => 0)).toBe(
+      "Custom Drift Arc",
+    );
+    expect(customStrategyName([], () => 1)).toBe("Custom Wisp Wave");
   });
 });

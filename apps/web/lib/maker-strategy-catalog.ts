@@ -1,4 +1,5 @@
 export type MakerStrategyPresetId =
+  | "custom"
   | "inventory-recycling"
   | "fill-driven-aftermath-hedge"
   | "selective-rotation"
@@ -13,17 +14,28 @@ export type MakerStrategyPreset = {
   shortName: string;
   summary: string;
   mode: "Paper" | "Observe";
-  state: "ready" | "research";
+  state: "custom" | "ready" | "research";
   nextStep: string;
 };
 
 /**
  * The strategy bench is deliberately separate from saved strategies. A card is
- * an honest description of a strategy family; only `ready` cards have a
- * runtime behind them and can create a draft. This prevents a named research
- * idea from silently running the passive-maker engine.
+ * an honest description of a strategy family. `custom` starts the current
+ * passive-maker builder, and only `ready` cards have their named runtime
+ * behind them. This prevents a named research idea from silently running the
+ * passive-maker engine.
  */
 export const makerStrategyCatalog: readonly MakerStrategyPreset[] = [
+  {
+    id: "custom",
+    name: "Custom strategy",
+    shortName: "Your policy",
+    summary:
+      "Starts the full strategy builder from bounded Paper settings, so you can choose your own markets, sizing, inventory policy, and hedge behavior.",
+    mode: "Paper",
+    state: "custom",
+    nextStep: "Open the builder with a short generated draft name",
+  },
   {
     id: "inventory-recycling",
     name: "Inventory recycling",
@@ -97,6 +109,54 @@ export const makerStrategyCatalog: readonly MakerStrategyPreset[] = [
     nextStep: "Needs a fixed-policy baseline and validated adaptive controls",
   },
 ] as const;
+
+const customModifiers = [
+  "Cinder",
+  "Drift",
+  "Ember",
+  "Lumen",
+  "Moss",
+  "Nova",
+  "Sable",
+  "Tidal",
+  "Vivid",
+  "Wisp",
+] as const;
+
+const customNouns = [
+  "Arc",
+  "Bloom",
+  "Kite",
+  "Mica",
+  "Orbit",
+  "Pine",
+  "Quill",
+  "Rook",
+  "Vale",
+  "Wave",
+] as const;
+
+/** Gives an unsaved custom draft a short, legible unique-ish name. The server
+ * remains authoritative for concurrent name collisions. */
+export function customStrategyName(
+  existingNames: Iterable<string>,
+  random: () => number = Math.random,
+): string {
+  const existing = new Set(
+    Array.from(existingNames, (name) => name.toLocaleLowerCase()),
+  );
+  const combinations = customModifiers.length * customNouns.length;
+  const bounded = Math.min(0.999_999_999, Math.max(0, random()));
+  const start = Math.floor(bounded * combinations);
+  for (let offset = 0; offset < combinations; offset += 1) {
+    const index = (start + offset) % combinations;
+    const modifier = customModifiers[index % customModifiers.length];
+    const noun = customNouns[Math.floor(index / customModifiers.length)];
+    const name = `Custom ${modifier} ${noun}`;
+    if (!existing.has(name.toLocaleLowerCase())) return name;
+  }
+  return `Custom Draft ${existing.size + 1}`;
+}
 
 export function makerStrategyPreset(
   id: MakerStrategyPresetId,

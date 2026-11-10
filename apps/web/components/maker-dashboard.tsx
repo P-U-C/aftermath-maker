@@ -92,6 +92,7 @@ import {
   inventoryRecyclingDefault,
 } from "../lib/inventory-recycling-default";
 import {
+  customStrategyName,
   makerStrategyCatalog,
   makerStrategyPreset,
   type MakerStrategyPresetId,
@@ -1879,7 +1880,7 @@ function DashboardBody() {
   async function createStrategy(
     presetId: Extract<
       MakerStrategyPresetId,
-      "inventory-recycling" | "fill-driven-aftermath-hedge"
+      "custom" | "inventory-recycling" | "fill-driven-aftermath-hedge"
     > = "inventory-recycling",
   ) {
     if (createStrategyInFlight.current) return;
@@ -1892,9 +1893,11 @@ function DashboardBody() {
     const names = new Set(
       strategies.map((strategy) => strategy.name.toLowerCase()),
     );
+    const draftName =
+      presetId === "custom" ? customStrategyName(names) : preset.name;
     let sequence = 1;
     const presetName = () =>
-      sequence === 1 ? preset.name : `${preset.name} ${sequence}`;
+      sequence === 1 ? draftName : `${draftName} ${sequence}`;
     while (names.has(presetName().toLowerCase())) sequence += 1;
     let createdId: string | null = null;
     try {
@@ -1939,13 +1942,13 @@ function DashboardBody() {
         createdId = result.strategy.id;
         setNewStrategySource({
           id: result.strategy.id,
-          name: preset.name,
+          name: draftName,
         });
         setStrategyCatalogOpen(false);
         setStrategyEditing(true);
         setStrategyStep(0);
         setNotice(
-          `${preset.name} created in Paper. Nothing changes for your bundles until you attach it.`,
+          `${draftName} created in Paper. Nothing changes for your bundles until you attach it.`,
           "success",
         );
       });
@@ -6855,7 +6858,11 @@ function DashboardBody() {
           )}
           <form
             hidden={strategySummaryMode}
-            className="settings-panel"
+            className={
+              strategyCatalogOpen
+                ? "settings-panel is-selecting-strategy"
+                : "settings-panel"
+            }
             data-strategy-step={strategyStep}
             onSubmit={saveConfig}
           >
@@ -6899,20 +6906,20 @@ function DashboardBody() {
                 <header className="strategy-bench-header">
                   <div>
                     <span className="strategy-bench-kicker">
-                      Preloaded defaults
+                      Choose a starting point
                     </span>
                     <h2 id="strategy-bench-title">Strategy bench</h2>
                     <p>
-                      Start with a bounded Paper draft. Research tracks stay
-                      visible here, but cannot silently use the passive-maker
-                      runtime.
+                      Choose a default or start a Custom draft. Research tracks
+                      stay visible here, but cannot silently use the
+                      passive-maker runtime.
                     </p>
                   </div>
                   <span
                     className="strategy-bench-count"
-                    aria-label="Seven strategy families"
+                    aria-label="Seven default strategy families plus Custom"
                   >
-                    7 families
+                    7 defaults + Custom
                   </span>
                 </header>
                 <div className="strategy-bench-grid">
@@ -6932,13 +6939,17 @@ function DashboardBody() {
                         <span
                           className={`strategy-bench-state is-${preset.state}`}
                         >
-                          {preset.state === "ready" ? "Ready" : "Research"}
+                          {preset.state === "custom"
+                            ? "Custom"
+                            : preset.state === "ready"
+                              ? "Ready"
+                              : "Research"}
                         </span>
                       </header>
                       <p>{preset.summary}</p>
                       <footer>
                         <small>{preset.nextStep}</small>
-                        {preset.state === "ready" ? (
+                        {preset.state !== "research" ? (
                           <Button
                             variant="secondary"
                             type="button"
@@ -6946,6 +6957,7 @@ function DashboardBody() {
                               void createStrategy(
                                 preset.id as Extract<
                                   MakerStrategyPresetId,
+                                  | "custom"
                                   | "inventory-recycling"
                                   | "fill-driven-aftermath-hedge"
                                 >,
@@ -6953,9 +6965,11 @@ function DashboardBody() {
                             }
                             disabled={Boolean(busy)}
                           >
-                            {preset.id === "inventory-recycling"
-                              ? "Create Paper draft"
-                              : "Create hedge draft"}
+                            {preset.id === "custom"
+                              ? "Start custom draft"
+                              : preset.id === "inventory-recycling"
+                                ? "Create Paper draft"
+                                : "Create hedge draft"}
                           </Button>
                         ) : (
                           <span className="strategy-bench-blocked">
