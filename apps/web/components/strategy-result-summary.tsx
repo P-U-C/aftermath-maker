@@ -22,6 +22,19 @@ export type StrategyResultSide = {
 export type StrategyResults = {
   requiredCollateralUsd: number;
   paper: StrategyResultSide;
+  /** Fixed Paper evidence, shown separately from trading P&L. */
+  paperEvidence?: Array<{
+    marketId: string;
+    symbol: string;
+    fills: number;
+    makerFills: number;
+    volumeUsd: number;
+    knownFeesUsd: number;
+    feeTermsMissing: number;
+    markout5mUsd: number | null;
+    markout5mMeasuredFills: number;
+    markout5mUnavailableFills: number;
+  }>;
   live: StrategyResultSide;
   liveReadError?: string | null;
 };
@@ -136,6 +149,90 @@ function ResultStat({
   );
 }
 
+function PaperEvidence({
+  rows,
+}: {
+  rows: NonNullable<StrategyResults["paperEvidence"]>;
+}) {
+  if (!rows.length) return null;
+  return (
+    <section
+      className="strategy-paper-evidence"
+      aria-label="Paper evidence by market"
+    >
+      <header>
+        <div>
+          <h4>Paper evidence by market</h4>
+          <p>
+            Frozen fee terms and 5-minute index markouts. Markouts measure
+            post-fill selection; they are not trading P&amp;L.
+          </p>
+        </div>
+      </header>
+      <div className="strategy-paper-evidence-scroll">
+        <table>
+          <thead>
+            <tr>
+              <th scope="col">Market</th>
+              <th scope="col">Flow</th>
+              <th scope="col">Known fees</th>
+              <th scope="col">5m markout</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((row) => {
+              const markoutCoverage = `${row.markout5mMeasuredFills}/${row.makerFills} measured`;
+              const waiting = Math.max(
+                0,
+                row.makerFills -
+                  row.markout5mMeasuredFills -
+                  row.markout5mUnavailableFills,
+              );
+              return (
+                <tr key={row.marketId}>
+                  <th scope="row">{row.symbol}</th>
+                  <td>
+                    {formatMoney(row.volumeUsd)} · {row.fills}{" "}
+                    {row.fills === 1 ? "fill" : "fills"}
+                  </td>
+                  <td>
+                    <strong>{part(-row.knownFeesUsd)}</strong>
+                    {row.feeTermsMissing ? (
+                      <small>{row.feeTermsMissing} legacy missing</small>
+                    ) : (
+                      <small>all terms captured</small>
+                    )}
+                  </td>
+                  <td>
+                    <strong
+                      className={
+                        row.markout5mUsd === null
+                          ? undefined
+                          : `is-${moneyTone(row.markout5mUsd)}`
+                      }
+                    >
+                      {row.markout5mUsd === null
+                        ? "—"
+                        : formatSignedMoney(row.markout5mUsd)}
+                    </strong>
+                    <small>
+                      {markoutCoverage}
+                      {row.markout5mUnavailableFills
+                        ? ` · ${row.markout5mUnavailableFills} unavailable`
+                        : ""}
+                      {waiting ? ` · ${waiting} waiting` : ""}
+                    </small>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  );
+}
+
 /** A strategy's overall trading result across every bundle that has run it.
  * Paper and Live sit side by side and are never added together, and rewards
  * are never added to either. */
@@ -165,6 +262,7 @@ export function StrategyResultSummary({
           }
         />
       </dl>
+      <PaperEvidence rows={results.paperEvidence ?? []} />
       <p className="strategy-result-rewards">
         Rewards aren&apos;t included. Paper doesn&apos;t earn them, and Live
         rewards are paid per wallet with no validated estimate for this epoch.

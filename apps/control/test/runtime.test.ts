@@ -637,10 +637,14 @@ describe("runtime execution boundaries", () => {
       marketId: "0x5678",
       bestBid: 9.9,
       bestAsk: 9.9,
+      makerFeeRate: 0,
+      builderFeeRate: 0.0001,
     });
     harness.tenant.recordPaperHedge({
       trialId: "runtime",
       makerFill: paperFill!,
+      takerFeeRate: 0,
+      builderFeeRate: 0.0001,
     });
     const performance = await runtime.performance();
     expect(performance.paper).toMatchObject({
