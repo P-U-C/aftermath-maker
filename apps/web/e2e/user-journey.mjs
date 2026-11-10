@@ -749,6 +749,17 @@ async function waitForPort(portNumber) {
   });
 }
 
+async function waitForHttp(url) {
+  try {
+    const response = await fetch(url, {
+      signal: AbortSignal.timeout(1_000),
+    });
+    return response.ok;
+  } catch {
+    return false;
+  }
+}
+
 async function ensurePortFree(portNumber) {
   if (await waitForPort(portNumber)) {
     throw new Error(
@@ -766,7 +777,10 @@ async function startServer() {
   });
   let output = "";
   for (let attempt = 0; attempt < 120; attempt += 1) {
-    if (await waitForPort(port)) return child;
+    // A listening port is not enough: Next can accept a connection while its
+    // first route is still unavailable. The browser audit needs the app, not
+    // merely its process, to be ready before opening its first fixture page.
+    if (await waitForHttp(baseUrl)) return child;
     if (child.exitCode !== null) {
       throw new Error(`Next start exited early: ${output.slice(-2_000)}`);
     }
@@ -833,9 +847,27 @@ async function newPage(
 }
 
 async function goToDesk(page) {
-  await page.goto(baseUrl, { waitUntil: "domcontentloaded" });
-  await page.getByRole("navigation", { name: "Maker views" }).waitFor();
-  await page.locator('.maker-view[data-view="desk"]:not([hidden])').waitFor();
+  // Request the Desk explicitly. An unconfigured fixture intentionally routes
+  // a bare root URL to Venues; this audit starts from the Desk contract and
+  // must not race that onboarding redirect.
+  await page.goto(`${baseUrl}/#desk`, { waitUntil: "domcontentloaded" });
+  try {
+    await page
+      .getByRole("navigation", { name: "Maker views" })
+      .waitFor({ timeout: 15_000 });
+    await page
+      .locator('.maker-view[data-view="desk"]:not([hidden])')
+      .waitFor({ timeout: 15_000 });
+  } catch (error) {
+    const body = await page
+      .locator("body")
+      .innerText({ timeout: 1_000 })
+      .catch(() => "<body unavailable>");
+    throw new Error(
+      `Maker Desk did not become ready. Rendered page: ${body.replace(/\s+/g, " ").slice(0, 1_000)}`,
+      { cause: error },
+    );
+  }
 }
 
 async function capture(page, name) {
@@ -2911,9 +2943,7 @@ async function round6ReviewCreatesBundle(browser) {
       !(await dialog.getByRole("button", { name: "Continue" }).isEnabled()),
       "Paired strategy allowed creation without a hedge account",
     );
-    await dialog
-      .getByText(/Choose a distinct authorized Taker account/)
-      .waitFor();
+    await dialog.getByText(/Choose a distinct Taker account/).waitFor();
     await dialog
       .getByLabel("Taker account (required for this strategy)")
       .selectOption("1746");
@@ -3426,9 +3456,18 @@ async function strategyPolishFlow(browser) {
     const review = view.locator(".strategy-review-changes");
     await review.waitFor();
     assert(!(await review.innerText()).includes("{"), "Review showed raw JSON");
-    await view
-      .getByRole("button", { name: "New strategy", exact: true })
-      .click();
+    async function createCustomDraft() {
+      await view
+        .getByRole("button", { name: "New strategy", exact: true })
+        .click();
+      const bench = view.getByLabel("Strategy bench");
+      await bench.waitFor();
+      await bench
+        .getByRole("button", { name: "Start custom draft", exact: true })
+        .click();
+    }
+
+    await createCustomDraft();
     const created = state.strategies[0];
     const name = view.getByLabel("Strategy name", { exact: true });
     await name.waitFor({ state: "visible" });
@@ -3447,11 +3486,11 @@ async function strategyPolishFlow(browser) {
         .getAttribute("data-strategy-step")) === "0",
       "New strategy did not open on Goal",
     );
-    await view.getByText(/Starts from Core strategy's settings/).waitFor();
-    await capture(page, "r8-new-strategy-goal-desktop-light.png");
     await view
-      .getByRole("button", { name: "New strategy", exact: true })
-      .click();
+      .getByText(/Starts from the Custom \w+ \w+ Paper preset/)
+      .waitFor();
+    await capture(page, "r8-new-strategy-goal-desktop-light.png");
+    await createCustomDraft();
     assert(
       state.strategies[0].name !== created.name,
       "Two New strategy clicks collided on a name",
@@ -3466,14 +3505,12 @@ async function strategyPolishFlow(browser) {
       message:
         "Another strategy already uses this name. Choose a different name.",
     });
-    await view
-      .getByRole("button", { name: "New strategy", exact: true })
-      .click();
-    await page.waitForFunction(
-      () => document.querySelector("#strategy-name")?.value === "Strategy 4",
+    await createCustomDraft();
+    await page.waitForFunction(() =>
+      document.querySelector("#strategy-name")?.value?.endsWith(" 2"),
     );
     assert(
-      state.strategies[0].name === "Strategy 4",
+      state.strategies[0].name.endsWith(" 2"),
       "Archived name collision was not retried",
     );
     await goToStrategyStep(page, 4);
@@ -3519,6 +3556,11 @@ async function strategyApplyRaceAndAttach(browser) {
     await capture(page, "r8-strategy-summary-header-phone-dark.png");
     await view
       .getByRole("button", { name: "New strategy", exact: true })
+      .click();
+    const bench = view.getByLabel("Strategy bench");
+    await bench.waitFor();
+    await bench
+      .getByRole("button", { name: "Start custom draft", exact: true })
       .click();
     const created = state.strategies[0];
     await view.locator(".strategy-new-label:visible").waitFor();
@@ -3750,12 +3792,24 @@ async function round8KitHeaders(browser) {
           .locator(`.maker-view[data-view="${view}"]:not([hidden]) ${selector}`)
           .first();
         await header.waitFor();
-        const structure = await page
-          .locator(`.maker-view[data-view="${view}"]:not([hidden])`)
-          .evaluate((node) => ({
-            nestedCards: node.querySelectorAll(".ui-card .ui-card").length,
-            bareTables: node.querySelectorAll("table:not(.ui-table)").length,
-          }));
+        let structure;
+        try {
+          structure = await page
+            .locator(`.maker-view[data-view="${view}"]:not([hidden])`)
+            .evaluate((node) => ({
+              nestedCards: node.querySelectorAll(".ui-card .ui-card").length,
+              bareTables: node.querySelectorAll("table:not(.ui-table)").length,
+            }));
+        } catch (error) {
+          const body = await page
+            .locator("body")
+            .innerText({ timeout: 1_000 })
+            .catch(() => "<body unavailable>");
+          throw new Error(
+            `Maker Kit ${view} view disappeared after its header rendered. Hash: ${await page.evaluate(() => window.location.hash)}. Rendered page: ${body.replace(/\s+/g, " ").slice(0, 1_000)}`,
+            { cause: error },
+          );
+        }
         assert(
           structure.nestedCards === 0 && structure.bareTables === 0,
           `Maker Kit components drifted on ${view}: ${JSON.stringify(structure)}`,
