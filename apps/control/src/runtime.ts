@@ -239,6 +239,31 @@ const snapshotBookLevels = (
     )
     .slice(0, 50);
 
+/** Dollar depth around an independent index. Missing/corrupt levels are not
+ * treated as liquidity; callers mark the observation incomplete instead. */
+const depthUsdWithinBps = (
+  levels: ReadonlyArray<[number, number]> | null,
+  indexPrice: number,
+  bps: number,
+): number | null => {
+  if (!levels || !Number.isFinite(indexPrice) || indexPrice <= 0) return null;
+  const maximumDistance = indexPrice * (bps / 10_000);
+  let total = 0;
+  for (const [price, size] of levels) {
+    if (
+      !Number.isFinite(price) ||
+      !Number.isFinite(size) ||
+      price <= 0 ||
+      size < 0 ||
+      Math.abs(price - indexPrice) > maximumDistance
+    ) {
+      continue;
+    }
+    total += price * size;
+  }
+  return total;
+};
+
 const initialSnapshot = (): RuntimeSnapshot => ({
   mode: "paper",
   running: false,
@@ -3598,6 +3623,74 @@ export class MakerRuntime {
       );
       const openInterestBase = Math.abs(market.marketState.openInterest);
       const maxOpenInterestBase = market.marketParams.maxOpenInterest;
+
+      // Persist a source-stamped Paper/Observe snapshot before the quote
+      // decision. Ranking reads these later; it never needs to infer a book
+      // from a future fill or use an absent value as free liquidity.
+      if (config.mode !== "live") {
+        const bidDepth = depthUsdWithinBps(
+          book?.bids ?? null,
+          market.indexPrice,
+          50,
+        );
+        const askDepth = depthUsdWithinBps(
+          book?.asks ?? null,
+          market.indexPrice,
+          50,
+        );
+        const fundingRate = market.estimatedFundingRate();
+        const complete =
+          Number.isFinite(market.indexPrice) &&
+          market.indexPrice > 0 &&
+          Number.isFinite(bestBid) &&
+          Number.isFinite(bestAsk) &&
+          bestBid > 0 &&
+          bestAsk > bestBid &&
+          bidDepth !== null &&
+          askDepth !== null &&
+          summary?.volume24hUsd !== null &&
+          summary?.volume24hUsd !== undefined &&
+          Number.isFinite(summary.volume24hUsd) &&
+          Number.isFinite(openInterestBase * market.indexPrice) &&
+          Number.isFinite(fundingRate) &&
+          summary?.sessionOpen !== null &&
+          summary?.sessionOpen !== undefined;
+        this.store.recordMarketObservation({
+          marketId: selected.marketId,
+          observedAtMs: observedAt.getTime(),
+          sourceTimestampMs: observedAt.getTime(),
+          indexUsd: String(
+            Number.isFinite(market.indexPrice) ? market.indexPrice : 0,
+          ),
+          bestBidUsd: String(Number.isFinite(bestBid) ? bestBid : 0),
+          bestAskUsd: String(Number.isFinite(bestAsk) ? bestAsk : 0),
+          depthBid50BpsUsd: String(bidDepth ?? 0),
+          depthAsk50BpsUsd: String(askDepth ?? 0),
+          volume24hUsd: String(summary?.volume24hUsd ?? 0),
+          openInterestUsd: String(
+            Number.isFinite(openInterestBase * market.indexPrice)
+              ? openInterestBase * market.indexPrice
+              : 0,
+          ),
+          fundingRateRaw: String(
+            Number.isFinite(fundingRate) ? fundingRate : 0,
+          ),
+          fundingPeriodMs: 0,
+          makerFeeRate: String(summary?.makerFee ?? 0),
+          takerFeeRate: String(summary?.takerFee ?? 0),
+          sessionOpen: summary?.sessionOpen ?? false,
+          source: "aftermath-runtime-market",
+          network: "mainnet",
+          coverage: complete ? "complete" : "unavailable",
+          raw: {
+            quoteMode: config.mode,
+            marketSummaryPresent: Boolean(summary),
+            indexPrice: market.indexPrice,
+            bestBid,
+            bestAsk,
+          },
+        });
+      }
 
       if (inputs.executeLive && !executionIsCurrent()) return;
 
