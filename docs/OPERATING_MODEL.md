@@ -122,13 +122,31 @@ Maker now supplies the measurement and control foundation for those experiments.
 
 ## Strategy families to test
 
-These are hypotheses to compare in Observe, Paper, and small Live runs:
+Maker's Strategy bench lists the following family contracts. A named family is not
+an execution promise: only the two Aftermath variants currently create a Paper
+draft. Every new draft is unattached, and neither path enables Live trading.
 
-- **Inventory-aware quoting:** the current baseline, with market-specific targets and limits.
-- **Volatility-adaptive quoting:** widen, reduce size, or pause when realized volatility and source divergence cross thresholds.
-- **Paired-account hedging:** the implemented same-venue baseline for reducing bot-attributed delta while measuring taker fees and residual exposure.
-- **Cross-venue hedged market making:** quote on Aftermath and hedge externally when expected spread exceeds hedge, funding, fee, gas, and basis costs.
-- **Funding and basis:** pair spot and perps, or two perp venues, while measuring funding reversal, margin, liquidation, and basis risk.
+- **Inventory recycling / passive maker (Paper ready):** the current baseline,
+  with two-sided inventory-aware quotes, market-specific targets, and limits.
+- **Fill-driven Aftermath hedge (Paper ready):** an optional addition to passive
+  making. It only hedges independently attributed fills and requires two
+  distinct authorized Aftermath accounts before attachment.
+- **Selective rotation (Observe research):** move bounded capital only when a
+  measured maker or hold opportunity exceeds switching costs.
+- **Hedged hold (Observe research):** hedge an externally filled position with
+  a second Aftermath account, then hold for a measured interval.
+- **Cross-venue funding arbitrage (Observe research):** a confirmed Aftermath
+  short fill paired with an exact-base Hyperliquid long only where funding
+  clears entry, exit, basis, and capital costs. Initial work is read-only
+  scanner and deterministic Paper replay; it has no Live path.
+- **Cross-venue hedged market making (Observe research):** passive Aftermath
+  quotes around an independent fair price, with capped external hedges only
+  after confirmed fills.
+- **Adaptive quoting (Observe research):** widen, reduce size, skew, or pause
+  from measured volatility, divergence, time-of-day, and post-fill markouts.
+
+Objectives remain separate from engines:
+
 - **Farming:** rank reported flow and turnover per dollar of balanced near-book depth, with competition, uptime proxies, funding, capacity, and book balance as controls. This mode deliberately allows a high-turnover market to win when its measured capital efficiency is stronger.
 - **Profit:** rank half-spread after known maker and builder fees, then favor stable markets with stronger two-sided exit depth and lower funding risk.
 - **Both:** require positive pre-risk edge and rank the harmonic mean of Farming and Profit scores. This prevents a very high farming score from fully masking weak fill economics.

@@ -88,9 +88,14 @@ import {
 } from "../lib/run-state";
 import { hedgeSizingSuggestion } from "../lib/hedge-suggestion";
 import {
-  INVENTORY_RECYCLING_NAME,
+  fillDrivenAftermathHedgeDefault,
   inventoryRecyclingDefault,
 } from "../lib/inventory-recycling-default";
+import {
+  makerStrategyCatalog,
+  makerStrategyPreset,
+  type MakerStrategyPresetId,
+} from "../lib/maker-strategy-catalog";
 import { strategyIssueFromServer } from "../lib/strategy-validation";
 import { mergeStrategyReads } from "../lib/strategy-snapshots";
 import {
@@ -1255,6 +1260,7 @@ function DashboardBody() {
   const [strategyMarketRule, setStrategyMarketRule] =
     useState<StrategyMarketRule>({ kind: "quick-pick", pick: "balanced" });
   const [strategyNameDraft, setStrategyNameDraft] = useState("");
+  const [strategyCatalogOpen, setStrategyCatalogOpen] = useState(false);
   const createStrategyInFlight = useRef(false);
   const pendingStrategyCreateIds = useRef(new Set<string>());
   const [newStrategySource, setNewStrategySource] = useState<{
@@ -1870,21 +1876,25 @@ function DashboardBody() {
     return true;
   }
 
-  async function createStrategy() {
+  async function createStrategy(
+    presetId: Extract<
+      MakerStrategyPresetId,
+      "inventory-recycling" | "fill-driven-aftermath-hedge"
+    > = "inventory-recycling",
+  ) {
     if (createStrategyInFlight.current) return;
     createStrategyInFlight.current = true;
-    const startingConfig = inventoryRecyclingDefault(
-      defaultConfig,
-      config.markets,
-    );
+    const preset = makerStrategyPreset(presetId);
+    const startingConfig =
+      presetId === "fill-driven-aftermath-hedge"
+        ? fillDrivenAftermathHedgeDefault(defaultConfig, config.markets)
+        : inventoryRecyclingDefault(defaultConfig, config.markets);
     const names = new Set(
       strategies.map((strategy) => strategy.name.toLowerCase()),
     );
     let sequence = 1;
     const presetName = () =>
-      sequence === 1
-        ? INVENTORY_RECYCLING_NAME
-        : `${INVENTORY_RECYCLING_NAME} ${sequence}`;
+      sequence === 1 ? preset.name : `${preset.name} ${sequence}`;
     while (names.has(presetName().toLowerCase())) sequence += 1;
     let createdId: string | null = null;
     try {
@@ -1929,12 +1939,13 @@ function DashboardBody() {
         createdId = result.strategy.id;
         setNewStrategySource({
           id: result.strategy.id,
-          name: INVENTORY_RECYCLING_NAME,
+          name: preset.name,
         });
+        setStrategyCatalogOpen(false);
         setStrategyEditing(true);
         setStrategyStep(0);
         setNotice(
-          "Strategy created. Nothing changes for your bundles until you attach it.",
+          `${preset.name} created in Paper. Nothing changes for your bundles until you attach it.`,
           "success",
         );
       });
@@ -6599,7 +6610,10 @@ function DashboardBody() {
                 <div className="strategy-summary-actions">
                   <Button
                     variant="secondary"
-                    onClick={() => void createStrategy()}
+                    onClick={() => {
+                      setStrategyEditing(true);
+                      setStrategyCatalogOpen(true);
+                    }}
                     disabled={Boolean(busy)}
                   >
                     New strategy
@@ -6860,10 +6874,12 @@ function DashboardBody() {
               <Button
                 variant="secondary"
                 className="strategy-new-button"
-                onClick={() => void createStrategy()}
+                onClick={() => setStrategyCatalogOpen((current) => !current)}
                 disabled={Boolean(busy)}
+                aria-expanded={strategyCatalogOpen}
+                aria-controls="strategy-bench"
               >
-                New strategy
+                {strategyCatalogOpen ? "Close strategy bench" : "New strategy"}
               </Button>
             </div>
 
@@ -6874,6 +6890,84 @@ function DashboardBody() {
                 ? ` Used by ${selectedStrategy.usedBy.map((bundle) => bundle.name).join(", ")}.`
                 : " Not attached to a bundle yet."}
             </p>
+            {strategyCatalogOpen && (
+              <section
+                id="strategy-bench"
+                className="strategy-bench"
+                aria-labelledby="strategy-bench-title"
+              >
+                <header className="strategy-bench-header">
+                  <div>
+                    <span className="strategy-bench-kicker">
+                      Preloaded defaults
+                    </span>
+                    <h2 id="strategy-bench-title">Strategy bench</h2>
+                    <p>
+                      Start with a bounded Paper draft. Research tracks stay
+                      visible here, but cannot silently use the passive-maker
+                      runtime.
+                    </p>
+                  </div>
+                  <span
+                    className="strategy-bench-count"
+                    aria-label="Seven strategy families"
+                  >
+                    7 families
+                  </span>
+                </header>
+                <div className="strategy-bench-grid">
+                  {makerStrategyCatalog.map((preset) => (
+                    <article
+                      key={preset.id}
+                      className={`strategy-bench-card is-${preset.state}`}
+                      data-strategy-preset={preset.id}
+                    >
+                      <header>
+                        <div>
+                          <span className="strategy-bench-mode">
+                            {preset.mode}
+                          </span>
+                          <h3>{preset.name}</h3>
+                        </div>
+                        <span
+                          className={`strategy-bench-state is-${preset.state}`}
+                        >
+                          {preset.state === "ready" ? "Ready" : "Research"}
+                        </span>
+                      </header>
+                      <p>{preset.summary}</p>
+                      <footer>
+                        <small>{preset.nextStep}</small>
+                        {preset.state === "ready" ? (
+                          <Button
+                            variant="secondary"
+                            type="button"
+                            onClick={() =>
+                              void createStrategy(
+                                preset.id as Extract<
+                                  MakerStrategyPresetId,
+                                  | "inventory-recycling"
+                                  | "fill-driven-aftermath-hedge"
+                                >,
+                              )
+                            }
+                            disabled={Boolean(busy)}
+                          >
+                            {preset.id === "inventory-recycling"
+                              ? "Create Paper draft"
+                              : "Create hedge draft"}
+                          </Button>
+                        ) : (
+                          <span className="strategy-bench-blocked">
+                            No execution engine yet
+                          </span>
+                        )}
+                      </footer>
+                    </article>
+                  ))}
+                </div>
+              </section>
+            )}
             <header className="strategy-title">
               <div className="strategy-name-column">
                 {newStrategySource?.id === selectedStrategyId && (
