@@ -1,5 +1,3 @@
-export const INVENTORY_RECYCLING_NAME = "Inventory recycling";
-
 type StrategyConfig = {
   markets: Array<{ overrides?: object | undefined }>;
   mode: "observe" | "paper" | "live";
@@ -11,7 +9,13 @@ type StrategyConfig = {
   maxLeverage: number;
   flattenOnRotate: boolean;
   autoRebalanceEnabled: boolean;
-  hedge: { enabled: boolean; accountId: string | null };
+  quoteSizeUsd: number;
+  hedge: {
+    enabled: boolean;
+    accountId: string | null;
+    thresholdUsd: number;
+    maxOrderUsd: number;
+  };
 };
 
 /** A new, unattached Paper strategy. Existing market IDs may be carried over
@@ -36,6 +40,27 @@ export function inventoryRecyclingDefault<Config extends StrategyConfig>(
       ...defaults.hedge,
       enabled: false,
       accountId: null,
+    },
+  } as Config;
+}
+
+/**
+ * This enables the existing same-venue hedge policy only. Account binding is
+ * intentionally left empty: a bundle must still supply two distinct,
+ * authorized accounts before it can run.
+ */
+export function fillDrivenAftermathHedgeDefault<Config extends StrategyConfig>(
+  defaults: Config,
+  markets: Config["markets"],
+): Config {
+  const paper = inventoryRecyclingDefault(defaults, markets);
+  return {
+    ...paper,
+    hedge: {
+      ...paper.hedge,
+      enabled: true,
+      thresholdUsd: paper.quoteSizeUsd,
+      maxOrderUsd: paper.quoteSizeUsd,
     },
   } as Config;
 }

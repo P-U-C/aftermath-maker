@@ -2153,9 +2153,25 @@ async function strategyLibraryAndBundleAttachment(browser) {
     await page
       .getByRole("button", { name: "New strategy", exact: true })
       .click();
+    const bench = page.getByLabel("Strategy bench");
+    await bench.waitFor();
+    assert(
+      (await bench.locator("[data-strategy-preset]").count()) === 7,
+      "The strategy bench did not show all seven default families",
+    );
+    assert(
+      (await bench
+        .getByText("No execution engine yet", { exact: true })
+        .count()) === 5,
+      "Research strategy families were offered an execution path",
+    );
+    await capture(page, "strategy-bench-desktop.png");
+    await bench
+      .getByRole("button", { name: "Create Paper draft", exact: true })
+      .click();
     await page
       .getByText(
-        "Strategy created. Nothing changes for your bundles until you attach it.",
+        "Inventory recycling created in Paper. Nothing changes for your bundles until you attach it.",
         {
           exact: true,
         },
@@ -2181,6 +2197,28 @@ async function strategyLibraryAndBundleAttachment(browser) {
       })
       .waitFor();
     await capture(page, "rfc-0002-strategy-attachment-desktop.png");
+  } finally {
+    await context.close();
+  }
+}
+
+async function strategyBenchFitsPhone(browser) {
+  const { context, page } = await newPage(browser, { width: 390, height: 844 });
+  try {
+    await goToDesk(page);
+    await page.getByRole("link", { name: "Strategy", exact: true }).click();
+    await page
+      .getByRole("button", { name: "New strategy", exact: true })
+      .click();
+    const bench = page.getByLabel("Strategy bench");
+    await bench.waitFor();
+    assert(
+      !(await page.evaluate(
+        () => document.documentElement.scrollWidth > window.innerWidth + 2,
+      )),
+      "Strategy bench overflows the 390px viewport",
+    );
+    await capture(page, "strategy-bench-phone.png");
   } finally {
     await context.close();
   }
@@ -3914,6 +3952,7 @@ try {
       await cleanStrategyLeavesWithoutPrompt(browser);
       await plainControlLog(browser);
       await strategyLibraryAndBundleAttachment(browser);
+      await strategyBenchFitsPhone(browser);
       await paperTrialRunsBesideBundles(browser);
       await staleStrategyDraftCannotApply(browser);
       await paperSimulationBlockerStaysVisible(browser);

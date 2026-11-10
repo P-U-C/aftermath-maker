@@ -1,7 +1,10 @@
 import { makerConfigSchema } from "@puc/core";
 import { describe, expect, it } from "vitest";
 
-import { inventoryRecyclingDefault } from "../lib/inventory-recycling-default";
+import {
+  fillDrivenAftermathHedgeDefault,
+  inventoryRecyclingDefault,
+} from "../lib/inventory-recycling-default";
 
 describe("new inventory recycling strategy", () => {
   it("does not inherit live execution, cross-account hedging, leverage, or market overrides", () => {
@@ -48,5 +51,27 @@ describe("new inventory recycling strategy", () => {
     expect(next.quoteSizeUsd).toBe(defaults.quoteSizeUsd);
     expect(makerConfigSchema.safeParse(next).success).toBe(true);
     expect(previous.mode).toBe("live");
+  });
+
+  it("creates a Paper hedge template without carrying either account into it", () => {
+    const defaults = makerConfigSchema.parse({
+      markets: [{ marketId: "0x1234", symbol: "MON" }],
+    });
+    const next = fillDrivenAftermathHedgeDefault(defaults, defaults.markets);
+
+    expect(next.mode).toBe("paper");
+    expect(next.makerAccountId).toBeNull();
+    expect(next.hedge).toMatchObject({
+      enabled: true,
+      accountId: null,
+      thresholdUsd: next.quoteSizeUsd,
+      maxOrderUsd: next.quoteSizeUsd,
+    });
+    const configuredBundle = makerConfigSchema.safeParse(next);
+    expect(configuredBundle.success).toBe(false);
+    expect(configuredBundle.error?.issues[0]?.path).toEqual([
+      "hedge",
+      "accountId",
+    ]);
   });
 });
