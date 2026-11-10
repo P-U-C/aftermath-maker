@@ -2886,6 +2886,16 @@ export class MakerRuntime {
       if (bestBid === undefined || bestAsk === undefined) {
         throw new Error("Orderbook has no two-sided price");
       }
+      // `this.markets` is a UI/ranking cache and may not have been refreshed
+      // for a newly started bundle. Freeze Paper costs from the same market
+      // object that supplied this cycle's book instead, so a valid Paper fill
+      // never becomes an "unknown fee" merely because no Markets request ran.
+      const makerFeeRate = Number.isFinite(market.marketParams.makerFee)
+        ? market.marketParams.makerFee
+        : null;
+      const takerFeeRate = Number.isFinite(market.marketParams.takerFee)
+        ? market.marketParams.takerFee
+        : null;
 
       if (config.mode === "paper") {
         const paperBuilderFeeRate =
@@ -2896,12 +2906,13 @@ export class MakerRuntime {
           // market.  These are simulator records only; no live order path is
           // reachable from this branch.
           this.store.cancelPaperOrders(paperTrialId, volumeRotateFromMarketId);
-          const priorBook = await this.venueRead(
+          const priorRead = await this.venueRead(
             this.gateway.getOrderbook(volumeRotateFromMarketId),
             "Volume close orderbook read",
           );
-          const priorBid = priorBook.orderbook.bestBidPrice;
-          const priorAsk = priorBook.orderbook.bestAskPrice;
+          const priorBook = priorRead.orderbook;
+          const priorBid = priorBook.bestBidPrice;
+          const priorAsk = priorBook.bestAskPrice;
           if (priorBid === undefined || priorAsk === undefined) {
             throw new Error("Volume close orderbook has no two-sided price");
           }
@@ -2911,9 +2922,11 @@ export class MakerRuntime {
             bestBid: priorBid,
             bestAsk: priorAsk,
             reason: "close",
-            takerFeeRate:
-              this.markets.find((item) => item.id === volumeRotateFromMarketId)
-                ?.takerFee ?? null,
+            takerFeeRate: Number.isFinite(
+              priorRead.market.marketParams.takerFee,
+            )
+              ? priorRead.market.marketParams.takerFee
+              : null,
           });
           if (closes.length) {
             const utcDate = new Date().toISOString().slice(0, 10);
@@ -2966,9 +2979,7 @@ export class MakerRuntime {
           marketId: selected.marketId,
           bestBid,
           bestAsk,
-          makerFeeRate:
-            this.markets.find((item) => item.id === selected!.marketId)
-              ?.makerFee ?? null,
+          makerFeeRate,
           builderFeeRate: paperBuilderFeeRate,
         });
         // Index is an independently maintained reference from the venue, not
@@ -2993,9 +3004,7 @@ export class MakerRuntime {
             this.store.recordPaperHedge({
               trialId: paperTrialId,
               makerFill: fill,
-              takerFeeRate:
-                this.markets.find((item) => item.id === selected!.marketId)
-                  ?.takerFee ?? null,
+              takerFeeRate,
               builderFeeRate: paperBuilderFeeRate,
             });
           }
@@ -3009,9 +3018,6 @@ export class MakerRuntime {
             // Fee terms are frozen on every simulated fill. Count both the
             // maker fill and immediate taker hedge; closes are added when the
             // dwell interval ends.
-            const takerFeeRate =
-              this.markets.find((item) => item.id === selected!.marketId)
-                ?.takerFee ?? null;
             this.paperVolumeFees!.usd += estimatedFills.reduce(
               (total, fill) =>
                 total +
@@ -3925,6 +3931,7 @@ export class MakerRuntime {
           // never the selected market's book.
           let unwindBestBid = bestBid;
           let unwindBestAsk = bestAsk;
+          let unwindTakerFeeRate = takerFeeRate;
           if (largest.marketId !== selected?.marketId) {
             const unwindBook = await this.venueRead(
               this.gateway.getOrderbook(largest.marketId),
@@ -3939,6 +3946,11 @@ export class MakerRuntime {
             }
             unwindBestBid = unwindBid;
             unwindBestAsk = unwindAsk;
+            unwindTakerFeeRate = Number.isFinite(
+              unwindBook.market.marketParams.takerFee,
+            )
+              ? unwindBook.market.marketParams.takerFee
+              : null;
           }
           const closed = this.store.closePaperMarket({
             trialId: paperTrialId,
@@ -3946,9 +3958,7 @@ export class MakerRuntime {
             bestBid: unwindBestBid,
             bestAsk: unwindBestAsk,
             reason: "unwind",
-            takerFeeRate:
-              this.markets.find((item) => item.id === largest.marketId)
-                ?.takerFee ?? null,
+            takerFeeRate: unwindTakerFeeRate,
           });
           if (closed.length) {
             this.store.logEvent({
