@@ -161,6 +161,51 @@ describe("five ordered bundle readiness stages", () => {
       }).stages[1].status,
     ).toBe("todo");
   });
+  it("blocks Paper before start when a selected account is not flat", () => {
+    const hedge = makerConfigSchema.parse({
+      ...config,
+      makerAccountId: "42",
+      hedge: {
+        ...config.hedge,
+        enabled: true,
+        accountId: "1927",
+        thresholdUsd: 10,
+        maxOrderUsd: 10,
+      },
+    });
+    const readiness = deriveBundleReadiness({
+      ...base,
+      config: hedge,
+      bundle: { ...base.bundle, takerAccountId: "1927" },
+      accounts: [
+        { accountId: "42", availableCollateralUsd: 100 },
+        {
+          accountId: "1927",
+          availableCollateralUsd: 100,
+          positionCount: 2,
+          openMakerOrderCount: 0,
+        },
+      ],
+    });
+    expect(readiness.stages[1]).toMatchObject({
+      id: "accounts",
+      status: "todo",
+      detail:
+        "Paper needs flat accounts: account 1927 has 2 position(s) and 0 resting Maker order(s). Flatten or cancel them in Venues",
+    });
+    try {
+      assertBundleReadyToStart({ name: "Core" }, readiness);
+      expect.fail("Paper must not start over an unreconciled account");
+    } catch (error) {
+      expect(classifyHttpError(error)).toMatchObject({
+        status: 409,
+        code: "bundle-not-ready-accounts",
+        publicMessage:
+          "Paper needs flat accounts: account 1927 has 2 position(s) and 0 resting Maker order(s). Flatten or cancel them in Venues before starting Core.",
+        fix: { kind: "venues" },
+      });
+    }
+  });
   it("counts collateral backing resting quotes, but not a position's margin", () => {
     const wide = makerConfigSchema.parse({
       ...config,
@@ -188,7 +233,7 @@ describe("five ordered bundle readiness stages", () => {
     });
     const holding = deriveBundleReadiness({
       ...base,
-      config: wide,
+      config: makerConfigSchema.parse({ ...wide, mode: "live" }),
       accounts: [
         {
           accountId: "42",

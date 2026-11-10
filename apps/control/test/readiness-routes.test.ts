@@ -251,6 +251,39 @@ describe("Start route and server-owned readiness", () => {
     }
   });
 
+  it("rejects Paper before the runtime starts when a selected account has positions", async () => {
+    const h = await appHarness();
+    try {
+      const tenant = h.store.forTenant(OWNER);
+      tenant.setConfig(
+        wideConfig("1796", { hedgeAccountId: "1927", marketCount: 1 }),
+      );
+      h.gateway.account("1796", 20);
+      const hedge = h.gateway.account("1927", 120);
+      hedge.positionCount = 2;
+      const bundleId = tenant.listBundles()[0]!.id;
+
+      const response = await start(h, bundleId);
+
+      expect(response.statusCode).toBe(409);
+      expect(response.json()).toMatchObject({
+        code: "bundle-not-ready-accounts",
+        error:
+          "Paper needs flat accounts: account 1927 has 2 position(s) and 0 resting Maker order(s). Flatten or cancel them in Venues before starting Core.",
+      });
+      expect(tenant.getStoredBundle(bundleId)?.status).toBe("stopped");
+      expect(
+        tenant
+          .listEvents(100)
+          .filter(
+            (event) => event.category === "runtime" && event.action === "start",
+          ),
+      ).toHaveLength(0);
+    } finally {
+      await h.close();
+    }
+  });
+
   it("re-reads $0 then $300 account state without a restart or cached readiness", async () => {
     const h = await appHarness();
     try {
