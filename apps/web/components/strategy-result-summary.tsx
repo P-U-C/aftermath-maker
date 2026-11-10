@@ -34,6 +34,21 @@ export type StrategyResults = {
     markout5mUsd: number | null;
     markout5mMeasuredFills: number;
     markout5mUnavailableFills: number;
+    adverseSelection: {
+      state: "collecting" | "within_limit" | "blocked";
+      measuredFills: number;
+      unavailableFills: number;
+      makerNotionalUsd: number;
+      totalMarkoutUsd: number | null;
+      averageMarkoutBps: number | null;
+      windowStartedAtMs: number;
+      policy: {
+        horizonMs: number;
+        windowMs: number;
+        minimumMeasuredFills: number;
+        maximumAverageMarkoutBps: number;
+      };
+    };
   }>;
   live: StrategyResultSide;
   liveReadError?: string | null;
@@ -177,6 +192,7 @@ function PaperEvidence({
               <th scope="col">Flow</th>
               <th scope="col">Known fees</th>
               <th scope="col">5m markout</th>
+              <th scope="col">Paper guard</th>
             </tr>
           </thead>
           <tbody>
@@ -188,6 +204,13 @@ function PaperEvidence({
                   row.markout5mMeasuredFills -
                   row.markout5mUnavailableFills,
               );
+              const guard = row.adverseSelection;
+              const guardLabel =
+                guard.state === "blocked"
+                  ? "New exposure paused"
+                  : guard.state === "within_limit"
+                    ? "Within limit"
+                    : "Collecting evidence";
               return (
                 <tr key={row.marketId}>
                   <th scope="row">{row.symbol}</th>
@@ -221,6 +244,23 @@ function PaperEvidence({
                         ? ` · ${row.markout5mUnavailableFills} unavailable`
                         : ""}
                       {waiting ? ` · ${waiting} waiting` : ""}
+                    </small>
+                  </td>
+                  <td>
+                    <strong
+                      className={
+                        guard.state === "blocked" ? "is-loss" : undefined
+                      }
+                    >
+                      {guardLabel}
+                    </strong>
+                    <small>
+                      {guard.averageMarkoutBps === null
+                        ? `${guard.measuredFills}/${guard.policy.minimumMeasuredFills} measured`
+                        : `${guard.averageMarkoutBps.toFixed(0)} bps across ${guard.measuredFills} fills`}
+                      {guard.state === "blocked"
+                        ? ` · limit ${guard.policy.maximumAverageMarkoutBps} bps`
+                        : ""}
                     </small>
                   </td>
                 </tr>

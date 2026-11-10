@@ -11,6 +11,7 @@ import {
 } from "@puc/aftermath";
 import {
   decimalToBaseUnits,
+  evaluatePaperAdverseSelection,
   allocateRewardShareVolume,
   integratorInspectionSchema,
   makerConfigSchema,
@@ -827,6 +828,15 @@ export async function buildServer({
       gasUsedMist: number | null;
       suiUsd: number | null;
     }> = [];
+    const paperAdverseSelection = new Map<
+      string,
+      Array<{
+        fillAtMs: number;
+        sizeUsd: number;
+        markoutUsd: number | null;
+        coverage: "complete" | "partial" | "stale" | "unavailable";
+      }>
+    >();
     const paperGaps = ["Funding isn't simulated in Paper yet."];
     const liveFills: StrategyResultFill[] = [];
     const liveGas: Array<{
@@ -894,6 +904,14 @@ export async function buildServer({
         } else {
           evidence.markout5mUnavailableFills += 1;
         }
+        const observations = paperAdverseSelection.get(markout.marketId) ?? [];
+        observations.push({
+          fillAtMs: markout.fillAtMs,
+          sizeUsd: markout.sizeUsd,
+          markoutUsd: markout.markoutUsd,
+          coverage: markout.coverage,
+        });
+        paperAdverseSelection.set(markout.marketId, observations);
       }
       paperGas.push(...scoped.listStrategyGas(attachment, "paper"));
       const paperPruned =
@@ -996,11 +1014,18 @@ export async function buildServer({
           gaps: paperGaps,
         }),
         paperEvidence: [...paperEvidence.values()]
-          .map((row) => ({
-            ...row,
-            markout5mUsd:
-              row.markout5mMeasuredFills > 0 ? row.markout5mUsd : null,
-          }))
+          .map((row) => {
+            const adverseSelection = evaluatePaperAdverseSelection({
+              asOfMs: Date.now(),
+              observations: paperAdverseSelection.get(row.marketId) ?? [],
+            });
+            return {
+              ...row,
+              markout5mUsd:
+                row.markout5mMeasuredFills > 0 ? row.markout5mUsd : null,
+              adverseSelection,
+            };
+          })
           .sort((left, right) => left.symbol.localeCompare(right.symbol)),
         live: summarizeStrategyResult({
           fills: liveFills,

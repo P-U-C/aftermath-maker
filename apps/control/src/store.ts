@@ -487,6 +487,15 @@ export type StrategyPaperMarkoutRow = {
   marketId: string;
   orderKey: string;
   horizonMs: number;
+  fillAtMs: number;
+  sizeUsd: number;
+  markoutUsd: number | null;
+  coverage: Coverage;
+};
+
+export type PaperAdverseSelectionMarkoutRow = {
+  fillAtMs: number;
+  sizeUsd: number;
   markoutUsd: number | null;
   coverage: Coverage;
 };
@@ -3823,7 +3832,8 @@ export class TenantStore {
       this.db
         .prepare(
           `SELECT markout.market_id, markout.order_key, markout.horizon_ms,
-                  markout.markout_usd, markout.coverage
+                  markout.fill_at_ms, fill.size_usd, markout.markout_usd,
+                  markout.coverage
            FROM tenant_inventory_paper_markouts AS markout
            JOIN tenant_paper_fills AS fill
              ON fill.owner_address = markout.owner_address
@@ -3847,6 +3857,8 @@ export class TenantStore {
         market_id: string;
         order_key: string;
         horizon_ms: number;
+        fill_at_ms: number;
+        size_usd: number;
         markout_usd: string | null;
         coverage: Coverage;
       }>
@@ -3854,6 +3866,64 @@ export class TenantStore {
       marketId: row.market_id,
       orderKey: row.order_key,
       horizonMs: row.horizon_ms,
+      fillAtMs: row.fill_at_ms,
+      sizeUsd: row.size_usd,
+      markoutUsd: row.markout_usd === null ? null : Number(row.markout_usd),
+      coverage: row.coverage,
+    }));
+  }
+
+  /**
+   * Exact, trial-scoped evidence used by the runtime's Paper-only adverse
+   * selection guard. The join prevents a markout from another bundle or a
+   * historical trial from steering the currently running Paper bundle.
+   */
+  listPaperAdverseSelectionMarkouts(inputs: {
+    trialId: string;
+    marketId: string;
+    sinceMs: number;
+    horizonMs: number;
+  }): PaperAdverseSelectionMarkoutRow[] {
+    if (
+      !Number.isInteger(inputs.sinceMs) ||
+      inputs.sinceMs < 0 ||
+      !Number.isInteger(inputs.horizonMs) ||
+      inputs.horizonMs <= 0
+    ) {
+      throw new Error("Paper adverse-selection bounds are invalid");
+    }
+    return (
+      this.db
+        .prepare(
+          `SELECT markout.fill_at_ms, fill.size_usd, markout.markout_usd,
+                  markout.coverage
+           FROM tenant_inventory_paper_markouts AS markout
+           JOIN tenant_paper_fills AS fill
+             ON fill.owner_address = markout.owner_address
+            AND fill.trial_id = markout.run_id
+            AND fill.order_key = markout.order_key
+            AND fill.market_id = markout.market_id
+           WHERE fill.owner_address = ? AND fill.bundle_id = ?
+             AND markout.run_id = ? AND markout.market_id = ?
+             AND markout.fill_at_ms >= ? AND markout.horizon_ms = ?
+           ORDER BY markout.fill_at_ms ASC, markout.source_event_key ASC`,
+        )
+        .all(
+          this.ownerAddress,
+          this.paperBundleId(),
+          inputs.trialId,
+          inputs.marketId,
+          inputs.sinceMs,
+          inputs.horizonMs,
+        ) as Array<{
+        fill_at_ms: number;
+        size_usd: number;
+        markout_usd: string | null;
+        coverage: Coverage;
+      }>
+    ).map((row) => ({
+      fillAtMs: row.fill_at_ms,
+      sizeUsd: row.size_usd,
       markoutUsd: row.markout_usd === null ? null : Number(row.markout_usd),
       coverage: row.coverage,
     }));

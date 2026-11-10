@@ -118,6 +118,11 @@ describe("strategy results", () => {
         feeTermsMissing: 0,
         markout5mUsd: 0.25,
         markout5mMeasuredFills: 1,
+        adverseSelection: expect.objectContaining({
+          state: "collecting",
+          measuredFills: 1,
+          unavailableFills: 0,
+        }),
       }),
     ]);
     await h.close();

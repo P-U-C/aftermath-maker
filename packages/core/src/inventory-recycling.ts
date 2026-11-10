@@ -314,6 +314,110 @@ export type InventoryQuoteDecision = {
   detail: Record<string, unknown>;
 };
 
+/**
+ * The first adaptive control is deliberately Paper-only and conservative. It
+ * waits for a meaningful, recent sample of completed five-minute markouts
+ * before it can suppress a fresh quote.  It is evidence, not P&L: a negative
+ * markout says the simulated maker fill was selected adversely after it
+ * happened, not that the strategy lost this amount.
+ *
+ * Keep this policy versioned and visible rather than inferring a zero loss
+ * from missing observations.  Live quoting must opt into a separately
+ * reviewed control; it never reaches this helper from the runtime today.
+ */
+export const PAPER_ADVERSE_SELECTION_POLICY = {
+  horizonMs: 300_000,
+  windowMs: 24 * 60 * 60_000,
+  minimumMeasuredFills: 12,
+  /** A maker loses at least 50 bps to the five-minute reference on average. */
+  maximumAverageMarkoutBps: -50,
+} as const;
+
+export type PaperAdverseSelectionObservation = {
+  fillAtMs: number;
+  sizeUsd: number;
+  markoutUsd: number | null;
+  coverage: Coverage;
+};
+
+export type PaperAdverseSelectionEvidence = {
+  state: "collecting" | "within_limit" | "blocked";
+  measuredFills: number;
+  unavailableFills: number;
+  makerNotionalUsd: number;
+  totalMarkoutUsd: number | null;
+  averageMarkoutBps: number | null;
+  windowStartedAtMs: number;
+  policy: typeof PAPER_ADVERSE_SELECTION_POLICY;
+};
+
+/**
+ * Scores only completed fixed-horizon Paper markouts inside a rolling window.
+ * Incomplete marks stay counted as unavailable evidence, never as a free zero
+ * loss.  The result is pure so the runtime, results API and fixtures cannot
+ * accidentally use different guard thresholds.
+ */
+export function evaluatePaperAdverseSelection(inputs: {
+  asOfMs: number;
+  observations: readonly PaperAdverseSelectionObservation[];
+  policy?: typeof PAPER_ADVERSE_SELECTION_POLICY;
+}): PaperAdverseSelectionEvidence {
+  if (!Number.isInteger(inputs.asOfMs) || inputs.asOfMs < 0) {
+    throw new Error(
+      "Paper adverse-selection time must be a non-negative integer",
+    );
+  }
+  const policy = inputs.policy ?? PAPER_ADVERSE_SELECTION_POLICY;
+  const windowStartedAtMs = inputs.asOfMs - policy.windowMs;
+  let measuredFills = 0;
+  let unavailableFills = 0;
+  let makerNotionalUsd = 0;
+  let totalMarkoutUsd = 0;
+  for (const observation of inputs.observations) {
+    if (
+      !Number.isInteger(observation.fillAtMs) ||
+      observation.fillAtMs < windowStartedAtMs ||
+      observation.fillAtMs > inputs.asOfMs
+    ) {
+      continue;
+    }
+    if (!Number.isFinite(observation.sizeUsd) || observation.sizeUsd < 0) {
+      throw new Error("Paper adverse-selection size must be non-negative");
+    }
+    if (
+      observation.coverage !== "complete" ||
+      observation.markoutUsd === null ||
+      !Number.isFinite(observation.markoutUsd) ||
+      observation.sizeUsd <= 0
+    ) {
+      unavailableFills += 1;
+      continue;
+    }
+    measuredFills += 1;
+    makerNotionalUsd += observation.sizeUsd;
+    totalMarkoutUsd += observation.markoutUsd;
+  }
+  const averageMarkoutBps =
+    makerNotionalUsd > 0 ? (totalMarkoutUsd / makerNotionalUsd) * 10_000 : null;
+  const state =
+    measuredFills < policy.minimumMeasuredFills
+      ? "collecting"
+      : averageMarkoutBps !== null &&
+          averageMarkoutBps <= policy.maximumAverageMarkoutBps
+        ? "blocked"
+        : "within_limit";
+  return {
+    state,
+    measuredFills,
+    unavailableFills,
+    makerNotionalUsd,
+    totalMarkoutUsd: measuredFills ? totalMarkoutUsd : null,
+    averageMarkoutBps,
+    windowStartedAtMs,
+    policy,
+  };
+}
+
 const DECIMAL_SCALE = 100_000_000n;
 
 function decimalToUnits(value: DecimalString): bigint {
