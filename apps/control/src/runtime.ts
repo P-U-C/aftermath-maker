@@ -4595,6 +4595,87 @@ export class MakerRuntime {
       const cancelled =
         inputs.generation !== this.generation ||
         (config?.mode === "paper" && inputs.cycleToken !== this.cycleToken);
+      // A crossed or locked book is a transient market condition, not a
+      // bundle failure. `buildQuoteIntent` deliberately refuses to construct
+      // a post-only intent from it. Clear this market's resting work and let
+      // the normal rotation retry with a fresh observation instead of pausing
+      // the entire Paper bundle.
+      const crossedBook =
+        !cancelled &&
+        config?.mode === "paper" &&
+        Boolean(selected) &&
+        errorText === "Orderbook is crossed or locked";
+      if (crossedBook && config && selected) {
+        this.store.cancelPaperOrders(paperTrialId, selected.marketId);
+        // A simulated fill may have landed immediately before the fresh book
+        // proved crossed. Keep the desk state reconciled to that ledger even
+        // though this cycle cannot construct a replacement quote.
+        const paper = this.store.getPaperState(paperTrialId);
+        const makerInventory =
+          paper.positions.find(
+            (position) =>
+              position.role === "maker" &&
+              position.marketId === selected!.marketId,
+          )?.inventoryUsd ?? 0;
+        const inventoryPositions = paper.positions
+          .filter((position) => Math.abs(position.inventoryUsd) > 0.000001)
+          .map((position) => ({
+            marketId: position.marketId,
+            symbol:
+              config!.markets.find(
+                (market) => market.marketId === position.marketId,
+              )?.symbol ?? position.marketId.slice(0, 10),
+            account:
+              position.role === "maker"
+                ? ("Maker" as const)
+                : ("Hedge" as const),
+            inventoryUsd: position.inventoryUsd,
+          }));
+        this.snapshotValue.paper = paperSnapshot(paper);
+        this.snapshotValue.balances = {
+          ...this.snapshotValue.balances,
+          inventoryUsd: makerInventory,
+        };
+        this.snapshotValue.portfolio = {
+          ...this.snapshotValue.portfolio,
+          grossExposureUsd: paper.positions.reduce(
+            (total, position) => total + Math.abs(position.inventoryUsd),
+            0,
+          ),
+        };
+        this.snapshotValue.inventory = {
+          netUsd: inventoryPositions.reduce(
+            (total, position) => total + position.inventoryUsd,
+            0,
+          ),
+          grossUsd: inventoryPositions.reduce(
+            (total, position) => total + Math.abs(position.inventoryUsd),
+            0,
+          ),
+          positions: inventoryPositions,
+        };
+        this.snapshotValue.markets = this.snapshotValue.markets.map((row) =>
+          row.id === selected!.marketId
+            ? { ...row, inventoryUsd: makerInventory }
+            : row,
+        );
+        this.recordPaperMarketSkip({
+          selected,
+          failed: {
+            code: "spread",
+            label: "No crossed quote",
+            ok: false,
+            scope: "market",
+            detail: "Orderbook is crossed or locked",
+          },
+          config,
+        });
+        this.snapshotValue.lastError =
+          this.snapshotValue.paperBlocker?.message ?? null;
+        this.snapshotValue.execution.lastDecision = "held";
+        this.snapshotValue.lastSuccessfulCycleAt = new Date().toISOString();
+        return;
+      }
       if (
         !cancelled &&
         (error instanceof VenueReadTimeoutError ||

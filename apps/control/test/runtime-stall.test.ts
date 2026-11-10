@@ -237,6 +237,82 @@ describe("Paper cycle freshness under a stalled venue read", () => {
     }
   });
 
+  it("keeps Paper running through a crossed book and resumes on a valid observation", async () => {
+    const h = await paperRuntime({ makerFreeUsd: 300 });
+    h.gateway.when("getOrderbook", () => ({
+      market: {
+        metadata: { symbol: "NEAR" },
+        indexPrice: 10,
+        marketState: { openInterest: 1_000 },
+        marketParams: { maxOpenInterest: 10_000 },
+        estimatedFundingRate: () => 0.0001,
+        tickSize: () => 0.01,
+      },
+      orderbook: {
+        bestBidPrice: 10,
+        bestAskPrice: 10,
+        bids: [],
+        asks: [],
+      },
+    }));
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-10-31T01:11:55.000Z"));
+    try {
+      h.runtime.start();
+      await vi.advanceTimersByTimeAsync(1);
+
+      expect(h.runtime.snapshot.running).toBe(true);
+      expect(h.runtime.snapshot.lastError).toBeNull();
+      expect(
+        h.runtime.snapshot.markets.find((market) => market.id === "0x1")?.skip
+          ?.code,
+      ).toBe("spread");
+      expect(h.runtime.snapshot.paper.openOrders).toBe(0);
+      expect(
+        h.tenant
+          .listEvents(100)
+          .filter(
+            (event) =>
+              event.category === "runtime" &&
+              event.action === "cycle" &&
+              event.outcome === "error",
+          ),
+      ).toHaveLength(0);
+      expect(
+        h.tenant
+          .listEvents(100)
+          .some(
+            (event) =>
+              event.category === "paper" &&
+              event.action === "market-skip" &&
+              event.outcome === "paused",
+          ),
+      ).toBe(true);
+
+      h.gateway.clear("getOrderbook");
+      await vi.advanceTimersByTimeAsync(5_000);
+
+      expect(h.runtime.snapshot.running).toBe(true);
+      expect(
+        h.runtime.snapshot.markets.find((market) => market.id === "0x1")?.skip,
+      ).toBeNull();
+      expect(
+        h.tenant
+          .listEvents(100)
+          .some(
+            (event) =>
+              event.category === "paper" &&
+              event.action === "market-skip" &&
+              event.outcome === "resumed",
+          ),
+      ).toBe(true);
+    } finally {
+      await h.runtime.stop();
+      vi.useRealTimers();
+      await h.close();
+    }
+  });
+
   it("keeps fair-value skips visible while surfacing the bundle collateral blocker", async () => {
     const h = await paperRuntime();
     h.tenant.setConfig(
