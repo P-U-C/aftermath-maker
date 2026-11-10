@@ -2111,4 +2111,150 @@ describe("persistent control store", () => {
     ).toThrow("New bundles start in Paper");
     databaseStore.close();
   });
+
+  it("retains Paper markouts and policy decisions as separate read-only evidence", () => {
+    const directory = join(
+      process.env.TMPDIR ?? "/tmp",
+      `aftermath-maker-${randomBytes(8).toString("hex")}`,
+    );
+    mkdirSync(directory, { recursive: true });
+    const databaseStore = new Store(join(directory, "maker.db"));
+    const tenant = databaseStore.forTenant(`0x${"e".repeat(64)}`);
+
+    tenant.recordInventoryPaperMarkouts([
+      {
+        sourceEventKey: "paper:runtime:quote-1:60000",
+        runId: "runtime",
+        orderKey: "quote-1",
+        marketId: "0xmarket",
+        fillAtMs: 1_000,
+        fillPriceUsd: "10",
+        side: "ask",
+        baseAssetAmount: "2",
+        horizonMs: 60_000,
+        referenceUsd: "9.5",
+        observedAtMs: 61_000,
+        markoutUsd: "1",
+        source: "fixture-index",
+        network: "paper",
+        coverage: "complete",
+        raw: { fixture: true },
+      },
+      {
+        sourceEventKey: "paper:runtime:quote-1:300000",
+        runId: "runtime",
+        orderKey: "quote-1",
+        marketId: "0xmarket",
+        fillAtMs: 1_000,
+        fillPriceUsd: "10",
+        side: "ask",
+        baseAssetAmount: "2",
+        horizonMs: 300_000,
+        referenceUsd: null,
+        observedAtMs: 301_000,
+        markoutUsd: null,
+        source: "fixture-index",
+        network: "paper",
+        coverage: "unavailable",
+        raw: { fixture: true },
+      },
+    ]);
+    tenant.recordInventoryQuoteDecision({
+      decisionKey: "paper:runtime:market:1000:pause",
+      runId: "runtime",
+      marketId: "0xmarket",
+      observedAtMs: 1_000,
+      action: "pause",
+      reason: "insufficient_evidence",
+      policy: "fixed",
+      coverage: "partial",
+      detail: { markoutCoverage: "unavailable" },
+    });
+    // A fixed-horizon mark is the first source observation after the horizon;
+    // a later price must not rewrite the historical measurement.
+    tenant.recordInventoryPaperMarkouts([
+      {
+        sourceEventKey: "paper:runtime:quote-1:60000",
+        runId: "runtime",
+        orderKey: "quote-1",
+        marketId: "0xmarket",
+        fillAtMs: 1_000,
+        fillPriceUsd: "10",
+        side: "ask",
+        baseAssetAmount: "2",
+        horizonMs: 60_000,
+        referenceUsd: "8",
+        observedAtMs: 120_000,
+        markoutUsd: "4",
+        source: "fixture-index",
+        network: "paper",
+        coverage: "complete",
+        raw: { later: true },
+      },
+    ]);
+
+    expect(tenant.listInventoryPaperMarkouts("runtime")).toMatchObject([
+      { horizonMs: 60_000, markoutUsd: "1", coverage: "complete" },
+      {
+        horizonMs: 300_000,
+        markoutUsd: null,
+        coverage: "unavailable",
+      },
+    ]);
+    expect(tenant.listInventoryQuoteDecisions("runtime")).toEqual([
+      expect.objectContaining({
+        action: "pause",
+        reason: "insufficient_evidence",
+        policy: "fixed",
+      }),
+    ]);
+    databaseStore.close();
+  });
+
+  it("derives Paper markouts only after their horizon from a reference price", () => {
+    const directory = join(
+      process.env.TMPDIR ?? "/tmp",
+      `aftermath-maker-${randomBytes(8).toString("hex")}`,
+    );
+    mkdirSync(directory, { recursive: true });
+    const databaseStore = new Store(join(directory, "maker.db"));
+    const tenant = databaseStore.forTenant(`0x${"f".repeat(64)}`);
+    tenant.recordPaperQuote({
+      trialId: "runtime",
+      marketId: "0xmarket",
+      symbol: "MARK",
+      bidPrice: 10,
+      askPrice: 11,
+      sizeUsd: 10,
+      sides: "bid",
+    });
+    expect(
+      tenant.matchPaperOrders({
+        trialId: "runtime",
+        marketId: "0xmarket",
+        bestBid: 9.8,
+        bestAsk: 9.9,
+      }),
+    ).toHaveLength(1);
+    tenant.refreshPaperMarkouts({
+      trialId: "runtime",
+      marketId: "0xmarket",
+      referenceUsd: 11,
+      observedAtMs: Date.now() + 10_000,
+      coverage: "complete",
+      horizonsMs: [1],
+      source: "fixture-index",
+      network: "paper",
+    });
+    expect(tenant.listInventoryPaperMarkouts("runtime")).toMatchObject([
+      {
+        side: "bid",
+        horizonMs: 1,
+        referenceUsd: "11",
+        markoutUsd: "1",
+        coverage: "complete",
+      },
+    ]);
+    databaseStore.close();
+  });
 });

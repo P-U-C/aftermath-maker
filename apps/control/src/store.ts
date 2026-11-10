@@ -12,6 +12,7 @@ import type {
 } from "@puc/aftermath";
 import {
   decideInventoryPaperFill,
+  inventoryPaperMarkout,
   makerConfigSchema,
   makerMarketSchema,
   type AttributedFill,
@@ -19,6 +20,8 @@ import {
   type InventoryLedgerEffect,
   type MakerConfig,
   type InventoryMarketObservation,
+  type InventoryPaperMarkoutObservation,
+  type InventoryQuoteDecision,
   type RewardAllocation,
   type SourceCheckpoint,
   type Setup,
@@ -40,6 +43,9 @@ export type RewardShareSettings = {
 export type StoredAttributedFill = AttributedFill;
 export type StoredInventoryLedgerEffect = InventoryLedgerEffect;
 export type StoredMarketObservation = InventoryMarketObservation;
+export type StoredInventoryPaperMarkoutObservation =
+  InventoryPaperMarkoutObservation;
+export type StoredInventoryQuoteDecision = InventoryQuoteDecision;
 export type StoredRewardAllocation = RewardAllocation;
 export type StoredSourceCheckpoint = SourceCheckpoint;
 
@@ -712,6 +718,47 @@ export class Store {
         coverage TEXT NOT NULL CHECK (coverage IN ('complete', 'partial', 'stale', 'unavailable')),
         raw TEXT NOT NULL,
         UNIQUE (owner_address, source, network, market_id, observed_at_ms)
+      );
+
+      -- Paper markouts are retained separately from fills and ledger effects:
+      -- they explain post-fill selection quality but are never counted as
+      -- realised P&L. A null markout means the requested horizon was not
+      -- observed with complete coverage.
+      CREATE TABLE IF NOT EXISTS tenant_inventory_paper_markouts (
+        owner_address TEXT NOT NULL,
+        source_event_key TEXT NOT NULL,
+        run_id TEXT NOT NULL,
+        order_key TEXT NOT NULL,
+        market_id TEXT NOT NULL,
+        fill_at_ms INTEGER NOT NULL,
+        fill_price_usd TEXT NOT NULL,
+        side TEXT NOT NULL CHECK (side IN ('bid', 'ask')),
+        base_asset_amount TEXT NOT NULL,
+        horizon_ms INTEGER NOT NULL,
+        reference_usd TEXT,
+        reference_observed_at_ms INTEGER NOT NULL,
+        markout_usd TEXT,
+        source TEXT NOT NULL,
+        network TEXT NOT NULL,
+        coverage TEXT NOT NULL CHECK (coverage IN ('complete', 'partial', 'stale', 'unavailable')),
+        raw TEXT NOT NULL,
+        PRIMARY KEY (owner_address, source_event_key)
+      );
+
+      -- A decision log makes Paper policy changes reviewable. It contains no
+      -- signer material and does not imply that an order reached a venue.
+      CREATE TABLE IF NOT EXISTS tenant_inventory_quote_decisions (
+        owner_address TEXT NOT NULL,
+        decision_key TEXT NOT NULL,
+        run_id TEXT NOT NULL,
+        market_id TEXT NOT NULL,
+        observed_at_ms INTEGER NOT NULL,
+        action TEXT NOT NULL CHECK (action IN ('quote', 'resize', 'widen', 'skew', 'pause')),
+        reason TEXT NOT NULL,
+        policy TEXT NOT NULL CHECK (policy IN ('fixed', 'adaptive')),
+        coverage TEXT NOT NULL CHECK (coverage IN ('complete', 'partial', 'stale', 'unavailable')),
+        detail TEXT NOT NULL,
+        PRIMARY KEY (owner_address, decision_key)
       );
 
       CREATE TABLE IF NOT EXISTS tenant_attributed_fills (
@@ -2739,6 +2786,152 @@ export class TenantStore {
         observation.coverage,
         stringify(observation.raw),
       );
+  }
+
+  recordInventoryPaperMarkouts(
+    observations: readonly InventoryPaperMarkoutObservation[],
+  ): void {
+    const insert = this.db.prepare(
+      `INSERT INTO tenant_inventory_paper_markouts
+        (owner_address, source_event_key, run_id, order_key, market_id,
+         fill_at_ms, fill_price_usd, side, base_asset_amount, horizon_ms,
+         reference_usd, reference_observed_at_ms, markout_usd, source,
+         network, coverage, raw)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(owner_address, source_event_key) DO NOTHING`,
+    );
+    this.db.transaction(() => {
+      for (const observation of observations) {
+        insert.run(
+          this.ownerAddress,
+          observation.sourceEventKey,
+          observation.runId,
+          observation.orderKey,
+          observation.marketId,
+          observation.fillAtMs,
+          observation.fillPriceUsd,
+          observation.side,
+          observation.baseAssetAmount,
+          observation.horizonMs,
+          observation.referenceUsd,
+          observation.observedAtMs,
+          observation.markoutUsd,
+          observation.source,
+          observation.network,
+          observation.coverage,
+          stringify(observation.raw),
+        );
+      }
+    })();
+  }
+
+  listInventoryPaperMarkouts(
+    runId?: string,
+  ): StoredInventoryPaperMarkoutObservation[] {
+    const rows = this.db
+      .prepare(
+        `SELECT source_event_key, run_id, order_key, market_id, fill_at_ms,
+                fill_price_usd, side, base_asset_amount, horizon_ms,
+                reference_usd, reference_observed_at_ms, markout_usd, source,
+                network, coverage, raw
+         FROM tenant_inventory_paper_markouts
+         WHERE owner_address = ? AND (? IS NULL OR run_id = ?)
+         ORDER BY fill_at_ms ASC, horizon_ms ASC, source_event_key ASC`,
+      )
+      .all(this.ownerAddress, runId ?? null, runId ?? null) as Array<{
+      source_event_key: string;
+      run_id: string;
+      order_key: string;
+      market_id: string;
+      fill_at_ms: number;
+      fill_price_usd: string;
+      side: "bid" | "ask";
+      base_asset_amount: string;
+      horizon_ms: number;
+      reference_usd: string | null;
+      reference_observed_at_ms: number;
+      markout_usd: string | null;
+      source: string;
+      network: string;
+      coverage: Coverage;
+      raw: string;
+    }>;
+    return rows.map((row) => ({
+      sourceEventKey: row.source_event_key,
+      runId: row.run_id,
+      orderKey: row.order_key,
+      marketId: row.market_id,
+      fillAtMs: row.fill_at_ms,
+      fillPriceUsd: row.fill_price_usd,
+      side: row.side,
+      baseAssetAmount: row.base_asset_amount,
+      horizonMs: row.horizon_ms,
+      referenceUsd: row.reference_usd,
+      observedAtMs: row.reference_observed_at_ms,
+      markoutUsd: row.markout_usd,
+      source: row.source,
+      network: row.network,
+      coverage: row.coverage,
+      raw: parse(row.raw),
+    }));
+  }
+
+  recordInventoryQuoteDecision(decision: InventoryQuoteDecision): void {
+    this.db
+      .prepare(
+        `INSERT INTO tenant_inventory_quote_decisions
+          (owner_address, decision_key, run_id, market_id, observed_at_ms,
+           action, reason, policy, coverage, detail)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(owner_address, decision_key) DO UPDATE SET
+           coverage = excluded.coverage,
+           detail = excluded.detail`,
+      )
+      .run(
+        this.ownerAddress,
+        decision.decisionKey,
+        decision.runId,
+        decision.marketId,
+        decision.observedAtMs,
+        decision.action,
+        decision.reason,
+        decision.policy,
+        decision.coverage,
+        stringify(decision.detail),
+      );
+  }
+
+  listInventoryQuoteDecisions(runId?: string): StoredInventoryQuoteDecision[] {
+    const rows = this.db
+      .prepare(
+        `SELECT decision_key, run_id, market_id, observed_at_ms, action,
+                reason, policy, coverage, detail
+         FROM tenant_inventory_quote_decisions
+         WHERE owner_address = ? AND (? IS NULL OR run_id = ?)
+         ORDER BY observed_at_ms ASC, decision_key ASC`,
+      )
+      .all(this.ownerAddress, runId ?? null, runId ?? null) as Array<{
+      decision_key: string;
+      run_id: string;
+      market_id: string;
+      observed_at_ms: number;
+      action: StoredInventoryQuoteDecision["action"];
+      reason: string;
+      policy: StoredInventoryQuoteDecision["policy"];
+      coverage: Coverage;
+      detail: string;
+    }>;
+    return rows.map((row) => ({
+      decisionKey: row.decision_key,
+      runId: row.run_id,
+      marketId: row.market_id,
+      observedAtMs: row.observed_at_ms,
+      action: row.action,
+      reason: row.reason,
+      policy: row.policy,
+      coverage: row.coverage,
+      detail: parse<Record<string, unknown>>(row.detail),
+    }));
   }
 
   recordAttributedFills(fills: readonly AttributedFill[]): void {
@@ -5712,6 +5905,112 @@ export class TenantStore {
       sizeUsd: fill.size_usd,
       occurredAt: now,
     }));
+  }
+
+  /**
+   * Records fixed-horizon, index-reference Paper markouts for existing maker
+   * fills. It is intentionally separate from `matchPaperOrders`: no fill is
+   * inferred from a later mark, and a pre-horizon reference is never used as
+   * if it knew the future.
+   */
+  refreshPaperMarkouts(inputs: {
+    trialId: string;
+    marketId: string;
+    referenceUsd: number | null;
+    observedAtMs: number;
+    coverage: Coverage;
+    horizonsMs?: readonly number[];
+    source?: string;
+    network?: string;
+    raw?: unknown;
+  }): void {
+    if (!Number.isInteger(inputs.observedAtMs) || inputs.observedAtMs < 0) {
+      throw new Error(
+        "Paper markout observation time must be a non-negative integer",
+      );
+    }
+    if (
+      inputs.referenceUsd !== null &&
+      (!Number.isFinite(inputs.referenceUsd) || inputs.referenceUsd <= 0)
+    ) {
+      throw new Error("Paper markout reference price must be positive");
+    }
+    const horizons = inputs.horizonsMs ?? [
+      60_000, 300_000, 1_800_000, 3_600_000,
+    ];
+    if (
+      !horizons.length ||
+      horizons.some((horizon) => !Number.isInteger(horizon) || horizon <= 0)
+    ) {
+      throw new Error("Paper markout horizons must be positive integers");
+    }
+    const bundleId = this.paperBundleId();
+    const rows = this.db
+      .prepare(
+        `SELECT order_key, market_id, side, price, size_usd, occurred_at
+         FROM tenant_paper_fills
+         WHERE owner_address = ? AND bundle_id = ? AND trial_id = ?
+           AND market_id = ? AND role = 'maker'
+         ORDER BY occurred_at ASC, id ASC`,
+      )
+      .all(
+        this.ownerAddress,
+        bundleId,
+        inputs.trialId,
+        inputs.marketId,
+      ) as Array<{
+      order_key: string;
+      market_id: string;
+      side: "bid" | "ask";
+      price: number;
+      size_usd: number;
+      occurred_at: string;
+    }>;
+    const decimal = (value: number) =>
+      value
+        .toFixed(12)
+        .replace(/\.0+$/, "")
+        .replace(/(\.\d*?)0+$/, "$1");
+    const source = inputs.source ?? "paper-index-reference";
+    const network = inputs.network ?? "paper";
+    const observations: InventoryPaperMarkoutObservation[] = [];
+    for (const row of rows) {
+      const fillAtMs = Date.parse(row.occurred_at);
+      if (!Number.isFinite(fillAtMs) || row.price <= 0 || row.size_usd < 0) {
+        continue;
+      }
+      const baseAssetAmount = decimal(row.size_usd / row.price);
+      for (const horizonMs of horizons) {
+        if (inputs.observedAtMs < fillAtMs + horizonMs) continue;
+        const markout = inventoryPaperMarkout({
+          quote: { side: row.side, priceUsd: decimal(row.price) },
+          baseAssetAmount,
+          fillAtMs,
+          horizonMs,
+          referenceUsd:
+            inputs.referenceUsd === null ? null : decimal(inputs.referenceUsd),
+          referenceObservedAtMs: inputs.observedAtMs,
+          coverage: inputs.coverage,
+        });
+        observations.push({
+          ...markout,
+          sourceEventKey: `paper:${inputs.trialId}:${row.order_key}:${horizonMs}`,
+          runId: inputs.trialId,
+          orderKey: row.order_key,
+          marketId: row.market_id,
+          fillAtMs,
+          fillPriceUsd: decimal(row.price),
+          side: row.side,
+          baseAssetAmount,
+          referenceUsd:
+            inputs.referenceUsd === null ? null : decimal(inputs.referenceUsd),
+          source,
+          network,
+          raw: inputs.raw ?? {},
+        });
+      }
+    }
+    if (observations.length) this.recordInventoryPaperMarkouts(observations);
   }
 
   /** Record the estimated opposite-side hedge without sending a transaction. */

@@ -1897,6 +1897,8 @@ export async function buildServer({
       reconciliation: scoped.latestInventoryReconciliation(query.runId),
       fills,
       effects,
+      paperMarkouts: scoped.listInventoryPaperMarkouts(query.runId),
+      quoteDecisions: scoped.listInventoryQuoteDecisions(query.runId),
       rewards: scoped.listRewardAllocations(),
     };
   });
