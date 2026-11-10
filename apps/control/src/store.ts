@@ -4532,6 +4532,92 @@ export class TenantStore {
     return this.getStrategy(id)!;
   }
 
+  /**
+   * Install the executable members of the strategy bench as unattached Paper
+   * drafts once a wallet has a market list. Research families deliberately do
+   * not appear here: a saved strategy must correspond to an implemented
+   * execution policy, not merely an idea on the bench.
+   *
+   * Names are the user-facing identity for existing strategy records. If a
+   * wallet has already used or archived either name, respect that decision and
+   * never recreate or overwrite it.
+   */
+  ensureDefaultStrategies(): StoredStrategy[] {
+    if (this.bundleId || this.bundlesRolledBack()) return [];
+    const current = this.getConfig();
+    if (!current?.markets.length) return [];
+
+    const base = makerConfigSchema.parse({
+      ...current,
+      markets: current.markets.map(
+        ({ overrides: _overrides, ...market }) => market,
+      ),
+      mode: "paper",
+      makerAccountId: null,
+      strategyObjective: "both",
+      strategyProfile: "balanced",
+      rotationMode: "portfolio",
+      inventoryTargetUsd: 0,
+      maxLeverage: 1,
+      flattenOnRotate: false,
+      hedge: {
+        ...current.hedge,
+        enabled: false,
+        accountId: null,
+      },
+      autoRebalanceEnabled: false,
+    });
+    const inventoryConfig = strategyConfigFromMaker(base);
+    // Strategy settings intentionally omit account bindings. A hedge template
+    // is valid here, while the composed bundle config remains invalid until it
+    // receives two distinct accounts at attachment time.
+    const hedgeConfig = strategyConfigSchema.parse({
+      ...inventoryConfig,
+      hedge: {
+        ...inventoryConfig.hedge,
+        enabled: true,
+        thresholdUsd: base.quoteSizeUsd,
+        maxOrderUsd: base.quoteSizeUsd,
+      },
+    });
+    const defaults: Array<{ name: string; config: StrategyConfig }> = [
+      { name: "Inventory recycling", config: inventoryConfig },
+      { name: "Fill-driven Aftermath hedge", config: hedgeConfig },
+    ];
+    const exists = this.db.prepare(
+      `SELECT 1 FROM strategies
+       WHERE owner_address = ? AND name = ? COLLATE NOCASE`,
+    );
+    const marketRule: StrategyMarketRule = {
+      kind: "preferred-list",
+      marketIds: base.markets.map((market) => market.marketId),
+    };
+    const created: StoredStrategy[] = [];
+    const preload = this.db.transaction(() => {
+      for (const preset of defaults) {
+        if (exists.get(this.ownerAddress, preset.name)) continue;
+        created.push(
+          this.createStrategy({
+            name: preset.name,
+            config: preset.config,
+            marketRule,
+            markets: base.markets,
+          }),
+        );
+      }
+    });
+    preload();
+    if (created.length) {
+      this.logEvent({
+        category: "strategies",
+        action: "defaults.preloaded",
+        outcome: "success",
+        detail: { names: created.map((strategy) => strategy.name) },
+      });
+    }
+    return created;
+  }
+
   updateStrategy(inputs: {
     strategyId: string;
     name: string;
