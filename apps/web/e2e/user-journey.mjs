@@ -2156,8 +2156,8 @@ async function strategyLibraryAndBundleAttachment(browser) {
     const bench = page.getByLabel("Strategy bench");
     await bench.waitFor();
     assert(
-      (await bench.locator("[data-strategy-preset]").count()) === 7,
-      "The strategy bench did not show all seven default families",
+      (await bench.locator("[data-strategy-preset]").count()) === 8,
+      "The strategy bench did not show Custom and all seven default families",
     );
     assert(
       (await bench
@@ -2167,16 +2167,20 @@ async function strategyLibraryAndBundleAttachment(browser) {
     );
     await capture(page, "strategy-bench-desktop.png");
     await bench
-      .getByRole("button", { name: "Create Paper draft", exact: true })
+      .getByRole("button", { name: "Start custom draft", exact: true })
       .click();
     await page
       .getByText(
-        "Inventory recycling created in Paper. Nothing changes for your bundles until you attach it.",
+        /Custom \w+ \w+ created in Paper\. Nothing changes for your bundles until you attach it\./,
         {
-          exact: true,
+          exact: false,
         },
       )
       .waitFor();
+    assert(
+      /^Custom \w+ \w+$/.test(state.strategies[0].name),
+      `Custom draft name was not short and generated: ${state.strategies[0].name}`,
+    );
 
     await page.getByRole("link", { name: "Bundles", exact: true }).click();
     const card = page.locator(".bundle-card").filter({

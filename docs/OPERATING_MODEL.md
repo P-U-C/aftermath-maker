@@ -123,8 +123,10 @@ Maker now supplies the measurement and control foundation for those experiments.
 ## Strategy families to test
 
 Maker's Strategy bench lists the following family contracts. A named family is not
-an execution promise: only the two Aftermath variants currently create a Paper
-draft. Every new draft is unattached, and neither path enables Live trading.
+an execution promise: only the two Aftermath variants currently create a named
+Paper draft. The amber **Custom** card starts the existing builder from safe
+Paper defaults and gives it a short generated name. Every new draft is
+unattached, and neither path enables Live trading.
 
 - **Inventory recycling / passive maker (Paper ready):** the current baseline,
   with two-sided inventory-aware quotes, market-specific targets, and limits.

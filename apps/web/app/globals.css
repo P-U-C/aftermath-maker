@@ -11033,6 +11033,11 @@ mysten-dapp-kit-connect-modal,
 .workspace-strategy .settings-panel > .strategy-bench {
   order: 2;
 }
+.workspace-strategy
+  .settings-panel.is-selecting-strategy
+  > :not(.strategy-select-row, .strategy-bench) {
+  display: none;
+}
 .workspace-strategy .settings-panel > .strategy-title {
   order: 3;
 }
@@ -11115,6 +11120,12 @@ mysten-dapp-kit-connect-modal,
 .strategy-bench-card.is-ready {
   border-color: color-mix(in srgb, var(--tide) 42%, var(--line));
 }
+.strategy-bench-card.is-custom {
+  background:
+    linear-gradient(135deg, var(--amber-soft), transparent 58%),
+    color-mix(in srgb, var(--surface) 88%, var(--fill));
+  border-color: color-mix(in srgb, var(--amber) 52%, var(--line));
+}
 .strategy-bench-card > header,
 .strategy-bench-card > footer {
   display: flex;
@@ -11141,6 +11152,11 @@ mysten-dapp-kit-connect-modal,
 .strategy-bench-state.is-ready {
   color: var(--tide-text);
   background: color-mix(in srgb, var(--tide) 16%, var(--fill));
+}
+.strategy-bench-state.is-custom,
+.strategy-bench-card.is-custom .strategy-bench-blocked {
+  color: var(--amber-text);
+  background: var(--amber-soft);
 }
 .strategy-bench-card > p {
   margin: 0;
