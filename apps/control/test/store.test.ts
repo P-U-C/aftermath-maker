@@ -395,9 +395,16 @@ describe("persistent control store", () => {
       marketId: "0x9001",
       bestBid: 9.9,
       bestAsk: 9.8,
+      makerFeeRate: -0.001,
+      builderFeeRate: 0.002,
     });
     expect(makerFill).toBeDefined();
-    tenant.recordPaperHedge({ trialId: "runtime", makerFill: makerFill! });
+    tenant.recordPaperHedge({
+      trialId: "runtime",
+      makerFill: makerFill!,
+      takerFeeRate: 0.003,
+      builderFeeRate: 0.004,
+    });
 
     expect(tenant.getPaperState("runtime")).toMatchObject({
       openOrders: 1,
@@ -408,6 +415,24 @@ describe("persistent control store", () => {
         expect.objectContaining({ role: "hedge", inventoryUsd: -1 }),
       ]),
     });
+    expect(tenant.listPaperFills({ trialId: "runtime" })).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          role: "maker",
+          venueFeeRate: -0.001,
+          venueFeeUsd: -0.001,
+          builderFeeRate: 0.002,
+          builderFeeUsd: 0.002,
+        }),
+        expect.objectContaining({
+          role: "hedge",
+          venueFeeRate: 0.003,
+          venueFeeUsd: 0.003,
+          builderFeeRate: 0.004,
+          builderFeeUsd: 0.004,
+        }),
+      ]),
+    );
     expect(tenant.listTrackedMakerOrders()).toEqual([]);
     databaseStore.close();
   });
@@ -489,6 +514,42 @@ describe("persistent control store", () => {
 
     const reopened = new Store(path);
     expect(reopened.forTenant(owner).listPaperFills()).toEqual([]);
+    reopened.close();
+  });
+
+  it("keeps legacy Paper fills' missing fee terms explicit", () => {
+    const directory = join(
+      process.env.TMPDIR ?? "/tmp",
+      `aftermath-maker-${randomBytes(8).toString("hex")}`,
+    );
+    mkdirSync(directory, { recursive: true });
+    const path = join(directory, "maker.db");
+    const owner = `0x${"c".repeat(64)}`;
+    const databaseStore = new Store(path);
+    databaseStore.close();
+
+    const database = new Database(path);
+    database
+      .prepare(
+        `INSERT INTO tenant_paper_fills
+          (owner_address, bundle_id, trial_id, order_key, role, market_id,
+           symbol, side, price, size_usd, occurred_at)
+         VALUES (?, '', 'runtime', 'legacy-maker', 'maker', '0x1', 'PAPER',
+                 'bid', 10, 10, ?)`,
+      )
+      .run(owner, new Date().toISOString());
+    database.close();
+
+    const reopened = new Store(path);
+    expect(reopened.forTenant(owner).listPaperFills()).toEqual([
+      expect.objectContaining({
+        orderKey: "legacy-maker",
+        venueFeeRate: null,
+        venueFeeUsd: null,
+        builderFeeRate: null,
+        builderFeeUsd: null,
+      }),
+    ]);
     reopened.close();
   });
 

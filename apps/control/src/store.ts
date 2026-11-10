@@ -379,6 +379,12 @@ export type PaperFill = {
   side: "bid" | "ask";
   price: number;
   sizeUsd: number;
+  /** Fee terms frozen with the simulated fill. Null marks legacy rows whose
+   * fee schedule was not retained, never an assumed zero cost. */
+  venueFeeRate: number | null;
+  venueFeeUsd: number | null;
+  builderFeeRate: number | null;
+  builderFeeUsd: number | null;
   occurredAt: string;
 };
 
@@ -466,10 +472,23 @@ export type StrategyPaperFillRow = {
    * close: a reduce-only taker close (Volume rotation or exposure unwind). */
   kind: "quote" | "hedge" | "close";
   marketId: string;
+  symbol: string;
   side: "bid" | "ask";
   price: number;
   sizeUsd: number;
+  venueFeeRate: number | null;
+  venueFeeUsd: number | null;
+  builderFeeRate: number | null;
+  builderFeeUsd: number | null;
   occurredAt: string;
+};
+
+export type StrategyPaperMarkoutRow = {
+  marketId: string;
+  orderKey: string;
+  horizonMs: number;
+  markoutUsd: number | null;
+  coverage: Coverage;
 };
 
 type BundleRow = {
@@ -645,6 +664,10 @@ export class Store {
         price REAL NOT NULL,
         size_usd REAL NOT NULL,
         estimated INTEGER NOT NULL DEFAULT 1 CHECK (estimated = 1),
+        venue_fee_rate REAL,
+        venue_fee_usd REAL,
+        builder_fee_rate REAL,
+        builder_fee_usd REAL,
         occurred_at TEXT NOT NULL,
         UNIQUE (owner_address, bundle_id, trial_id, order_key)
       );
@@ -956,6 +979,25 @@ export class Store {
       this.db.exec(
         "ALTER TABLE tenant_hedge_executions ADD COLUMN sui_usd REAL",
       );
+    }
+
+    // Paper fee terms are part of the simulation evidence. Older fills did
+    // not retain a schedule, so leave their new columns NULL rather than
+    // recreating costs from the current market fee table.
+    const paperFillColumns = this.db
+      .prepare("PRAGMA table_info(tenant_paper_fills)")
+      .all() as Array<{ name: string }>;
+    for (const column of [
+      "venue_fee_rate",
+      "venue_fee_usd",
+      "builder_fee_rate",
+      "builder_fee_usd",
+    ]) {
+      if (!paperFillColumns.some((current) => current.name === column)) {
+        this.db.exec(
+          `ALTER TABLE tenant_paper_fills ADD COLUMN ${column} REAL`,
+        );
+      }
     }
 
     const makerOrderColumns = this.db
@@ -3717,8 +3759,9 @@ export class TenantStore {
     return (
       this.db
         .prepare(
-          `SELECT bundle_id, order_key, role, market_id, side, price, size_usd,
-                  occurred_at
+          `SELECT bundle_id, order_key, role, market_id, symbol, side, price,
+                  size_usd, venue_fee_rate, venue_fee_usd, builder_fee_rate,
+                  builder_fee_usd, occurred_at
            FROM tenant_paper_fills
            WHERE owner_address = ? AND bundle_id = ?
              AND occurred_at >= ?
@@ -3736,9 +3779,14 @@ export class TenantStore {
         order_key: string;
         role: "maker" | "hedge";
         market_id: string;
+        symbol: string;
         side: "bid" | "ask";
         price: number;
         size_usd: number;
+        venue_fee_rate: number | null;
+        venue_fee_usd: number | null;
+        builder_fee_rate: number | null;
+        builder_fee_usd: number | null;
         occurred_at: string;
       }>
     ).map((row) => ({
@@ -3750,10 +3798,64 @@ export class TenantStore {
           ? ("hedge" as const)
           : ("quote" as const),
       marketId: row.market_id,
+      symbol: row.symbol,
       side: row.side,
       price: row.price,
       sizeUsd: row.size_usd,
+      venueFeeRate: row.venue_fee_rate,
+      venueFeeUsd: row.venue_fee_usd,
+      builderFeeRate: row.builder_fee_rate,
+      builderFeeUsd: row.builder_fee_usd,
       occurredAt: row.occurred_at,
+    }));
+  }
+
+  /** Fixed-horizon Paper markouts for one strategy attachment. The join makes
+   * each markout follow the exact Paper fill and bundle that produced it. */
+  listStrategyPaperMarkouts(
+    attachment: StrategyAttachment,
+    horizonMs = 300_000,
+  ): StrategyPaperMarkoutRow[] {
+    if (!Number.isInteger(horizonMs) || horizonMs <= 0) {
+      throw new Error("Paper markout horizon must be a positive integer");
+    }
+    return (
+      this.db
+        .prepare(
+          `SELECT markout.market_id, markout.order_key, markout.horizon_ms,
+                  markout.markout_usd, markout.coverage
+           FROM tenant_inventory_paper_markouts AS markout
+           JOIN tenant_paper_fills AS fill
+             ON fill.owner_address = markout.owner_address
+            AND fill.trial_id = markout.run_id
+            AND fill.order_key = markout.order_key
+            AND fill.market_id = markout.market_id
+           WHERE fill.owner_address = ? AND fill.bundle_id = ?
+             AND fill.occurred_at >= ?
+             AND (? IS NULL OR fill.occurred_at < ?)
+             AND markout.horizon_ms = ?
+           ORDER BY fill.occurred_at ASC, markout.source_event_key ASC`,
+        )
+        .all(
+          this.ownerAddress,
+          attachment.bundleId,
+          attachment.attachedAt,
+          attachment.detachedAt,
+          attachment.detachedAt,
+          horizonMs,
+        ) as Array<{
+        market_id: string;
+        order_key: string;
+        horizon_ms: number;
+        markout_usd: string | null;
+        coverage: Coverage;
+      }>
+    ).map((row) => ({
+      marketId: row.market_id,
+      orderKey: row.order_key,
+      horizonMs: row.horizon_ms,
+      markoutUsd: row.markout_usd === null ? null : Number(row.markout_usd),
+      coverage: row.coverage,
     }));
   }
 
@@ -5969,7 +6071,18 @@ export class TenantStore {
     marketId: string;
     bestBid: number;
     bestAsk: number;
+    /** Current venue terms are frozen into a fill once it is estimated. */
+    makerFeeRate?: number | null;
+    builderFeeRate?: number;
   }): PaperFill[] {
+    const venueFeeRate = inputs.makerFeeRate ?? null;
+    const builderFeeRate = inputs.builderFeeRate ?? 0;
+    if (
+      (venueFeeRate !== null && !Number.isFinite(venueFeeRate)) ||
+      !Number.isFinite(builderFeeRate)
+    ) {
+      throw new Error("Paper fee rates must be finite");
+    }
     const bundleId = this.paperBundleId();
     const rows = this.db
       .prepare(
@@ -6022,8 +6135,9 @@ export class TenantStore {
       const insert = this.db.prepare(
         `INSERT OR IGNORE INTO tenant_paper_fills
           (owner_address, bundle_id, trial_id, order_key, role, market_id,
-           symbol, side, price, size_usd, occurred_at)
-         VALUES (?, ?, ?, ?, 'maker', ?, ?, ?, ?, ?, ?)`,
+           symbol, side, price, size_usd, venue_fee_rate, venue_fee_usd,
+           builder_fee_rate, builder_fee_usd, occurred_at)
+         VALUES (?, ?, ?, ?, 'maker', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       );
       for (const fill of fills) {
         close.run(
@@ -6043,6 +6157,10 @@ export class TenantStore {
           fill.side,
           fill.price,
           fill.size_usd,
+          venueFeeRate,
+          venueFeeRate === null ? null : fill.size_usd * venueFeeRate,
+          builderFeeRate,
+          fill.size_usd * builderFeeRate,
           now,
         );
       }
@@ -6057,6 +6175,10 @@ export class TenantStore {
       side: fill.side,
       price: fill.price,
       sizeUsd: fill.size_usd,
+      venueFeeRate,
+      venueFeeUsd: venueFeeRate === null ? null : fill.size_usd * venueFeeRate,
+      builderFeeRate,
+      builderFeeUsd: fill.size_usd * builderFeeRate,
       occurredAt: now,
     }));
   }
@@ -6168,14 +6290,28 @@ export class TenantStore {
   }
 
   /** Record the estimated opposite-side hedge without sending a transaction. */
-  recordPaperHedge(inputs: { trialId: string; makerFill: PaperFill }): void {
+  recordPaperHedge(inputs: {
+    trialId: string;
+    makerFill: PaperFill;
+    takerFeeRate?: number | null;
+    builderFeeRate?: number;
+  }): void {
+    const venueFeeRate = inputs.takerFeeRate ?? null;
+    const builderFeeRate = inputs.builderFeeRate ?? 0;
+    if (
+      (venueFeeRate !== null && !Number.isFinite(venueFeeRate)) ||
+      !Number.isFinite(builderFeeRate)
+    ) {
+      throw new Error("Paper fee rates must be finite");
+    }
     const bundleId = this.paperBundleId();
     this.db
       .prepare(
         `INSERT OR IGNORE INTO tenant_paper_fills
           (owner_address, bundle_id, trial_id, order_key, role, market_id,
-           symbol, side, price, size_usd, occurred_at)
-         VALUES (?, ?, ?, ?, 'hedge', ?, ?, ?, ?, ?, ?)`,
+           symbol, side, price, size_usd, venue_fee_rate, venue_fee_usd,
+           builder_fee_rate, builder_fee_usd, occurred_at)
+         VALUES (?, ?, ?, ?, 'hedge', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         this.ownerAddress,
@@ -6187,6 +6323,10 @@ export class TenantStore {
         inputs.makerFill.side === "bid" ? "ask" : "bid",
         inputs.makerFill.price,
         inputs.makerFill.sizeUsd,
+        venueFeeRate,
+        venueFeeRate === null ? null : inputs.makerFill.sizeUsd * venueFeeRate,
+        builderFeeRate,
+        inputs.makerFill.sizeUsd * builderFeeRate,
         new Date().toISOString(),
       );
     this.pruneTable("tenant_paper_fills", RETENTION_LIMITS.paperFills);
@@ -6204,7 +6344,12 @@ export class TenantStore {
     bestBid: number;
     bestAsk: number;
     reason?: "close" | "unwind";
+    takerFeeRate?: number | null;
   }): PaperFill[] {
+    const venueFeeRate = inputs.takerFeeRate ?? null;
+    if (venueFeeRate !== null && !Number.isFinite(venueFeeRate)) {
+      throw new Error("Paper fee rate must be finite");
+    }
     const bundleId = this.paperBundleId();
     const positions = this.getPaperState(inputs.trialId).positions.filter(
       (position) => position.marketId === inputs.marketId,
@@ -6216,8 +6361,9 @@ export class TenantStore {
       const insert = this.db.prepare(
         `INSERT OR IGNORE INTO tenant_paper_fills
           (owner_address, bundle_id, trial_id, order_key, role, market_id,
-           symbol, side, price, size_usd, occurred_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           symbol, side, price, size_usd, venue_fee_rate, venue_fee_usd,
+           builder_fee_rate, builder_fee_usd, occurred_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       );
       for (const position of positions) {
         const side: "bid" | "ask" =
@@ -6234,6 +6380,13 @@ export class TenantStore {
           // account. Reusing its old USD notional would flip inventory when
           // the touch price moved between entry and exit.
           sizeUsd: Math.abs(position.baseAssetAmount * price),
+          venueFeeRate,
+          venueFeeUsd:
+            venueFeeRate === null
+              ? null
+              : Math.abs(position.baseAssetAmount * price) * venueFeeRate,
+          builderFeeRate: 0,
+          builderFeeUsd: 0,
           occurredAt: now,
         };
         insert.run(
@@ -6247,6 +6400,10 @@ export class TenantStore {
           fill.side,
           fill.price,
           fill.sizeUsd,
+          fill.venueFeeRate,
+          fill.venueFeeUsd,
+          fill.builderFeeRate,
+          fill.builderFeeUsd,
           fill.occurredAt,
         );
         inserted.push(fill);
@@ -6358,7 +6515,8 @@ export class TenantStore {
     const rows = this.db
       .prepare(
         `SELECT order_key, role, market_id, symbol, side, price, size_usd,
-                occurred_at
+                venue_fee_rate, venue_fee_usd, builder_fee_rate,
+                builder_fee_usd, occurred_at
          FROM tenant_paper_fills
          WHERE owner_address = ? AND bundle_id = ?
            AND (? IS NULL OR trial_id = ?)
@@ -6379,6 +6537,10 @@ export class TenantStore {
       side: "bid" | "ask";
       price: number;
       size_usd: number;
+      venue_fee_rate: number | null;
+      venue_fee_usd: number | null;
+      builder_fee_rate: number | null;
+      builder_fee_usd: number | null;
       occurred_at: string;
     }>;
     return rows.map((row) => ({
@@ -6389,6 +6551,10 @@ export class TenantStore {
       side: row.side,
       price: row.price,
       sizeUsd: row.size_usd,
+      venueFeeRate: row.venue_fee_rate,
+      venueFeeUsd: row.venue_fee_usd,
+      builderFeeRate: row.builder_fee_rate,
+      builderFeeUsd: row.builder_fee_usd,
       occurredAt: row.occurred_at,
     }));
   }

@@ -1452,6 +1452,9 @@ export class MakerRuntime {
                 sinceMs === undefined || Date.parse(fill.occurredAt) >= sinceMs,
             )
         : [];
+    const paperMissingFeeSnapshots = paperRows.filter(
+      (fill) => fill.venueFeeUsd === null || fill.builderFeeUsd === null,
+    ).length;
     const builderFeeRate = this.options.builderCode()?.integratorFee ?? 0;
     const paperFills = paperRows.map<MakerFill>((fill) => {
       const closing =
@@ -1464,11 +1467,6 @@ export class MakerRuntime {
         : fill.role === "hedge"
           ? "Hedge"
           : "Maker fill";
-      const market = this.markets.find((item) => item.id === fill.marketId);
-      const feeRate =
-        role === "Maker fill"
-          ? (market?.makerFee ?? 0)
-          : (market?.takerFee ?? 0);
       return {
         occurredAt: fill.occurredAt,
         txDigest: `paper:${fill.orderKey}`,
@@ -1479,8 +1477,8 @@ export class MakerRuntime {
         size: fill.sizeUsd / fill.price,
         notionalUsd: fill.sizeUsd,
         realizedPnlUsd: 0,
-        protocolFeesUsd: fill.sizeUsd * feeRate,
-        estimatedBuilderFeeUsd: closing ? 0 : fill.sizeUsd * builderFeeRate,
+        protocolFeesUsd: fill.venueFeeUsd ?? 0,
+        estimatedBuilderFeeUsd: fill.builderFeeUsd ?? 0,
         orderId: fill.orderKey,
         estimated: true,
         role,
@@ -1540,7 +1538,7 @@ export class MakerRuntime {
         marketVolumeLabel: null,
         fills: paperFills,
         note: paperRows.length
-          ? "Paper fills are book-crossing estimates, including estimated venue and builder fees. Authorize an agent to add confirmed Live fill reconciliation."
+          ? `Paper fills are book-crossing estimates, including fee terms captured with each fill.${paperMissingFeeSnapshots ? ` ${paperMissingFeeSnapshots} legacy ${paperMissingFeeSnapshots === 1 ? "fill has" : "fills have"} no retained fee terms.` : ""} Authorize an agent to add confirmed Live fill reconciliation.`
           : "Authorize an agent to begin account and fill reconciliation.",
       };
     }
@@ -1789,7 +1787,7 @@ export class MakerRuntime {
         .sort((left, right) => left.symbol.localeCompare(right.symbol)),
       marketVolumeLabel,
       fills,
-      note: `Maker attribution uses recorded order IDs. Hedge attribution uses confirmed hedge transaction digests. Builder fees are deterministic estimates from filled notional; account metrics come from Aftermath's ${period === "1D" ? "24-hour" : period === "EPOCH" ? "current-epoch" : "all-time"} history.${paperRows.length ? " Paper fills are book-crossing estimates, not exchange executions." : ""}`,
+      note: `Maker attribution uses recorded order IDs. Hedge attribution uses confirmed hedge transaction digests. Builder fees are deterministic estimates from filled notional; account metrics come from Aftermath's ${period === "1D" ? "24-hour" : period === "EPOCH" ? "current-epoch" : "all-time"} history.${paperRows.length ? ` Paper fills are book-crossing estimates, not exchange executions.${paperMissingFeeSnapshots ? ` ${paperMissingFeeSnapshots} legacy ${paperMissingFeeSnapshots === 1 ? "fill has" : "fills have"} no retained fee terms.` : ""}` : ""}`,
     };
   }
 
@@ -2890,6 +2888,8 @@ export class MakerRuntime {
       }
 
       if (config.mode === "paper") {
+        const paperBuilderFeeRate =
+          this.options.builderCode()?.integratorFee ?? 0;
         if (volumeRotateFromMarketId) {
           // Volume is deliberately sequential: cancel first, then close the
           // prior maker and hedge inventories at touch before opening the next
@@ -2911,18 +2911,20 @@ export class MakerRuntime {
             bestBid: priorBid,
             bestAsk: priorAsk,
             reason: "close",
+            takerFeeRate:
+              this.markets.find((item) => item.id === volumeRotateFromMarketId)
+                ?.takerFee ?? null,
           });
           if (closes.length) {
             const utcDate = new Date().toISOString().slice(0, 10);
             if (this.paperVolumeFees?.utcDate !== utcDate) {
               this.paperVolumeFees = { utcDate, usd: 0, warned: false };
             }
-            const priorFee =
-              this.markets.find((item) => item.id === volumeRotateFromMarketId)
-                ?.makerFee ?? 0;
-            this.paperVolumeFees!.usd +=
-              closes.reduce((total, fill) => total + fill.sizeUsd, 0) *
-              priorFee;
+            this.paperVolumeFees!.usd += closes.reduce(
+              (total, fill) =>
+                total + (fill.venueFeeUsd ?? 0) + (fill.builderFeeUsd ?? 0),
+              0,
+            );
             const state = this.store.getPaperState(paperTrialId);
             if (
               state.positions.some(
@@ -2964,6 +2966,10 @@ export class MakerRuntime {
           marketId: selected.marketId,
           bestBid,
           bestAsk,
+          makerFeeRate:
+            this.markets.find((item) => item.id === selected!.marketId)
+              ?.makerFee ?? null,
+          builderFeeRate: paperBuilderFeeRate,
         });
         // Index is an independently maintained reference from the venue, not
         // a derived midpoint of the quoted book.  It is retained only as
@@ -2987,6 +2993,10 @@ export class MakerRuntime {
             this.store.recordPaperHedge({
               trialId: paperTrialId,
               makerFill: fill,
+              takerFeeRate:
+                this.markets.find((item) => item.id === selected!.marketId)
+                  ?.takerFee ?? null,
+              builderFeeRate: paperBuilderFeeRate,
             });
           }
         }
@@ -2996,14 +3006,21 @@ export class MakerRuntime {
             if (this.paperVolumeFees?.utcDate !== utcDate) {
               this.paperVolumeFees = { utcDate, usd: 0, warned: false };
             }
-            // The Paper estimate has no account-history fee rows.  Apply the
-            // venue maker rate to the maker fill and its immediate hedge; the
-            // two reduce-only closes are added when the dwell interval ends.
-            this.paperVolumeFees!.usd +=
-              estimatedFills.reduce((total, fill) => total + fill.sizeUsd, 0) *
-              (this.markets.find((item) => item.id === selected!.marketId)
-                ?.makerFee ?? 0) *
-              2;
+            // Fee terms are frozen on every simulated fill. Count both the
+            // maker fill and immediate taker hedge; closes are added when the
+            // dwell interval ends.
+            const takerFeeRate =
+              this.markets.find((item) => item.id === selected!.marketId)
+                ?.takerFee ?? null;
+            this.paperVolumeFees!.usd += estimatedFills.reduce(
+              (total, fill) =>
+                total +
+                (fill.venueFeeUsd ?? 0) +
+                (fill.builderFeeUsd ?? 0) +
+                (takerFeeRate === null ? 0 : fill.sizeUsd * takerFeeRate) +
+                fill.sizeUsd * paperBuilderFeeRate,
+              0,
+            );
           }
           this.store.logEvent({
             category: "paper",
@@ -3929,6 +3946,9 @@ export class MakerRuntime {
             bestBid: unwindBestBid,
             bestAsk: unwindBestAsk,
             reason: "unwind",
+            takerFeeRate:
+              this.markets.find((item) => item.id === largest.marketId)
+                ?.takerFee ?? null,
           });
           if (closed.length) {
             this.store.logEvent({

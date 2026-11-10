@@ -796,13 +796,11 @@ export async function buildServer({
     const markets = await runtime(request)
       .listMarkets(USDC_COIN_TYPE)
       .catch(() => []);
-    const marketById = new Map(markets.map((market) => [market.id, market]));
     const marks = new Map(
       markets
         .filter((market) => Number.isFinite(market.indexPrice))
         .map((market) => [market.id, market.indexPrice]),
     );
-    const builderFeeRate = builderCode()?.integratorFee ?? 0;
     const day = (iso: string) =>
       new Date(iso).toLocaleDateString("en-US", {
         month: "short",
@@ -810,6 +808,21 @@ export async function buildServer({
         timeZone: "UTC",
       });
     const paperFills: StrategyResultFill[] = [];
+    const paperEvidence = new Map<
+      string,
+      {
+        marketId: string;
+        symbol: string;
+        fills: number;
+        makerFills: number;
+        volumeUsd: number;
+        knownFeesUsd: number;
+        feeTermsMissing: number;
+        markout5mUsd: number;
+        markout5mMeasuredFills: number;
+        markout5mUnavailableFills: number;
+      }
+    >();
     const paperGas: Array<{
       gasUsedMist: number | null;
       suiUsd: number | null;
@@ -824,6 +837,7 @@ export async function buildServer({
     let liveFundingUsd: number | null = 0;
     let liveUnrealizedUsd = 0;
     let liveReadError: string | null = null;
+    let paperFeeTermsMissing = 0;
     const prunedSince = (
       table: Parameters<typeof scoped.historyKeptSince>[0],
       attachedAt: string,
@@ -833,13 +847,8 @@ export async function buildServer({
     };
     for (const attachment of attachments) {
       for (const fill of scoped.listStrategyPaperFills(attachment)) {
-        const market = marketById.get(fill.marketId);
-        // Quotes rest as maker; hedges and closes take. Maker quotes and
-        // hedges carry the builder code; reduce-only closes don't.
-        const feeRate =
-          fill.kind === "quote"
-            ? (market?.makerFee ?? 0)
-            : (market?.takerFee ?? 0);
+        const feeTermsKnown =
+          fill.venueFeeUsd !== null && fill.builderFeeUsd !== null;
         paperFills.push({
           occurredAt: fill.occurredAt,
           marketId: fill.marketId,
@@ -847,12 +856,44 @@ export async function buildServer({
           side: fill.side,
           price: fill.price,
           sizeUsd: fill.sizeUsd,
-          executionFeeUsd: fill.sizeUsd * feeRate,
-          builderFeeUsd:
-            fill.kind === "close" ? 0 : fill.sizeUsd * builderFeeRate,
+          executionFeeUsd: fill.venueFeeUsd ?? 0,
+          builderFeeUsd: fill.builderFeeUsd ?? 0,
         });
+        const evidence = paperEvidence.get(fill.marketId) ?? {
+          marketId: fill.marketId,
+          symbol: fill.symbol,
+          fills: 0,
+          makerFills: 0,
+          volumeUsd: 0,
+          knownFeesUsd: 0,
+          feeTermsMissing: 0,
+          markout5mUsd: 0,
+          markout5mMeasuredFills: 0,
+          markout5mUnavailableFills: 0,
+        };
+        evidence.fills += 1;
+        evidence.makerFills += fill.kind === "quote" ? 1 : 0;
+        evidence.volumeUsd += fill.sizeUsd;
+        if (feeTermsKnown) {
+          evidence.knownFeesUsd +=
+            (fill.venueFeeUsd ?? 0) + (fill.builderFeeUsd ?? 0);
+        } else {
+          evidence.feeTermsMissing += 1;
+          paperFeeTermsMissing += 1;
+        }
+        paperEvidence.set(fill.marketId, evidence);
         if (fill.kind !== "quote")
           paperGaps.push("Gas for Paper hedges and closes isn't estimated.");
+      }
+      for (const markout of scoped.listStrategyPaperMarkouts(attachment)) {
+        const evidence = paperEvidence.get(markout.marketId);
+        if (!evidence) continue;
+        if (markout.coverage === "complete" && markout.markoutUsd !== null) {
+          evidence.markout5mUsd += markout.markoutUsd;
+          evidence.markout5mMeasuredFills += 1;
+        } else {
+          evidence.markout5mUnavailableFills += 1;
+        }
       }
       paperGas.push(...scoped.listStrategyGas(attachment, "paper"));
       const paperPruned =
@@ -921,6 +962,11 @@ export async function buildServer({
         liveReadError = error instanceof Error ? error.message : String(error);
       }
     }
+    if (paperFeeTermsMissing) {
+      paperGaps.push(
+        `${paperFeeTermsMissing} legacy Paper ${paperFeeTermsMissing === 1 ? "fill has" : "fills have"} no retained fee terms, so those fees aren't counted.`,
+      );
+    }
     if (liveReadError) liveGaps.push("Live fills couldn't be read just now.");
     const gasResult = (
       rows: Array<{ gasUsedMist: number | null; suiUsd: number | null }>,
@@ -949,6 +995,13 @@ export async function buildServer({
           gasUsd: gasResult(paperGas, paperGaps),
           gaps: paperGaps,
         }),
+        paperEvidence: [...paperEvidence.values()]
+          .map((row) => ({
+            ...row,
+            markout5mUsd:
+              row.markout5mMeasuredFills > 0 ? row.markout5mUsd : null,
+          }))
+          .sort((left, right) => left.symbol.localeCompare(right.symbol)),
         live: summarizeStrategyResult({
           fills: liveFills,
           marks,
