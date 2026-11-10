@@ -160,6 +160,7 @@ function createHarness(options: { configured?: boolean } = {}) {
     bids: [],
     asks: [],
   };
+  let marketFees = { makerFee: 0, takerFee: 0 };
   const performanceRequests: Array<{
     timeframe?: "1D" | "1W" | "1M" | "ALL";
     sinceMs?: number;
@@ -197,7 +198,7 @@ function createHarness(options: { configured?: boolean } = {}) {
         metadata: { symbol: marketId === "0x5678" ? "SUI" : "BTC" },
         indexPrice: 10,
         marketState: { openInterest: 1_000 },
-        marketParams: { maxOpenInterest: 10_000 },
+        marketParams: { maxOpenInterest: 10_000, ...marketFees },
         estimatedFundingRate: () => 0.0001,
         tickSize: () => 0.01,
       },
@@ -345,6 +346,9 @@ function createHarness(options: { configured?: boolean } = {}) {
     setOrderbook: (value: typeof orderbook) => {
       orderbook = value;
     },
+    setMarketFees: (value: typeof marketFees) => {
+      marketFees = value;
+    },
     setOwnerAccounts: (value: typeof ownerAccounts) => {
       ownerAccounts = value;
     },
@@ -402,6 +406,10 @@ describe("runtime execution boundaries", () => {
 
   it("records estimated Paper fills only when a later book crosses a scratch order", async () => {
     const harness = createHarness();
+    // Do not call runtime.listMarkets(): a bundle may begin before its UI
+    // market cache is populated. Paper must freeze the fresh orderbook
+    // market's terms instead of losing them from the ledger.
+    harness.setMarketFees({ makerFee: -0.0001, takerFee: 0.0005 });
     harness.tenant.setConfig(
       makerConfigSchema.parse({
         ...harness.tenant.getConfig()!,
@@ -444,6 +452,17 @@ describe("runtime execution boundaries", () => {
     });
     expect(performance.fills[0]?.estimatedBuilderFeeUsd).toBe(0.001);
     expect(performance.fills[0]).toMatchObject({ estimated: true });
+    expect(harness.tenant.listPaperFills({ trialId: "runtime" })).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          role: "maker",
+          venueFeeRate: -0.0001,
+          venueFeeUsd: -0.001,
+          builderFeeRate: 0.0001,
+          builderFeeUsd: 0.001,
+        }),
+      ]),
+    );
     expect(harness.executionSequence).toEqual(["paper-dry-run"]);
     await harness.runtime.stop();
     harness.store.close();
