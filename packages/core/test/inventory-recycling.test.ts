@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   classifyCounterparty,
   decideInventoryPaperFill,
+  evaluatePaperAdverseSelection,
   inventoryPaperMarkout,
   isDecimalString,
   rankInventoryRecyclingMarkets,
@@ -48,6 +49,61 @@ function market(overrides: Record<string, unknown> = {}) {
 }
 
 describe("Inventory recycling accounting contracts", () => {
+  it("blocks only a sufficiently sampled, recent adverse Paper markout", () => {
+    const asOfMs = 1_000_000;
+    const adverse = evaluatePaperAdverseSelection({
+      asOfMs,
+      observations: Array.from({ length: 12 }, (_, index) => ({
+        fillAtMs: asOfMs - index * 1_000,
+        sizeUsd: 10,
+        markoutUsd: -0.06,
+        coverage: "complete" as const,
+      })),
+    });
+    expect(adverse).toMatchObject({
+      state: "blocked",
+      measuredFills: 12,
+      makerNotionalUsd: 120,
+    });
+    expect(adverse.averageMarkoutBps).toBeCloseTo(-60, 8);
+
+    expect(
+      evaluatePaperAdverseSelection({
+        asOfMs,
+        observations: [
+          ...Array.from({ length: 11 }, (_, index) => ({
+            fillAtMs: asOfMs - index * 1_000,
+            sizeUsd: 10,
+            markoutUsd: -0.2,
+            coverage: "complete" as const,
+          })),
+          {
+            fillAtMs: asOfMs - 1_000,
+            sizeUsd: 10,
+            markoutUsd: null,
+            coverage: "unavailable" as const,
+          },
+        ],
+      }),
+    ).toMatchObject({
+      state: "collecting",
+      measuredFills: 11,
+      unavailableFills: 1,
+    });
+
+    expect(
+      evaluatePaperAdverseSelection({
+        asOfMs,
+        observations: Array.from({ length: 12 }, (_, index) => ({
+          fillAtMs: asOfMs - (24 * 60 * 60_000 + index + 1),
+          sizeUsd: 10,
+          markoutUsd: -1,
+          coverage: "complete" as const,
+        })),
+      }),
+    ).toMatchObject({ state: "collecting", measuredFills: 0 });
+  });
+
   it("does not call an unobserved counterparty independent", () => {
     expect(
       classifyCounterparty({

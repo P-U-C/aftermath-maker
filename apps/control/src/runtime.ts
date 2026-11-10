@@ -14,9 +14,11 @@ import {
   aggregatePortfolioQuoteRisk,
   requiredMakerCollateralUsd,
   requiredHedgeCollateralUsd,
+  PAPER_ADVERSE_SELECTION_POLICY,
   lowestEffectiveHedgeLeverage,
   assertSafe,
   buildQuoteIntent,
+  evaluatePaperAdverseSelection,
   evaluateQuoteSafety,
   makerConfigSchema,
   marketRiskThresholds,
@@ -2637,7 +2639,9 @@ export class MakerRuntime {
             ? `${bundleName}: ${selected.symbol} skipped. ${failed.detail} quotes it live, and one Live bundle quotes a market at a time. ${bundleName} picks it up when ${failed.detail} stops quoting it.`
             : failed.code === "fair-value"
               ? `${bundleName}: ${selected.symbol} paused. Its book is ${failed.detail.split(";")[0]} from the index price, and ${bundleName} quotes only within ${maxFairValue.toFixed(1)} bps (${limitName}). Quoting resumes when the book comes back, or widen the spread in Strategy.`
-              : `${bundleName}: ${selected.symbol} paused. ${failed.detail}. Quoting resumes when this market is safe again.`;
+              : failed.code === "adverse-selection"
+                ? `${bundleName}: ${selected.symbol} paused new exposure. ${failed.detail}. Maker cancelled its Paper quotes; if inventory exists, it still quotes only the side that reduces it.`
+                : `${bundleName}: ${selected.symbol} paused. ${failed.detail}. Quoting resumes when this market is safe again.`;
     const previous = this.paperMarketSkips.get(selected.marketId);
     this.snapshotValue.markets = this.snapshotValue.markets.map((row) =>
       row.id === selected.marketId
@@ -2675,13 +2679,20 @@ export class MakerRuntime {
     this.maybeWarnAllPaperMarketsSkipped(config, bundleName);
   }
 
-  private clearPaperMarketSkip(selected: MakerMarket): void {
+  private clearPaperMarketSkip(
+    selected: MakerMarket,
+    preserveRowError = false,
+  ): void {
     if (!this.paperMarketSkips.delete(selected.marketId)) return;
     const bundleName = this.store.bundleId
       ? (this.store.getStoredBundle(this.store.bundleId)?.name ?? "Maker")
       : "Core";
     this.snapshotValue.markets = this.snapshotValue.markets.map((row) =>
-      row.id === selected.marketId ? { ...row, error: null, skip: null } : row,
+      row.id === selected.marketId
+        ? preserveRowError
+          ? { ...row, skip: null }
+          : { ...row, error: null, skip: null }
+        : row,
     );
     this.logPaperMarketResumed(selected, bundleName);
     if (this.paperMarketSkips.size === 0) this.paperAllSkippedSince = null;
@@ -2728,6 +2739,7 @@ export class MakerRuntime {
       spread: "with crossed quotes",
       notional: "outside the notional limit",
       inventory: "at the inventory limit",
+      "adverse-selection": "with adverse Paper markouts",
     };
     const reasons = [...counts.entries()]
       .map(
@@ -3379,6 +3391,8 @@ export class MakerRuntime {
       let quote = twoSidedQuote;
       let reducingOnly = false;
       let holdNewExposure = false;
+      let holdNewExposureReason: "gross-exposure" | "adverse-selection" | null =
+        null;
       const activeConfig = config;
       const portfolioRiskFor = (intent: QuoteIntent) =>
         aggregatePortfolioQuoteRisk(
@@ -3568,6 +3582,43 @@ export class MakerRuntime {
           // A flat market cannot reduce bundle risk. Do not post a new quote
           // while another market is bringing the bundle back below its cap.
           holdNewExposure = true;
+          holdNewExposureReason = "gross-exposure";
+        }
+      }
+      // The first adaptive control is deliberately Paper-only. It looks only
+      // at completed, exact-trial five-minute markouts and never treats a
+      // missing mark as a zero loss. A held position still gets the normal
+      // passive reduce-only path; only a flat market's fresh exposure pauses.
+      const adverseSelection =
+        config.mode === "paper"
+          ? evaluatePaperAdverseSelection({
+              asOfMs: observedAt.getTime(),
+              observations: this.store.listPaperAdverseSelectionMarkouts({
+                trialId: paperTrialId,
+                marketId: selected.marketId,
+                sinceMs:
+                  observedAt.getTime() -
+                  PAPER_ADVERSE_SELECTION_POLICY.windowMs,
+                horizonMs: PAPER_ADVERSE_SELECTION_POLICY.horizonMs,
+              }),
+            })
+          : null;
+      if (
+        !holdNewExposure &&
+        !reducingOnly &&
+        adverseSelection?.state === "blocked"
+      ) {
+        const reduceOnly = reduceOnlyQuoteIntent({
+          quote,
+          inventoryUsd,
+          targetUsd: marketConfig.inventoryTargetUsd,
+        });
+        if (reduceOnly) {
+          quote = reduceOnly;
+          reducingOnly = true;
+        } else {
+          holdNewExposure = true;
+          holdNewExposureReason = "adverse-selection";
         }
       }
       const inventoryReconciliation = this.inventoryRecyclingReconciliation();
@@ -3800,7 +3851,10 @@ export class MakerRuntime {
             error: reducingOnly
               ? `Reducing: quoting the ${quote.sides} to bring inventory from $${inventoryUsd.toFixed(2)} back to $${marketConfig.inventoryTargetUsd.toFixed(2)}.`
               : holdNewExposure
-                ? "Paused new exposure until bundle inventory is reduced."
+                ? holdNewExposureReason === "adverse-selection" &&
+                  adverseSelection?.averageMarkoutBps !== null
+                  ? `Paused new exposure: 5-minute Paper markout averages ${adverseSelection!.averageMarkoutBps!.toFixed(0)} bps across ${adverseSelection!.measuredFills} fills; the guard limit is ${adverseSelection!.policy.maximumAverageMarkoutBps} bps.`
+                  : "Paused new exposure until bundle inventory is reduced."
                 : null,
           };
         }),
@@ -3981,18 +4035,49 @@ export class MakerRuntime {
       }
       if (holdNewExposure) {
         if (config.mode === "paper") {
+          if (holdNewExposureReason === "adverse-selection") {
+            // Do not leave a pre-guard Paper quote resting: that would still
+            // create fresh simulated exposure after the policy paused it.
+            this.store.cancelPaperOrders(paperTrialId, selected.marketId);
+            this.recordPaperMarketSkip({
+              selected,
+              failed: {
+                code: "adverse-selection",
+                label: "Adverse selection",
+                ok: false,
+                scope: "market",
+                detail: `${adverseSelection!.measuredFills} complete 5-minute Paper markouts average ${adverseSelection!.averageMarkoutBps!.toFixed(1)} bps; guard limit ${adverseSelection!.policy.maximumAverageMarkoutBps} bps`,
+              },
+              config,
+            });
+          }
           this.store.recordInventoryQuoteDecision({
             decisionKey: `paper:${paperTrialId}:${selected.marketId}:${Date.parse(updatedAt)}:pause`,
             runId: paperTrialId,
             marketId: selected.marketId,
             observedAtMs: Date.parse(updatedAt),
             action: "pause",
-            reason: "gross_exposure_reduce_only",
-            policy: "fixed",
+            reason:
+              holdNewExposureReason === "adverse-selection"
+                ? "adverse_selection_markout"
+                : "gross_exposure_reduce_only",
+            policy:
+              holdNewExposureReason === "adverse-selection"
+                ? "adaptive"
+                : "fixed",
             coverage: "complete",
             detail: {
               inventoryUsd,
               targetUsd: marketConfig.inventoryTargetUsd,
+              ...(holdNewExposureReason === "adverse-selection"
+                ? {
+                    measuredFills: adverseSelection!.measuredFills,
+                    unavailableFills: adverseSelection!.unavailableFills,
+                    averageMarkoutBps: adverseSelection!.averageMarkoutBps,
+                    maximumAverageMarkoutBps:
+                      adverseSelection!.policy.maximumAverageMarkoutBps,
+                  }
+                : {}),
             },
           });
         }
@@ -4166,7 +4251,7 @@ export class MakerRuntime {
           this.snapshotValue.lastSuccessfulCycleAt = updatedAt;
           return;
         }
-        this.clearPaperMarketSkip(selected);
+        this.clearPaperMarketSkip(selected, reducingOnly);
 
         let receipt: { endpoint: string; gasUsedMist: number };
         try {

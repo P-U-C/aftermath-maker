@@ -417,7 +417,6 @@ describe("runtime execution boundaries", () => {
         markets: [{ marketId: "0x5678", symbol: "SUI" }],
       }),
     );
-
     harness.runtime.start();
     await harness.runtime.cycle();
     expect(harness.executions()).toBe(0);
@@ -464,6 +463,118 @@ describe("runtime execution boundaries", () => {
       ]),
     );
     expect(harness.executionSequence).toEqual(["paper-dry-run"]);
+    await harness.runtime.stop();
+    harness.store.close();
+  });
+
+  it("pauses fresh Paper exposure after adverse markouts but preserves the normal reduce-only path", async () => {
+    const harness = createHarness();
+    harness.tenant.setConfig(
+      makerConfigSchema.parse({
+        ...harness.tenant.getConfig()!,
+        mode: "paper",
+        markets: [{ marketId: "0x5678", symbol: "SUI" }],
+        maxGrossExposureUsd: 1_000,
+      }),
+    );
+    harness.runtime.start();
+    await harness.runtime.cycle({ executeLive: true });
+    harness.executionSequence.length = 0;
+    // Seed twelve completed five-minute marks from this exact Paper trial.
+    // Each simulated maker fill is closed first, so the guard must pause a
+    // flat market rather than merely inheriting an inventory limit.
+    for (let index = 0; index < 12; index += 1) {
+      harness.tenant.recordPaperQuote({
+        trialId: "runtime",
+        marketId: "0x5678",
+        symbol: "SUI",
+        bidPrice: 10,
+        askPrice: 10.1,
+        sizeUsd: 10,
+        sides: "bid",
+      });
+      const [fill] = harness.tenant.matchPaperOrders({
+        trialId: "runtime",
+        marketId: "0x5678",
+        bestBid: 9.9,
+        bestAsk: 9.9,
+      });
+      harness.tenant.closePaperMarket({
+        trialId: "runtime",
+        marketId: "0x5678",
+        bestBid: 10,
+        bestAsk: 10.1,
+      });
+      const fillAtMs = Date.parse(fill!.occurredAt);
+      harness.tenant.recordInventoryPaperMarkouts([
+        {
+          sourceEventKey: `paper:runtime:${fill!.orderKey}:300000`,
+          runId: "runtime",
+          orderKey: fill!.orderKey,
+          marketId: "0x5678",
+          fillAtMs,
+          fillPriceUsd: "10",
+          side: "bid",
+          baseAssetAmount: "1",
+          horizonMs: 300_000,
+          referenceUsd: "9.9",
+          observedAtMs: fillAtMs + 300_000,
+          markoutUsd: "-0.1",
+          source: "fixture-index",
+          network: "paper",
+          coverage: "complete",
+          raw: { fixture: true, index },
+        },
+      ]);
+    }
+    expect(
+      harness.tenant.listPaperAdverseSelectionMarkouts({
+        trialId: "runtime",
+        marketId: "0x5678",
+        sinceMs: Date.now() - 24 * 60 * 60_000,
+        horizonMs: 300_000,
+      }),
+    ).toHaveLength(12);
+
+    await harness.runtime.cycle({ executeLive: true });
+
+    expect(harness.executionSequence).not.toContain("paper-dry-run");
+    expect(harness.runtime.snapshot.markets[0]?.skip).toMatchObject({
+      code: "adverse-selection",
+    });
+    expect(harness.runtime.snapshot.markets[0]?.error).toContain(
+      "12 complete 5-minute Paper markouts average -100.0 bps",
+    );
+    expect(harness.tenant.listInventoryQuoteDecisions("runtime")).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          action: "pause",
+          reason: "adverse_selection_markout",
+          policy: "adaptive",
+        }),
+      ]),
+    );
+
+    // A later held inventory is still allowed to post only the opposite side.
+    harness.tenant.recordPaperQuote({
+      trialId: "runtime",
+      marketId: "0x5678",
+      symbol: "SUI",
+      bidPrice: 10,
+      askPrice: 10.1,
+      sizeUsd: 10,
+      sides: "bid",
+    });
+    harness.tenant.matchPaperOrders({
+      trialId: "runtime",
+      marketId: "0x5678",
+      bestBid: 9.9,
+      bestAsk: 9.9,
+    });
+    await harness.runtime.cycle({ executeLive: true });
+    expect(harness.executionSequence).toContain("paper-dry-run");
+    expect(harness.runtime.snapshot.quote).toMatchObject({ sides: "ask" });
+    expect(harness.runtime.snapshot.markets[0]?.error).toContain("Reducing:");
     await harness.runtime.stop();
     harness.store.close();
   });
