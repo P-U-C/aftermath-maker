@@ -45,14 +45,15 @@ strategy unless a separate verified allocation source exists.
 
 ## Current evidence status
 
-| Item                                                   | Status                                                                                                |
-| ------------------------------------------------------ | ----------------------------------------------------------------------------------------------------- |
-| Durable source-aware observation/fill/reward contracts | Implemented; effects and reconciliation records are append-only and tenant-scoped                     |
-| Epoch 4/5 accounting targets                           | Sanitized fixture verifier and fixture-backed regression test; no historical quote replay is claimed  |
-| Paper fixed-horizon markouts and decisions             | Durable tenant-scoped 1/5/30/60-minute index-reference records; missing references remain unavailable |
-| Independent-fill sample and markouts                   | Not yet collected                                                                                     |
-| Wallet-paid gas reconciliation                         | Not yet collected                                                                                     |
-| Per-strategy reward allocation                         | Unavailable by design without a verified allocation source                                            |
+| Item                                                   | Status                                                                                                     |
+| ------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------- |
+| Durable source-aware observation/fill/reward contracts | Implemented; effects and reconciliation records are append-only and tenant-scoped                          |
+| Epoch 4/5 accounting targets                           | Sanitized fixture verifier and fixture-backed regression test; no historical quote replay is claimed       |
+| Paper/Observe market snapshots                         | Runtime records source-stamped index, book, depth, fees, OI and volume; incomplete fields stay unavailable |
+| Paper fixed-horizon markouts and decisions             | Durable tenant-scoped 1/5/30/60-minute index-reference records; missing references remain unavailable      |
+| Independent-fill sample and markouts                   | Not yet collected                                                                                          |
+| Wallet-paid gas reconciliation                         | Not yet collected                                                                                          |
+| Per-strategy reward allocation                         | Unavailable by design without a verified allocation source                                                 |
 
 ## Next evidence
 

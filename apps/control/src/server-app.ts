@@ -1897,6 +1897,7 @@ export async function buildServer({
       reconciliation: scoped.latestInventoryReconciliation(query.runId),
       fills,
       effects,
+      marketObservations: scoped.listMarketObservations({ limit: 500 }),
       paperMarkouts: scoped.listInventoryPaperMarkouts(query.runId),
       quoteDecisions: scoped.listInventoryQuoteDecisions(query.runId),
       rewards: scoped.listRewardAllocations(),

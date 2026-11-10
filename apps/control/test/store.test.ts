@@ -2257,4 +2257,46 @@ describe("persistent control store", () => {
     ]);
     databaseStore.close();
   });
+
+  it("lists newest source-stamped market observations without crossing tenants", () => {
+    const directory = join(
+      process.env.TMPDIR ?? "/tmp",
+      `aftermath-maker-${randomBytes(8).toString("hex")}`,
+    );
+    mkdirSync(directory, { recursive: true });
+    const databaseStore = new Store(join(directory, "maker.db"));
+    const owner = databaseStore.forTenant(`0x${"a".repeat(64)}`);
+    const other = databaseStore.forTenant(`0x${"b".repeat(64)}`);
+    const observation = {
+      marketId: "0xmarket",
+      sourceTimestampMs: 100,
+      indexUsd: "10",
+      bestBidUsd: "9.99",
+      bestAskUsd: "10.01",
+      depthBid50BpsUsd: "200",
+      depthAsk50BpsUsd: "200",
+      volume24hUsd: "10000",
+      openInterestUsd: "1000",
+      fundingRateRaw: "0.0001",
+      fundingPeriodMs: 0,
+      makerFeeRate: "-0.0001",
+      takerFeeRate: "0.0005",
+      sessionOpen: true,
+      source: "fixture-market",
+      network: "mainnet",
+      coverage: "complete" as const,
+      raw: {},
+    };
+    owner.recordMarketObservation({ ...observation, observedAtMs: 100 });
+    owner.recordMarketObservation({ ...observation, observedAtMs: 200 });
+    other.recordMarketObservation({ ...observation, observedAtMs: 300 });
+
+    expect(
+      owner.listMarketObservations({ marketId: "0xmarket", limit: 1 }),
+    ).toMatchObject([{ observedAtMs: 200, coverage: "complete" }]);
+    expect(
+      other.listMarketObservations({ marketId: "0xmarket" }),
+    ).toMatchObject([{ observedAtMs: 300 }]);
+    databaseStore.close();
+  });
 });

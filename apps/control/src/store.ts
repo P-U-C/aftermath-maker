@@ -2788,6 +2788,74 @@ export class TenantStore {
       );
   }
 
+  listMarketObservations(
+    inputs: { marketId?: string; limit?: number } = {},
+  ): StoredMarketObservation[] {
+    const limit = inputs.limit ?? 500;
+    if (!Number.isInteger(limit) || limit < 1 || limit > 10_000) {
+      throw new Error("Market observation limit must be between 1 and 10000");
+    }
+    const rows = this.db
+      .prepare(
+        `SELECT market_id, observed_at_ms, source_timestamp_ms, index_usd,
+                best_bid_usd, best_ask_usd, depth_bid_50bps_usd,
+                depth_ask_50bps_usd, volume_24h_usd, open_interest_usd,
+                funding_rate_raw, funding_period_ms, maker_fee_rate,
+                taker_fee_rate, session_open, source, network, coverage, raw
+         FROM tenant_market_observations
+         WHERE owner_address = ? AND (? IS NULL OR market_id = ?)
+         ORDER BY observed_at_ms DESC, id DESC
+         LIMIT ?`,
+      )
+      .all(
+        this.ownerAddress,
+        inputs.marketId ?? null,
+        inputs.marketId ?? null,
+        limit,
+      ) as Array<{
+      market_id: string;
+      observed_at_ms: number;
+      source_timestamp_ms: number | null;
+      index_usd: string;
+      best_bid_usd: string;
+      best_ask_usd: string;
+      depth_bid_50bps_usd: string;
+      depth_ask_50bps_usd: string;
+      volume_24h_usd: string;
+      open_interest_usd: string;
+      funding_rate_raw: string;
+      funding_period_ms: number;
+      maker_fee_rate: string;
+      taker_fee_rate: string;
+      session_open: number;
+      source: string;
+      network: string;
+      coverage: Coverage;
+      raw: string;
+    }>;
+    return rows.map((row) => ({
+      marketId: row.market_id,
+      observedAtMs: row.observed_at_ms,
+      sourceTimestampMs: row.source_timestamp_ms,
+      indexUsd: row.index_usd,
+      bestBidUsd: row.best_bid_usd,
+      bestAskUsd: row.best_ask_usd,
+      depthBid50BpsUsd: row.depth_bid_50bps_usd,
+      depthAsk50BpsUsd: row.depth_ask_50bps_usd,
+      volume24hUsd: row.volume_24h_usd,
+      openInterestUsd: row.open_interest_usd,
+      fundingRateRaw: row.funding_rate_raw,
+      fundingPeriodMs: row.funding_period_ms,
+      makerFeeRate: row.maker_fee_rate,
+      takerFeeRate: row.taker_fee_rate,
+      sessionOpen: row.session_open === 1,
+      source: row.source,
+      network: row.network,
+      coverage: row.coverage,
+      raw: parse(row.raw),
+    }));
+  }
+
   recordInventoryPaperMarkouts(
     observations: readonly InventoryPaperMarkoutObservation[],
   ): void {
