@@ -99,6 +99,80 @@ describe("persistent control store", () => {
     databaseStore.close();
   });
 
+  it("preloads only the runnable Paper templates from a wallet's selected markets", () => {
+    const directory = join(
+      process.env.TMPDIR ?? "/tmp",
+      `aftermath-maker-${randomBytes(8).toString("hex")}`,
+    );
+    mkdirSync(directory, { recursive: true });
+    const databaseStore = new Store(join(directory, "maker.db"));
+    const tenant = databaseStore.forTenant(`0x${"9".repeat(64)}`);
+    tenant.setConfig(
+      makerConfigSchema.parse({
+        markets: [
+          {
+            marketId: "0x9001",
+            symbol: "NINE",
+            marketMaxLeverage: 10,
+            overrides: { quoteSizeUsd: 99, maxLeverage: 8 },
+          },
+        ],
+        mode: "live",
+        makerAccountId: "613",
+        strategyObjective: "volume",
+        strategyProfile: "active",
+        rotationMode: "single-slot",
+        flattenOnRotate: true,
+        maxLeverage: 8,
+        hedge: {
+          enabled: true,
+          accountId: "1706",
+          thresholdUsd: 25,
+          maxOrderUsd: 100,
+          maxSlippageBps: 75,
+        },
+      }),
+    );
+
+    const created = tenant.ensureDefaultStrategies();
+
+    expect(created.map((strategy) => strategy.name).sort()).toEqual([
+      "Fill-driven Aftermath hedge",
+      "Inventory recycling",
+    ]);
+    const inventory = tenant
+      .listStrategies()
+      .find((strategy) => strategy.name === "Inventory recycling")!;
+    expect(inventory).toMatchObject({
+      usedBy: [],
+      config: {
+        strategyObjective: "both",
+        strategyProfile: "balanced",
+        rotationMode: "portfolio",
+        flattenOnRotate: false,
+        maxLeverage: 1,
+        hedge: { enabled: false },
+      },
+      markets: [{ marketId: "0x9001", symbol: "NINE", marketMaxLeverage: 10 }],
+    });
+    const hedge = tenant
+      .listStrategies()
+      .find((strategy) => strategy.name === "Fill-driven Aftermath hedge")!;
+    expect(hedge.config.hedge).toMatchObject({
+      enabled: true,
+      thresholdUsd: inventory.config.quoteSizeUsd,
+      maxOrderUsd: inventory.config.quoteSizeUsd,
+    });
+    expect(tenant.ensureDefaultStrategies()).toEqual([]);
+    expect(tenant.listStrategies()).toHaveLength(3);
+    expect(
+      tenant
+        .listStrategies()
+        .some((strategy) => strategy.name === "Cross-venue funding arbitrage"),
+    ).toBe(false);
+    databaseStore.close();
+  });
+
   it("persists Inventory recycling evidence idempotently and keeps rewards wallet-level", () => {
     const directory = join(
       process.env.TMPDIR ?? "/tmp",

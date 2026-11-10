@@ -745,6 +745,7 @@ export async function buildServer({
         { kind: "bundles" },
       );
     }
+    scoped.ensureDefaultStrategies();
     return {
       strategies: scoped
         .listStrategies()

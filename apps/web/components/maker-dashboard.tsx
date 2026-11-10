@@ -1572,7 +1572,15 @@ function DashboardBody() {
       pendingStrategyCreateIds.current.delete(strategy.id);
     }
     setSelectedStrategyId((current) => {
-      const next = current ?? strategyResult.strategies[0]?.id ?? null;
+      // Keep the strategy already applied to a bundle as the initial context.
+      // Preloaded, unattached templates belong in the picker, not ahead of the
+      // strategy the user was just running or reviewing.
+      const next =
+        current ??
+        strategyResult.strategies.find((strategy) => strategy.usedBy.length > 0)
+          ?.id ??
+        strategyResult.strategies[0]?.id ??
+        null;
       if (next !== current) {
         const strategy = strategyResult.strategies.find(
           (candidate) => candidate.id === next,
