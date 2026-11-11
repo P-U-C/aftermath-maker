@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   gasCostUsd,
+  summarizeLiveResultEvidence,
   summarizeStrategyResult,
   type StrategyResultFill,
 } from "../src/index.js";
@@ -202,5 +203,139 @@ describe("strategy result", () => {
         { gasUsedMist: null, suiUsd: 3 },
       ]),
     ).toEqual({ usd: 0.006 + 0.002, priced: 2, unpriced: 1 });
+  });
+
+  it("summarizes a Live fill with fixed-horizon markouts, gas, and funding without treating unknown data as zero", () => {
+    const result = summarizeLiveResultEvidence({
+      asOfMs: 5_000_000,
+      fills: [
+        {
+          fillId: "live-fill-1",
+          occurredAtMs: 1_000_000,
+          side: "bid",
+          priceUsd: 100,
+          sizeUsd: 250,
+          references: [
+            {
+              horizonMs: 60_000,
+              observedAtMs: 1_090_000,
+              priceUsd: 101,
+            },
+            {
+              horizonMs: 300_000,
+              observedAtMs: null,
+              priceUsd: null,
+            },
+            {
+              horizonMs: 3_600_000,
+              observedAtMs: 4_630_001,
+              priceUsd: 104,
+            },
+          ],
+        },
+      ],
+      fundingUsd: 1.25,
+      gasUsd: null,
+    });
+
+    expect(result).toMatchObject({
+      asOfMs: 5_000_000,
+      maximumReferenceDelayMs: 30_000,
+    });
+    expect(result.fills).toEqual([
+      {
+        fillId: "live-fill-1",
+        markouts: [
+          {
+            horizonMs: 60_000,
+            expectedAtMs: 1_060_000,
+            observedAtMs: 1_090_000,
+            markoutUsd: 2.5,
+            coverage: "complete",
+            reason: null,
+          },
+          {
+            horizonMs: 300_000,
+            expectedAtMs: 1_300_000,
+            observedAtMs: null,
+            markoutUsd: null,
+            coverage: "unavailable",
+            reason: "reference price is missing",
+          },
+          {
+            horizonMs: 1_800_000,
+            expectedAtMs: 2_800_000,
+            observedAtMs: null,
+            markoutUsd: null,
+            coverage: "unavailable",
+            reason: "reference is missing",
+          },
+          {
+            horizonMs: 3_600_000,
+            expectedAtMs: 4_600_000,
+            observedAtMs: 4_630_001,
+            markoutUsd: null,
+            coverage: "unavailable",
+            reason: "reference arrived after freshness window",
+          },
+        ],
+      },
+    ]);
+    expect(result.fundingUsd).toBe(1.25);
+    expect(result.gasUsd).toBeNull();
+    expect(result.netFundingAfterGasUsd).toBeNull();
+    expect(result.gaps).toEqual([
+      "Live markout for fill live-fill-1 at 300000ms is unavailable: reference price is missing.",
+      "Live markout for fill live-fill-1 at 1800000ms is unavailable: reference is missing.",
+      "Live markout for fill live-fill-1 at 3600000ms is unavailable: reference arrived after freshness window.",
+      "Run gas is unavailable.",
+    ]);
+
+    const missingFunding = summarizeLiveResultEvidence({
+      asOfMs: 1_000_000,
+      fills: [],
+      fundingUsd: Number.NaN,
+      gasUsd: 0.25,
+    });
+    expect(missingFunding.fundingUsd).toBeNull();
+    expect(missingFunding.gasUsd).toBe(0.25);
+    expect(missingFunding.netFundingAfterGasUsd).toBeNull();
+    expect(missingFunding.gaps).toEqual(["Run funding is unavailable."]);
+
+    const completeRun = summarizeLiveResultEvidence({
+      asOfMs: 1_000_000,
+      fills: [],
+      fundingUsd: 1.25,
+      gasUsd: 0.25,
+    });
+    expect(completeRun.netFundingAfterGasUsd).toBe(1);
+    expect(completeRun.gaps).toEqual([]);
+
+    const zeroSize = summarizeLiveResultEvidence({
+      asOfMs: 1_100_000,
+      fills: [
+        {
+          fillId: "zero-size-fill",
+          occurredAtMs: 1_000_000,
+          side: "bid",
+          priceUsd: 100,
+          sizeUsd: 0,
+          references: [
+            {
+              horizonMs: 60_000,
+              observedAtMs: 1_060_000,
+              priceUsd: 101,
+            },
+          ],
+        },
+      ],
+      fundingUsd: 0,
+      gasUsd: 0,
+    });
+    expect(zeroSize.fills[0]?.markouts[0]).toMatchObject({
+      markoutUsd: null,
+      coverage: "unavailable",
+      reason: "fill data is invalid",
+    });
   });
 });

@@ -50,6 +50,162 @@ export type StrategyResult = {
   gaps: string[];
 };
 
+/** Fixed Live post-fill horizons. A Live result reports every one, including
+ * unavailable evidence, so a caller cannot silently choose a favorable window.
+ */
+export const LIVE_MARKOUT_HORIZONS_MS = [
+  60_000, 300_000, 1_800_000, 3_600_000,
+] as const;
+
+/** A reference must arrive within this window after its fixed horizon. */
+export const LIVE_MARKOUT_MAX_REFERENCE_DELAY_MS = 30_000;
+
+export type LiveMarkoutReference = {
+  horizonMs: number;
+  observedAtMs: number | null;
+  priceUsd: number | null;
+};
+
+export type LiveResultEvidenceFillInput = {
+  fillId: string;
+  occurredAtMs: number;
+  side: "bid" | "ask";
+  priceUsd: number;
+  sizeUsd: number;
+  references: readonly LiveMarkoutReference[];
+};
+
+export type LiveFillMarkoutEvidence = {
+  horizonMs: number;
+  expectedAtMs: number;
+  observedAtMs: number | null;
+  /** Positive USD is favorable to the Live fill. Never a substitute for PnL. */
+  markoutUsd: number | null;
+  coverage: "complete" | "unavailable";
+  reason: string | null;
+};
+
+export type LiveResultEvidence = {
+  /** The reporting boundary. Later references cannot rewrite this result. */
+  asOfMs: number;
+  maximumReferenceDelayMs: number;
+  fills: Array<{
+    fillId: string;
+    markouts: LiveFillMarkoutEvidence[];
+  }>;
+  /** Signed funding income over this run, or null when its source is unknown. */
+  fundingUsd: number | null;
+  /** Gas cost over this run, or null when a receipt or its price is unknown. */
+  gasUsd: number | null;
+  /** Funding minus gas only when both inputs are known; never a fabricated zero. */
+  netFundingAfterGasUsd: number | null;
+  gaps: string[];
+};
+
+const finiteNumberOrNull = (value: number | null): number | null =>
+  value !== null && Number.isFinite(value) ? value : null;
+
+/**
+ * Builds a read-only Live evidence record from a fill and later market
+ * references. It is deliberately separate from `summarizeStrategyResult`:
+ * markouts describe post-fill selection, while a trading result describes
+ * realized and marked PnL.
+ */
+export function summarizeLiveResultEvidence(inputs: {
+  /** Reporting boundary supplied by the runtime rather than read from a clock. */
+  asOfMs: number;
+  fills: readonly LiveResultEvidenceFillInput[];
+  fundingUsd: number | null;
+  gasUsd: number | null;
+  maximumReferenceDelayMs?: number;
+}): LiveResultEvidence {
+  const maximumReferenceDelayMs =
+    inputs.maximumReferenceDelayMs ?? LIVE_MARKOUT_MAX_REFERENCE_DELAY_MS;
+  const validReportingBoundary =
+    Number.isInteger(inputs.asOfMs) &&
+    inputs.asOfMs >= 0 &&
+    Number.isInteger(maximumReferenceDelayMs) &&
+    maximumReferenceDelayMs >= 0;
+  const gaps: string[] = [];
+  const fills = inputs.fills.map((fill) => {
+    const validFill =
+      Number.isInteger(fill.occurredAtMs) &&
+      fill.occurredAtMs >= 0 &&
+      Number.isFinite(fill.priceUsd) &&
+      fill.priceUsd > 0 &&
+      Number.isFinite(fill.sizeUsd) &&
+      fill.sizeUsd > 0 &&
+      (fill.side === "bid" || fill.side === "ask");
+    const markouts = LIVE_MARKOUT_HORIZONS_MS.map((horizonMs) => {
+      const expectedAtMs = fill.occurredAtMs + horizonMs;
+      const reference = fill.references.find(
+        (candidate) => candidate.horizonMs === horizonMs,
+      );
+      const priceUsd = finiteNumberOrNull(reference?.priceUsd ?? null);
+      const observedAtMs = finiteNumberOrNull(reference?.observedAtMs ?? null);
+      let reason: string | null = null;
+      if (!validFill) reason = "fill data is invalid";
+      else if (!validReportingBoundary)
+        reason = "reporting boundary is invalid";
+      else if (expectedAtMs > inputs.asOfMs)
+        reason = "requested horizon is not due as of reporting time";
+      else if (!reference) reason = "reference is missing";
+      else if (priceUsd === null || priceUsd <= 0)
+        reason = "reference price is missing";
+      else if (observedAtMs === null || !Number.isInteger(observedAtMs))
+        reason = "reference time is missing";
+      else if (observedAtMs > inputs.asOfMs)
+        reason = "reference is after reporting time";
+      else if (observedAtMs < expectedAtMs)
+        reason = "reference arrived before the requested horizon";
+      else if (observedAtMs > expectedAtMs + maximumReferenceDelayMs)
+        reason = "reference arrived after freshness window";
+
+      const evidence: LiveFillMarkoutEvidence = reason
+        ? {
+            horizonMs,
+            expectedAtMs,
+            observedAtMs,
+            markoutUsd: null,
+            coverage: "unavailable",
+            reason,
+          }
+        : {
+            horizonMs,
+            expectedAtMs,
+            observedAtMs,
+            markoutUsd:
+              ((fill.side === "bid" ? 1 : -1) *
+                fill.sizeUsd *
+                (priceUsd! - fill.priceUsd)) /
+              fill.priceUsd,
+            coverage: "complete",
+            reason: null,
+          };
+      if (reason)
+        gaps.push(
+          `Live markout for fill ${fill.fillId} at ${horizonMs}ms is unavailable: ${reason}.`,
+        );
+      return evidence;
+    });
+    return { fillId: fill.fillId, markouts };
+  });
+  const fundingUsd = finiteNumberOrNull(inputs.fundingUsd);
+  const gasUsd = finiteNumberOrNull(inputs.gasUsd);
+  if (fundingUsd === null) gaps.push("Run funding is unavailable.");
+  if (gasUsd === null) gaps.push("Run gas is unavailable.");
+  return {
+    asOfMs: inputs.asOfMs,
+    maximumReferenceDelayMs,
+    fills,
+    fundingUsd,
+    gasUsd,
+    netFundingAfterGasUsd:
+      fundingUsd !== null && gasUsd !== null ? fundingUsd - gasUsd : null,
+    gaps,
+  };
+}
+
 type Lot = { marketId: string; base: number; costUsd: number };
 
 /**
