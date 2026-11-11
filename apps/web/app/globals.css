@@ -13622,6 +13622,79 @@ mysten-dapp-kit-connect-modal,
   color: var(--ink-3);
   font-size: 11.5px;
 }
+.strategy-paper-markouts {
+  display: grid;
+  gap: 6px;
+  min-width: 168px;
+}
+.strategy-paper-markouts > div {
+  padding-bottom: 5px;
+  border-bottom: 1px solid var(--hair);
+}
+.strategy-paper-markouts > div:last-child {
+  padding-bottom: 0;
+  border-bottom: 0;
+}
+.strategy-paper-markouts strong {
+  display: flex;
+  gap: 6px;
+  align-items: baseline;
+}
+.strategy-paper-markouts strong span.is-gain {
+  color: var(--tide-text);
+}
+.strategy-paper-markouts strong span.is-loss {
+  color: var(--ember-text);
+}
+@media (max-width: 700px) {
+  .strategy-paper-evidence-scroll {
+    overflow: visible;
+  }
+  .strategy-paper-evidence table {
+    min-width: 0;
+  }
+  .strategy-paper-evidence thead {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+  .strategy-paper-evidence tbody {
+    display: grid;
+    gap: 10px;
+  }
+  .strategy-paper-evidence tbody tr {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0 12px;
+    padding: 10px;
+    border: 1px solid var(--hair);
+    border-radius: 10px;
+  }
+  .strategy-paper-evidence tbody :is(th, td) {
+    display: block;
+    padding: 7px 0;
+    border: 0;
+  }
+  .strategy-paper-evidence tbody th,
+  .strategy-paper-evidence tbody td:nth-child(4),
+  .strategy-paper-evidence tbody td:nth-child(5) {
+    grid-column: 1 / -1;
+  }
+  .strategy-paper-evidence tbody :is(th, td)::before {
+    display: block;
+    margin-bottom: 2px;
+    color: var(--ink-3);
+    content: attr(data-label);
+    font-size: 10px;
+    font-weight: 620;
+    letter-spacing: 0.03em;
+    text-transform: uppercase;
+  }
+}
 /* How the trading result adds up: a quiet ledger, signed effects that sum to
    the total, with anything not measured named instead of shown as zero. */
 .strategy-result-breakdown {

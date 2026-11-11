@@ -1705,6 +1705,69 @@ async function strategyResultBreakdown(browser) {
         "Gas for Paper hedges and closes isn't estimated.",
       ],
     }),
+    paperEvidence: [
+      {
+        marketId: "0xnear",
+        symbol: "NEAR",
+        fills: 19,
+        makerFills: 12,
+        volumeUsd: 190,
+        knownFeesUsd: 0.031,
+        feeTermsMissing: 0,
+        markout5mUsd: -0.024,
+        markout5mMeasuredFills: 12,
+        markout5mUnavailableFills: 0,
+        markouts: [
+          {
+            horizonMs: 60_000,
+            totalUsd: -0.012,
+            measuredFills: 12,
+            measuredNotionalUsd: 120,
+            unavailableFills: 0,
+            averageBps: -1,
+          },
+          {
+            horizonMs: 300_000,
+            totalUsd: -0.024,
+            measuredFills: 12,
+            measuredNotionalUsd: 120,
+            unavailableFills: 0,
+            averageBps: -2,
+          },
+          {
+            horizonMs: 1_800_000,
+            totalUsd: 0.036,
+            measuredFills: 12,
+            measuredNotionalUsd: 120,
+            unavailableFills: 0,
+            averageBps: 3,
+          },
+          {
+            horizonMs: 3_600_000,
+            totalUsd: 0.048,
+            measuredFills: 12,
+            measuredNotionalUsd: 120,
+            unavailableFills: 0,
+            averageBps: 4,
+          },
+        ],
+        adverseSelection: {
+          state: "within_limit",
+          measuredFills: 12,
+          unavailableFills: 0,
+          makerNotionalUsd: 120,
+          totalMarkoutUsd: -0.024,
+          averageMarkoutBps: -2,
+          windowStartedAtMs: Date.parse("2026-11-04T09:00:00.000Z"),
+          policy: {
+            horizonMs: 300_000,
+            windowMs: 86_400_000,
+            minimumMeasuredFills: 12,
+            maximumAverageMarkoutBps: -50,
+          },
+        },
+      },
+    ],
     live: side({}),
     liveReadError: null,
   };
@@ -1736,6 +1799,11 @@ async function strategyResultBreakdown(browser) {
         .waitFor();
       await result.getByText("No Live trades yet.").waitFor();
       await result.getByText(/^Rewards aren.t included\./).waitFor();
+      const evidence = result.getByLabel("Paper evidence by market");
+      await evidence.getByText("1m −$0.012", { exact: true }).waitFor();
+      await evidence.getByText("5m −$0.024", { exact: true }).waitFor();
+      await evidence.getByText("30m +$0.036", { exact: true }).waitFor();
+      await evidence.getByText("1h +$0.048", { exact: true }).waitFor();
       const breakdown = result.locator(".strategy-result-breakdown").first();
       await breakdown
         .getByText("How it adds up (2 parts not counted)", { exact: true })
