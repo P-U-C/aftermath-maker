@@ -164,6 +164,7 @@ function BundleLane({
               type="button"
               className="bundle-lane-notice"
               title={notices.join(" ")}
+              aria-label={`Open ${bundle.name} run status`}
               onClick={() => openRunStatus(bundle.id)}
             >
               <span>{notices[0]}</span>
