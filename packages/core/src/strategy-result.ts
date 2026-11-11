@@ -50,6 +50,135 @@ export type StrategyResult = {
   gaps: string[];
 };
 
+/** Fixed Live post-fill horizons. A Live result reports every one, including
+ * unavailable evidence, so a caller cannot silently choose a favorable window.
+ */
+export const LIVE_MARKOUT_HORIZONS_MS = [
+  60_000, 300_000, 1_800_000, 3_600_000,
+] as const;
+
+export type LiveMarkoutReference = {
+  horizonMs: number;
+  observedAtMs: number | null;
+  priceUsd: number | null;
+};
+
+export type LiveResultEvidenceFillInput = {
+  fillId: string;
+  occurredAtMs: number;
+  side: "bid" | "ask";
+  priceUsd: number;
+  sizeUsd: number;
+  references: readonly LiveMarkoutReference[];
+};
+
+export type LiveFillMarkoutEvidence = {
+  horizonMs: number;
+  expectedAtMs: number;
+  observedAtMs: number | null;
+  /** Positive USD is favorable to the Live fill. Never a substitute for PnL. */
+  markoutUsd: number | null;
+  coverage: "complete" | "unavailable";
+  reason: string | null;
+};
+
+export type LiveResultEvidence = {
+  fills: Array<{
+    fillId: string;
+    markouts: LiveFillMarkoutEvidence[];
+  }>;
+  /** Signed funding income over this run, or null when its source is unknown. */
+  fundingUsd: number | null;
+  /** Gas cost over this run, or null when a receipt or its price is unknown. */
+  gasUsd: number | null;
+  /** Funding minus gas only when both inputs are known; never a fabricated zero. */
+  netFundingAfterGasUsd: number | null;
+  gaps: string[];
+};
+
+const finiteNumberOrNull = (value: number | null): number | null =>
+  value !== null && Number.isFinite(value) ? value : null;
+
+/**
+ * Builds a read-only Live evidence record from a fill and later market
+ * references. It is deliberately separate from `summarizeStrategyResult`:
+ * markouts describe post-fill selection, while a trading result describes
+ * realized and marked PnL.
+ */
+export function summarizeLiveResultEvidence(inputs: {
+  fills: readonly LiveResultEvidenceFillInput[];
+  fundingUsd: number | null;
+  gasUsd: number | null;
+}): LiveResultEvidence {
+  const gaps: string[] = [];
+  const fills = inputs.fills.map((fill) => {
+    const validFill =
+      Number.isInteger(fill.occurredAtMs) &&
+      fill.occurredAtMs >= 0 &&
+      Number.isFinite(fill.priceUsd) &&
+      fill.priceUsd > 0 &&
+      Number.isFinite(fill.sizeUsd) &&
+      fill.sizeUsd >= 0;
+    const markouts = LIVE_MARKOUT_HORIZONS_MS.map((horizonMs) => {
+      const expectedAtMs = fill.occurredAtMs + horizonMs;
+      const reference = fill.references.find(
+        (candidate) => candidate.horizonMs === horizonMs,
+      );
+      const priceUsd = finiteNumberOrNull(reference?.priceUsd ?? null);
+      const observedAtMs = finiteNumberOrNull(reference?.observedAtMs ?? null);
+      let reason: string | null = null;
+      if (!validFill) reason = "fill data is invalid";
+      else if (!reference) reason = "reference is missing";
+      else if (priceUsd === null || priceUsd <= 0)
+        reason = "reference price is missing";
+      else if (observedAtMs === null || !Number.isInteger(observedAtMs))
+        reason = "reference time is missing";
+      else if (observedAtMs < expectedAtMs)
+        reason = "reference arrived before the requested horizon";
+
+      const evidence: LiveFillMarkoutEvidence = reason
+        ? {
+            horizonMs,
+            expectedAtMs,
+            observedAtMs,
+            markoutUsd: null,
+            coverage: "unavailable",
+            reason,
+          }
+        : {
+            horizonMs,
+            expectedAtMs,
+            observedAtMs,
+            markoutUsd:
+              ((fill.side === "bid" ? 1 : -1) *
+                fill.sizeUsd *
+                (priceUsd! - fill.priceUsd)) /
+              fill.priceUsd,
+            coverage: "complete",
+            reason: null,
+          };
+      if (reason)
+        gaps.push(
+          `Live markout for fill ${fill.fillId} at ${horizonMs}ms is unavailable: ${reason}.`,
+        );
+      return evidence;
+    });
+    return { fillId: fill.fillId, markouts };
+  });
+  const fundingUsd = finiteNumberOrNull(inputs.fundingUsd);
+  const gasUsd = finiteNumberOrNull(inputs.gasUsd);
+  if (fundingUsd === null) gaps.push("Run funding is unavailable.");
+  if (gasUsd === null) gaps.push("Run gas is unavailable.");
+  return {
+    fills,
+    fundingUsd,
+    gasUsd,
+    netFundingAfterGasUsd:
+      fundingUsd !== null && gasUsd !== null ? fundingUsd - gasUsd : null,
+    gaps,
+  };
+}
+
 type Lot = { marketId: string; base: number; costUsd: number };
 
 /**
