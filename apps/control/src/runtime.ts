@@ -3698,10 +3698,10 @@ export class MakerRuntime {
       const openInterestBase = Math.abs(market.marketState.openInterest);
       const maxOpenInterestBase = market.marketParams.maxOpenInterest;
 
-      // Persist a source-stamped Paper/Observe snapshot before the quote
-      // decision. Ranking reads these later; it never needs to infer a book
-      // from a future fill or use an absent value as free liquidity.
-      if (config.mode !== "live") {
+      // Persist a source-stamped snapshot before any mode's quote decision.
+      // Read-only evidence reports use these later; they never infer a book
+      // from a future fill or use absent values as free liquidity.
+      {
         const bidDepth = depthUsdWithinBps(
           book?.bids ?? null,
           market.indexPrice,
@@ -3734,24 +3734,24 @@ export class MakerRuntime {
           observedAtMs: observedAt.getTime(),
           sourceTimestampMs: observedAt.getTime(),
           indexUsd: String(
-            Number.isFinite(market.indexPrice) ? market.indexPrice : 0,
+            Number.isFinite(market.indexPrice) ? market.indexPrice : Number.NaN,
           ),
-          bestBidUsd: String(Number.isFinite(bestBid) ? bestBid : 0),
-          bestAskUsd: String(Number.isFinite(bestAsk) ? bestAsk : 0),
-          depthBid50BpsUsd: String(bidDepth ?? 0),
-          depthAsk50BpsUsd: String(askDepth ?? 0),
-          volume24hUsd: String(summary?.volume24hUsd ?? 0),
+          bestBidUsd: String(Number.isFinite(bestBid) ? bestBid : Number.NaN),
+          bestAskUsd: String(Number.isFinite(bestAsk) ? bestAsk : Number.NaN),
+          depthBid50BpsUsd: String(bidDepth ?? Number.NaN),
+          depthAsk50BpsUsd: String(askDepth ?? Number.NaN),
+          volume24hUsd: String(summary?.volume24hUsd ?? Number.NaN),
           openInterestUsd: String(
             Number.isFinite(openInterestBase * market.indexPrice)
               ? openInterestBase * market.indexPrice
-              : 0,
+              : Number.NaN,
           ),
           fundingRateRaw: String(
-            Number.isFinite(fundingRate) ? fundingRate : 0,
+            Number.isFinite(fundingRate) ? fundingRate : Number.NaN,
           ),
           fundingPeriodMs: 0,
-          makerFeeRate: String(summary?.makerFee ?? 0),
-          takerFeeRate: String(summary?.takerFee ?? 0),
+          makerFeeRate: String(summary?.makerFee ?? Number.NaN),
+          takerFeeRate: String(summary?.takerFee ?? Number.NaN),
           sessionOpen: summary?.sessionOpen ?? false,
           source: "aftermath-runtime-market",
           network: "mainnet",
