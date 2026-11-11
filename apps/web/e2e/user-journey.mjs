@@ -3411,6 +3411,12 @@ async function paperVenuesDoNotRequireTradingKeys(browser) {
       .waitFor();
     const table = page.locator(".venue-kit-table");
     await table.waitFor();
+    // The table shell renders before the owner-account read completes. Wait
+    // for the mode-specific row rather than inspecting its header-only state.
+    await table
+      .getByText("Not needed for Paper", { exact: true })
+      .first()
+      .waitFor();
     const tableText = await table.innerText();
     assert(
       tableText.includes("Not needed for Paper"),
