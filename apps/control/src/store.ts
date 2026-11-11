@@ -15,6 +15,7 @@ import {
   inventoryPaperMarkout,
   makerConfigSchema,
   makerMarketSchema,
+  PAPER_MARKOUT_HORIZONS_MS,
   type AttributedFill,
   type Coverage,
   type InventoryLedgerEffect,
@@ -6281,9 +6282,7 @@ export class TenantStore {
     ) {
       throw new Error("Paper markout reference price must be positive");
     }
-    const horizons = inputs.horizonsMs ?? [
-      60_000, 300_000, 1_800_000, 3_600_000,
-    ];
+    const horizons = inputs.horizonsMs ?? PAPER_MARKOUT_HORIZONS_MS;
     if (
       !horizons.length ||
       horizons.some((horizon) => !Number.isInteger(horizon) || horizon <= 0)

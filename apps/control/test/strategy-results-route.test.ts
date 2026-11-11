@@ -52,26 +52,31 @@ describe("strategy results", () => {
       bestAsk: 2.25,
       takerFeeRate: 0.0005,
     });
-    tenant.recordInventoryPaperMarkouts([
-      {
-        sourceEventKey: `paper:runtime:${makerFill!.orderKey}:300000`,
+    tenant.recordInventoryPaperMarkouts(
+      [
+        [60_000, "0.05"],
+        [300_000, "0.25"],
+        [1_800_000, "0.5"],
+        [3_600_000, "0.75"],
+      ].map(([horizonMs, markoutUsd]) => ({
+        sourceEventKey: `paper:runtime:${makerFill!.orderKey}:${horizonMs}`,
         runId: "runtime",
         orderKey: makerFill!.orderKey,
         marketId: "0x1",
         fillAtMs: Date.parse(makerFill!.occurredAt),
         fillPriceUsd: "2",
-        side: "bid",
+        side: "bid" as const,
         baseAssetAmount: "5",
-        horizonMs: 300_000,
+        horizonMs,
         referenceUsd: "2.05",
-        observedAtMs: Date.parse(makerFill!.occurredAt) + 300_000,
-        markoutUsd: "0.25",
+        observedAtMs: Date.parse(makerFill!.occurredAt) + horizonMs,
+        markoutUsd,
         source: "fixture-index",
         network: "paper",
-        coverage: "complete",
+        coverage: "complete" as const,
         raw: { fixture: true },
-      },
-    ]);
+      })),
+    );
     // Two simulated quote transactions: one priced, one from before prices.
     for (const suiUsd of [3, null])
       tenant.logExecution({
@@ -118,6 +123,32 @@ describe("strategy results", () => {
         feeTermsMissing: 0,
         markout5mUsd: 0.25,
         markout5mMeasuredFills: 1,
+        markouts: [
+          expect.objectContaining({
+            horizonMs: 60_000,
+            totalUsd: 0.05,
+            measuredFills: 1,
+            averageBps: 50,
+          }),
+          expect.objectContaining({
+            horizonMs: 300_000,
+            totalUsd: 0.25,
+            measuredFills: 1,
+            averageBps: 250,
+          }),
+          expect.objectContaining({
+            horizonMs: 1_800_000,
+            totalUsd: 0.5,
+            measuredFills: 1,
+            averageBps: 500,
+          }),
+          expect.objectContaining({
+            horizonMs: 3_600_000,
+            totalUsd: 0.75,
+            measuredFills: 1,
+            averageBps: 750,
+          }),
+        ],
         adverseSelection: expect.objectContaining({
           state: "collecting",
           measuredFills: 1,

@@ -16,6 +16,7 @@ import {
   integratorInspectionSchema,
   makerConfigSchema,
   makerMarketOverridesSchema,
+  PAPER_MARKOUT_HORIZONS_MS,
   scoreRewardShare,
   requiredMakerCollateralUsd,
   setupSchema,
@@ -822,6 +823,13 @@ export async function buildServer({
         markout5mUsd: number;
         markout5mMeasuredFills: number;
         markout5mUnavailableFills: number;
+        markouts: Array<{
+          horizonMs: number;
+          totalUsd: number;
+          measuredFills: number;
+          measuredNotionalUsd: number;
+          unavailableFills: number;
+        }>;
       }
     >();
     const paperGas: Array<{
@@ -880,6 +888,13 @@ export async function buildServer({
           markout5mUsd: 0,
           markout5mMeasuredFills: 0,
           markout5mUnavailableFills: 0,
+          markouts: PAPER_MARKOUT_HORIZONS_MS.map((horizonMs) => ({
+            horizonMs,
+            totalUsd: 0,
+            measuredFills: 0,
+            measuredNotionalUsd: 0,
+            unavailableFills: 0,
+          })),
         };
         evidence.fills += 1;
         evidence.makerFills += fill.kind === "quote" ? 1 : 0;
@@ -895,23 +910,42 @@ export async function buildServer({
         if (fill.kind !== "quote")
           paperGaps.push("Gas for Paper hedges and closes isn't estimated.");
       }
-      for (const markout of scoped.listStrategyPaperMarkouts(attachment)) {
-        const evidence = paperEvidence.get(markout.marketId);
-        if (!evidence) continue;
-        if (markout.coverage === "complete" && markout.markoutUsd !== null) {
-          evidence.markout5mUsd += markout.markoutUsd;
-          evidence.markout5mMeasuredFills += 1;
-        } else {
-          evidence.markout5mUnavailableFills += 1;
+      for (const horizonMs of PAPER_MARKOUT_HORIZONS_MS) {
+        for (const markout of scoped.listStrategyPaperMarkouts(
+          attachment,
+          horizonMs,
+        )) {
+          const evidence = paperEvidence.get(markout.marketId);
+          if (!evidence) continue;
+          const horizon = evidence.markouts.find(
+            (candidate) => candidate.horizonMs === markout.horizonMs,
+          );
+          if (!horizon) continue;
+          if (markout.coverage === "complete" && markout.markoutUsd !== null) {
+            horizon.totalUsd += markout.markoutUsd;
+            horizon.measuredFills += 1;
+            horizon.measuredNotionalUsd += markout.sizeUsd;
+            if (markout.horizonMs === 300_000) {
+              evidence.markout5mUsd += markout.markoutUsd;
+              evidence.markout5mMeasuredFills += 1;
+            }
+          } else {
+            horizon.unavailableFills += 1;
+            if (markout.horizonMs === 300_000)
+              evidence.markout5mUnavailableFills += 1;
+          }
+          if (markout.horizonMs === 300_000) {
+            const observations =
+              paperAdverseSelection.get(markout.marketId) ?? [];
+            observations.push({
+              fillAtMs: markout.fillAtMs,
+              sizeUsd: markout.sizeUsd,
+              markoutUsd: markout.markoutUsd,
+              coverage: markout.coverage,
+            });
+            paperAdverseSelection.set(markout.marketId, observations);
+          }
         }
-        const observations = paperAdverseSelection.get(markout.marketId) ?? [];
-        observations.push({
-          fillAtMs: markout.fillAtMs,
-          sizeUsd: markout.sizeUsd,
-          markoutUsd: markout.markoutUsd,
-          coverage: markout.coverage,
-        });
-        paperAdverseSelection.set(markout.marketId, observations);
       }
       paperGas.push(...scoped.listStrategyGas(attachment, "paper"));
       const paperPruned =
@@ -1023,6 +1057,14 @@ export async function buildServer({
               ...row,
               markout5mUsd:
                 row.markout5mMeasuredFills > 0 ? row.markout5mUsd : null,
+              markouts: row.markouts.map((markout) => ({
+                ...markout,
+                totalUsd: markout.measuredFills > 0 ? markout.totalUsd : null,
+                averageBps:
+                  markout.measuredNotionalUsd > 0
+                    ? (markout.totalUsd / markout.measuredNotionalUsd) * 10_000
+                    : null,
+              })),
               adverseSelection,
             };
           })

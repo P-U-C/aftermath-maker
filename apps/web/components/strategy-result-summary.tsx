@@ -34,6 +34,14 @@ export type StrategyResults = {
     markout5mUsd: number | null;
     markout5mMeasuredFills: number;
     markout5mUnavailableFills: number;
+    markouts: Array<{
+      horizonMs: number;
+      totalUsd: number | null;
+      measuredFills: number;
+      measuredNotionalUsd: number;
+      unavailableFills: number;
+      averageBps: number | null;
+    }>;
     adverseSelection: {
       state: "collecting" | "within_limit" | "blocked";
       measuredFills: number;
@@ -70,6 +78,11 @@ const part = (value: number) =>
       ? { maximumFractionDigits: 4 }
       : {},
   );
+
+const markoutHorizonLabel = (horizonMs: number) =>
+  horizonMs % 3_600_000 === 0
+    ? `${horizonMs / 3_600_000}h`
+    : `${horizonMs / 60_000}m`;
 
 function Breakdown({ side }: { side: StrategyResultSide }) {
   const rows: Array<[string, number | null, string?]> = [
@@ -179,7 +192,7 @@ function PaperEvidence({
         <div>
           <h4>Paper evidence by market</h4>
           <p>
-            Frozen fee terms and 5-minute index markouts. Markouts measure
+            Frozen fee terms and fixed-horizon index markouts. Markouts measure
             post-fill selection; they are not trading P&amp;L.
           </p>
         </div>
@@ -191,19 +204,12 @@ function PaperEvidence({
               <th scope="col">Market</th>
               <th scope="col">Flow</th>
               <th scope="col">Known fees</th>
-              <th scope="col">5m markout</th>
+              <th scope="col">Markouts</th>
               <th scope="col">Paper guard</th>
             </tr>
           </thead>
           <tbody>
             {rows.map((row) => {
-              const markoutCoverage = `${row.markout5mMeasuredFills}/${row.makerFills} measured`;
-              const waiting = Math.max(
-                0,
-                row.makerFills -
-                  row.markout5mMeasuredFills -
-                  row.markout5mUnavailableFills,
-              );
               const guard = row.adverseSelection;
               const guardLabel =
                 guard.state === "blocked"
@@ -213,12 +219,14 @@ function PaperEvidence({
                     : "Collecting evidence";
               return (
                 <tr key={row.marketId}>
-                  <th scope="row">{row.symbol}</th>
-                  <td>
+                  <th scope="row" data-label="Market">
+                    {row.symbol}
+                  </th>
+                  <td data-label="Flow">
                     {formatMoney(row.volumeUsd)} · {row.fills}{" "}
                     {row.fills === 1 ? "fill" : "fills"}
                   </td>
-                  <td>
+                  <td data-label="Known fees">
                     <strong>{part(-row.knownFeesUsd)}</strong>
                     {row.feeTermsMissing ? (
                       <small>{row.feeTermsMissing} legacy missing</small>
@@ -226,27 +234,47 @@ function PaperEvidence({
                       <small>all terms captured</small>
                     )}
                   </td>
-                  <td>
-                    <strong
-                      className={
-                        row.markout5mUsd === null
-                          ? undefined
-                          : `is-${moneyTone(row.markout5mUsd)}`
-                      }
-                    >
-                      {row.markout5mUsd === null
-                        ? "—"
-                        : formatSignedMoney(row.markout5mUsd)}
-                    </strong>
-                    <small>
-                      {markoutCoverage}
-                      {row.markout5mUnavailableFills
-                        ? ` · ${row.markout5mUnavailableFills} unavailable`
-                        : ""}
-                      {waiting ? ` · ${waiting} waiting` : ""}
-                    </small>
+                  <td data-label="Markouts">
+                    <div className="strategy-paper-markouts">
+                      {row.markouts.map((markout) => {
+                        const waiting = Math.max(
+                          0,
+                          row.makerFills -
+                            markout.measuredFills -
+                            markout.unavailableFills,
+                        );
+                        return (
+                          <div key={markout.horizonMs}>
+                            <strong>
+                              {markoutHorizonLabel(markout.horizonMs)}{" "}
+                              <span
+                                className={
+                                  markout.totalUsd === null
+                                    ? undefined
+                                    : `is-${moneyTone(markout.totalUsd)}`
+                                }
+                              >
+                                {markout.totalUsd === null
+                                  ? "—"
+                                  : part(markout.totalUsd)}
+                              </span>
+                            </strong>
+                            <small>
+                              {markout.measuredFills}/{row.makerFills} measured
+                              {markout.averageBps === null
+                                ? ""
+                                : ` · ${markout.averageBps.toFixed(1)} bps`}
+                              {markout.unavailableFills
+                                ? ` · ${markout.unavailableFills} unavailable`
+                                : ""}
+                              {waiting ? ` · ${waiting} waiting` : ""}
+                            </small>
+                          </div>
+                        );
+                      })}
+                    </div>
                   </td>
-                  <td>
+                  <td data-label="Paper guard">
                     <strong
                       className={
                         guard.state === "blocked" ? "is-loss" : undefined

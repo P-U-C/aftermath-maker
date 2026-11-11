@@ -298,6 +298,13 @@ export type InventoryPaperMarkoutObservation = InventoryPaperMarkout & {
   raw: unknown;
 };
 
+/** Fixed Paper post-fill horizons. Keep these shared so retention, reporting,
+ * and any later policy all describe the same evidence rather than silently
+ * selecting different windows. */
+export const PAPER_MARKOUT_HORIZONS_MS = [
+  60_000, 300_000, 1_800_000, 3_600_000,
+] as const;
+
 /**
  * A policy decision is append-only evidence. It explains a changed quote or
  * a pause without pretending a simulated fill was independently observed.
