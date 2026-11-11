@@ -993,7 +993,11 @@ export async function buildServer({
         const attachmentFills = persistedLiveFills.filter(
           (fill) =>
             fill.accountId === bundle.makerAccountId &&
+            fill.configVersion === attachment.strategyVersion &&
             inAttachment(fill.timestampMs),
+        );
+        const attachmentRunIds = new Set(
+          attachmentFills.map((fill) => fill.runId),
         );
         for (const fill of attachmentFills) {
           const priceUsd = Number(fill.priceUsd);
@@ -1054,6 +1058,9 @@ export async function buildServer({
           (effect) =>
             effect.kind === "funding" &&
             effect.accountId === bundle.makerAccountId &&
+            effect.configVersion === attachment.strategyVersion &&
+            effect.runId !== null &&
+            attachmentRunIds.has(effect.runId) &&
             inAttachment(effect.timestampMs),
         );
         for (const effect of fundingEffects) {

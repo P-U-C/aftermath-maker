@@ -50,6 +50,36 @@ describe("strategy results", () => {
           raw: { fixture: true },
         },
       ]);
+      // Same account and attachment interval, but another run/configuration:
+      // this must never leak into this strategy attachment's Live evidence.
+      tenant.recordAttributedFills([
+        {
+          sourceEventKey: "mainnet:other-run-fill:0",
+          runId: "live-run-other",
+          configVersion: 2,
+          accountId: "42",
+          ownerWallet: OWNER,
+          marketId: "0x1",
+          orderId: "other-run-fill",
+          txDigest: "other-run-fill",
+          eventIndex: 0,
+          timestampMs: fillAtMs + 1_000,
+          side: "buy",
+          liquidity: "maker",
+          sizeBase: "1",
+          priceUsd: "99",
+          notionalUsd: "99",
+          venueFeeUsd: "0",
+          builderFeeUsd: "0",
+          realizedPnlUsd: "0",
+          counterpartyClass: "unresolved",
+          classificationEvidence: ["fixture"],
+          source: "fixture-live-fills",
+          network: "mainnet",
+          coverage: "complete",
+          raw: { fixture: true },
+        },
+      ]);
       for (const [horizonMs, indexUsd] of [
         [60_000, "101"],
         [300_000, "102"],
@@ -98,6 +128,25 @@ describe("strategy results", () => {
           raw: { fixture: true },
         },
       ]);
+      tenant.recordInventoryLedgerEffects([
+        {
+          sourceEventKey: "mainnet:other-run-funding",
+          runId: "live-run-other",
+          configVersion: 2,
+          accountId: "42",
+          marketId: "0x1",
+          timestampMs: fillAtMs + 60_000,
+          kind: "funding",
+          fundingUsd: "999",
+          gasUsedMist: null,
+          gasUsd: null,
+          externalTransferUsd: null,
+          source: "fixture-live-funding",
+          network: "mainnet",
+          coverage: "complete",
+          raw: { fixture: true },
+        },
+      ]);
       vi.setSystemTime(fillAtMs + 1);
       tenant.logExecution({
         mode: "live",
@@ -121,7 +170,9 @@ describe("strategy results", () => {
       headers: complete.h.signedInAs(),
     });
     expect(completeResponse.statusCode).toBe(200);
-    expect(completeResponse.json().results.liveEvidence).toMatchObject({
+    const completeEvidence = completeResponse.json().results.liveEvidence;
+    expect(completeEvidence.fills).toHaveLength(1);
+    expect(completeEvidence).toMatchObject({
       asOfMs,
       fundingUsd: 1.25,
       gasUsd: 0.006,
