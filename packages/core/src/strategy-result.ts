@@ -117,17 +117,12 @@ export function summarizeLiveResultEvidence(inputs: {
   fills: readonly LiveResultEvidenceFillInput[];
   fundingUsd: number | null;
   gasUsd: number | null;
-  maximumReferenceDelayMs?: number;
 }): LiveResultEvidence {
-  const maximumReferenceDelayMs =
-    inputs.maximumReferenceDelayMs ?? LIVE_MARKOUT_MAX_REFERENCE_DELAY_MS;
   const validReportingBoundary =
-    Number.isInteger(inputs.asOfMs) &&
-    inputs.asOfMs >= 0 &&
-    Number.isInteger(maximumReferenceDelayMs) &&
-    maximumReferenceDelayMs >= 0;
+    Number.isInteger(inputs.asOfMs) && inputs.asOfMs >= 0;
   const gaps: string[] = [];
   const fills = inputs.fills.map((fill) => {
+    const validFillId = fill.fillId.trim().length > 0;
     const validFill =
       Number.isInteger(fill.occurredAtMs) &&
       fill.occurredAtMs >= 0 &&
@@ -144,7 +139,8 @@ export function summarizeLiveResultEvidence(inputs: {
       const priceUsd = finiteNumberOrNull(reference?.priceUsd ?? null);
       const observedAtMs = finiteNumberOrNull(reference?.observedAtMs ?? null);
       let reason: string | null = null;
-      if (!validFill) reason = "fill data is invalid";
+      if (!validFillId) reason = "fill ID is missing";
+      else if (!validFill) reason = "fill data is invalid";
       else if (!validReportingBoundary)
         reason = "reporting boundary is invalid";
       else if (expectedAtMs > inputs.asOfMs)
@@ -158,7 +154,10 @@ export function summarizeLiveResultEvidence(inputs: {
         reason = "reference is after reporting time";
       else if (observedAtMs < expectedAtMs)
         reason = "reference arrived before the requested horizon";
-      else if (observedAtMs > expectedAtMs + maximumReferenceDelayMs)
+      else if (
+        observedAtMs >
+        expectedAtMs + LIVE_MARKOUT_MAX_REFERENCE_DELAY_MS
+      )
         reason = "reference arrived after freshness window";
 
       const evidence: LiveFillMarkoutEvidence = reason
@@ -184,19 +183,31 @@ export function summarizeLiveResultEvidence(inputs: {
           };
       if (reason)
         gaps.push(
-          `Live markout for fill ${fill.fillId} at ${horizonMs}ms is unavailable: ${reason}.`,
+          `Live markout for fill ${validFillId ? fill.fillId : "(missing fill ID)"} at ${horizonMs}ms is unavailable: ${reason}.`,
         );
       return evidence;
     });
     return { fillId: fill.fillId, markouts };
   });
   const fundingUsd = finiteNumberOrNull(inputs.fundingUsd);
-  const gasUsd = finiteNumberOrNull(inputs.gasUsd);
+  const gasUsd =
+    inputs.gasUsd !== null &&
+    Number.isFinite(inputs.gasUsd) &&
+    inputs.gasUsd >= 0
+      ? inputs.gasUsd
+      : null;
   if (fundingUsd === null) gaps.push("Run funding is unavailable.");
-  if (gasUsd === null) gaps.push("Run gas is unavailable.");
+  if (gasUsd === null)
+    gaps.push(
+      inputs.gasUsd !== null &&
+        Number.isFinite(inputs.gasUsd) &&
+        inputs.gasUsd < 0
+        ? "Run gas is unavailable: gas cost cannot be negative."
+        : "Run gas is unavailable.",
+    );
   return {
     asOfMs: inputs.asOfMs,
-    maximumReferenceDelayMs,
+    maximumReferenceDelayMs: LIVE_MARKOUT_MAX_REFERENCE_DELAY_MS,
     fills,
     fundingUsd,
     gasUsd,
