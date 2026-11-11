@@ -1,0 +1,256 @@
+{
+  "packetId": "AM-EXT-2026-11-11",
+  "auditSource": "audits/2026-10-27-external/REMEDIATION.md",
+  "externalRetestPerformed": false,
+  "purpose": "Internal map from each external-audit finding to a locally named regression test. It is not an independent or external retest result.",
+  "entries": [
+    {
+      "id": "AM-EXT-01",
+      "finding": "API-built transactions signed without returned-intent verification",
+      "remediation": "fixed",
+      "coverage": "mapped",
+      "test": {
+        "file": "packages/aftermath/test/transaction-intent.test.ts",
+        "name": "rejects a returned transaction with a moved quote price"
+      }
+    },
+    {
+      "id": "AM-EXT-02",
+      "finding": "Simultaneous portfolio fills can exceed gross exposure",
+      "remediation": "fixed",
+      "coverage": "mapped",
+      "test": {
+        "file": "apps/control/test/runtime.test.ts",
+        "name": "blocks portfolio quoting against every resting pair's simultaneous-fill exposure"
+      }
+    },
+    {
+      "id": "AM-EXT-03",
+      "finding": "Gas reserve cannot fund cancellation",
+      "remediation": "fixed",
+      "coverage": "mapped",
+      "test": {
+        "file": "packages/core/test/core.test.ts",
+        "name": "requires aggregate collateral and three gas ceilings for Live, one for Paper"
+      }
+    },
+    {
+      "id": "AM-EXT-04",
+      "finding": "Removed members keep trading; no kill switch",
+      "remediation": "fixed",
+      "coverage": "mapped",
+      "test": {
+        "file": "apps/control/test/auth.test.ts",
+        "name": "stops a tenant as soon as a refreshed membership check is revoked"
+      }
+    },
+    {
+      "id": "AM-EXT-05",
+      "finding": "Stop does nothing after restart",
+      "remediation": "fixed",
+      "coverage": "mapped",
+      "test": {
+        "file": "apps/control/test/runtime.test.ts",
+        "name": "stops Paper by cancelling its scratch ledger without signing"
+      }
+    },
+    {
+      "id": "AM-EXT-06",
+      "finding": "Agent transactions are not serialized",
+      "remediation": "fixed",
+      "coverage": "mapped",
+      "test": {
+        "file": "packages/core/test/core.test.ts",
+        "name": "runs urgent cancellation work before queued normal mutations"
+      }
+    },
+    {
+      "id": "AM-EXT-07",
+      "finding": "Deselected markets disappear from risk and flatten",
+      "remediation": "fixed",
+      "coverage": "mapped",
+      "test": {
+        "file": "apps/control/test/runtime.test.ts",
+        "name": "keeps deselected positions inside the account-wide gross exposure gate"
+      }
+    },
+    {
+      "id": "AM-EXT-08",
+      "finding": "Hedge account is outside risk gates",
+      "remediation": "fixed",
+      "coverage": "mapped",
+      "test": {
+        "file": "apps/control/test/runtime.test.ts",
+        "name": "fails closed when the dedicated hedge account nears margin or liquidation limits"
+      }
+    },
+    {
+      "id": "AM-EXT-09",
+      "finding": "Lagging index can quote one tick inside adverse touch",
+      "remediation": "fixed",
+      "coverage": "mapped",
+      "test": {
+        "file": "packages/core/test/core.test.ts",
+        "name": "rejects a thin book that diverges from the protocol index"
+      }
+    },
+    {
+      "id": "AM-EXT-10",
+      "finding": "Rate limit bypass/shared login bucket",
+      "remediation": "fixed",
+      "coverage": "mapped",
+      "test": {
+        "file": "apps/control/test/auth.test.ts",
+        "name": "caps unconsumed sign-in challenges per wallet"
+      }
+    },
+    {
+      "id": "AM-EXT-11",
+      "finding": "One illiquid market blocks all flattening",
+      "remediation": "fixed",
+      "coverage": "mapped",
+      "test": {
+        "file": "apps/control/test/runtime.test.ts",
+        "name": "automatically flattens both dedicated accounts before the gross limit"
+      }
+    },
+    {
+      "id": "AM-EXT-12",
+      "finding": "Browser signs host-built owner transactions unchecked",
+      "remediation": "mitigated",
+      "coverage": "mapped",
+      "test": {
+        "file": "packages/aftermath/test/owner-transaction-intent.test.ts",
+        "name": "rejects an added SUI transfer"
+      }
+    },
+    {
+      "id": "AM-EXT-13",
+      "finding": "Master-key rotation is unavailable",
+      "remediation": "fixed",
+      "coverage": "mapped",
+      "test": {
+        "file": "apps/control/test/store.test.ts",
+        "name": "atomically re-encrypts stored agents under a new key and bound context"
+      }
+    },
+    {
+      "id": "AM-EXT-14",
+      "finding": "4xx becomes 500 and 5xx leaks internals",
+      "remediation": "fixed",
+      "coverage": "mapped",
+      "test": {
+        "file": "apps/control/test/http-error.test.ts",
+        "name": "preserves Fastify 400 and rate-limit 429 statuses"
+      }
+    },
+    {
+      "id": "AM-EXT-15",
+      "finding": "Backup stops every Live engine",
+      "remediation": "fixed",
+      "coverage": "missing-regression",
+      "test": null,
+      "blocker": "No named regression test currently covers the online SQLite backup and quick_check behavior; source inspection alone is not an acceptable substitute for a named regression test."
+    },
+    {
+      "id": "AM-EXT-16",
+      "finding": "Builder registration trusts API transaction and ID",
+      "remediation": "mitigated",
+      "coverage": "mapped",
+      "test": {
+        "file": "packages/aftermath/test/gateway.test.ts",
+        "name": "pins the exact builder-registration command before wallet signing"
+      }
+    },
+    {
+      "id": "AM-EXT-17",
+      "finding": "Flatten waits forever and duplicates",
+      "remediation": "fixed",
+      "coverage": "mapped",
+      "test": {
+        "file": "apps/control/test/runtime.test.ts",
+        "name": "deduplicates concurrent flatten requests"
+      }
+    },
+    {
+      "id": "AM-EXT-18",
+      "finding": "24h stats joined by response index",
+      "remediation": "fixed",
+      "coverage": "mapped",
+      "test": {
+        "file": "packages/aftermath/test/gateway.test.ts",
+        "name": "sums fake daily market stats once per taker-side market volume"
+      }
+    },
+    {
+      "id": "AM-EXT-19",
+      "finding": "BigInt reviver mutates user strings",
+      "remediation": "fixed",
+      "coverage": "mapped",
+      "test": {
+        "file": "apps/control/test/store.test.ts",
+        "name": "does not coerce user strings that look like legacy bigint values"
+      }
+    },
+    {
+      "id": "AM-EXT-20",
+      "finding": "No Origin check; variable-time token compare",
+      "remediation": "fixed",
+      "coverage": "mapped",
+      "test": {
+        "file": "apps/web/test/security-headers.test.ts",
+        "name": "keeps the transport, embedding, and content restrictions enabled"
+      }
+    },
+    {
+      "id": "AM-EXT-21",
+      "finding": "Runtime tables unbounded; 2,000-order cap hidden",
+      "remediation": "fixed",
+      "coverage": "mapped",
+      "test": {
+        "file": "apps/control/test/store.test.ts",
+        "name": "enforces documented per-tenant retention without crossing tenants"
+      }
+    },
+    {
+      "id": "AM-EXT-22",
+      "finding": "Inventory may be cost basis",
+      "remediation": "fixed",
+      "coverage": "mapped",
+      "test": {
+        "file": "packages/aftermath/test/gateway.test.ts",
+        "name": "marks signed position inventory from current index price"
+      }
+    },
+    {
+      "id": "AM-EXT-23",
+      "finding": "Registry authority/upgrade policy weakly tested",
+      "remediation": "fixed",
+      "coverage": "mapped",
+      "test": {
+        "file": "move/maker_access/tests/access_tests.move",
+        "name": "operator_can_add_and_remove_member"
+      }
+    },
+    {
+      "id": "AM-EXT-24",
+      "finding": "Missing risk inputs default to infinity",
+      "remediation": "fixed",
+      "coverage": "mapped",
+      "test": {
+        "file": "apps/control/test/readiness-routes.test.ts",
+        "name": "fails closed with typed 503 when an account read rejects or never resolves"
+      }
+    },
+    {
+      "id": "AM-EXT-25",
+      "finding": "Trial watchdog misleading; endpoint fixed at boot",
+      "remediation": "fixed",
+      "coverage": "mapped",
+      "test": {
+        "file": "apps/control/test/runtime-manager.test.ts",
+        "name": "re-probes endpoints after startup and adopts a recovered preferred endpoint"
+      }
+    }
+  ]
+}
