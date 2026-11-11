@@ -12746,6 +12746,11 @@ mysten-dapp-kit-connect-modal,
   }
 }
 @media (max-width: 700px) {
+  .bundle-lane-notice-slot,
+  .bundle-lane-notice {
+    height: 44px;
+  }
+
   .run-status-row-copy button,
   .desk-event-description button {
     min-height: 44px;

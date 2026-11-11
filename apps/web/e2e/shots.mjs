@@ -587,17 +587,32 @@ async function capture(browser, stateName, captureConfig, view) {
         }
         if (stateName !== "onboarding") {
           await page.getByRole("link", { name: "Performance" }).click();
-          await page
-            .getByRole("button", { name: "Epoch", exact: true })
+          const performanceView = page.locator(
+            '[data-view="performance"]:not([hidden])',
+          );
+          await performanceView.waitFor();
+          await performanceView
+            .getByRole("tab", { name: "Epoch", exact: true })
             .click();
-          await page
-            .getByText(/Epoch 128/)
-            .first()
-            .waitFor();
-          await page
-            .getByRole("button", { name: "All time", exact: true })
+          if (
+            (await performanceView
+              .getByRole("tab", { name: "Epoch", exact: true })
+              .getAttribute("aria-selected")) !== "true"
+          ) {
+            throw new Error("Performance did not switch to the Epoch period");
+          }
+          await performanceView
+            .getByRole("tab", { name: "All time", exact: true })
             .click();
-          await page.getByText("All time").first().waitFor();
+          if (
+            (await performanceView
+              .getByRole("tab", { name: "All time", exact: true })
+              .getAttribute("aria-selected")) !== "true"
+          ) {
+            throw new Error(
+              "Performance did not switch to the All time period",
+            );
+          }
         }
         const resetView = stateName === "onboarding" ? "venues" : "desk";
         if (navigationViews.includes(resetView)) {
