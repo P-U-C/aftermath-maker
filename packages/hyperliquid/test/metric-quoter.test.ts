@@ -14,91 +14,101 @@ describe("recorded Metric basis quoter", () => {
     });
 
     expect(METRIC_QUOTE_SIZES_USD).toEqual([1000, 5000, 25000, 50000]);
-    expect(report.status).toBe("available");
-    if (report.status !== "available") return;
-
-    expect(report.quotes).toHaveLength(8);
-    expect(
-      report.quotes.map(({ direction, sizeUsd, status }) => ({
-        direction,
-        sizeUsd,
-        status,
-      })),
-    ).toEqual([
-      {
-        direction: "buy-metric-sell-hyperliquid",
-        sizeUsd: 1000,
-        status: "available",
-      },
-      {
-        direction: "buy-metric-sell-hyperliquid",
-        sizeUsd: 5000,
-        status: "available",
-      },
-      {
-        direction: "buy-metric-sell-hyperliquid",
-        sizeUsd: 25000,
-        status: "available",
-      },
-      {
-        direction: "buy-metric-sell-hyperliquid",
-        sizeUsd: 50000,
-        status: "available",
-      },
-      {
-        direction: "buy-hyperliquid-sell-metric",
-        sizeUsd: 1000,
-        status: "available",
-      },
-      {
-        direction: "buy-hyperliquid-sell-metric",
-        sizeUsd: 5000,
-        status: "available",
-      },
-      {
-        direction: "buy-hyperliquid-sell-metric",
-        sizeUsd: 25000,
-        status: "available",
-      },
-      {
-        direction: "buy-hyperliquid-sell-metric",
-        sizeUsd: 50000,
-        status: "available",
-      },
-    ]);
-    expect(report.quotes[0]).toEqual({
+    expect(report).toEqual({
       status: "available",
-      direction: "buy-metric-sell-hyperliquid",
-      sizeUsd: 1000,
-      sources: {
-        metric: { timestampMs: 1735689599800, side: "buy" },
-        hyperliquid: { timestampMs: 1735689599700, side: "sell" },
-      },
-      costs: {
-        metricFeeUsd: 1,
-        metricGasUsd: 0.2,
-        hyperliquidFeeUsd: 1.5,
-        hyperliquidGasUsd: 0.3,
-        fundingUsd: 0.4,
-        totalUsd: 3.4,
-      },
-      grossBasisUsd: 16,
-      netBasisUsd: 12.6,
+      market: "NVDA",
+      observedAtMs: 1735689600000,
+      quotes: [
+        available(
+          "buy-metric-sell-hyperliquid",
+          1000,
+          1735689599800,
+          1735689599700,
+          "buy",
+          "sell",
+          [1, 0.2, 1.5, 0.3, 0.4],
+          16,
+          12.6,
+        ),
+        available(
+          "buy-metric-sell-hyperliquid",
+          5000,
+          1735689599800,
+          1735689599700,
+          "buy",
+          "sell",
+          [5, 0.2, 7.5, 0.3, 2],
+          77,
+          62,
+        ),
+        available(
+          "buy-metric-sell-hyperliquid",
+          25000,
+          1735689599800,
+          1735689599700,
+          "buy",
+          "sell",
+          [25, 0.2, 37.5, 0.3, 10],
+          395,
+          322,
+        ),
+        available(
+          "buy-metric-sell-hyperliquid",
+          50000,
+          1735689599800,
+          1735689599700,
+          "buy",
+          "sell",
+          [50, 0.2, 75, 0.3, 20],
+          810,
+          664.5,
+        ),
+        available(
+          "buy-hyperliquid-sell-metric",
+          1000,
+          1735689599750,
+          1735689599650,
+          "sell",
+          "buy",
+          [1.1, 0.2, 1.4, 0.3, 0.4],
+          18,
+          14.6,
+        ),
+        available(
+          "buy-hyperliquid-sell-metric",
+          5000,
+          1735689599750,
+          1735689599650,
+          "sell",
+          "buy",
+          [5.5, 0.2, 7, 0.3, 2],
+          83,
+          68,
+        ),
+        available(
+          "buy-hyperliquid-sell-metric",
+          25000,
+          1735689599750,
+          1735689599650,
+          "sell",
+          "buy",
+          [27.5, 0.2, 35, 0.3, 10],
+          425,
+          352,
+        ),
+        available(
+          "buy-hyperliquid-sell-metric",
+          50000,
+          1735689599750,
+          1735689599650,
+          "sell",
+          "buy",
+          [55, 0.2, 70, 0.3, 20],
+          870,
+          724.5,
+        ),
+      ],
     });
-    for (const quote of report.quotes) {
-      expect(quote.status).toBe("available");
-      if (quote.status !== "available") continue;
-      expect(quote.sources.metric.timestampMs).toBeGreaterThan(0);
-      expect(quote.sources.hyperliquid.timestampMs).toBeGreaterThan(0);
-      expect(quote.costs).toMatchObject({
-        metricFeeUsd: expect.any(Number),
-        metricGasUsd: expect.any(Number),
-        hyperliquidFeeUsd: expect.any(Number),
-        hyperliquidGasUsd: expect.any(Number),
-        fundingUsd: expect.any(Number),
-        totalUsd: expect.any(Number),
-      });
-    }
 
     const reverted = quoteRecordedMetricBasis(revertedQuotes, {
       maxAgeMs: 1_000,
@@ -135,7 +145,7 @@ describe("recorded Metric basis quoter", () => {
     });
   });
 
-  it("fails closed for stale, malformed, or non-positive evidence", () => {
+  it("fails closed for stale, malformed, non-positive, mismatched, or overflowing evidence", () => {
     const firstQuote = recordedQuotes.quotes[0];
     if (!firstQuote) throw new Error("recorded Metric fixture needs a quote");
 
@@ -185,6 +195,45 @@ describe("recorded Metric basis quoter", () => {
       reason: "malformed-field",
     });
 
+    const mismatchedInput = {
+      ...recordedQuotes,
+      quotes: [{ ...firstQuote, inputUsd: 900 }],
+    };
+    expect(
+      quoteRecordedMetricBasis(mismatchedInput, { maxAgeMs: 1_000 }),
+    ).toEqual({ status: "unavailable", reason: "malformed-field" });
+
+    const overflowingCosts = {
+      ...recordedQuotes,
+      quotes: [
+        {
+          ...firstQuote,
+          costs: {
+            metricFeeUsd: Number.MAX_VALUE,
+            metricGasUsd: Number.MAX_VALUE,
+            hyperliquidFeeUsd: Number.MAX_VALUE,
+            hyperliquidGasUsd: Number.MAX_VALUE,
+            fundingUsd: Number.MAX_VALUE,
+          },
+        },
+      ],
+    };
+    expect(
+      quoteRecordedMetricBasis(overflowingCosts, { maxAgeMs: 1_000 }),
+    ).toEqual({
+      status: "available",
+      market: "NVDA",
+      observedAtMs: 1735689600000,
+      quotes: expect.arrayContaining([
+        {
+          status: "unavailable",
+          direction: "buy-metric-sell-hyperliquid",
+          sizeUsd: 1000,
+          reason: "malformed-field",
+        },
+      ]),
+    });
+
     const missingSide = {
       ...recordedQuotes,
       quotes: [
@@ -200,3 +249,49 @@ describe("recorded Metric basis quoter", () => {
     });
   });
 });
+
+function available(
+  direction: "buy-metric-sell-hyperliquid" | "buy-hyperliquid-sell-metric",
+  sizeUsd: 1000 | 5000 | 25000 | 50000,
+  metricTimestampMs: number,
+  hyperliquidTimestampMs: number,
+  metricSide: "buy" | "sell",
+  hyperliquidSide: "buy" | "sell",
+  [
+    metricFeeUsd,
+    metricGasUsd,
+    hyperliquidFeeUsd,
+    hyperliquidGasUsd,
+    fundingUsd,
+  ]: [number, number, number, number, number],
+  grossBasisUsd: number,
+  netBasisUsd: number,
+) {
+  return {
+    status: "available" as const,
+    direction,
+    sizeUsd,
+    sources: {
+      metric: { timestampMs: metricTimestampMs, side: metricSide },
+      hyperliquid: {
+        timestampMs: hyperliquidTimestampMs,
+        side: hyperliquidSide,
+      },
+    },
+    costs: {
+      metricFeeUsd,
+      metricGasUsd,
+      hyperliquidFeeUsd,
+      hyperliquidGasUsd,
+      fundingUsd,
+      totalUsd:
+        metricFeeUsd +
+        metricGasUsd +
+        hyperliquidFeeUsd +
+        hyperliquidGasUsd +
+        fundingUsd,
+    },
+    grossBasisUsd,
+    netBasisUsd,
+  };
+}

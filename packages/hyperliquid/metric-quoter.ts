@@ -184,6 +184,7 @@ function parseCaptureQuote(
   ) {
     return failed(firstProblem(requiredFields) ?? "malformed-field");
   }
+  if (inputUsd.value !== sizeUsd.value) return failed("malformed-field");
 
   const metric = parseSource(
     sources.value,
@@ -298,6 +299,14 @@ function calculateQuote(
     captured.costs.hyperliquidGasUsd +
     captured.costs.fundingUsd;
   const grossBasisUsd = captured.outputUsd - captured.inputUsd;
+  const netBasisUsd = grossBasisUsd - totalUsd;
+  if (![totalUsd, grossBasisUsd, netBasisUsd].every(Number.isFinite)) {
+    return unavailableQuote(
+      captured.direction,
+      captured.sizeUsd,
+      "malformed-field",
+    );
+  }
   return {
     status: "available",
     direction: captured.direction,
@@ -305,7 +314,7 @@ function calculateQuote(
     sources: captured.sources,
     costs: { ...captured.costs, totalUsd },
     grossBasisUsd,
-    netBasisUsd: grossBasisUsd - totalUsd,
+    netBasisUsd,
   };
 }
 
