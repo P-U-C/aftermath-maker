@@ -75,7 +75,7 @@ describe("SQLite backups", () => {
     );
   });
 
-  it("fails closed when the copied snapshot's integrity checker reports corruption", async () => {
+  it("fails closed when quick_check reports corruption for a valid copied snapshot", async () => {
     const directory = temporaryDirectory();
     const sourcePath = join(directory, "source.db");
     const destinationPath = join(directory, "snapshot.db");
@@ -90,9 +90,10 @@ describe("SQLite backups", () => {
         { sourcePath, destinationPath },
         (snapshotPath) => {
           verifiedPath = snapshotPath;
-          throw new Error(
-            "SQLite backup integrity check failed: *** in database main ***",
-          );
+          verifySqliteBackup(snapshotPath, (snapshot) => {
+            expect(snapshot.pragma("quick_check", { simple: true })).toBe("ok");
+            return "*** in database main ***";
+          });
         },
       ),
     ).rejects.toThrow("SQLite backup integrity check failed");

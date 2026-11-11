@@ -10,15 +10,20 @@ export type SqliteBackupOptions = {
 };
 
 type SqliteBackupVerifier = (snapshotPath: string) => void;
+type SqliteQuickCheck = (snapshot: Database.Database) => unknown;
 
-export function verifySqliteBackup(snapshotPath: string): void {
+export function verifySqliteBackup(
+  snapshotPath: string,
+  quickCheck: SqliteQuickCheck = (snapshot) =>
+    snapshot.pragma("quick_check", { simple: true }),
+): void {
   let snapshot: Database.Database | undefined;
   try {
     snapshot = new Database(snapshotPath, {
       readonly: true,
       fileMustExist: true,
     });
-    const integrity = snapshot.pragma("quick_check", { simple: true });
+    const integrity = quickCheck(snapshot);
     if (integrity !== "ok") {
       throw new Error(
         `SQLite backup integrity check failed: ${String(integrity)}`,
