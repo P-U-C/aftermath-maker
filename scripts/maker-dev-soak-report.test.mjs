@@ -42,3 +42,29 @@ test("rejects a Paper soak with a gap, missing forced restart, or unreconciled e
     });
   }
 });
+
+test("rejects timestamps that are not strict UTC milliseconds", async () => {
+  const evidence = await readFixture("valid-paper-soak.json");
+  evidence.observations[1].at = "November 1, 2026 06:00:00 GMT";
+
+  const report = validatePaperSoakEvidence(evidence);
+
+  assert.equal(report.valid, false);
+  assert.deepEqual(
+    report.failures.map(({ code }) => code),
+    ["invalid-observation"],
+  );
+});
+
+test("rejects a duration proposal that differs from its declared window", async () => {
+  const evidence = await readFixture("valid-paper-soak.json");
+  evidence.durationProposal.hours = 71;
+
+  const report = validatePaperSoakEvidence(evidence);
+
+  assert.equal(report.valid, false);
+  assert.deepEqual(
+    report.failures.map(({ code }) => code),
+    ["duration-proposal-window-mismatch"],
+  );
+});

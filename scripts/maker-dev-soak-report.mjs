@@ -5,12 +5,17 @@ function failure(code, message) {
 }
 
 function parseTimestamp(value) {
-  if (typeof value !== "string") {
+  if (
+    typeof value !== "string" ||
+    !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(value)
+  ) {
     return null;
   }
 
   const timestamp = Date.parse(value);
-  return Number.isNaN(timestamp) ? null : timestamp;
+  return Number.isNaN(timestamp) || new Date(timestamp).toISOString() !== value
+    ? null
+    : timestamp;
 }
 
 function renderReport(evidence, failures, durationMs) {
@@ -92,6 +97,9 @@ export function validatePaperSoakEvidence(evidence) {
       ),
     );
   }
+  const durationMs =
+    startedAt === null || endedAt === null ? Number.NaN : endedAt - startedAt;
+  const durationHours = durationMs / (60 * 60 * 1000);
 
   const observations = Array.isArray(record.observations)
     ? record.observations
@@ -185,24 +193,32 @@ export function validatePaperSoakEvidence(evidence) {
   }
 
   const durationProposal = record.durationProposal;
-  if (
+  const hasInvalidDurationProposal =
     durationProposal?.status !== "proposal" ||
     typeof durationProposal.hours !== "number" ||
     !Number.isFinite(durationProposal.hours) ||
     durationProposal.hours <= 0 ||
     typeof durationProposal.rationale !== "string" ||
-    durationProposal.rationale.length === 0
-  ) {
+    durationProposal.rationale.length === 0;
+  if (hasInvalidDurationProposal) {
     failures.push(
       failure(
         "duration-proposal",
         "durationProposal must be a non-empty operator-facing proposal",
       ),
     );
+  } else if (
+    Number.isFinite(durationHours) &&
+    durationProposal.hours !== durationHours
+  ) {
+    failures.push(
+      failure(
+        "duration-proposal-window-mismatch",
+        "durationProposal.hours must equal the declared UTC window duration",
+      ),
+    );
   }
 
-  const durationMs =
-    startedAt === null || endedAt === null ? Number.NaN : endedAt - startedAt;
   return {
     valid: failures.length === 0,
     failures,
