@@ -148,9 +148,11 @@
       "id": "AM-EXT-15",
       "finding": "Backup stops every Live engine",
       "remediation": "fixed",
-      "coverage": "missing-regression",
-      "test": null,
-      "blocker": "No named regression test currently covers the online SQLite backup and quick_check behavior; source inspection alone is not an acceptable substitute for a named regression test."
+      "coverage": "mapped",
+      "test": {
+        "file": "apps/control/test/backup.test.ts",
+        "name": "creates a verified SQLite online backup without stopping the source database"
+      }
     },
     {
       "id": "AM-EXT-16",
