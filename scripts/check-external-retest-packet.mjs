@@ -81,7 +81,6 @@ if (packet.entries.length !== expectedIds.length) {
 }
 
 const seen = new Set();
-const openGaps = [];
 for (const [index, entry] of packet.entries.entries()) {
   if (!entry || typeof entry !== "object")
     fail(`entry ${index + 1} is not an object`);
@@ -99,29 +98,12 @@ for (const [index, entry] of packet.entries.entries()) {
     verifyNamedTest(entry);
     continue;
   }
-  if (entry.coverage === "missing-regression") {
-    if (
-      entry.test !== null ||
-      !requireString(entry.blocker, `${entry.id}.blocker`).includes(
-        "named regression test",
-      )
-    ) {
-      fail(
-        `${entry.id} missing-regression entry must explicitly record its absent named regression test`,
-      );
-    }
-    openGaps.push(entry.id);
-    continue;
-  }
-  fail(`${entry.id}.coverage must be mapped or missing-regression`);
+  fail(`${entry.id}.coverage must be mapped with a named regression test`);
 }
 
 process.stdout.write("RETEST PACKET CHECK PASS\n");
 process.stdout.write(
-  `Mapped named regression tests: ${expectedIds.length - openGaps.length}/${expectedIds.length}\n`,
-);
-process.stdout.write(
-  `Open coverage gaps: ${openGaps.length ? openGaps.join(", ") : "none"}\n`,
+  `Mapped named regression tests: ${expectedIds.length}/${expectedIds.length}\n`,
 );
 process.stdout.write(
   "External retest: not performed; this packet is an internal mapping only.\n",
