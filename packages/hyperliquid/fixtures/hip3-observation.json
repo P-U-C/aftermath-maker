@@ -1,0 +1,36 @@
+{
+  "market": "xyz:TEST",
+  "observedAtMs": 1735689600000,
+  "book": {
+    "coin": "xyz:TEST",
+    "time": 1735689599500,
+    "levels": [
+      [{ "px": "101.20", "sz": "2.50", "n": 2 }],
+      [{ "px": "101.40", "sz": "1.75", "n": 1 }]
+    ]
+  },
+  "metaAndAssetCtxs": [
+    {
+      "universe": [
+        { "name": "xyz:OTHER", "szDecimals": 2 },
+        { "name": "xyz:TEST", "szDecimals": 2 }
+      ]
+    },
+    [
+      { "markPx": "50.00", "oraclePx": "49.80" },
+      { "markPx": "101.30", "oraclePx": "101.10" }
+    ]
+  ],
+  "fundingHistory": [
+    {
+      "coin": "xyz:TEST",
+      "time": 1735689599200,
+      "fundingRate": "0.0001"
+    },
+    {
+      "coin": "xyz:TEST",
+      "time": 1735685999200,
+      "fundingRate": "0.00008"
+    }
+  ]
+}
