@@ -468,6 +468,8 @@ describe("runtime execution boundaries", () => {
   });
 
   it("pauses fresh Paper exposure after adverse markouts but preserves the normal reduce-only path", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-11-11T12:00:00.000Z"));
     const harness = createHarness();
     harness.tenant.setConfig(
       makerConfigSchema.parse({
@@ -484,6 +486,7 @@ describe("runtime execution boundaries", () => {
     // Each simulated maker fill is closed first, so the guard must pause a
     // flat market rather than merely inheriting an inventory limit.
     for (let index = 0; index < 12; index += 1) {
+      vi.advanceTimersByTime(1);
       harness.tenant.recordPaperQuote({
         trialId: "runtime",
         marketId: "0x5678",
