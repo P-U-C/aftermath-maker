@@ -208,6 +208,8 @@ describe("strategy result", () => {
   it("summarizes a Live fill with fixed-horizon markouts, gas, and funding without treating unknown data as zero", () => {
     const result = summarizeLiveResultEvidence({
       asOfMs: 5_000_000,
+      // @ts-expect-error The fixed 30-second cap must not be caller-widenable.
+      maximumReferenceDelayMs: 60_000,
       fills: [
         {
           fillId: "live-fill-1",
@@ -241,6 +243,16 @@ describe("strategy result", () => {
     expect(result).toMatchObject({
       asOfMs: 5_000_000,
       maximumReferenceDelayMs: 30_000,
+    });
+    expect(result.fills[0]?.markouts[0]).toMatchObject({
+      observedAtMs: 1_090_000,
+      coverage: "complete",
+    });
+    expect(result.fills[0]?.markouts[3]).toMatchObject({
+      observedAtMs: 4_630_001,
+      markoutUsd: null,
+      coverage: "unavailable",
+      reason: "reference arrived after freshness window",
     });
     expect(result.fills).toEqual([
       {
@@ -337,5 +349,47 @@ describe("strategy result", () => {
       coverage: "unavailable",
       reason: "fill data is invalid",
     });
+
+    const negativeGas = summarizeLiveResultEvidence({
+      asOfMs: 1_000_000,
+      fills: [],
+      fundingUsd: 1.25,
+      gasUsd: -0.25,
+    });
+    expect(negativeGas.gasUsd).toBeNull();
+    expect(negativeGas.netFundingAfterGasUsd).toBeNull();
+    expect(negativeGas.gaps).toEqual([
+      "Run gas is unavailable: gas cost cannot be negative.",
+    ]);
+
+    const blankFillId = summarizeLiveResultEvidence({
+      asOfMs: 1_100_000,
+      fills: [
+        {
+          fillId: "   ",
+          occurredAtMs: 1_000_000,
+          side: "bid",
+          priceUsd: 100,
+          sizeUsd: 10,
+          references: [
+            {
+              horizonMs: 60_000,
+              observedAtMs: 1_060_000,
+              priceUsd: 101,
+            },
+          ],
+        },
+      ],
+      fundingUsd: 0,
+      gasUsd: 0,
+    });
+    expect(blankFillId.fills[0]?.markouts[0]).toMatchObject({
+      markoutUsd: null,
+      coverage: "unavailable",
+      reason: "fill ID is missing",
+    });
+    expect(blankFillId.gaps).toContain(
+      "Live markout for fill (missing fill ID) at 60000ms is unavailable: fill ID is missing.",
+    );
   });
 });
