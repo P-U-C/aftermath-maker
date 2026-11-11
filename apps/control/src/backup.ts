@@ -9,6 +9,8 @@ export type SqliteBackupOptions = {
   onProgress?: (info: { totalPages: number; remainingPages: number }) => number;
 };
 
+type SqliteBackupVerifier = (snapshotPath: string) => void;
+
 export function verifySqliteBackup(snapshotPath: string): void {
   let snapshot: Database.Database | undefined;
   try {
@@ -40,11 +42,10 @@ export function verifySqliteBackup(snapshotPath: string): void {
   }
 }
 
-export async function createVerifiedSqliteBackup({
-  sourcePath,
-  destinationPath,
-  onProgress,
-}: SqliteBackupOptions): Promise<string> {
+export async function createVerifiedSqliteBackup(
+  { sourcePath, destinationPath, onProgress }: SqliteBackupOptions,
+  verifySnapshot: SqliteBackupVerifier = verifySqliteBackup,
+): Promise<string> {
   const resolved = resolve(destinationPath);
   mkdirSync(dirname(resolved), { recursive: true });
   const database = new Database(sourcePath, {
@@ -61,7 +62,7 @@ export async function createVerifiedSqliteBackup({
     database.close();
   }
 
-  verifySqliteBackup(resolved);
+  verifySnapshot(resolved);
   return resolved;
 }
 
