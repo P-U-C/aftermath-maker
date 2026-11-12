@@ -255,9 +255,11 @@ function snapshotInput(input: unknown): StressInputSnapshot {
       rawScenarios: null,
     };
   }
-  const rawWindows = Array.isArray(source.windows) ? source.windows : null;
+  const rawWindows = Array.isArray(source.windows)
+    ? Array.from(source.windows)
+    : null;
   const rawScenarios = Array.isArray(source.scenarios)
-    ? source.scenarios
+    ? Array.from(source.scenarios)
     : null;
   const baseInput = {
     candidateId: source.candidateId,

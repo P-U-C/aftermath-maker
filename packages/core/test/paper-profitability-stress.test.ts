@@ -455,6 +455,31 @@ describe("Paper profitability stress admission", () => {
     );
   });
 
+  it("fails closed for sparse runtime windows and scenario arrays", () => {
+    const sparseWindows = new Array(candidate().windows.length);
+    sparseWindows[0] = candidate().windows[0];
+    const sparseScenarios = new Array(2);
+    sparseScenarios[1] = scenario({ scenarioId: "sparse" });
+
+    expect(() =>
+      assessPaperProfitabilityStress({
+        ...candidate(),
+        windows: sparseWindows,
+        scenarios: sparseScenarios,
+      } as unknown as PaperProfitabilityStressInput),
+    ).not.toThrow();
+    const result = assessPaperProfitabilityStress({
+      ...candidate(),
+      windows: sparseWindows,
+      scenarios: sparseScenarios,
+    } as unknown as PaperProfitabilityStressInput);
+    expect(result.status).toBe("ineligible");
+    expect(result.scenarios).toHaveLength(2);
+    expect(result.scenarios.every((item) => item.status === "ineligible")).toBe(
+      true,
+    );
+  });
+
   it("returns an explicit reporting allowlist and drops execution, provider and authority extras", () => {
     const authorityInput = {
       ...candidate(),
