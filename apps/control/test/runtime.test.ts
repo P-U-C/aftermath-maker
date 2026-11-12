@@ -11,6 +11,8 @@ import {
   type RewardDashboard,
 } from "@puc/aftermath";
 import {
+  applyAtomicBasketEvents,
+  createAtomicBasketState,
   makerConfigSchema,
   setupSchema,
   type StrategyObjective,
@@ -603,6 +605,137 @@ describe("runtime execution boundaries", () => {
     expect(harness.executionSequence).toEqual(["paper-dry-run"]);
     await harness.runtime.stop();
     harness.store.close();
+  });
+
+  it("holds Paper dry-run across Stop and restart while an Atomic reservation is unresolved", async () => {
+    const harness = createHarness();
+    harness.tenant.setConfig(
+      makerConfigSchema.parse({
+        ...harness.tenant.getConfig()!,
+        mode: "paper",
+        markets: [{ marketId: "0x5678", symbol: "SUI" }],
+      }),
+    );
+    const basket = createAtomicBasketState({
+      basketId: "runtime-atomic-hold",
+      reservationId: "runtime-atomic-reservation",
+      slices: [
+        { sliceId: "first", legIds: ["leg-first"] },
+        { sliceId: "second", legIds: ["leg-second"] },
+      ],
+    });
+    const unresolved = applyAtomicBasketEvents(basket, [
+      {
+        kind: "BASKET_RECONCILIATION" as const,
+        eventId: "partial-runtime-atomic-hold",
+        sourceTime: 1,
+        basketId: basket.basketId,
+        slices: [
+          {
+            sliceId: "first",
+            legs: [{ legId: "leg-first", status: "complete" as const }],
+          },
+        ],
+      },
+    ]);
+    harness.tenant.savePaperAtomicBasket({
+      trialId: "runtime",
+      state: unresolved,
+    });
+    const getOrderbook = vi.fn(harness.gateway.getOrderbook);
+    harness.gateway.getOrderbook = getOrderbook;
+
+    harness.runtime.start();
+    await harness.runtime.cycle({ executeLive: true });
+
+    expect(harness.executionSequence).not.toContain("paper-dry-run");
+    expect(getOrderbook).not.toHaveBeenCalled();
+    expect(harness.tenant.getPaperState("runtime").openOrders).toBe(0);
+    expect(harness.runtime.snapshot.paperBlocker).toMatchObject({
+      code: "atomic-reservation",
+    });
+    const beforeStop = harness.tenant.getPaperAtomicBasket({
+      trialId: "runtime",
+      basketId: basket.basketId,
+    })!;
+    expect(beforeStop).toMatchObject({
+      reservation: "RESERVED",
+      status: "RECONCILIATION_REQUIRED",
+    });
+
+    await harness.runtime.stop();
+    expect(
+      harness.tenant.getPaperAtomicBasket({
+        trialId: "runtime",
+        basketId: basket.basketId,
+      })?.events,
+    ).toEqual(beforeStop.events);
+    harness.store.close();
+
+    const restartedStore = new Store(join(harness.directory, "maker.db"));
+    const restartedTenant = restartedStore.forTenant(
+      harness.tenant.ownerAddress,
+    );
+    const restarted = new MakerRuntime(
+      restartedTenant,
+      harness.gateway as never,
+      harness.runtimeOptions,
+    );
+    restarted.start();
+    await restarted.cycle({ executeLive: true });
+
+    expect(harness.executionSequence).not.toContain("paper-dry-run");
+    expect(restartedTenant.getPaperState("runtime").openOrders).toBe(0);
+    expect(restarted.snapshot.paperBlocker).toMatchObject({
+      code: "atomic-reservation",
+    });
+    expect(
+      restartedTenant.getPaperAtomicBasket({
+        trialId: "runtime",
+        basketId: basket.basketId,
+      }),
+    ).toMatchObject({
+      reservation: "RESERVED",
+      status: "RECONCILIATION_REQUIRED",
+    });
+    const cancelled = applyAtomicBasketEvents(
+      restartedTenant.getPaperAtomicBasket({
+        trialId: "runtime",
+        basketId: basket.basketId,
+      })!,
+      [
+        {
+          kind: "CANCEL_CONFIRMED" as const,
+          eventId: "confirmed-runtime-atomic-cancel",
+          sourceTime: 2,
+          basketId: basket.basketId,
+          reservationId: basket.basket.reservationId,
+        },
+      ],
+    );
+    expect(cancelled).toMatchObject({
+      reservation: "RELEASED",
+      status: "CANCELLED",
+    });
+    restartedTenant.savePaperAtomicBasket({
+      trialId: "runtime",
+      state: cancelled,
+    });
+    await restarted.stop();
+    restartedStore.close();
+
+    const releasedStore = new Store(join(harness.directory, "maker.db"));
+    const releasedRuntime = new MakerRuntime(
+      releasedStore.forTenant(harness.tenant.ownerAddress),
+      harness.gateway as never,
+      harness.runtimeOptions,
+    );
+    releasedRuntime.start();
+    await releasedRuntime.cycle({ executeLive: true });
+    expect(harness.executionSequence).toContain("paper-dry-run");
+    expect(releasedRuntime.snapshot.paperBlocker).toBeNull();
+    await releasedRuntime.stop();
+    releasedStore.close();
   });
 
   it("pauses fresh Paper exposure after adverse markouts but preserves the normal reduce-only path", async () => {

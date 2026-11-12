@@ -6375,6 +6375,60 @@ export class TenantStore {
     }
   }
 
+  /**
+   * A runtime has no safe action when any of its persisted Atomic baskets
+   * cannot prove it reached a terminal reconciliation or cancellation. A
+   * corrupt replay input is deliberately indistinguishable from an
+   * unresolved reservation to callers: both hold before a Paper dry-run.
+   */
+  getPaperAtomicReservationHold(inputs: {
+    trialId: string;
+  }): { basketId: string; reason: "corrupt" | "unresolved" } | null {
+    if (!inputs.trialId.trim()) return null;
+    const rows = this.db
+      .prepare(
+        `SELECT basket_id, definition, events, persistent_rejection_reasons
+         FROM tenant_paper_atomic_baskets
+         WHERE owner_address = ? AND bundle_id = ? AND trial_id = ?
+         ORDER BY updated_at ASC, basket_id ASC`,
+      )
+      .all(this.ownerAddress, this.paperBundleId(), inputs.trialId) as Array<{
+      basket_id: string;
+      definition: string;
+      events: string;
+      persistent_rejection_reasons: string;
+    }>;
+    for (const row of rows) {
+      try {
+        const persisted = persistedPaperAtomicBasketSchema.parse({
+          definition: JSON.parse(row.definition),
+          events: JSON.parse(row.events),
+          persistentRejectionReasons: JSON.parse(
+            row.persistent_rejection_reasons,
+          ),
+        });
+        if (persisted.definition.basketId !== row.basket_id) {
+          return { basketId: row.basket_id, reason: "corrupt" };
+        }
+        const state = withPersistentAtomicBasketRejections(
+          applyAtomicBasketEvents(
+            createAtomicBasketState(
+              persisted.definition as AtomicBasketDefinition,
+            ),
+            persisted.events as AtomicBasketEvent[],
+          ),
+          persisted.persistentRejectionReasons,
+        );
+        if (state.status !== "RECONCILED" && state.status !== "CANCELLED") {
+          return { basketId: row.basket_id, reason: "unresolved" };
+        }
+      } catch {
+        return { basketId: row.basket_id, reason: "corrupt" };
+      }
+    }
+    return null;
+  }
+
   /** Replace only the simulated resting orders for this market and scope. */
   recordPaperQuote(inputs: {
     trialId: string;
