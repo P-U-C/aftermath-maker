@@ -36,8 +36,8 @@ export type AtomicTwapReconciliationInput = {
   expected: AtomicTwapExpectedBasket;
   snapshot: unknown;
   /** Caller-supplied clock; this module never reads system time. */
-  nowMs: number;
-  maxSnapshotAgeMs: number;
+  nowMs: AtomicTwapUnsignedInteger;
+  maxSnapshotAgeMs: AtomicTwapUnsignedInteger;
 };
 
 export type AtomicTwapReconciliationResult =
@@ -216,8 +216,11 @@ export function normalizeAtomicTwapSnapshot(
 
   const parsed = readSnapshot(input.snapshot);
   if (!parsed) return unavailable("malformed provider snapshot");
-  const nowMs = BigInt(input.nowMs);
-  const maxSnapshotAgeMs = BigInt(input.maxSnapshotAgeMs);
+  const nowMs = parseUnsignedInteger(input.nowMs);
+  const maxSnapshotAgeMs = parseUnsignedInteger(input.maxSnapshotAgeMs);
+  if (nowMs === undefined || maxSnapshotAgeMs === undefined) {
+    return unavailable("invalid reconciliation input");
+  }
   if (parsed.capturedAtMs > nowMs) {
     return unavailable("provider snapshot is from the future");
   }
