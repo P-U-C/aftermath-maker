@@ -76,6 +76,12 @@ export interface AtomicBasketState {
   readonly checkpoint: AtomicBasketCheckpoint | null;
   readonly appliedEventIds: readonly string[];
   readonly events: readonly AtomicBasketEvent[];
+  /**
+   * Structural input rejections cannot be replayed as events, so they are a
+   * durable fail-closed checkpoint. They are intentionally never cleared by
+   * later reconciliation or cancellation evidence.
+   */
+  readonly persistentRejectionReasons: readonly string[];
   readonly rejectionReasons: readonly string[];
 }
 
@@ -90,7 +96,10 @@ export function createAtomicBasketState(
 /**
  * Adds unseen evidence then deterministically replays the complete local log.
  * Applied event IDs are a checkpoint-safe dedupe boundary; source-time and
- * event ID provide a stable ordering for out-of-order input.
+ * event ID provide a stable ordering for out-of-order input. Structural input
+ * rejections and ID collisions have no valid event to replay, so their
+ * fail-closed checkpoint is persisted separately and cannot be cleared by a
+ * later cancellation or reconciliation event.
  */
 export function applyAtomicBasketEvents(
   state: AtomicBasketState,
@@ -101,14 +110,14 @@ export function applyAtomicBasketEvents(
   return replayAtomicBasket(
     state.basket,
     collected.events,
-    collected.rejectionReasons,
+    appendReasons(state.persistentRejectionReasons, collected.rejectionReasons),
   );
 }
 
 function replayAtomicBasket(
   basket: AtomicBasketDefinition,
   events: readonly AtomicBasketEvent[],
-  initialRejectionReasons: readonly string[] = [],
+  persistentRejectionReasons: readonly string[] = [],
 ): AtomicBasketState {
   const orderedEvents = [...events].sort(compareAtomicBasketEvents);
   let reservation: AtomicBasketReservation = "RESERVED";
@@ -175,10 +184,13 @@ function replayAtomicBasket(
     }
   }
 
-  if (initialRejectionReasons.length > 0) {
+  if (persistentRejectionReasons.length > 0) {
     reservation = "RESERVED";
     status = "RECONCILIATION_REQUIRED";
-    rejectionReasons = appendReasons(rejectionReasons, initialRejectionReasons);
+    rejectionReasons = appendReasons(
+      rejectionReasons,
+      persistentRejectionReasons,
+    );
   }
 
   const lastEvent = orderedEvents.at(-1);
@@ -193,6 +205,7 @@ function replayAtomicBasket(
       : null,
     appliedEventIds: orderedEvents.map((event) => event.eventId),
     events: orderedEvents,
+    persistentRejectionReasons,
     rejectionReasons,
   };
 }

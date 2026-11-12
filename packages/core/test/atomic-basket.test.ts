@@ -238,6 +238,91 @@ describe("Atomic basket Paper replay", () => {
     });
   });
 
+  it("persists post-reconciliation malformed or colliding evidence across replay", () => {
+    const reconciliation = {
+      eventId: "reconcile-complete",
+      sourceTime: 40,
+      kind: "BASKET_RECONCILIATION" as const,
+      basketId: basket.basketId,
+      slices: [
+        {
+          sliceId: "slice-a",
+          legs: [
+            { legId: "leg-a1", status: "complete" as const },
+            { legId: "leg-a2", status: "complete" as const },
+          ],
+        },
+        {
+          sliceId: "slice-b",
+          legs: [
+            { legId: "leg-b1", status: "complete" as const },
+            { legId: "leg-b2", status: "complete" as const },
+          ],
+        },
+      ],
+    };
+    const reconciled = applyAtomicBasketEvents(
+      createAtomicBasketState(basket),
+      [reconciliation],
+    );
+    expect(reconciled).toMatchObject({
+      reservation: "RELEASED",
+      status: "RECONCILED",
+    });
+
+    const malformed = applyAtomicBasketEvents(reconciled, [
+      {
+        eventId: "",
+        sourceTime: 41,
+        kind: "RETRY_REQUESTED" as const,
+        basketId: basket.basketId,
+        riskIncreasing: false,
+      },
+    ]);
+    expect(malformed).toMatchObject({
+      reservation: "RESERVED",
+      status: "RECONCILIATION_REQUIRED",
+      rejectionReasons: ["event-id-required"],
+    });
+    expect(applyAtomicBasketEvents(malformed, [])).toMatchObject({
+      reservation: "RESERVED",
+      status: "RECONCILIATION_REQUIRED",
+      rejectionReasons: ["event-id-required"],
+    });
+    expect(
+      applyAtomicBasketEvents(malformed, [
+        {
+          eventId: "cancel-after-malformed",
+          sourceTime: 42,
+          kind: "CANCEL_CONFIRMED" as const,
+          basketId: basket.basketId,
+          reservationId: basket.reservationId,
+        },
+      ]),
+    ).toMatchObject({
+      reservation: "RESERVED",
+      status: "RECONCILIATION_REQUIRED",
+      rejectionReasons: ["event-id-required"],
+    });
+
+    const collision = applyAtomicBasketEvents(reconciled, [
+      {
+        ...reconciliation,
+        sourceTime: 41,
+      },
+    ]);
+    expect(collision).toMatchObject({
+      reservation: "RESERVED",
+      status: "RECONCILIATION_REQUIRED",
+      rejectionReasons: ["event-id-collision:reconcile-complete"],
+    });
+    expect(applyAtomicBasketEvents(collision, [])).toMatchObject({
+      reservation: "RESERVED",
+      status: "RECONCILIATION_REQUIRED",
+      rejectionReasons: ["event-id-collision:reconcile-complete"],
+    });
+  });
+
   it("rejects empty declared baskets and slices", () => {
     expect(() =>
       createAtomicBasketState({
