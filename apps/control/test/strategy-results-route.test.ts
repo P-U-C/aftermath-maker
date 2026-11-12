@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import Database from "better-sqlite3";
 import { makerConfigSchema } from "@puc/core";
 import { appHarness, OWNER } from "./helpers/app.js";
 
@@ -22,10 +23,12 @@ describe("strategy results", () => {
       const core = tenant
         .listBundles()
         .find((bundle) => bundle.name === "Core")!;
+      const attachment = tenant.listStrategyAttachments(core.strategyId!)[0]!;
+      expect(attachment.runId).toEqual(expect.any(String));
       tenant.recordAttributedFills([
         {
           sourceEventKey: "mainnet:fill-1:0",
-          runId: "live-run-1",
+          runId: attachment.runId,
           configVersion: 1,
           accountId: "42",
           ownerWallet: OWNER,
@@ -50,13 +53,13 @@ describe("strategy results", () => {
           raw: { fixture: true },
         },
       ]);
-      // Same account and attachment interval, but another run/configuration:
-      // this must never leak into this strategy attachment's Live evidence.
+      // Same account, strategy version, and attachment interval, but another
+      // run: this must never leak into this strategy attachment's Live evidence.
       tenant.recordAttributedFills([
         {
           sourceEventKey: "mainnet:other-run-fill:0",
           runId: "live-run-other",
-          configVersion: 2,
+          configVersion: 1,
           accountId: "42",
           ownerWallet: OWNER,
           marketId: "0x1",
@@ -112,7 +115,7 @@ describe("strategy results", () => {
       tenant.recordInventoryLedgerEffects([
         {
           sourceEventKey: "mainnet:funding-1",
-          runId: "live-run-1",
+          runId: attachment.runId,
           configVersion: 1,
           accountId: "42",
           marketId: "0x1",
@@ -132,7 +135,7 @@ describe("strategy results", () => {
         {
           sourceEventKey: "mainnet:other-run-funding",
           runId: "live-run-other",
-          configVersion: 2,
+          configVersion: 1,
           accountId: "42",
           marketId: "0x1",
           timestampMs: fillAtMs + 60_000,
@@ -210,6 +213,94 @@ describe("strategy results", () => {
       "Live markout for fill mainnet:fill-1:0 at 300000ms is unavailable: reference arrived after freshness window.",
     );
     await missing.h.close();
+  });
+
+  it("fails closed for a legacy attachment without an authoritative Live run binding", async () => {
+    const h = await appHarness();
+    const tenant = h.store.forTenant(OWNER);
+    tenant.setConfig(
+      makerConfigSchema.parse({
+        mode: "paper",
+        makerAccountId: "42",
+        markets: [{ marketId: "0x1", symbol: "NEAR" }],
+      }),
+    );
+    const core = tenant.listBundles().find((bundle) => bundle.name === "Core")!;
+    const attachment = tenant.listStrategyAttachments(core.strategyId!)[0]!;
+    const database = (h.store as unknown as { db: Database.Database }).db;
+    database
+      .prepare(
+        `UPDATE strategy_attachments SET run_id = NULL
+         WHERE owner_address = ? AND bundle_id = ? AND strategy_id = ?`,
+      )
+      .run(OWNER, attachment.bundleId, attachment.strategyId);
+    const timestampMs = Date.parse(attachment.attachedAt) + 1;
+    tenant.recordAttributedFills([
+      {
+        sourceEventKey: "mainnet:legacy-fill:0",
+        runId: "legacy-live-run",
+        configVersion: attachment.strategyVersion,
+        accountId: "42",
+        ownerWallet: OWNER,
+        marketId: "0x1",
+        orderId: "legacy-fill",
+        txDigest: "legacy-fill",
+        eventIndex: 0,
+        timestampMs,
+        side: "buy",
+        liquidity: "maker",
+        sizeBase: "1",
+        priceUsd: "100",
+        notionalUsd: "100",
+        venueFeeUsd: "0",
+        builderFeeUsd: "0",
+        realizedPnlUsd: "0",
+        counterpartyClass: "unresolved",
+        classificationEvidence: ["fixture"],
+        source: "fixture-live-fills",
+        network: "mainnet",
+        coverage: "complete",
+        raw: { fixture: true },
+      },
+    ]);
+    tenant.recordInventoryLedgerEffects([
+      {
+        sourceEventKey: "mainnet:legacy-funding",
+        runId: "legacy-live-run",
+        configVersion: attachment.strategyVersion,
+        accountId: "42",
+        marketId: "0x1",
+        timestampMs,
+        kind: "funding",
+        fundingUsd: "999",
+        gasUsedMist: null,
+        gasUsd: null,
+        externalTransferUsd: null,
+        source: "fixture-live-funding",
+        network: "mainnet",
+        coverage: "complete",
+        raw: { fixture: true },
+      },
+    ]);
+
+    const response = await h.app.inject({
+      method: "GET",
+      url: `/api/strategies/${core.strategyId}/results`,
+      headers: h.signedInAs(),
+    });
+
+    expect(response.statusCode).toBe(200);
+    const evidence = response.json().results.liveEvidence;
+    expect(evidence.fills).toEqual([]);
+    expect(evidence.fundingUsd).toBeNull();
+    expect(evidence.gasUsd).toBeNull();
+    expect(evidence.gaps).toContain(
+      "Live evidence is unavailable for this attachment because its authoritative run binding was not recorded.",
+    );
+    expect(response.json().attachments).toEqual([
+      expect.objectContaining({ runId: null }),
+    ]);
+    await h.close();
   });
 
   it("reports the Paper trading result with fees, priced gas and named gaps", async () => {

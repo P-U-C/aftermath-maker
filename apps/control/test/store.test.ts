@@ -13,6 +13,56 @@ import { makerConfigSchema, setupSchema } from "@puc/core";
 import { Store } from "../src/store.js";
 
 describe("persistent control store", () => {
+  it("keeps pre-run-binding strategy attachments explicitly unbound after migration", () => {
+    const directory = join(
+      process.env.TMPDIR ?? "/tmp",
+      `aftermath-maker-${randomBytes(8).toString("hex")}`,
+    );
+    mkdirSync(directory, { recursive: true });
+    const path = join(directory, "maker.db");
+    const owner = `0x${"a".repeat(64)}`;
+    const initial = new Store(path);
+    const tenant = initial.forTenant(owner);
+    tenant.setConfig(
+      makerConfigSchema.parse({
+        makerAccountId: "42",
+        markets: [{ marketId: "0x5678", symbol: "SUI" }],
+      }),
+    );
+    const strategyId = tenant
+      .listBundles()
+      .find((bundle) => bundle.name === "Core")!.strategyId!;
+    initial.close();
+
+    // Reproduce the pre-#149 table shape with an existing attachment row.
+    const legacy = new Database(path);
+    legacy.pragma("foreign_keys = OFF");
+    legacy.exec(`
+      ALTER TABLE strategy_attachments RENAME TO strategy_attachments_legacy;
+      CREATE TABLE strategy_attachments (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        owner_address TEXT NOT NULL,
+        bundle_id TEXT NOT NULL REFERENCES bundles(id) ON DELETE CASCADE,
+        strategy_id TEXT NOT NULL REFERENCES strategies(id),
+        strategy_version INTEGER NOT NULL CHECK (strategy_version >= 1),
+        attached_at TEXT NOT NULL,
+        detached_at TEXT
+      );
+      INSERT INTO strategy_attachments
+        (id, owner_address, bundle_id, strategy_id, strategy_version, attached_at, detached_at)
+      SELECT id, owner_address, bundle_id, strategy_id, strategy_version, attached_at, detached_at
+      FROM strategy_attachments_legacy;
+      DROP TABLE strategy_attachments_legacy;
+    `);
+    legacy.close();
+
+    const reopened = new Store(path);
+    expect(
+      reopened.forTenant(owner).listStrategyAttachments(strategyId),
+    ).toEqual([expect.objectContaining({ runId: null })]);
+    reopened.close();
+  });
+
   it("persists config, setup, encrypted signer, and audit events", () => {
     const directory = join(
       process.env.TMPDIR ?? "/tmp",

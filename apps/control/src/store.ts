@@ -77,6 +77,17 @@ const normalizeAddress = (address: string) => address.toLowerCase();
 const coreBundleId = (ownerAddress: string) =>
   `core-${normalizeAddress(ownerAddress).replace(/^0x/, "")}`;
 
+/**
+ * Live evidence needs a durable owner before source rows are attributed.
+ * This is local reporting metadata only: it neither starts nor affects a run.
+ */
+const strategyAttachmentRunId = (
+  bundleId: string,
+  strategyId: string,
+  strategyVersion: number,
+  attachedAt: string,
+) => `attachment:${bundleId}:${strategyId}:v${strategyVersion}:${attachedAt}`;
+
 type StoredMakerConfig = Partial<MakerConfig> & {
   marketId?: string;
   symbol?: string;
@@ -462,6 +473,8 @@ export type StrategyAttachment = {
   bundleId: string;
   strategyId: string;
   strategyVersion: number;
+  /** Null only for an attachment created before run binding was introduced. */
+  runId: string | null;
   attachedAt: string;
   detachedAt: string | null;
 };
@@ -1255,6 +1268,7 @@ export class Store {
           bundle_id TEXT NOT NULL REFERENCES bundles(id) ON DELETE CASCADE,
           strategy_id TEXT NOT NULL REFERENCES strategies(id),
           strategy_version INTEGER NOT NULL CHECK (strategy_version >= 1),
+          run_id TEXT,
           attached_at TEXT NOT NULL,
           detached_at TEXT
         );
@@ -1377,6 +1391,13 @@ export class Store {
         "tenant_hedged_fills",
         "bundle_id",
         "bundle_id TEXT REFERENCES bundles(id)",
+      );
+      // Do not infer a binding for existing attachment history: overlapping
+      // same-account runs are indistinguishable without a recorded run ID.
+      ensureColumn("strategy_attachments", "run_id", "run_id TEXT");
+      this.db.exec(
+        `CREATE INDEX IF NOT EXISTS strategy_attachments_owner_run
+         ON strategy_attachments(owner_address, run_id)`,
       );
       ensureColumn(
         "bundle_markets",
@@ -3716,14 +3737,20 @@ export class TenantStore {
     this.db
       .prepare(
         `INSERT INTO strategy_attachments
-          (owner_address, bundle_id, strategy_id, strategy_version, attached_at, detached_at)
-         VALUES (?, ?, ?, ?, ?, NULL)`,
+          (owner_address, bundle_id, strategy_id, strategy_version, run_id, attached_at, detached_at)
+         VALUES (?, ?, ?, ?, ?, ?, NULL)`,
       )
       .run(
         this.ownerAddress,
         bundleId,
         strategyId,
         strategyVersion,
+        strategyAttachmentRunId(
+          bundleId,
+          strategyId,
+          strategyVersion,
+          attachedAt,
+        ),
         attachedAt,
       );
   }
@@ -3741,7 +3768,7 @@ export class TenantStore {
     return (
       this.db
         .prepare(
-          `SELECT bundle_id, strategy_id, strategy_version, attached_at, detached_at
+          `SELECT bundle_id, strategy_id, strategy_version, run_id, attached_at, detached_at
            FROM strategy_attachments
            WHERE owner_address = ? AND strategy_id = ?
            ORDER BY attached_at ASC, id ASC`,
@@ -3750,6 +3777,7 @@ export class TenantStore {
         bundle_id: string;
         strategy_id: string;
         strategy_version: number;
+        run_id: string | null;
         attached_at: string;
         detached_at: string | null;
       }>
@@ -3757,6 +3785,7 @@ export class TenantStore {
       bundleId: row.bundle_id,
       strategyId: row.strategy_id,
       strategyVersion: row.strategy_version,
+      runId: row.run_id,
       attachedAt: row.attached_at,
       detachedAt: row.detached_at,
     }));
