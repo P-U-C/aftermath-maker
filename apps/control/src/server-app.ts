@@ -21,6 +21,7 @@ import {
   requiredMakerCollateralUsd,
   setupSchema,
   gasCostUsd,
+  summarizeLiveResultEvidence,
   summarizeStrategyResult,
   summarizeInventoryTradingLedger,
   USDC_COIN_TYPE,
@@ -793,6 +794,9 @@ export async function buildServer({
         404,
       );
     }
+    // A result is a report at one boundary.  Read-dependent work below must
+    // not move a fill from unavailable to complete midway through one reply.
+    const reportingBoundaryMs = clock().getTime();
     const owner = requestAuth(request).ownerAddress;
     const attachments = scoped.listStrategyAttachments(params.strategyId);
     const markets = await runtime(request)
@@ -851,6 +855,18 @@ export async function buildServer({
       gasUsedMist: number | null;
       suiUsd: number | null;
     }> = [];
+    const liveEvidenceFills: Array<
+      Parameters<typeof summarizeLiveResultEvidence>[0]["fills"][number]
+    > = [];
+    const liveEvidenceGaps: string[] = [];
+    const persistedLiveFills = scoped.listAttributedFills();
+    const persistedObservations = scoped.listMarketObservations({
+      limit: 10_000,
+    });
+    const persistedLedgerEffects = scoped.listInventoryLedgerEffects();
+    let liveEvidenceFundingUsd = 0;
+    let liveEvidenceHasFunding = false;
+    let liveEvidenceFundingComplete = true;
     const liveGaps: string[] = [];
     let liveFundingUsd: number | null = 0;
     let liveUnrealizedUsd = 0;
@@ -965,6 +981,106 @@ export async function buildServer({
           `Gas before ${day(livePruned)} was pruned from history and isn't counted.`,
         );
       const bundle = scoped.getStoredBundle(attachment.bundleId);
+      const attachedAtMs = Date.parse(attachment.attachedAt);
+      const detachedAtMs = attachment.detachedAt
+        ? Date.parse(attachment.detachedAt)
+        : null;
+      const inAttachment = (timestampMs: number) =>
+        Number.isFinite(attachedAtMs) &&
+        timestampMs >= attachedAtMs &&
+        (detachedAtMs === null || timestampMs < detachedAtMs);
+      if (bundle?.makerAccountId) {
+        const attachmentFills = persistedLiveFills.filter(
+          (fill) =>
+            fill.accountId === bundle.makerAccountId &&
+            fill.configVersion === attachment.strategyVersion &&
+            inAttachment(fill.timestampMs),
+        );
+        const attachmentRunIds = new Set(
+          attachmentFills.map((fill) => fill.runId),
+        );
+        for (const fill of attachmentFills) {
+          const priceUsd = Number(fill.priceUsd);
+          const sizeUsd = Number(fill.notionalUsd);
+          const references = [60_000, 300_000, 1_800_000, 3_600_000].flatMap(
+            (horizonMs) => {
+              const expectedAtMs = fill.timestampMs + horizonMs;
+              const observation = persistedObservations
+                .filter(
+                  (candidate) =>
+                    candidate.marketId === fill.marketId &&
+                    candidate.network === fill.network &&
+                    candidate.coverage === "complete" &&
+                    inAttachment(candidate.observedAtMs) &&
+                    candidate.observedAtMs >= expectedAtMs &&
+                    candidate.observedAtMs <= reportingBoundaryMs,
+                )
+                .sort(
+                  (left, right) => left.observedAtMs - right.observedAtMs,
+                )[0];
+              if (!observation) return [];
+              const referenceUsd = Number(observation.indexUsd);
+              return [
+                {
+                  horizonMs,
+                  observedAtMs: observation.observedAtMs,
+                  priceUsd:
+                    Number.isFinite(referenceUsd) && referenceUsd > 0
+                      ? referenceUsd
+                      : null,
+                },
+              ];
+            },
+          );
+          liveEvidenceFills.push({
+            fillId: fill.sourceEventKey,
+            occurredAtMs: fill.timestampMs,
+            side: fill.side === "buy" ? "bid" : "ask",
+            // An incomplete persisted fill is deliberately invalid evidence;
+            // the core summary reports every horizon unavailable rather than
+            // trusting a price from an incomplete source.
+            priceUsd:
+              fill.coverage === "complete" &&
+              Number.isFinite(priceUsd) &&
+              priceUsd > 0
+                ? priceUsd
+                : Number.NaN,
+            sizeUsd:
+              fill.coverage === "complete" &&
+              Number.isFinite(sizeUsd) &&
+              sizeUsd > 0
+                ? sizeUsd
+                : Number.NaN,
+            references,
+          });
+        }
+        const fundingEffects = persistedLedgerEffects.filter(
+          (effect) =>
+            effect.kind === "funding" &&
+            effect.accountId === bundle.makerAccountId &&
+            effect.configVersion === attachment.strategyVersion &&
+            effect.runId !== null &&
+            attachmentRunIds.has(effect.runId) &&
+            inAttachment(effect.timestampMs),
+        );
+        for (const effect of fundingEffects) {
+          liveEvidenceHasFunding = true;
+          const fundingUsd = Number(effect.fundingUsd);
+          if (
+            effect.coverage !== "complete" ||
+            effect.fundingUsd === null ||
+            !Number.isFinite(fundingUsd)
+          ) {
+            liveEvidenceFundingComplete = false;
+          } else {
+            liveEvidenceFundingUsd += fundingUsd;
+          }
+        }
+      } else {
+        liveEvidenceGaps.push(
+          "Live fill and funding evidence is unavailable: the bundle has no Maker account.",
+        );
+      }
       if (!bundle || bundle.archivedAt) continue;
       try {
         const bundleRuntime = runtimeManager.getBundle(owner, bundle.id);
@@ -1031,6 +1147,25 @@ export async function buildServer({
         );
       return gas.usd;
     };
+    const liveEvidenceGas = gasCostUsd(liveGas);
+    const liveEvidenceGasUsd =
+      liveGas.length > 0 && liveEvidenceGas.unpriced === 0
+        ? liveEvidenceGas.usd
+        : null;
+    if (liveEvidenceGas.unpriced) {
+      liveEvidenceGaps.push(
+        `${liveEvidenceGas.unpriced} ${liveEvidenceGas.unpriced === 1 ? "Live transaction has" : "Live transactions have"} no SUI price, so Live gas is unavailable.`,
+      );
+    }
+    const liveEvidence = summarizeLiveResultEvidence({
+      asOfMs: reportingBoundaryMs,
+      fills: liveEvidenceFills,
+      fundingUsd:
+        liveEvidenceHasFunding && liveEvidenceFundingComplete
+          ? liveEvidenceFundingUsd
+          : null,
+      gasUsd: liveEvidenceGasUsd,
+    });
     // Only the fields the collateral rule reads; accounts and mode don't matter.
     const requiredCollateralUsd = requiredMakerCollateralUsd({
       ...strategy.config,
@@ -1079,6 +1214,10 @@ export async function buildServer({
           gasUsd: gasResult(liveGas, liveGaps),
           gaps: liveGaps,
         }),
+        liveEvidence: {
+          ...liveEvidence,
+          gaps: [...liveEvidence.gaps, ...liveEvidenceGaps],
+        },
         liveReadError,
       },
       attachments,
