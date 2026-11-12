@@ -117,6 +117,10 @@ function nonNegativeFiniteNumber(value: unknown): value is number {
   return finiteNumber(value) && value >= 0;
 }
 
+function nonNegativeUnsignedInteger(value: unknown): boolean {
+  return parseUnsignedInteger(value) !== undefined;
+}
+
 function validIntendedMarkets(
   intendedMarkets: AtomicMarketCapabilityInput["intendedMarkets"],
 ): boolean {
@@ -141,7 +145,18 @@ function validIntendedMarkets(
 }
 
 function normalizeMarket(value: unknown): AtomicMarketConstraint | undefined {
-  if (!isRecord(value) || !nonEmptyString(value.objectId)) return undefined;
+  if (
+    !isRecord(value) ||
+    !nonEmptyString(value.packageId) ||
+    !nonEmptyString(value.objectId) ||
+    !nonEmptyString(value.collateralCoinType) ||
+    !positiveFiniteNumber(value.collateralPrice) ||
+    !positiveFiniteNumber(value.indexPrice) ||
+    !finiteNumber(value.estimatedFundingRate) ||
+    !nonNegativeUnsignedInteger(value.nextFundingTimestampMs)
+  ) {
+    return undefined;
+  }
   if (!isRecord(value.marketParams) || !isRecord(value.marketState))
     return undefined;
 
@@ -152,9 +167,20 @@ function normalizeMarket(value: unknown): AtomicMarketConstraint | undefined {
   const maxPendingOrders = canonicalUnsignedInteger(params.maxPendingOrders);
 
   if (
+    !nonEmptyString(params.baseAssetSymbol) ||
+    !nonNegativeUnsignedInteger(params.basePriceFeedId) ||
+    !nonNegativeUnsignedInteger(params.collateralPriceFeedId) ||
+    !nonNegativeUnsignedInteger(params.fundingFrequencyMs) ||
+    !nonNegativeUnsignedInteger(params.fundingPeriodMs) ||
+    !nonNegativeUnsignedInteger(params.premiumTwapFrequencyMs) ||
+    !nonNegativeUnsignedInteger(params.premiumTwapPeriodMs) ||
+    !nonNegativeUnsignedInteger(params.spreadTwapFrequencyMs) ||
+    !nonNegativeUnsignedInteger(params.spreadTwapPeriodMs) ||
     !fraction(params.makerFee) ||
     !fraction(params.takerFee) ||
     (params.priorityTakerFee !== null && !fraction(params.priorityTakerFee)) ||
+    !fraction(params.liquidationFee) ||
+    !fraction(params.insuranceFundFee) ||
     !fraction(params.marginRatioInitial, true) ||
     !fraction(params.marginRatioMaintenance, true) ||
     params.marginRatioMaintenance > params.marginRatioInitial ||
@@ -165,10 +191,21 @@ function normalizeMarket(value: unknown): AtomicMarketConstraint | undefined {
     BigInt(tickSize.slice(0, -1)) <= 0n ||
     maxPendingOrders === undefined ||
     BigInt(maxPendingOrders.slice(0, -1)) <= 0n ||
+    !positiveFiniteNumber(params.scalingFactor) ||
+    !nonNegativeUnsignedInteger(params.baseOracleTolerance) ||
+    !nonNegativeUnsignedInteger(params.collateralOracleTolerance) ||
     !positiveFiniteNumber(params.maxOpenInterest) ||
     !nonNegativeFiniteNumber(params.maxOpenInterestThreshold) ||
     !fraction(params.maxOpenInterestPositionPercent, true) ||
-    !nonNegativeFiniteNumber(state.openInterest)
+    !finiteNumber(state.cumFundingRateLong) ||
+    !finiteNumber(state.cumFundingRateShort) ||
+    !nonNegativeUnsignedInteger(state.fundingLastUpdateTimestamp) ||
+    !finiteNumber(state.premiumTwap) ||
+    !nonNegativeUnsignedInteger(state.premiumTwapLastUpdateTimestamp) ||
+    !finiteNumber(state.spreadTwap) ||
+    !nonNegativeUnsignedInteger(state.spreadTwapLastUpdateTimestamp) ||
+    !nonNegativeFiniteNumber(state.openInterest) ||
+    !nonNegativeFiniteNumber(state.feesAccrued)
   ) {
     return undefined;
   }
@@ -194,6 +231,7 @@ function normalizeMarket(value: unknown): AtomicMarketConstraint | undefined {
 function previewMatches(
   preview: unknown,
   intendedMarkets: AtomicMarketCapabilityInput["intendedMarkets"],
+  constraintsByMarket: Map<string, AtomicMarketConstraint>,
 ): AtomicMarketCapabilityResult["reason"] | undefined {
   if (
     !isRecord(preview) ||
@@ -214,6 +252,7 @@ function previewMatches(
     return "preview-unavailable";
   }
 
+  let perOrderCollateralChange = 0;
   for (const [index, intended] of intendedMarkets.entries()) {
     const requestOrder = request.orders[index];
     const responseOrder = response.orders[index];
@@ -254,6 +293,20 @@ function previewMatches(
     ) {
       return "preview-unavailable";
     }
+    const constraint = constraintsByMarket.get(intended.marketId);
+    if (
+      !constraint ||
+      responseOrder.filledSizeUsd < constraint.minOrderUsdValue
+    ) {
+      return "minimum-order-not-met";
+    }
+    perOrderCollateralChange += responseOrder.collateralChange;
+    if (!Number.isFinite(perOrderCollateralChange))
+      return "preview-unavailable";
+  }
+
+  if (perOrderCollateralChange !== response.collateralChange) {
+    return "preview-unavailable";
   }
 
   return undefined;
@@ -315,15 +368,13 @@ export function normalizeAtomicMarketCapability(
     const size = parseUnsignedInteger(intended.size)!;
     const lotSize = BigInt(constraint.lotSize.slice(0, -1));
     if (size % lotSize !== 0n) return unavailable("invalid-order-lot");
-    if (intended.notionalUsd < constraint.minOrderUsdValue) {
-      return unavailable("minimum-order-not-met");
-    }
     constraints.push(constraint);
   }
 
   const previewReason = previewMatches(
     input.snapshot.atomicPreview,
     input.intendedMarkets,
+    constraintsByMarket,
   );
   if (previewReason) return unavailable(previewReason, constraints);
   if (!hasRecordedGasReserve(input.gasReserveReceipt, capturedAtMs)) {

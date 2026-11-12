@@ -81,6 +81,20 @@ describe("Atomic market capability snapshots", () => {
       constraints: [],
     });
 
+    const missingProviderState = structuredClone(fixture);
+    delete (missingProviderState.markets as Array<Record<string, unknown>>)[0]!
+      .marketState.premiumTwapLastUpdateTimestamp;
+    expect(unavailable(missingProviderState).reason).toBe(
+      "malformed-market-snapshot",
+    );
+
+    const missingProviderPrice = structuredClone(fixture);
+    delete (missingProviderPrice.markets as Array<Record<string, unknown>>)[0]!
+      .indexPrice;
+    expect(unavailable(missingProviderPrice).reason).toBe(
+      "malformed-market-snapshot",
+    );
+
     const invalidPriorityFee = structuredClone(fixture);
     (
       invalidPriorityFee.markets as Array<Record<string, unknown>>
@@ -112,6 +126,33 @@ describe("Atomic market capability snapshots", () => {
       }
     ).response.orders[0]!.postedSize = 1;
     expect(unavailable(partial).reason).toBe("partial-or-posted-preview");
+
+    const underMinimumPreview = structuredClone(fixture);
+    (
+      underMinimumPreview.atomicPreview as {
+        response: { orders: Array<Record<string, unknown>> };
+      }
+    ).response.orders[0]!.filledSizeUsd = 1;
+    expect(
+      normalizeAtomicMarketCapability({
+        ...input,
+        intendedMarkets: [
+          { ...intendedMarkets[0]!, notionalUsd: 1000 },
+          intendedMarkets[1]!,
+        ],
+        snapshot: underMinimumPreview,
+      }).reason,
+    ).toBe("minimum-order-not-met");
+
+    const inconsistentPreviewTotal = structuredClone(fixture);
+    (
+      inconsistentPreviewTotal.atomicPreview as {
+        response: { collateralChange: number };
+      }
+    ).response.collateralChange = 31;
+    expect(unavailable(inconsistentPreviewTotal).reason).toBe(
+      "preview-unavailable",
+    );
 
     const exhaustedOi = structuredClone(fixture);
     (
