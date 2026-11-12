@@ -6,6 +6,7 @@ import {
 
 const basket = {
   basketId: "basket-123",
+  reservationId: "reservation-123",
   slices: [
     { sliceId: "slice-a", legIds: ["leg-a1", "leg-a2"] },
     { sliceId: "slice-b", legIds: ["leg-b1", "leg-b2"] },
@@ -128,6 +129,7 @@ describe("Atomic basket Paper replay", () => {
         sourceTime: 40,
         kind: "CANCEL_CONFIRMED" as const,
         basketId: basket.basketId,
+        reservationId: basket.reservationId,
       },
     ]);
     expect(cancelled).toMatchObject({
@@ -140,11 +142,142 @@ describe("Atomic basket Paper replay", () => {
     expect(() =>
       createAtomicBasketState({
         basketId: "duplicate-declared-leg",
+        reservationId: "reservation-duplicate-declared-leg",
         slices: [
           { sliceId: "one", legIds: ["leg"] },
           { sliceId: "two", legIds: ["leg"] },
         ],
       }),
     ).toThrow("declared leg IDs must be unique");
+  });
+
+  it("requires a matching reservation identity before cancellation releases a basket", () => {
+    const staleCancellation = applyAtomicBasketEvents(
+      createAtomicBasketState(basket),
+      [
+        {
+          eventId: "stale-cancel",
+          sourceTime: 10,
+          kind: "CANCEL_CONFIRMED" as const,
+          basketId: basket.basketId,
+          reservationId: "old-reservation",
+        },
+      ],
+    );
+
+    expect(staleCancellation).toMatchObject({
+      reservation: "RESERVED",
+      status: "RECONCILIATION_REQUIRED",
+      rejectionReasons: ["cancellation-reservation-mismatch"],
+    });
+  });
+
+  it("holds the reservation for malformed events or event-ID collisions", () => {
+    const state = createAtomicBasketState(basket);
+    const malformed = [
+      {
+        eventId: "",
+        sourceTime: 10,
+        kind: "RETRY_REQUESTED" as const,
+        basketId: basket.basketId,
+        riskIncreasing: false,
+      },
+      {
+        eventId: "nan-time",
+        sourceTime: Number.NaN,
+        kind: "RETRY_REQUESTED" as const,
+        basketId: basket.basketId,
+        riskIncreasing: false,
+      },
+      {
+        eventId: "infinite-time",
+        sourceTime: Number.POSITIVE_INFINITY,
+        kind: "RETRY_REQUESTED" as const,
+        basketId: basket.basketId,
+        riskIncreasing: false,
+      },
+      {
+        eventId: "blank-basket",
+        sourceTime: 10,
+        kind: "RETRY_REQUESTED" as const,
+        basketId: " ",
+        riskIncreasing: false,
+      },
+    ];
+    const malformedResult = applyAtomicBasketEvents(state, malformed);
+    expect(malformedResult).toMatchObject({
+      reservation: "RESERVED",
+      status: "RECONCILIATION_REQUIRED",
+      rejectionReasons: [
+        "event-id-required",
+        "event-source-time-invalid",
+        "event-basket-id-required",
+      ],
+    });
+
+    const collision = applyAtomicBasketEvents(state, [
+      {
+        eventId: "same-id",
+        sourceTime: 10,
+        kind: "RETRY_REQUESTED" as const,
+        basketId: basket.basketId,
+        riskIncreasing: false,
+      },
+      {
+        eventId: "same-id",
+        sourceTime: 11,
+        kind: "RETRY_REQUESTED" as const,
+        basketId: basket.basketId,
+        riskIncreasing: true,
+      },
+    ]);
+    expect(collision).toMatchObject({
+      reservation: "RESERVED",
+      status: "RECONCILIATION_REQUIRED",
+      rejectionReasons: ["event-id-collision:same-id"],
+    });
+  });
+
+  it("rejects empty declared baskets and slices", () => {
+    expect(() =>
+      createAtomicBasketState({
+        basketId: "no-slices",
+        reservationId: "reservation-no-slices",
+        slices: [],
+      }),
+    ).toThrow("at least one slice is required");
+    expect(() =>
+      createAtomicBasketState({
+        basketId: "empty-slice",
+        reservationId: "reservation-empty-slice",
+        slices: [{ sliceId: "slice", legIds: [] }],
+      }),
+    ).toThrow("at least one declared leg is required");
+  });
+
+  it("holds rather than throwing when persisted nested evidence is malformed", () => {
+    const malformedEvidence = {
+      eventId: "bad-nested-evidence",
+      sourceTime: 10,
+      kind: "SLICE_EVIDENCE" as const,
+      basketId: basket.basketId,
+      sliceId: "slice-a",
+      legs: [null],
+    };
+
+    expect(() =>
+      applyAtomicBasketEvents(createAtomicBasketState(basket), [
+        malformedEvidence as never,
+      ]),
+    ).not.toThrow();
+    expect(
+      applyAtomicBasketEvents(createAtomicBasketState(basket), [
+        malformedEvidence as never,
+      ]),
+    ).toMatchObject({
+      reservation: "RESERVED",
+      status: "RECONCILIATION_REQUIRED",
+      rejectionReasons: ["event-leg-evidence-invalid"],
+    });
   });
 });

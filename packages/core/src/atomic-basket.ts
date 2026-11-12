@@ -16,6 +16,8 @@ export interface AtomicBasketSlice {
 
 export interface AtomicBasketDefinition {
   readonly basketId: string;
+  /** Opaque Paper reservation identity required to release this basket. */
+  readonly reservationId: string;
   readonly slices: readonly AtomicBasketSlice[];
 }
 
@@ -47,6 +49,7 @@ export interface AtomicBasketRetryRequestedEvent extends AtomicBasketEventBase {
 
 export interface AtomicBasketCancelConfirmedEvent extends AtomicBasketEventBase {
   readonly kind: "CANCEL_CONFIRMED";
+  readonly reservationId: string;
 }
 
 export type AtomicBasketEvent =
@@ -94,30 +97,18 @@ export function applyAtomicBasketEvents(
   incomingEvents: readonly AtomicBasketEvent[],
 ): AtomicBasketState {
   validateBasketDefinition(state.basket);
-
-  const seenEventIds = new Set(state.appliedEventIds);
-  const persistedEvents = [...state.events].sort(compareAtomicBasketEvents);
-  for (const event of persistedEvents) {
-    seenEventIds.add(event.eventId);
-  }
-
-  const unseenEvents: AtomicBasketEvent[] = [];
-  for (const event of [...incomingEvents].sort(compareAtomicBasketEvents)) {
-    if (!seenEventIds.has(event.eventId)) {
-      seenEventIds.add(event.eventId);
-      unseenEvents.push(event);
-    }
-  }
-
-  return replayAtomicBasket(state.basket, [
-    ...persistedEvents,
-    ...unseenEvents,
-  ]);
+  const collected = collectAtomicBasketEvents(state.events, incomingEvents);
+  return replayAtomicBasket(
+    state.basket,
+    collected.events,
+    collected.rejectionReasons,
+  );
 }
 
 function replayAtomicBasket(
   basket: AtomicBasketDefinition,
   events: readonly AtomicBasketEvent[],
+  initialRejectionReasons: readonly string[] = [],
 ): AtomicBasketState {
   const orderedEvents = [...events].sort(compareAtomicBasketEvents);
   let reservation: AtomicBasketReservation = "RESERVED";
@@ -169,12 +160,25 @@ function replayAtomicBasket(
         break;
       }
       case "CANCEL_CONFIRMED": {
-        reservation = "RELEASED";
-        status = "CANCELLED";
-        rejectionReasons = [];
+        if (event.reservationId !== basket.reservationId) {
+          status = "RECONCILIATION_REQUIRED";
+          rejectionReasons = appendReasons(rejectionReasons, [
+            "cancellation-reservation-mismatch",
+          ]);
+        } else {
+          reservation = "RELEASED";
+          status = "CANCELLED";
+          rejectionReasons = [];
+        }
         break;
       }
     }
+  }
+
+  if (initialRejectionReasons.length > 0) {
+    reservation = "RESERVED";
+    status = "RECONCILIATION_REQUIRED";
+    rejectionReasons = appendReasons(rejectionReasons, initialRejectionReasons);
   }
 
   const lastEvent = orderedEvents.at(-1);
@@ -194,14 +198,20 @@ function replayAtomicBasket(
 }
 
 function validateBasketDefinition(basket: AtomicBasketDefinition): void {
-  if (basket.basketId.length === 0) {
+  if (basket.basketId.trim().length === 0) {
     throw new Error("basket ID is required");
+  }
+  if (basket.reservationId.trim().length === 0) {
+    throw new Error("reservation ID is required");
+  }
+  if (basket.slices.length === 0) {
+    throw new Error("at least one slice is required");
   }
 
   const sliceIds = new Set<string>();
   const legIds = new Set<string>();
   for (const slice of basket.slices) {
-    if (slice.sliceId.length === 0) {
+    if (slice.sliceId.trim().length === 0) {
       throw new Error("slice ID is required");
     }
     if (sliceIds.has(slice.sliceId)) {
@@ -209,8 +219,11 @@ function validateBasketDefinition(basket: AtomicBasketDefinition): void {
     }
     sliceIds.add(slice.sliceId);
 
+    if (slice.legIds.length === 0) {
+      throw new Error("at least one declared leg is required");
+    }
     for (const legId of slice.legIds) {
-      if (legId.length === 0) {
+      if (legId.trim().length === 0) {
         throw new Error("declared leg ID is required");
       }
       if (legIds.has(legId)) {
@@ -219,6 +232,143 @@ function validateBasketDefinition(basket: AtomicBasketDefinition): void {
       legIds.add(legId);
     }
   }
+}
+
+interface CollectedAtomicBasketEvents {
+  readonly events: readonly AtomicBasketEvent[];
+  readonly rejectionReasons: readonly string[];
+}
+
+/**
+ * Validate before either ordering or deduplication. This is deliberate: an
+ * invalid timestamp must never influence replay order, and a reused event ID
+ * must never silently replace valid Paper evidence.
+ */
+function collectAtomicBasketEvents(
+  persistedEvents: readonly AtomicBasketEvent[],
+  incomingEvents: readonly AtomicBasketEvent[],
+): CollectedAtomicBasketEvents {
+  const events: AtomicBasketEvent[] = [];
+  const rejectionReasons: string[] = [];
+  const payloadByEventId = new Map<string, string>();
+
+  for (const event of [...persistedEvents, ...incomingEvents]) {
+    const reasons = validateAtomicBasketEvent(event);
+    if (reasons.length > 0) {
+      rejectionReasons.push(...reasons);
+      continue;
+    }
+
+    const payload = stableJson(event);
+    const priorPayload = payloadByEventId.get(event.eventId);
+    if (priorPayload !== undefined) {
+      if (priorPayload !== payload) {
+        rejectionReasons.push(`event-id-collision:${event.eventId}`);
+      }
+      continue;
+    }
+    payloadByEventId.set(event.eventId, payload);
+    events.push(event);
+  }
+
+  return {
+    events: events.sort(compareAtomicBasketEvents),
+    rejectionReasons: [...new Set(rejectionReasons)],
+  };
+}
+
+function validateAtomicBasketEvent(event: AtomicBasketEvent): string[] {
+  if (!event || typeof event !== "object") {
+    return ["event-invalid"];
+  }
+  const candidate = event as unknown as Record<string, unknown>;
+  const reasons: string[] = [];
+  if (
+    typeof candidate.eventId !== "string" ||
+    candidate.eventId.trim() === ""
+  ) {
+    reasons.push("event-id-required");
+  }
+  if (
+    typeof candidate.sourceTime !== "number" ||
+    !Number.isFinite(candidate.sourceTime)
+  ) {
+    reasons.push("event-source-time-invalid");
+  }
+  if (
+    typeof candidate.basketId !== "string" ||
+    candidate.basketId.trim() === ""
+  ) {
+    reasons.push("event-basket-id-required");
+  }
+
+  switch (candidate.kind) {
+    case "SLICE_EVIDENCE":
+      if (
+        typeof candidate.sliceId !== "string" ||
+        candidate.sliceId.trim() === ""
+      ) {
+        reasons.push("event-slice-id-required");
+      }
+      if (!Array.isArray(candidate.legs)) {
+        reasons.push("event-legs-required");
+      } else if (!hasValidLegEvidence(candidate.legs)) {
+        reasons.push("event-leg-evidence-invalid");
+      }
+      break;
+    case "BASKET_RECONCILIATION":
+      if (!Array.isArray(candidate.slices)) {
+        reasons.push("event-slices-required");
+      } else if (!hasValidSliceEvidence(candidate.slices)) {
+        reasons.push("event-slice-evidence-invalid");
+      }
+      break;
+    case "RETRY_REQUESTED":
+      if (typeof candidate.riskIncreasing !== "boolean") {
+        reasons.push("event-retry-risk-required");
+      }
+      break;
+    case "CANCEL_CONFIRMED":
+      if (
+        typeof candidate.reservationId !== "string" ||
+        candidate.reservationId.trim() === ""
+      ) {
+        reasons.push("event-reservation-id-required");
+      }
+      break;
+    default:
+      reasons.push("event-kind-invalid");
+  }
+  return reasons;
+}
+
+function hasValidSliceEvidence(value: readonly unknown[]): boolean {
+  return value.every((slice) => {
+    if (!slice || typeof slice !== "object") {
+      return false;
+    }
+    const candidate = slice as Record<string, unknown>;
+    return (
+      typeof candidate.sliceId === "string" &&
+      Array.isArray(candidate.legs) &&
+      hasValidLegEvidence(candidate.legs)
+    );
+  });
+}
+
+function hasValidLegEvidence(value: readonly unknown[]): boolean {
+  return value.every((leg) => {
+    if (!leg || typeof leg !== "object") {
+      return false;
+    }
+    const candidate = leg as Record<string, unknown>;
+    return (
+      typeof candidate.legId === "string" &&
+      (candidate.status === "complete" ||
+        candidate.status === "pending" ||
+        candidate.status === "failed")
+    );
+  });
 }
 
 function validateBasketReconciliation(
