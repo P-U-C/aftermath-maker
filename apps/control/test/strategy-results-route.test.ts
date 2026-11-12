@@ -1,8 +1,217 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { makerConfigSchema } from "@puc/core";
 import { appHarness, OWNER } from "./helpers/app.js";
 
 describe("strategy results", () => {
+  afterEach(() => vi.useRealTimers());
+
+  it("reports fixed-horizon Live evidence from persisted fills and observations without treating missing data as zero", async () => {
+    const fillAtMs = 1_700_000_000_000;
+    const asOfMs = fillAtMs + 3_600_000;
+    const seed = async (includeFiveMinuteReference: boolean) => {
+      vi.setSystemTime(fillAtMs - 1_000);
+      const h = await appHarness();
+      const tenant = h.store.forTenant(OWNER);
+      tenant.setConfig(
+        makerConfigSchema.parse({
+          mode: "paper",
+          makerAccountId: "42",
+          markets: [{ marketId: "0x1", symbol: "NEAR" }],
+        }),
+      );
+      const core = tenant
+        .listBundles()
+        .find((bundle) => bundle.name === "Core")!;
+      tenant.recordAttributedFills([
+        {
+          sourceEventKey: "mainnet:fill-1:0",
+          runId: "live-run-1",
+          configVersion: 1,
+          accountId: "42",
+          ownerWallet: OWNER,
+          marketId: "0x1",
+          orderId: "fill-1",
+          txDigest: "fill-1",
+          eventIndex: 0,
+          timestampMs: fillAtMs,
+          side: "buy",
+          liquidity: "maker",
+          sizeBase: "2",
+          priceUsd: "100",
+          notionalUsd: "200",
+          venueFeeUsd: "-0.01",
+          builderFeeUsd: "0.02",
+          realizedPnlUsd: "0",
+          counterpartyClass: "unresolved",
+          classificationEvidence: ["fixture"],
+          source: "fixture-live-fills",
+          network: "mainnet",
+          coverage: "complete",
+          raw: { fixture: true },
+        },
+      ]);
+      // Same account and attachment interval, but another run/configuration:
+      // this must never leak into this strategy attachment's Live evidence.
+      tenant.recordAttributedFills([
+        {
+          sourceEventKey: "mainnet:other-run-fill:0",
+          runId: "live-run-other",
+          configVersion: 2,
+          accountId: "42",
+          ownerWallet: OWNER,
+          marketId: "0x1",
+          orderId: "other-run-fill",
+          txDigest: "other-run-fill",
+          eventIndex: 0,
+          timestampMs: fillAtMs + 1_000,
+          side: "buy",
+          liquidity: "maker",
+          sizeBase: "1",
+          priceUsd: "99",
+          notionalUsd: "99",
+          venueFeeUsd: "0",
+          builderFeeUsd: "0",
+          realizedPnlUsd: "0",
+          counterpartyClass: "unresolved",
+          classificationEvidence: ["fixture"],
+          source: "fixture-live-fills",
+          network: "mainnet",
+          coverage: "complete",
+          raw: { fixture: true },
+        },
+      ]);
+      for (const [horizonMs, indexUsd] of [
+        [60_000, "101"],
+        [300_000, "102"],
+        [1_800_000, "103"],
+        [3_600_000, "104"],
+      ] as const) {
+        if (horizonMs === 300_000 && !includeFiveMinuteReference) continue;
+        tenant.recordMarketObservation({
+          marketId: "0x1",
+          observedAtMs: fillAtMs + horizonMs,
+          sourceTimestampMs: fillAtMs + horizonMs,
+          indexUsd,
+          bestBidUsd: indexUsd,
+          bestAskUsd: indexUsd,
+          depthBid50BpsUsd: "10",
+          depthAsk50BpsUsd: "10",
+          volume24hUsd: "1000",
+          openInterestUsd: "1000",
+          fundingRateRaw: "0",
+          fundingPeriodMs: 0,
+          makerFeeRate: "-0.00005",
+          takerFeeRate: "0.0002",
+          sessionOpen: true,
+          source: "fixture-live-market",
+          network: "mainnet",
+          coverage: "complete",
+          raw: { fixture: true },
+        });
+      }
+      tenant.recordInventoryLedgerEffects([
+        {
+          sourceEventKey: "mainnet:funding-1",
+          runId: "live-run-1",
+          configVersion: 1,
+          accountId: "42",
+          marketId: "0x1",
+          timestampMs: fillAtMs + 60_000,
+          kind: "funding",
+          fundingUsd: "1.25",
+          gasUsedMist: null,
+          gasUsd: null,
+          externalTransferUsd: null,
+          source: "fixture-live-funding",
+          network: "mainnet",
+          coverage: "complete",
+          raw: { fixture: true },
+        },
+      ]);
+      tenant.recordInventoryLedgerEffects([
+        {
+          sourceEventKey: "mainnet:other-run-funding",
+          runId: "live-run-other",
+          configVersion: 2,
+          accountId: "42",
+          marketId: "0x1",
+          timestampMs: fillAtMs + 60_000,
+          kind: "funding",
+          fundingUsd: "999",
+          gasUsedMist: null,
+          gasUsd: null,
+          externalTransferUsd: null,
+          source: "fixture-live-funding",
+          network: "mainnet",
+          coverage: "complete",
+          raw: { fixture: true },
+        },
+      ]);
+      vi.setSystemTime(fillAtMs + 1);
+      tenant.logExecution({
+        mode: "live",
+        marketId: "0x1",
+        bidPrice: 100,
+        askPrice: 101,
+        sizeUsd: 200,
+        outcome: "confirmed",
+        gasUsedMist: 2_000_000,
+        suiUsd: 3,
+      });
+      vi.setSystemTime(asOfMs);
+      return { h, core };
+    };
+
+    vi.useFakeTimers();
+    const complete = await seed(true);
+    const completeResponse = await complete.h.app.inject({
+      method: "GET",
+      url: `/api/strategies/${complete.core.strategyId}/results`,
+      headers: complete.h.signedInAs(),
+    });
+    expect(completeResponse.statusCode).toBe(200);
+    const completeEvidence = completeResponse.json().results.liveEvidence;
+    expect(completeEvidence.fills).toHaveLength(1);
+    expect(completeEvidence).toMatchObject({
+      asOfMs,
+      fundingUsd: 1.25,
+      gasUsd: 0.006,
+      netFundingAfterGasUsd: 1.244,
+      gaps: [],
+      fills: [
+        {
+          fillId: "mainnet:fill-1:0",
+          markouts: [
+            { horizonMs: 60_000, coverage: "complete", markoutUsd: 2 },
+            { horizonMs: 300_000, coverage: "complete", markoutUsd: 4 },
+            { horizonMs: 1_800_000, coverage: "complete", markoutUsd: 6 },
+            { horizonMs: 3_600_000, coverage: "complete", markoutUsd: 8 },
+          ],
+        },
+      ],
+    });
+    await complete.h.close();
+
+    const missing = await seed(false);
+    const missingResponse = await missing.h.app.inject({
+      method: "GET",
+      url: `/api/strategies/${missing.core.strategyId}/results`,
+      headers: missing.h.signedInAs(),
+    });
+    expect(missingResponse.statusCode).toBe(200);
+    const missingEvidence = missingResponse.json().results.liveEvidence;
+    expect(missingEvidence.fills[0].markouts[1]).toMatchObject({
+      horizonMs: 300_000,
+      markoutUsd: null,
+      coverage: "unavailable",
+      reason: "reference arrived after freshness window",
+    });
+    expect(missingEvidence.gaps).toContain(
+      "Live markout for fill mainnet:fill-1:0 at 300000ms is unavailable: reference arrived after freshness window.",
+    );
+    await missing.h.close();
+  });
+
   it("reports the Paper trading result with fees, priced gas and named gaps", async () => {
     const h = await appHarness();
     const tenant = h.store.forTenant(OWNER);
