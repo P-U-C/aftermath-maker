@@ -17,7 +17,6 @@ const COHORT = {
   accountId: "paper-maker",
   marketId: "ETH-USDC",
   configVersion: 1,
-  source: "paper",
   network: "paper",
   windowStartAtMs: FILL_AT_MS,
 } as const;
@@ -44,7 +43,7 @@ function fill(overrides: Partial<AttributedFill> = {}): AttributedFill {
     realizedPnlUsd: "1.50",
     counterpartyClass: "verified_other_parent",
     classificationEvidence: ["paper-parent-proof"],
-    source: "paper",
+    source: "paper-fill-ledger",
     network: "paper",
     coverage: "complete",
     raw: {},
@@ -79,7 +78,7 @@ function markout(
               : "100.00",
     observedAtMs: FILL_AT_MS + horizonMs,
     markoutUsd,
-    source: "paper",
+    source: "paper-index-reference",
     network: "paper",
     coverage: "complete",
     raw: {},
@@ -103,7 +102,7 @@ function effect(
     gasUsedMist: kind === "gas" ? "500000" : null,
     gasUsd: kind === "gas" ? "0.05" : null,
     externalTransferUsd: kind === "transfer" ? "999999.99" : null,
-    source: "paper",
+    source: "paper-effect-ledger",
     network: "paper",
     coverage: "complete",
     raw: {},
@@ -115,6 +114,7 @@ function completeEvidence(
   overrides: Partial<PaperProfitabilityEvidenceInput> = {},
 ): PaperProfitabilityEvidenceInput {
   return {
+    mode: "paper",
     cohort: COHORT,
     asOfMs: AS_OF_MS,
     minimumSampleSize: 1,
@@ -132,9 +132,11 @@ function completeEvidence(
       accountId: "paper-maker",
       marketId: "ETH-USDC",
       configVersion: 1,
+      windowStartAtMs: FILL_AT_MS,
+      throughAtMs: FILL_AT_MS,
       observedAtMs: AS_OF_MS - 1,
       makerCreditUsd: "0.20",
-      source: "paper",
+      source: "paper-credit-ledger",
       network: "paper",
       coverage: "complete",
     },
@@ -144,9 +146,11 @@ function completeEvidence(
       accountId: "paper-maker",
       marketId: "ETH-USDC",
       configVersion: 1,
+      windowStartAtMs: FILL_AT_MS,
+      throughAtMs: FILL_AT_MS,
       observedAtMs: AS_OF_MS - 1,
       hedgeAndUnwindNetUsd: "-0.15",
-      source: "paper",
+      source: "paper-hedge-ledger",
       network: "paper",
       coverage: "complete",
     },
@@ -168,6 +172,10 @@ function expectUnavailable(
 }
 
 describe("Paper profitability source-evidence adapter", () => {
+  it("requires the explicit Paper mode discriminator", () => {
+    expectUnavailable(completeEvidence({ mode: "live" }), "mode_not_paper");
+  });
+
   it("decomposes complete source-aware Paper evidence at the exact minimum boundary", () => {
     const result = decomposePaperProfitabilityEvidence(completeEvidence());
 
@@ -355,28 +363,107 @@ describe("Paper profitability source-evidence adapter", () => {
     );
   });
 
-  it("binds every record to the Paper cohort and rejects foreign evidence", () => {
-    expectUnavailable(
-      completeEvidence({
-        fills: [fill({ network: "mainnet" })],
-      }),
-      "evidence_attribution_mismatch",
-    );
-    expectUnavailable(
-      completeEvidence({
-        effects: [effect("funding", { runId: "foreign-run" }), effect("gas")],
-      }),
-      "evidence_attribution_mismatch",
-    );
-    expectUnavailable(
-      completeEvidence({
-        makerCredit: {
-          ...completeEvidence().makerCredit!,
-          network: "mainnet",
-        },
-      }),
-      "evidence_attribution_mismatch",
-    );
+  it("binds fill identity to run/account/market/config/network, not source", () => {
+    for (const mutation of [
+      { runId: "foreign-run" },
+      { accountId: "foreign-account" },
+      { marketId: "BTC-USDC" },
+      { configVersion: 2 },
+      { network: "mainnet" },
+    ] satisfies Array<Partial<AttributedFill>>) {
+      expectUnavailable(
+        completeEvidence({ fills: [fill(mutation)] }),
+        "evidence_attribution_mismatch",
+      );
+    }
+
+    expect(
+      decomposePaperProfitabilityEvidence(
+        completeEvidence({
+          fills: [fill({ source: "independent-fill-source" })],
+        }),
+      ).status,
+    ).toBe("positive");
+  });
+
+  it("binds hedge and maker-credit receipts to the cohort identity", () => {
+    const fixture = completeEvidence();
+    for (const mutation of [
+      { runId: "foreign-run" },
+      { accountId: "foreign-account" },
+      { marketId: "BTC-USDC" },
+      { configVersion: 2 },
+      { network: "mainnet" },
+    ]) {
+      expectUnavailable(
+        completeEvidence({
+          hedgeAndUnwind: { ...fixture.hedgeAndUnwind!, ...mutation },
+        }),
+        "evidence_attribution_mismatch",
+      );
+      expectUnavailable(
+        completeEvidence({
+          makerCredit: { ...fixture.makerCredit!, ...mutation },
+        }),
+        "evidence_attribution_mismatch",
+      );
+    }
+  });
+
+  it("binds markouts through their fill plus run/market/network identity", () => {
+    const fixture = completeEvidence();
+    for (const mutation of [
+      { runId: "foreign-run" },
+      { marketId: "BTC-USDC" },
+      { network: "mainnet" },
+      { orderKey: "foreign-order" },
+    ] satisfies Array<Partial<InventoryPaperMarkoutObservation>>) {
+      expectUnavailable(
+        completeEvidence({
+          markouts: fixture.markouts.map((observation, index) =>
+            index === 0 ? { ...observation, ...mutation } : observation,
+          ),
+        }),
+        mutation.orderKey === undefined
+          ? "evidence_attribution_mismatch"
+          : "unmatched_markout",
+      );
+    }
+  });
+
+  it("binds funding and gas effects to exact cohort allocation", () => {
+    for (const mutation of [
+      { runId: "foreign-run" },
+      { accountId: "foreign-account" },
+      { marketId: "BTC-USDC" },
+      { marketId: null },
+      { configVersion: 2 },
+      { network: "mainnet" },
+    ] satisfies Array<Partial<InventoryLedgerEffect>>) {
+      expectUnavailable(
+        completeEvidence({
+          effects: [effect("funding", mutation), effect("gas")],
+        }),
+        "evidence_attribution_mismatch",
+      );
+      expectUnavailable(
+        completeEvidence({
+          effects: [effect("funding"), effect("gas", mutation)],
+        }),
+        "evidence_attribution_mismatch",
+      );
+    }
+
+    expect(
+      decomposePaperProfitabilityEvidence(
+        completeEvidence({
+          effects: [
+            effect("funding", { source: "funding-source" }),
+            effect("gas", { source: "gas-source" }),
+          ],
+        }),
+      ).status,
+    ).toBe("positive");
   });
 
   it("recomputes markouts from the retained fill and reference identity", () => {
@@ -429,6 +516,47 @@ describe("Paper profitability source-evidence adapter", () => {
         },
       }),
       "evidence_outside_window",
+    );
+  });
+
+  it("requires aggregate receipts to cover the cohort through the latest fill", () => {
+    const fixture = completeEvidence();
+    for (const makerCredit of [
+      { ...fixture.makerCredit!, observedAtMs: FILL_AT_MS - 1 },
+      { ...fixture.makerCredit!, throughAtMs: FILL_AT_MS - 1 },
+    ]) {
+      expectUnavailable(
+        completeEvidence({ makerCredit }),
+        "aggregate_receipt_stale",
+      );
+    }
+    expectUnavailable(
+      completeEvidence({
+        makerCredit: {
+          ...fixture.makerCredit!,
+          windowStartAtMs: FILL_AT_MS - 1,
+        },
+      }),
+      "aggregate_receipt_window_mismatch",
+    );
+    expectUnavailable(
+      completeEvidence({
+        hedgeAndUnwind: {
+          ...fixture.hedgeAndUnwind!,
+          throughAtMs: FILL_AT_MS - 1,
+        },
+      }),
+      "aggregate_receipt_stale",
+    );
+    expectUnavailable(
+      completeEvidence({
+        hedgeAndUnwind: {
+          ...fixture.hedgeAndUnwind!,
+          throughAtMs: AS_OF_MS,
+          observedAtMs: AS_OF_MS - 1,
+        },
+      }),
+      "aggregate_receipt_window_mismatch",
     );
   });
 

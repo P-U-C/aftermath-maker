@@ -13,6 +13,7 @@ import {
   type PaperProfitabilityInput,
   type PaperProfitabilityResult,
 } from "./paper-profitability.js";
+import type { RuntimeMode } from "./schema.js";
 
 type SourceAwareEvidence = Readonly<{
   sourceEventKey: string;
@@ -20,6 +21,10 @@ type SourceAwareEvidence = Readonly<{
   accountId: string;
   marketId: string;
   configVersion: number | null;
+  /** Aggregate coverage begins at this inclusive cohort timestamp. */
+  windowStartAtMs: number;
+  /** Aggregate coverage includes source records through this timestamp. */
+  throughAtMs: number;
   observedAtMs: number;
   source: string;
   network: string;
@@ -31,7 +36,6 @@ export type PaperProfitabilityEvidenceCohort = Readonly<{
   accountId: string;
   marketId: string;
   configVersion: number | null;
-  source: string;
   network: string;
   windowStartAtMs: number;
 }>;
@@ -48,6 +52,7 @@ export type PaperHedgeAndUnwindEvidence = SourceAwareEvidence &
   }>;
 
 export type PaperProfitabilityEvidenceInput = Readonly<{
+  mode: RuntimeMode;
   cohort: PaperProfitabilityEvidenceCohort;
   asOfMs: number;
   minimumSampleSize: number;
@@ -71,6 +76,7 @@ export type PaperProfitabilityEvidenceInput = Readonly<{
 }>;
 
 export type PaperProfitabilityEvidenceComponent =
+  | "mode"
   | "cohort"
   | "asOfMs"
   | "minimumSampleSize"
@@ -82,6 +88,7 @@ export type PaperProfitabilityEvidenceComponent =
   | "gas";
 
 export type PaperProfitabilityEvidenceGapReason =
+  | "mode_not_paper"
   | "invalid_cohort"
   | "invalid_as_of"
   | "evidence_attribution_mismatch"
@@ -125,6 +132,8 @@ export type PaperProfitabilityEvidenceGapReason =
   | "hedge_and_unwind_coverage_incomplete"
   | "missing_hedge_and_unwind_amount"
   | "future_hedge_and_unwind_evidence"
+  | "aggregate_receipt_stale"
+  | "aggregate_receipt_window_mismatch"
   | "missing_funding_evidence"
   | "funding_coverage_incomplete"
   | "missing_funding_amount"
@@ -229,7 +238,6 @@ function validCohort(
     nonempty(cohort.runId) &&
     nonempty(cohort.accountId) &&
     nonempty(cohort.marketId) &&
-    nonempty(cohort.source) &&
     nonempty(cohort.network) &&
     (cohort.configVersion === null ||
       (Number.isSafeInteger(cohort.configVersion) &&
@@ -243,7 +251,7 @@ function validCohort(
 function matchesCohort(
   evidence: Pick<
     SourceAwareEvidence,
-    "runId" | "accountId" | "marketId" | "configVersion" | "source" | "network"
+    "runId" | "accountId" | "marketId" | "configVersion" | "network"
   >,
   cohort: PaperProfitabilityEvidenceCohort,
 ): boolean {
@@ -252,7 +260,6 @@ function matchesCohort(
     evidence.accountId === cohort.accountId &&
     evidence.marketId === cohort.marketId &&
     evidence.configVersion === cohort.configVersion &&
-    evidence.source === cohort.source &&
     evidence.network === cohort.network
   );
 }
@@ -295,10 +302,36 @@ function invalidSourceEvidence(evidence: SourceAwareEvidence): boolean {
     (evidence.configVersion !== null &&
       (!Number.isSafeInteger(evidence.configVersion) ||
         evidence.configVersion < 0)) ||
+    !validTimestamp(evidence.windowStartAtMs) ||
+    !validTimestamp(evidence.throughAtMs) ||
     !nonempty(evidence.source) ||
     !nonempty(evidence.network) ||
     !validTimestamp(evidence.observedAtMs)
   );
+}
+
+function aggregateReceiptWindowGap(
+  evidence: SourceAwareEvidence,
+  cohort: PaperProfitabilityEvidenceCohort,
+  latestFillAtMs: number | null,
+  asOfMs: number,
+): "aggregate_receipt_stale" | "aggregate_receipt_window_mismatch" | null {
+  if (
+    latestFillAtMs !== null &&
+    (evidence.observedAtMs < latestFillAtMs ||
+      evidence.throughAtMs < latestFillAtMs)
+  ) {
+    return "aggregate_receipt_stale";
+  }
+  if (
+    evidence.windowStartAtMs !== cohort.windowStartAtMs ||
+    evidence.throughAtMs < evidence.windowStartAtMs ||
+    evidence.throughAtMs > evidence.observedAtMs ||
+    evidence.throughAtMs > asOfMs
+  ) {
+    return "aggregate_receipt_window_mismatch";
+  }
+  return null;
 }
 
 function collectTransferTotal(
@@ -336,6 +369,9 @@ export function decomposePaperProfitabilityEvidence(
   input: PaperProfitabilityEvidenceInput,
 ): PaperProfitabilityEvidenceResult {
   const evidenceGaps: PaperProfitabilityEvidenceGap[] = [];
+  if (input.mode !== "paper") {
+    evidenceGaps.push(gap("mode", "mode_not_paper"));
+  }
   const cohortIsValid = validCohort(input.cohort, input.asOfMs);
   if (!cohortIsValid) evidenceGaps.push(gap("cohort", "invalid_cohort"));
   const asOfIsValid = validTimestamp(input.asOfMs);
@@ -446,6 +482,12 @@ export function decomposePaperProfitabilityEvidence(
 
   const fillsAreAvailable =
     input.fills.length > 0 && evidenceGaps.length === fillGapStart;
+  const validFillTimestamps = input.fills
+    .map((fill) => fill.timestampMs)
+    .filter(validTimestamp);
+  const latestFillAtMs = validFillTimestamps.length
+    ? Math.max(...validFillTimestamps)
+    : null;
 
   const markoutGapStart = evidenceGaps.length;
   const markoutSourceKeys = new Set<string>();
@@ -489,7 +531,6 @@ export function decomposePaperProfitabilityEvidence(
       !nonempty(markout.network) ||
       markout.runId !== input.cohort.runId ||
       markout.marketId !== input.cohort.marketId ||
-      markout.source !== input.cohort.source ||
       markout.network !== input.cohort.network
     ) {
       evidenceGaps.push(
@@ -685,6 +726,22 @@ export function decomposePaperProfitabilityEvidence(
       );
     }
     if (
+      asOfIsValid &&
+      validTimestamp(input.makerCredit.windowStartAtMs) &&
+      validTimestamp(input.makerCredit.throughAtMs) &&
+      validTimestamp(input.makerCredit.observedAtMs)
+    ) {
+      const windowGap = aggregateReceiptWindowGap(
+        input.makerCredit,
+        input.cohort,
+        latestFillAtMs,
+        input.asOfMs,
+      );
+      if (windowGap !== null) {
+        evidenceGaps.push(gap("makerCredit", windowGap, details));
+      }
+    }
+    if (
       validTimestamp(input.makerCredit.observedAtMs) &&
       input.makerCredit.observedAtMs < input.cohort.windowStartAtMs
     ) {
@@ -734,6 +791,22 @@ export function decomposePaperProfitabilityEvidence(
       evidenceGaps.push(
         gap("hedgeAndUnwind", "future_hedge_and_unwind_evidence", details),
       );
+    }
+    if (
+      asOfIsValid &&
+      validTimestamp(input.hedgeAndUnwind.windowStartAtMs) &&
+      validTimestamp(input.hedgeAndUnwind.throughAtMs) &&
+      validTimestamp(input.hedgeAndUnwind.observedAtMs)
+    ) {
+      const windowGap = aggregateReceiptWindowGap(
+        input.hedgeAndUnwind,
+        input.cohort,
+        latestFillAtMs,
+        input.asOfMs,
+      );
+      if (windowGap !== null) {
+        evidenceGaps.push(gap("hedgeAndUnwind", windowGap, details));
+      }
     }
     if (
       validTimestamp(input.hedgeAndUnwind.observedAtMs) &&
@@ -803,9 +876,10 @@ export function decomposePaperProfitabilityEvidence(
     if (
       effect.runId !== input.cohort.runId ||
       effect.accountId !== input.cohort.accountId ||
-      (effect.marketId !== null && effect.marketId !== input.cohort.marketId) ||
+      effect.marketId !== input.cohort.marketId ||
       effect.configVersion !== input.cohort.configVersion ||
-      effect.source !== input.cohort.source ||
+      !nonempty(effect.source) ||
+      !nonempty(effect.network) ||
       effect.network !== input.cohort.network
     ) {
       evidenceGaps.push(
