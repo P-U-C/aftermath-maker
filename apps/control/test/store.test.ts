@@ -18,6 +18,132 @@ import {
 import { Store } from "../src/store.js";
 
 describe("persistent control store", () => {
+  it("persists a structural Atomic rejection across restart and holds a matching cancellation", () => {
+    const directory = join(
+      process.env.TMPDIR ?? "/tmp",
+      `aftermath-maker-${randomBytes(8).toString("hex")}`,
+    );
+    mkdirSync(directory, { recursive: true });
+    const path = join(directory, "maker.db");
+    const owner = `0x${"c".repeat(64)}`;
+    const initial = new Store(path);
+    const tenant = initial.forTenant(owner);
+    tenant.setConfig(
+      makerConfigSchema.parse({
+        makerAccountId: "155",
+        markets: [{ marketId: "0x155", symbol: "ATOMIC" }],
+      }),
+    );
+    const core = tenant.listBundles().find((bundle) => bundle.name === "Core")!;
+    const basketStore = initial.forBundle(owner, core.id);
+    const created = createAtomicBasketState({
+      basketId: "basket-structural-rejection-155",
+      reservationId: "reservation-structural-rejection-155",
+      slices: [
+        { sliceId: "slice-one", legIds: ["leg-one"] },
+        { sliceId: "slice-two", legIds: ["leg-two"] },
+      ],
+    });
+    const reconciled = applyAtomicBasketEvents(created, [
+      {
+        kind: "BASKET_RECONCILIATION" as const,
+        eventId: "complete-reconciliation-155",
+        sourceTime: 1,
+        basketId: created.basketId,
+        slices: [
+          {
+            sliceId: "slice-one",
+            legs: [{ legId: "leg-one", status: "complete" as const }],
+          },
+          {
+            sliceId: "slice-two",
+            legs: [{ legId: "leg-two", status: "complete" as const }],
+          },
+        ],
+      },
+    ]);
+    expect(reconciled).toMatchObject({
+      reservation: "RELEASED",
+      status: "RECONCILED",
+      persistentRejectionReasons: [],
+    });
+
+    // This is valid-shaped evidence with a reused ID but different payload.
+    // It cannot be replayed, so its fail-closed reason must survive separately.
+    const structurallyRejected = applyAtomicBasketEvents(reconciled, [
+      {
+        kind: "BASKET_RECONCILIATION" as const,
+        eventId: "complete-reconciliation-155",
+        sourceTime: 2,
+        basketId: created.basketId,
+        slices: [],
+      },
+    ]);
+    expect(structurallyRejected).toMatchObject({
+      reservation: "RESERVED",
+      status: "RECONCILIATION_REQUIRED",
+      persistentRejectionReasons: [
+        "event-id-collision:complete-reconciliation-155",
+      ],
+    });
+    basketStore.savePaperAtomicBasket({
+      trialId: "trial-structural-rejection-155",
+      state: structurallyRejected,
+    });
+    initial.close();
+
+    const reopened = new Store(path);
+    const reopenedBasketStore = reopened.forBundle(owner, core.id);
+    const restored = reopenedBasketStore.getPaperAtomicBasket({
+      trialId: "trial-structural-rejection-155",
+      basketId: created.basketId,
+    });
+    expect(restored).toMatchObject({
+      reservation: "RESERVED",
+      status: "RECONCILIATION_REQUIRED",
+      persistentRejectionReasons: [
+        "event-id-collision:complete-reconciliation-155",
+      ],
+    });
+
+    const heldAfterMatchingCancellation = applyAtomicBasketEvents(restored!, [
+      {
+        kind: "CANCEL_CONFIRMED" as const,
+        eventId: "matching-cancel-structural-rejection-155",
+        sourceTime: 3,
+        basketId: created.basketId,
+        reservationId: created.basket.reservationId,
+      },
+    ]);
+    expect(heldAfterMatchingCancellation).toMatchObject({
+      reservation: "RESERVED",
+      status: "RECONCILIATION_REQUIRED",
+      persistentRejectionReasons: [
+        "event-id-collision:complete-reconciliation-155",
+      ],
+    });
+    reopenedBasketStore.savePaperAtomicBasket({
+      trialId: "trial-structural-rejection-155",
+      state: heldAfterMatchingCancellation,
+    });
+    reopened.close();
+
+    const finalReopen = new Store(path);
+    expect(
+      finalReopen.forBundle(owner, core.id).getPaperAtomicBasket({
+        trialId: "trial-structural-rejection-155",
+        basketId: created.basketId,
+      }),
+    ).toMatchObject({
+      reservation: "RESERVED",
+      status: "RECONCILIATION_REQUIRED",
+      persistentRejectionReasons: [
+        "event-id-collision:complete-reconciliation-155",
+      ],
+    });
+    finalReopen.close();
+  });
+
   it("persists a Paper Atomic basket checkpoint across restart and releases only its matching cancellation", () => {
     const directory = join(
       process.env.TMPDIR ?? "/tmp",
