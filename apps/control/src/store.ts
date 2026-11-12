@@ -6111,6 +6111,8 @@ export class TenantStore {
   }
 
   logExecution(inputs: {
+    /** Captured immediately before a Live dispatch; never re-resolve at receipt time. */
+    attachmentRunId?: string | null;
     mode: string;
     marketId: string;
     digest?: string;
@@ -6124,7 +6126,10 @@ export class TenantStore {
     suiUsd?: number | null;
   }): void {
     const bundleId = this.attributedBundleId();
-    const runId = this.activeStrategyAttachmentRunId();
+    const runId =
+      inputs.attachmentRunId === undefined
+        ? this.activeStrategyAttachmentRunId()
+        : inputs.attachmentRunId;
     this.db
       .prepare(
         `INSERT INTO tenant_executions
@@ -6869,6 +6874,8 @@ export class TenantStore {
   }
 
   recordHedgeExecution(inputs: {
+    /** Captured immediately before the hedge dispatch. */
+    attachmentRunId?: string | null;
     makerAccountId: string;
     hedgeAccountId: string;
     marketId: string;
@@ -6881,7 +6888,10 @@ export class TenantStore {
   }): void {
     const occurredAt = new Date().toISOString();
     const bundleId = this.attributedBundleId();
-    const runId = this.activeStrategyAttachmentRunId();
+    const runId =
+      inputs.attachmentRunId === undefined
+        ? this.activeStrategyAttachmentRunId()
+        : inputs.attachmentRunId;
     this.db.transaction(() => {
       this.db
         .prepare(

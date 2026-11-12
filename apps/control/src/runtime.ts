@@ -1182,6 +1182,7 @@ export class MakerRuntime {
     const retryDelayMs = Math.max(0, options.retryDelayMs ?? 0);
     for (let attempt = 1; attempt <= attempts; attempt += 1) {
       try {
+        const attachmentRunId = this.store.activeStrategyAttachmentRunId();
         const receipt = await this.gateway.cancelMakerOrders({
           setup,
           marketIds:
@@ -1190,7 +1191,12 @@ export class MakerRuntime {
           signer,
           config,
         });
-        if (receipt) this.logCancelGas(receipt, options.marketIds ?? null);
+        if (receipt)
+          this.logCancelGas(
+            receipt,
+            options.marketIds ?? null,
+            attachmentRunId,
+          );
         if (receipt || attempt === attempts) {
           this.store.logEvent({
             category: "runtime",
@@ -1351,6 +1357,7 @@ export class MakerRuntime {
     });
     const transactions: FlattenResult["transactions"] = [];
     for (const account of accounts) {
+      const attachmentRunId = this.store.activeStrategyAttachmentRunId();
       const receipt = await this.gateway.flattenPositions({
         setup: account,
         config,
@@ -1369,6 +1376,7 @@ export class MakerRuntime {
         ...(residualMarketIds.length ? { residualMarketIds } : {}),
       });
       this.store.logExecution({
+        attachmentRunId,
         mode: "live",
         marketId: `portfolio:${account.accountId}`,
         digest: receipt.digest,
@@ -1895,6 +1903,7 @@ export class MakerRuntime {
     // the reduce-only sweep rather than treating the first indexed view as final.
     for (let pass = 1; pass <= 3; pass += 1) {
       for (const account of accounts) {
+        const attachmentRunId = this.store.activeStrategyAttachmentRunId();
         const receipt = await this.gateway.flattenPositions({
           setup: account,
           config: inputs.config,
@@ -1915,6 +1924,7 @@ export class MakerRuntime {
             : {}),
         });
         this.store.logExecution({
+          attachmentRunId,
           mode: "live",
           marketId: `portfolio:${account.accountId}`,
           digest: receipt.digest,
@@ -2260,6 +2270,7 @@ export class MakerRuntime {
       );
     }
 
+    const cancelAttachmentRunId = this.store.activeStrategyAttachmentRunId();
     const cancelReceipt = await this.gateway.cancelMakerOrders({
       setup: inputs.makerSetup,
       marketIds: [inputs.selected.marketId],
@@ -2267,7 +2278,11 @@ export class MakerRuntime {
       config: inputs.marketConfig,
     });
     if (cancelReceipt)
-      this.logCancelGas(cancelReceipt, [inputs.selected.marketId]);
+      this.logCancelGas(
+        cancelReceipt,
+        [inputs.selected.marketId],
+        cancelAttachmentRunId,
+      );
     if (this.activeQuoteMarketId === inputs.selected.marketId) {
       this.clearActiveQuoteState();
     }
@@ -2368,6 +2383,7 @@ export class MakerRuntime {
       Math.sign(currentCombinedDeltaUsd) *
       Math.min(Math.abs(currentCombinedDeltaUsd), Math.abs(pendingDeltaUsd));
     this.snapshotValue.hedge.state = "hedging";
+    const hedgeAttachmentRunId = this.store.activeStrategyAttachmentRunId();
     const receipt = await this.gateway.executeHedge({
       setup: hedgeAccount,
       config: inputs.marketConfig,
@@ -2443,6 +2459,7 @@ export class MakerRuntime {
     const progressUsd =
       Math.abs(currentCombinedDeltaUsd) - Math.abs(actualCombinedDeltaUsd);
     this.store.recordHedgeExecution({
+      attachmentRunId: hedgeAttachmentRunId,
       makerAccountId: inputs.makerSetup.accountId,
       hedgeAccountId: hedgeAccount.accountId,
       marketId: inputs.selected.marketId,
@@ -2760,8 +2777,10 @@ export class MakerRuntime {
   private logCancelGas(
     receipt: { digest: string; endpoint: string; gasUsedMist: number },
     marketIds: string[] | null,
+    attachmentRunId: string | null,
   ): void {
     this.store.logExecution({
+      attachmentRunId,
       mode: "live",
       marketId: marketIds?.length === 1 ? marketIds[0]! : "*",
       digest: receipt.digest,
@@ -4460,6 +4479,7 @@ export class MakerRuntime {
           )
             accounts.push(hedgeSetup);
           for (const unwindSetup of accounts) {
+            const attachmentRunId = this.store.activeStrategyAttachmentRunId();
             const receipt = await this.gateway.flattenPositions({
               setup: unwindSetup,
               config,
@@ -4469,6 +4489,7 @@ export class MakerRuntime {
             });
             if (!receipt) continue;
             this.store.logExecution({
+              attachmentRunId,
               mode: "live",
               marketId: largest.marketId,
               digest: receipt.digest,
@@ -4618,6 +4639,7 @@ export class MakerRuntime {
       // Require a fresh account read on a later cycle before reporting them.
       this.snapshotValue.restingQuoteMarketIds = [];
       this.snapshotValue.restingQuoteVerifiedAt = null;
+      const quoteAttachmentRunId = this.store.activeStrategyAttachmentRunId();
       let receipt: Awaited<ReturnType<AftermathGateway["executeQuote"]>>;
       try {
         receipt = await this.gateway.executeQuote({
@@ -4671,6 +4693,7 @@ export class MakerRuntime {
         return;
       }
       this.store.logExecution({
+        attachmentRunId: quoteAttachmentRunId,
         mode: "live",
         marketId: selected.marketId,
         digest: receipt.digest,

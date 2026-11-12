@@ -361,6 +361,65 @@ afterEach(() => {
 });
 
 describe("runtime execution boundaries", () => {
+  it("keeps a delayed Live quote receipt on the run captured before reattachment", async () => {
+    const harness = createHarness();
+    const core = harness.tenant
+      .listBundles()
+      .find((bundle) => bundle.name === "Core")!;
+    const firstAttachment = harness.tenant.listStrategyAttachments(
+      core.strategyId!,
+    )[0]!;
+    let dispatchStarted!: () => void;
+    const dispatched = new Promise<void>((resolve) => {
+      dispatchStarted = resolve;
+    });
+    let releaseReceipt!: () => void;
+    const receiptDeferred = new Promise<void>((resolve) => {
+      releaseReceipt = resolve;
+    });
+    const executeQuote = harness.gateway.executeQuote.bind(harness.gateway);
+    harness.gateway.executeQuote = async (inputs) => {
+      dispatchStarted();
+      await receiptDeferred;
+      return executeQuote(inputs);
+    };
+
+    harness.runtime.start();
+    await dispatched;
+    const cycle = (
+      harness.runtime as unknown as { cyclePromise: Promise<void> }
+    ).cyclePromise;
+    const config = harness.tenant.getConfig()!;
+    harness.tenant.setConfig({
+      ...config,
+      quoteSizeUsd: config.quoteSizeUsd + 1,
+    });
+    const secondAttachment = harness.tenant
+      .listStrategyAttachments(core.strategyId!)
+      .at(-1)!;
+    expect(secondAttachment.runId).not.toBe(firstAttachment.runId);
+
+    releaseReceipt();
+    await cycle;
+
+    const database = (harness.store as unknown as { db: Database.Database }).db;
+    const row = database
+      .prepare(
+        `SELECT run_id FROM tenant_executions
+         WHERE owner_address = ? AND digest = 'digest-1'`,
+      )
+      .get(harness.tenant.ownerAddress) as { run_id: string | null };
+    expect(row.run_id).toBe(firstAttachment.runId);
+    expect(
+      harness.tenant.listStrategyGas(firstAttachment, "live"),
+    ).toContainEqual({ gasUsedMist: 20, suiUsd: null });
+    expect(harness.tenant.listStrategyGas(secondAttachment, "live")).toEqual(
+      [],
+    );
+    await harness.runtime.stop();
+    harness.store.close();
+  });
+
   it("writes runtime gas under distinct attachment runs after reattachment", async () => {
     const harness = createHarness();
     const core = harness.tenant
