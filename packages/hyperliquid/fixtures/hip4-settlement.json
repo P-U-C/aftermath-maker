@@ -1,0 +1,27 @@
+{
+  "fixture": "Recorded HIP-4 settlement evidence. Timestamps are canonical Unix milliseconds. A selection requires the exact market identity, a source pinned by digest, nonempty pinned settlement rules, a completed observation window, and an expiry strictly after the caller's as-of boundary.",
+  "market": {
+    "venue": "hyperliquid",
+    "kind": "hip4",
+    "name": "xyz:TEST-2025-01-31",
+    "assetId": 1042
+  },
+  "observedAtMs": 1735689600000,
+  "observationWindow": {
+    "startMs": 1735603200000,
+    "endMs": 1735689600000
+  },
+  "settlement": {
+    "source": {
+      "id": "recorded-index-snapshot",
+      "uri": "https://evidence.example.invalid/hip4/xyz-test-2025-01-31.json",
+      "pinnedDigest": "sha256:2d27d863d66a7b7c7ec14a28b9f38f7a75ddcf75b30e4d0c74b5f53aa5432c97"
+    },
+    "rules": {
+      "version": "hip4-settlement-v1",
+      "pinnedDigest": "sha256:ae4476d21be22c474d07440a8c37f614dfb0b8ea78c11f1292caeab4d7365dd7",
+      "text": "Settlement uses the recorded index snapshot at the completed observation window end."
+    },
+    "expiryMs": 1735776000000
+  }
+}
