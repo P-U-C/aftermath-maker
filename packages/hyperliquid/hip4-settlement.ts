@@ -38,11 +38,13 @@ export type Hip4MarketIdentity = {
 type PinnedSettlementSource = {
   id: string;
   uri: string;
+  payload: string;
   pinnedDigest: string;
 };
 
 type PinnedSettlementRules = {
   version: string;
+  payload: string;
   pinnedDigest: string;
   text: string;
 };
@@ -56,7 +58,6 @@ type ParseResult<T> =
 type ParseProblem = Exclude<ParseResult<never>["kind"], "value">;
 
 const canonicalUnixMillisecondsMinimum = 1_000_000_000_000;
-const sha256DigestPattern = /^sha256:[a-f0-9]{64}$/;
 
 /**
  * Selects a recorded settlement only when it exactly matches the requested
@@ -89,12 +90,9 @@ export function selectRecordedHip4Settlement(
   }
 
   const window = parseObservationWindow(observationWindow.value);
-  const parsedSettlement = parseSettlement(settlement.value);
-  const parsed = [window, parsedSettlement];
-  if (window.kind !== "value" || parsedSettlement.kind !== "value") {
-    return unavailable(firstProblem(parsed) ?? "malformed");
+  if (window.kind !== "value") {
+    return unavailable(window.kind);
   }
-
   if (
     observedAtMs.value > parsedRequest.value.asOfMs ||
     window.value.startMs > parsedRequest.value.asOfMs ||
@@ -107,6 +105,15 @@ export function selectRecordedHip4Settlement(
     window.value.startMs >= window.value.endMs
   ) {
     return unavailable("malformed");
+  }
+  const parsedSettlement = parseSettlement(
+    settlement.value,
+    market.value,
+    observedAtMs.value,
+    window.value,
+  );
+  if (parsedSettlement.kind !== "value") {
+    return unavailable(parsedSettlement.kind);
   }
   if (parsedSettlement.value.expiryMs <= parsedRequest.value.asOfMs) {
     return unavailable("expired");
@@ -150,7 +157,12 @@ function parseObservationWindow(
   };
 }
 
-function parseSettlement(value: RecordValue): ParseResult<{
+function parseSettlement(
+  value: RecordValue,
+  market: Hip4MarketIdentity,
+  observedAtMs: number,
+  observationWindow: { startMs: number; endMs: number },
+): ParseResult<{
   source: PinnedSettlementSource;
   rules: PinnedSettlementRules;
   expiryMs: number;
@@ -166,7 +178,12 @@ function parseSettlement(value: RecordValue): ParseResult<{
     return failed(firstProblem([source, rules, expiryMs]) ?? "malformed");
   }
 
-  const parsedSource = parsePinnedSource(source.value);
+  const parsedSource = parsePinnedSource(
+    source.value,
+    market,
+    observedAtMs,
+    observationWindow,
+  );
   const parsedRules = parsePinnedRules(rules.value);
   if (parsedSource.kind !== "value" || parsedRules.kind !== "value") {
     return failed(firstProblem([parsedSource, parsedRules]) ?? "malformed");
@@ -183,23 +200,44 @@ function parseSettlement(value: RecordValue): ParseResult<{
 
 function parsePinnedSource(
   value: RecordValue,
+  market: Hip4MarketIdentity,
+  observedAtMs: number,
+  observationWindow: { startMs: number; endMs: number },
 ): ParseResult<PinnedSettlementSource> {
   const id = requiredString(value, "id");
   const uri = requiredString(value, "uri");
+  const payload = requiredString(value, "payload");
   const pinnedDigest = requiredPin(value, "pinnedDigest");
   if (
     id.kind !== "value" ||
     uri.kind !== "value" ||
+    payload.kind !== "value" ||
     pinnedDigest.kind !== "value"
   ) {
-    return failed(firstProblem([id, uri, pinnedDigest]) ?? "malformed");
+    return failed(
+      firstProblem([id, uri, payload, pinnedDigest]) ?? "malformed",
+    );
   }
-  if (!sha256DigestPattern.test(pinnedDigest.value)) {
+  const expectedPayload = canonicalSourcePayload(
+    market,
+    observedAtMs,
+    observationWindow,
+    { id: id.value, uri: uri.value },
+  );
+  if (
+    payload.value !== expectedPayload ||
+    pinnedDigest.value !== sha256Digest(payload.value)
+  ) {
     return failed("unpinned");
   }
   return {
     kind: "value",
-    value: { id: id.value, uri: uri.value, pinnedDigest: pinnedDigest.value },
+    value: {
+      id: id.value,
+      uri: uri.value,
+      payload: payload.value,
+      pinnedDigest: pinnedDigest.value,
+    },
   };
 }
 
@@ -207,22 +245,30 @@ function parsePinnedRules(
   value: RecordValue,
 ): ParseResult<PinnedSettlementRules> {
   const version = requiredString(value, "version");
+  const payload = requiredString(value, "payload");
   const pinnedDigest = requiredPin(value, "pinnedDigest");
   const text = requiredString(value, "text");
   if (
     version.kind !== "value" ||
+    payload.kind !== "value" ||
     pinnedDigest.kind !== "value" ||
     text.kind !== "value"
   ) {
-    return failed(firstProblem([version, pinnedDigest, text]) ?? "malformed");
+    return failed(
+      firstProblem([version, payload, pinnedDigest, text]) ?? "malformed",
+    );
   }
-  if (!sha256DigestPattern.test(pinnedDigest.value)) {
+  if (
+    payload.value !== canonicalRulesPayload(version.value, text.value) ||
+    pinnedDigest.value !== sha256Digest(payload.value)
+  ) {
     return failed("unpinned");
   }
   return {
     kind: "value",
     value: {
       version: version.value,
+      payload: payload.value,
       pinnedDigest: pinnedDigest.value,
       text: text.value,
     },
@@ -342,6 +388,23 @@ function isPositiveSafeInteger(value: unknown): value is number {
   return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
 }
 
+function canonicalSourcePayload(
+  market: Hip4MarketIdentity,
+  observedAtMs: number,
+  observationWindow: { startMs: number; endMs: number },
+  source: { id: string; uri: string },
+): string {
+  return JSON.stringify({ market, observedAtMs, observationWindow, source });
+}
+
+function canonicalRulesPayload(version: string, text: string): string {
+  return JSON.stringify({ version, text });
+}
+
+function sha256Digest(payload: string): string {
+  return `sha256:${createHash("sha256").update(payload, "utf8").digest("hex")}`;
+}
+
 function firstProblem(
   values: ParseResult<unknown>[],
 ): ParseProblem | undefined {
@@ -367,3 +430,4 @@ function unavailable(
     return { status: "unavailable", reason: "unpinned-settlement" };
   return { status: "unavailable", reason: `${kind}-field` };
 }
+import { createHash } from "node:crypto";

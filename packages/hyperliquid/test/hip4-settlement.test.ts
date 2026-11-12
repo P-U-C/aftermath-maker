@@ -26,13 +26,17 @@ describe("recorded HIP-4 settlement selector", () => {
         source: {
           id: "recorded-index-snapshot",
           uri: "https://evidence.example.invalid/hip4/xyz-test-2025-01-31.json",
+          payload:
+            '{"market":{"venue":"hyperliquid","kind":"hip4","name":"xyz:TEST-2025-01-31","assetId":1042},"observedAtMs":1735689600000,"observationWindow":{"startMs":1735603200000,"endMs":1735689600000},"source":{"id":"recorded-index-snapshot","uri":"https://evidence.example.invalid/hip4/xyz-test-2025-01-31.json"}}',
           pinnedDigest:
-            "sha256:2d27d863d66a7b7c7ec14a28b9f38f7a75ddcf75b30e4d0c74b5f53aa5432c97",
+            "sha256:7a51983006f34501f60839b46b1674e7e6e6941bca32390ce3fbcba8ffbd29e4",
         },
         rules: {
           version: "hip4-settlement-v1",
+          payload:
+            '{"version":"hip4-settlement-v1","text":"Settlement uses the recorded index snapshot at the completed observation window end."}',
           pinnedDigest:
-            "sha256:ae4476d21be22c474d07440a8c37f614dfb0b8ea78c11f1292caeab4d7365dd7",
+            "sha256:21459e1d357328f5e5207afda1e5d77394f0fefe6c9401f59fe39893eecc89ec",
           text: "Settlement uses the recorded index snapshot at the completed observation window end.",
         },
         expiryMs: 1_735_776_000_000,
@@ -59,6 +63,82 @@ describe("recorded HIP-4 settlement selector", () => {
       status: "unavailable",
       reason: "missing-field",
     });
+
+    const tamperedSourceUri = {
+      ...recordedSettlement,
+      settlement: {
+        ...recordedSettlement.settlement,
+        source: {
+          ...recordedSettlement.settlement.source,
+          uri: "https://evidence.example.invalid/tampered.json",
+        },
+      },
+    };
+    const tamperedSourceId = {
+      ...recordedSettlement,
+      settlement: {
+        ...recordedSettlement.settlement,
+        source: {
+          ...recordedSettlement.settlement.source,
+          id: "other-recorded-index-snapshot",
+        },
+      },
+    };
+    const tamperedSourcePayload = {
+      ...recordedSettlement,
+      settlement: {
+        ...recordedSettlement.settlement,
+        source: {
+          ...recordedSettlement.settlement.source,
+          payload: `${recordedSettlement.settlement.source.payload} `,
+        },
+      },
+    };
+    const arbitrarySourceDigest = {
+      ...recordedSettlement,
+      settlement: {
+        ...recordedSettlement.settlement,
+        source: {
+          ...recordedSettlement.settlement.source,
+          pinnedDigest:
+            "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        },
+      },
+    };
+    const tamperedRulesText = {
+      ...recordedSettlement,
+      settlement: {
+        ...recordedSettlement.settlement,
+        rules: {
+          ...recordedSettlement.settlement.rules,
+          text: "A different settlement rule.",
+        },
+      },
+    };
+    const arbitraryRulesDigest = {
+      ...recordedSettlement,
+      settlement: {
+        ...recordedSettlement.settlement,
+        rules: {
+          ...recordedSettlement.settlement.rules,
+          pinnedDigest:
+            "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        },
+      },
+    };
+    for (const input of [
+      tamperedSourceUri,
+      tamperedSourceId,
+      tamperedSourcePayload,
+      arbitrarySourceDigest,
+      tamperedRulesText,
+      arbitraryRulesDigest,
+    ]) {
+      expect(selectRecordedHip4Settlement(input, request)).toEqual({
+        status: "unavailable",
+        reason: "unpinned-settlement",
+      });
+    }
 
     const cases: Array<[unknown, string]> = [
       [
@@ -91,6 +171,16 @@ describe("recorded HIP-4 settlement selector", () => {
       [
         {
           ...recordedSettlement,
+          observationWindow: {
+            ...recordedSettlement.observationWindow,
+            endMs: recordedSettlement.observedAtMs - 1,
+          },
+        },
+        "malformed-field",
+      ],
+      [
+        {
+          ...recordedSettlement,
           market: { ...recordedSettlement.market, assetId: 1043 },
         },
         "market-mismatch",
@@ -102,6 +192,32 @@ describe("recorded HIP-4 settlement selector", () => {
         status: "unavailable",
         reason,
       });
+    }
+
+    for (const market of [
+      { ...recordedSettlement.market, venue: "other" },
+      { ...recordedSettlement.market, kind: "other" },
+      { ...recordedSettlement.market, name: "xyz:OTHER-2025-01-31" },
+      { ...recordedSettlement.market, assetId: 1043 },
+    ]) {
+      expect(
+        selectRecordedHip4Settlement(
+          { ...recordedSettlement, market },
+          request,
+        ),
+      ).toMatchObject({ status: "unavailable" });
+    }
+
+    for (const market of [
+      { ...recordedSettlement.market, name: "xyz:OTHER-2025-01-31" },
+      { ...recordedSettlement.market, assetId: 1043 },
+    ]) {
+      expect(
+        selectRecordedHip4Settlement(
+          { ...recordedSettlement, market },
+          { ...request, market },
+        ),
+      ).toEqual({ status: "unavailable", reason: "unpinned-settlement" });
     }
   });
 });
