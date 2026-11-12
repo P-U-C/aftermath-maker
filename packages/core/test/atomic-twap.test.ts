@@ -41,7 +41,12 @@ describe("Paper Atomic-TWAP planner", () => {
     for (const invalid of [
       { ...schedule, mode: "Live" },
       { ...schedule, cadenceMs: 0 },
+      { ...schedule, cadenceMs: -60_000, sliceCount: 1 },
       { ...schedule, cadenceMs: Number.POSITIVE_INFINITY },
+      { ...schedule, windowMs: -1 },
+      { ...schedule, windowMs: 0 },
+      { ...schedule, windowMs: Number.NaN },
+      { ...schedule, windowMs: Number.POSITIVE_INFINITY },
       { ...schedule, windowMs: 60_001 },
       { ...schedule, sliceCount: 0 },
       { ...schedule, sliceCount: 10_001 },
