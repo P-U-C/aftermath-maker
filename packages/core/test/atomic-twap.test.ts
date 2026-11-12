@@ -45,8 +45,6 @@ describe("Paper Atomic-TWAP planner", () => {
       { ...schedule, cadenceMs: Number.POSITIVE_INFINITY },
       { ...schedule, windowMs: -1 },
       { ...schedule, windowMs: 0 },
-      { ...schedule, windowMs: Number.NaN },
-      { ...schedule, windowMs: Number.POSITIVE_INFINITY },
       { ...schedule, windowMs: 60_001 },
       { ...schedule, sliceCount: 0 },
       { ...schedule, sliceCount: 10_001 },
@@ -57,6 +55,11 @@ describe("Paper Atomic-TWAP planner", () => {
       { ...schedule, startSourceTime: Number.MAX_SAFE_INTEGER, cadenceMs: 1 },
     ]) {
       expect(() => buildPaperAtomicTwapPlan(invalid)).toThrow();
+    }
+    for (const windowMs of [Number.NaN, Number.POSITIVE_INFINITY]) {
+      expect(() => buildPaperAtomicTwapPlan({ ...schedule, windowMs })).toThrow(
+        "window must be a positive safe integer",
+      );
     }
   });
 });
