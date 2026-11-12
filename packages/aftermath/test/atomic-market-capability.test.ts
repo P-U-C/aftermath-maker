@@ -148,6 +148,23 @@ describe("Atomic market capability snapshots", () => {
     };
     expect(unavailable(crossMarketPosition).reason).toBe("preview-unavailable");
 
+    const malformedPendingOrder = structuredClone(fixture);
+    (
+      malformedPendingOrder.atomicPreview as {
+        response: { orders: Array<Record<string, unknown>> };
+      }
+    ).response.orders[0]!.updatedPosition = {
+      ...(
+        malformedPendingOrder.atomicPreview as {
+          response: { orders: Array<Record<string, unknown>> };
+        }
+      ).response.orders[0]!.updatedPosition,
+      pendingOrders: [{}],
+    };
+    expect(unavailable(malformedPendingOrder).reason).toBe(
+      "preview-unavailable",
+    );
+
     const partial = structuredClone(fixture);
     (
       partial.atomicPreview as {

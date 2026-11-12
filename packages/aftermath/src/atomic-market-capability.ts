@@ -237,6 +237,22 @@ function validUpdatedPosition(value: unknown, marketId: string): boolean {
     return false;
   }
 
+  if (
+    !value.pendingOrders.every(
+      (order) =>
+        isRecord(order) &&
+        nonNegativeUnsignedInteger(order.orderId) &&
+        (order.side === 0 || order.side === 1) &&
+        nonNegativeUnsignedInteger(order.currentSize) &&
+        nonNegativeUnsignedInteger(order.initialSize) &&
+        (order.clientOrderId === undefined ||
+          order.clientOrderId === null ||
+          nonNegativeUnsignedInteger(order.clientOrderId)),
+    )
+  ) {
+    return false;
+  }
+
   return [
     value.collateral,
     value.baseAssetAmount,
