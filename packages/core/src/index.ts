@@ -13,3 +13,4 @@ export * from "./atomic-twap.js";
 export * from "./paper-profitability.js";
 export * from "./paper-profitability-evidence.js";
 export * from "./paper-profitability-ranking.js";
+export * from "./paper-profitability-stability.js";
