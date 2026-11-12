@@ -16,10 +16,24 @@ import {
 
 type SourceAwareEvidence = Readonly<{
   sourceEventKey: string;
+  runId: string;
+  accountId: string;
+  marketId: string;
+  configVersion: number | null;
   observedAtMs: number;
   source: string;
   network: string;
   coverage: Coverage;
+}>;
+
+export type PaperProfitabilityEvidenceCohort = Readonly<{
+  runId: string;
+  accountId: string;
+  marketId: string;
+  configVersion: number | null;
+  source: string;
+  network: string;
+  windowStartAtMs: number;
 }>;
 
 export type PaperMakerCreditEvidence = SourceAwareEvidence &
@@ -34,6 +48,7 @@ export type PaperHedgeAndUnwindEvidence = SourceAwareEvidence &
   }>;
 
 export type PaperProfitabilityEvidenceInput = Readonly<{
+  cohort: PaperProfitabilityEvidenceCohort;
   asOfMs: number;
   minimumSampleSize: number;
   /**
@@ -56,6 +71,7 @@ export type PaperProfitabilityEvidenceInput = Readonly<{
 }>;
 
 export type PaperProfitabilityEvidenceComponent =
+  | "cohort"
   | "asOfMs"
   | "minimumSampleSize"
   | "fills"
@@ -66,7 +82,10 @@ export type PaperProfitabilityEvidenceComponent =
   | "gas";
 
 export type PaperProfitabilityEvidenceGapReason =
+  | "invalid_cohort"
   | "invalid_as_of"
+  | "evidence_attribution_mismatch"
+  | "evidence_outside_window"
   | "invalid_minimum_sample_size"
   | "empty_fill_sample"
   | "fill_not_maker"
@@ -91,9 +110,11 @@ export type PaperProfitabilityEvidenceGapReason =
   | "missing_markout_reference"
   | "invalid_markout_timestamp"
   | "premature_markout"
+  | "late_markout"
   | "future_markout"
   | "invalid_markout_decimal"
   | "markout_fill_mismatch"
+  | "markout_reference_mismatch"
   | "missing_maker_credit_evidence"
   | "invalid_maker_credit_evidence"
   | "maker_credit_coverage_incomplete"
@@ -150,6 +171,7 @@ type ExactDecimal = Readonly<{
 
 const DECIMAL_PATTERN = /^(-?)(0|[1-9]\d*)(?:\.(\d+))?$/;
 const MARKOUT_HORIZONS = new Set<number>(PAPER_MARKOUT_HORIZONS_MS);
+const MAX_MARKOUT_LAG_MS = 30_000;
 
 function parseDecimal(value: string): ExactDecimal | null {
   const match = DECIMAL_PATTERN.exec(value);
@@ -199,6 +221,42 @@ function validTimestamp(value: number): boolean {
   return Number.isSafeInteger(value) && value >= 0;
 }
 
+function validCohort(
+  cohort: PaperProfitabilityEvidenceCohort,
+  asOfMs: number,
+): boolean {
+  return (
+    nonempty(cohort.runId) &&
+    nonempty(cohort.accountId) &&
+    nonempty(cohort.marketId) &&
+    nonempty(cohort.source) &&
+    nonempty(cohort.network) &&
+    (cohort.configVersion === null ||
+      (Number.isSafeInteger(cohort.configVersion) &&
+        cohort.configVersion >= 0)) &&
+    validTimestamp(cohort.windowStartAtMs) &&
+    validTimestamp(asOfMs) &&
+    cohort.windowStartAtMs <= asOfMs
+  );
+}
+
+function matchesCohort(
+  evidence: Pick<
+    SourceAwareEvidence,
+    "runId" | "accountId" | "marketId" | "configVersion" | "source" | "network"
+  >,
+  cohort: PaperProfitabilityEvidenceCohort,
+): boolean {
+  return (
+    evidence.runId === cohort.runId &&
+    evidence.accountId === cohort.accountId &&
+    evidence.marketId === cohort.marketId &&
+    evidence.configVersion === cohort.configVersion &&
+    evidence.source === cohort.source &&
+    evidence.network === cohort.network
+  );
+}
+
 function completeComponent(
   amountUsd: DecimalString,
 ): PaperProfitabilityComponent {
@@ -231,6 +289,12 @@ function gap(
 function invalidSourceEvidence(evidence: SourceAwareEvidence): boolean {
   return (
     !nonempty(evidence.sourceEventKey) ||
+    !nonempty(evidence.runId) ||
+    !nonempty(evidence.accountId) ||
+    !nonempty(evidence.marketId) ||
+    (evidence.configVersion !== null &&
+      (!Number.isSafeInteger(evidence.configVersion) ||
+        evidence.configVersion < 0)) ||
     !nonempty(evidence.source) ||
     !nonempty(evidence.network) ||
     !validTimestamp(evidence.observedAtMs)
@@ -272,6 +336,8 @@ export function decomposePaperProfitabilityEvidence(
   input: PaperProfitabilityEvidenceInput,
 ): PaperProfitabilityEvidenceResult {
   const evidenceGaps: PaperProfitabilityEvidenceGap[] = [];
+  const cohortIsValid = validCohort(input.cohort, input.asOfMs);
+  if (!cohortIsValid) evidenceGaps.push(gap("cohort", "invalid_cohort"));
   const asOfIsValid = validTimestamp(input.asOfMs);
   if (!asOfIsValid) evidenceGaps.push(gap("asOfMs", "invalid_as_of"));
   if (
@@ -324,6 +390,13 @@ export function decomposePaperProfitabilityEvidence(
     if (fill.coverage !== "complete") {
       evidenceGaps.push(gap("fills", "fill_coverage_incomplete", details));
     }
+    if (
+      !matchesCohort(fill, input.cohort) ||
+      !nonempty(fill.source) ||
+      !nonempty(fill.network)
+    ) {
+      evidenceGaps.push(gap("fills", "evidence_attribution_mismatch", details));
+    }
     if (fill.counterpartyClass === "known_same_parent") {
       evidenceGaps.push(gap("fills", "same_parent_fill", details));
     } else if (fill.counterpartyClass === "unresolved") {
@@ -331,6 +404,11 @@ export function decomposePaperProfitabilityEvidence(
     }
     if (!validTimestamp(fill.timestampMs)) {
       evidenceGaps.push(gap("fills", "invalid_fill_timestamp", details));
+    } else if (
+      fill.timestampMs < input.cohort.windowStartAtMs ||
+      (asOfIsValid && fill.timestampMs > input.asOfMs)
+    ) {
+      evidenceGaps.push(gap("fills", "evidence_outside_window", details));
     }
 
     const sizeBase = parseDecimal(fill.sizeBase);
@@ -376,6 +454,7 @@ export function decomposePaperProfitabilityEvidence(
   const adverseSelectionCosts: ExactDecimal[] = [];
 
   for (const markout of input.markouts) {
+    const recordGapStart = evidenceGaps.length;
     const sourceEventKey = nonempty(markout.sourceEventKey)
       ? markout.sourceEventKey
       : null;
@@ -404,6 +483,18 @@ export function decomposePaperProfitabilityEvidence(
     const fill = orderKey === null ? undefined : fillsByOrder.get(orderKey);
     if (fill === undefined) {
       evidenceGaps.push(gap("markouts", "unmatched_markout", details));
+    }
+    if (
+      !nonempty(markout.source) ||
+      !nonempty(markout.network) ||
+      markout.runId !== input.cohort.runId ||
+      markout.marketId !== input.cohort.marketId ||
+      markout.source !== input.cohort.source ||
+      markout.network !== input.cohort.network
+    ) {
+      evidenceGaps.push(
+        gap("markouts", "evidence_attribution_mismatch", details),
+      );
     }
     if (horizonMs === null) {
       evidenceGaps.push(
@@ -441,8 +532,20 @@ export function decomposePaperProfitabilityEvidence(
       ) {
         evidenceGaps.push(gap("markouts", "premature_markout", details));
       }
+      if (
+        horizonMs !== null &&
+        markout.observedAtMs > markout.fillAtMs + horizonMs + MAX_MARKOUT_LAG_MS
+      ) {
+        evidenceGaps.push(gap("markouts", "late_markout", details));
+      }
       if (asOfIsValid && markout.observedAtMs > input.asOfMs) {
         evidenceGaps.push(gap("markouts", "future_markout", details));
+      }
+      if (
+        markout.observedAtMs < input.cohort.windowStartAtMs ||
+        markout.fillAtMs < input.cohort.windowStartAtMs
+      ) {
+        evidenceGaps.push(gap("markouts", "evidence_outside_window", details));
       }
     }
 
@@ -477,21 +580,65 @@ export function decomposePaperProfitabilityEvidence(
     }
 
     if (
+      fill !== undefined &&
+      markoutAmount !== null &&
+      reference !== null &&
+      fillPrice !== null &&
+      baseAmount !== null
+    ) {
+      const priceScale = Math.max(fillPrice.scale, reference.scale);
+      const priceDifference = {
+        units:
+          unitsAtScale(reference, priceScale) -
+          unitsAtScale(fillPrice, priceScale),
+        scale: priceScale,
+      };
+      const computed = {
+        units:
+          (markout.side === "bid" ? 1n : -1n) *
+          baseAmount.units *
+          priceDifference.units,
+        scale: baseAmount.scale + priceDifference.scale,
+      };
+      const computedText = formatDecimal(computed.units, computed.scale);
+      if (!sameDecimal(markout.markoutUsd!, computedText)) {
+        evidenceGaps.push(
+          gap("markouts", "markout_reference_mismatch", details),
+        );
+      }
+    }
+
+    if (
       sourceEventKey !== null &&
       orderKey !== null &&
       horizonMs !== null &&
-      markoutAmount !== null
+      markoutAmount !== null &&
+      fill !== undefined &&
+      evidenceGaps.length === recordGapStart
     ) {
+      const computedMarkout = (() => {
+        const price = parseDecimal(markout.fillPriceUsd)!;
+        const referencePrice = parseDecimal(markout.referenceUsd!)!;
+        const base = parseDecimal(markout.baseAssetAmount)!;
+        const scale = Math.max(price.scale, referencePrice.scale);
+        return {
+          units:
+            (markout.side === "bid" ? 1n : -1n) *
+            base.units *
+            (unitsAtScale(referencePrice, scale) - unitsAtScale(price, scale)),
+          scale: base.scale + scale,
+        };
+      })();
       const adverseSelectionCost =
-        markoutAmount.units < 0n
-          ? { units: -markoutAmount.units, scale: markoutAmount.scale }
+        computedMarkout.units < 0n
+          ? { units: -computedMarkout.units, scale: computedMarkout.scale }
           : { units: 0n, scale: markoutAmount.scale };
       adverseSelectionCosts.push(adverseSelectionCost);
       fixedHorizonEvidence.push({
         sourceEventKey,
         orderKey,
         horizonMs,
-        markoutUsd: markout.markoutUsd!,
+        markoutUsd: formatDecimal(computedMarkout.units, computedMarkout.scale),
         adverseSelectionCostUsd: formatDecimal(
           adverseSelectionCost.units,
           adverseSelectionCost.scale,
@@ -528,10 +675,20 @@ export function decomposePaperProfitabilityEvidence(
       evidenceGaps.push(
         gap("makerCredit", "invalid_maker_credit_evidence", details),
       );
+    } else if (!matchesCohort(input.makerCredit, input.cohort)) {
+      evidenceGaps.push(
+        gap("makerCredit", "evidence_attribution_mismatch", details),
+      );
     } else if (asOfIsValid && input.makerCredit.observedAtMs > input.asOfMs) {
       evidenceGaps.push(
         gap("makerCredit", "future_maker_credit_evidence", details),
       );
+    }
+    if (
+      validTimestamp(input.makerCredit.observedAtMs) &&
+      input.makerCredit.observedAtMs < input.cohort.windowStartAtMs
+    ) {
+      evidenceGaps.push(gap("makerCredit", "evidence_outside_window", details));
     }
     if (input.makerCredit.coverage !== "complete") {
       evidenceGaps.push(
@@ -566,12 +723,24 @@ export function decomposePaperProfitabilityEvidence(
       evidenceGaps.push(
         gap("hedgeAndUnwind", "invalid_hedge_and_unwind_evidence", details),
       );
+    } else if (!matchesCohort(input.hedgeAndUnwind, input.cohort)) {
+      evidenceGaps.push(
+        gap("hedgeAndUnwind", "evidence_attribution_mismatch", details),
+      );
     } else if (
       asOfIsValid &&
       input.hedgeAndUnwind.observedAtMs > input.asOfMs
     ) {
       evidenceGaps.push(
         gap("hedgeAndUnwind", "future_hedge_and_unwind_evidence", details),
+      );
+    }
+    if (
+      validTimestamp(input.hedgeAndUnwind.observedAtMs) &&
+      input.hedgeAndUnwind.observedAtMs < input.cohort.windowStartAtMs
+    ) {
+      evidenceGaps.push(
+        gap("hedgeAndUnwind", "evidence_outside_window", details),
       );
     }
     if (input.hedgeAndUnwind.coverage !== "complete") {
@@ -631,18 +800,35 @@ export function decomposePaperProfitabilityEvidence(
     } else {
       effectSourceKeys.add(sourceEventKey);
     }
+    if (
+      effect.runId !== input.cohort.runId ||
+      effect.accountId !== input.cohort.accountId ||
+      (effect.marketId !== null && effect.marketId !== input.cohort.marketId) ||
+      effect.configVersion !== input.cohort.configVersion ||
+      effect.source !== input.cohort.source ||
+      effect.network !== input.cohort.network
+    ) {
+      evidenceGaps.push(
+        gap(component, "evidence_attribution_mismatch", details),
+      );
+    }
     if (!validTimestamp(effect.timestampMs)) {
       evidenceGaps.push(gap(component, "invalid_effect_timestamp", details));
-    } else if (asOfIsValid && effect.timestampMs > input.asOfMs) {
-      evidenceGaps.push(
-        gap(
-          component,
-          effect.kind === "funding"
-            ? "future_funding_effect"
-            : "future_gas_effect",
-          details,
-        ),
-      );
+    } else {
+      if (effect.timestampMs < input.cohort.windowStartAtMs) {
+        evidenceGaps.push(gap(component, "evidence_outside_window", details));
+      }
+      if (asOfIsValid && effect.timestampMs > input.asOfMs) {
+        evidenceGaps.push(
+          gap(
+            component,
+            effect.kind === "funding"
+              ? "future_funding_effect"
+              : "future_gas_effect",
+            details,
+          ),
+        );
+      }
     }
 
     if (effect.kind === "funding") {

@@ -12,6 +12,15 @@ import {
 
 const FILL_AT_MS = 1_000_000;
 const AS_OF_MS = FILL_AT_MS + PAPER_MARKOUT_HORIZONS_MS.at(-1)! + 10_000;
+const COHORT = {
+  runId: "paper-run-1",
+  accountId: "paper-maker",
+  marketId: "ETH-USDC",
+  configVersion: 1,
+  source: "paper",
+  network: "paper",
+  windowStartAtMs: FILL_AT_MS,
+} as const;
 
 function fill(overrides: Partial<AttributedFill> = {}): AttributedFill {
   return {
@@ -27,15 +36,15 @@ function fill(overrides: Partial<AttributedFill> = {}): AttributedFill {
     timestampMs: FILL_AT_MS,
     side: "buy",
     liquidity: "maker",
-    sizeBase: "1.000000000000000001",
+    sizeBase: "1",
     priceUsd: "100.00",
-    notionalUsd: "100.000000000000000100",
+    notionalUsd: "100.00",
     venueFeeUsd: "0.05",
     builderFeeUsd: "0.10",
     realizedPnlUsd: "1.50",
     counterpartyClass: "verified_other_parent",
     classificationEvidence: ["paper-parent-proof"],
-    source: "paper-fill-ledger",
+    source: "paper",
     network: "paper",
     coverage: "complete",
     raw: {},
@@ -56,12 +65,21 @@ function markout(
     fillAtMs: FILL_AT_MS,
     fillPriceUsd: "100.00",
     side: "bid",
-    baseAssetAmount: "1.000000000000000001",
+    baseAssetAmount: "1",
     horizonMs,
-    referenceUsd: "100.00",
+    referenceUsd:
+      markoutUsd === "-0.10"
+        ? "99.90"
+        : markoutUsd === "0.05"
+          ? "100.05"
+          : markoutUsd === "-0.20"
+            ? "99.80"
+            : markoutUsd === "-0.15"
+              ? "99.85"
+              : "100.00",
     observedAtMs: FILL_AT_MS + horizonMs,
     markoutUsd,
-    source: "paper-index-reference",
+    source: "paper",
     network: "paper",
     coverage: "complete",
     raw: {},
@@ -85,7 +103,7 @@ function effect(
     gasUsedMist: kind === "gas" ? "500000" : null,
     gasUsd: kind === "gas" ? "0.05" : null,
     externalTransferUsd: kind === "transfer" ? "999999.99" : null,
-    source: "paper-effect-ledger",
+    source: "paper",
     network: "paper",
     coverage: "complete",
     raw: {},
@@ -97,6 +115,7 @@ function completeEvidence(
   overrides: Partial<PaperProfitabilityEvidenceInput> = {},
 ): PaperProfitabilityEvidenceInput {
   return {
+    cohort: COHORT,
     asOfMs: AS_OF_MS,
     minimumSampleSize: 1,
     fills: [fill()],
@@ -109,17 +128,25 @@ function completeEvidence(
     effects: [effect("funding"), effect("gas"), effect("transfer")],
     makerCredit: {
       sourceEventKey: "maker-credit:paper-run-1",
+      runId: "paper-run-1",
+      accountId: "paper-maker",
+      marketId: "ETH-USDC",
+      configVersion: 1,
       observedAtMs: AS_OF_MS - 1,
       makerCreditUsd: "0.20",
-      source: "paper-credit-ledger",
+      source: "paper",
       network: "paper",
       coverage: "complete",
     },
     hedgeAndUnwind: {
       sourceEventKey: "hedge-unwind:paper-run-1",
+      runId: "paper-run-1",
+      accountId: "paper-maker",
+      marketId: "ETH-USDC",
+      configVersion: 1,
       observedAtMs: AS_OF_MS - 1,
       hedgeAndUnwindNetUsd: "-0.15",
-      source: "paper-hedge-ledger",
+      source: "paper",
       network: "paper",
       coverage: "complete",
     },
@@ -325,6 +352,83 @@ describe("Paper profitability source-evidence adapter", () => {
         ),
       }),
       "unmatched_markout",
+    );
+  });
+
+  it("binds every record to the Paper cohort and rejects foreign evidence", () => {
+    expectUnavailable(
+      completeEvidence({
+        fills: [fill({ network: "mainnet" })],
+      }),
+      "evidence_attribution_mismatch",
+    );
+    expectUnavailable(
+      completeEvidence({
+        effects: [effect("funding", { runId: "foreign-run" }), effect("gas")],
+      }),
+      "evidence_attribution_mismatch",
+    );
+    expectUnavailable(
+      completeEvidence({
+        makerCredit: {
+          ...completeEvidence().makerCredit!,
+          network: "mainnet",
+        },
+      }),
+      "evidence_attribution_mismatch",
+    );
+  });
+
+  it("recomputes markouts from the retained fill and reference identity", () => {
+    const fixture = completeEvidence();
+    const result = decomposePaperProfitabilityEvidence({
+      ...fixture,
+      markouts: fixture.markouts.map((observation, index) =>
+        index === 0 ? { ...observation, markoutUsd: "0.25" } : observation,
+      ),
+    });
+    expect(result.status).toBe("unavailable");
+    expect(result.evidenceGaps.map((entry) => entry.reason)).toContain(
+      "markout_reference_mismatch",
+    );
+    expect(result.fixedHorizonEvidence).toHaveLength(3);
+
+    expectUnavailable(
+      completeEvidence({
+        markouts: fixture.markouts.map((observation, index) =>
+          index === 0
+            ? { ...observation, fillPriceUsd: "101.00" }
+            : observation,
+        ),
+      }),
+      "markout_fill_mismatch",
+    );
+  });
+
+  it("rejects late fixed-horizon marks and pre-window aggregate receipts", () => {
+    const fixture = completeEvidence();
+    expectUnavailable(
+      completeEvidence({
+        markouts: fixture.markouts.map((observation, index) =>
+          index === 0
+            ? {
+                ...observation,
+                observedAtMs:
+                  observation.fillAtMs + observation.horizonMs + 30_001,
+              }
+            : observation,
+        ),
+      }),
+      "late_markout",
+    );
+    expectUnavailable(
+      completeEvidence({
+        makerCredit: {
+          ...fixture.makerCredit!,
+          observedAtMs: FILL_AT_MS - 1,
+        },
+      }),
+      "evidence_outside_window",
     );
   });
 
