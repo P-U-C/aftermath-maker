@@ -16,8 +16,8 @@ export const PAPER_PROFITABILITY_COMPONENTS = [
   "builderFees",
   "venueFees",
   "adverseFixedHorizonMarkout",
-  "carryAndFunding",
-  "hedgeAndUnwind",
+  "carryAndFundingNet",
+  "hedgeAndUnwindNet",
   "gas",
 ] as const;
 
@@ -26,9 +26,8 @@ export type PaperProfitabilityComponentName =
 
 export type PaperProfitabilityComponent = Readonly<{
   /**
-   * Source decimal text. It is returned unchanged. Income components are
-   * added; cost components are subtracted. A negative cost is a credit or
-   * reversal.
+   * Source decimal text. It is returned unchanged; component-specific sign
+   * semantics are documented on `decomposePaperProfitability`.
    */
   amountUsd: string | null;
   coverage: PaperProfitabilityCoverage;
@@ -53,11 +52,24 @@ type IncompleteCoverage = Exclude<PaperProfitabilityCoverage, "complete">;
 export type PaperProfitabilityGap =
   | Readonly<{
       component: PaperProfitabilityComponentName;
+      reason: "missing_component";
+    }>
+  | Readonly<{
+      component: PaperProfitabilityComponentName;
+      reason: "malformed_component";
+    }>
+  | Readonly<{
+      component: PaperProfitabilityComponentName;
       reason: "missing_amount";
     }>
   | Readonly<{
       component: PaperProfitabilityComponentName;
       reason: "invalid_decimal";
+      amountUsd: string;
+    }>
+  | Readonly<{
+      component: PaperProfitabilityComponentName;
+      reason: "negative_cost_magnitude";
       amountUsd: string;
     }>
   | Readonly<{
@@ -136,37 +148,101 @@ function formatUnits(units: bigint, scale: number): string {
   return `${negative ? "-" : ""}${whole}.${fraction}`;
 }
 
-function copyComponents(
-  components: PaperProfitabilityComponents,
-): PaperProfitabilityComponents {
-  return {
-    capturedMakerSpread: { ...components.capturedMakerSpread },
-    makerCredit: { ...components.makerCredit },
-    builderFees: { ...components.builderFees },
-    venueFees: { ...components.venueFees },
-    adverseFixedHorizonMarkout: {
-      ...components.adverseFixedHorizonMarkout,
-    },
-    carryAndFunding: { ...components.carryAndFunding },
-    hedgeAndUnwind: { ...components.hedgeAndUnwind },
-    gas: { ...components.gas },
-  };
+type ComponentShapeGap = Extract<
+  PaperProfitabilityGap,
+  { reason: "missing_component" | "malformed_component" }
+>;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function isCoverage(value: unknown): value is PaperProfitabilityCoverage {
+  return (
+    value === "complete" ||
+    value === "partial" ||
+    value === "stale" ||
+    value === "unavailable"
+  );
+}
+
+function snapshotComponents(value: unknown): Readonly<{
+  components: PaperProfitabilityComponents;
+  gaps: readonly ComponentShapeGap[];
+  malformed: ReadonlySet<PaperProfitabilityComponentName>;
+}> {
+  const source = isRecord(value) ? value : null;
+  const components = {} as Record<
+    PaperProfitabilityComponentName,
+    PaperProfitabilityComponent
+  >;
+  const gaps: ComponentShapeGap[] = [];
+  const malformed = new Set<PaperProfitabilityComponentName>();
+
+  for (const componentName of PAPER_PROFITABILITY_COMPONENTS) {
+    const rawComponent = source?.[componentName];
+    if (rawComponent === undefined) {
+      components[componentName] = {
+        amountUsd: null,
+        coverage: "unavailable",
+      };
+      gaps.push({ component: componentName, reason: "missing_component" });
+      malformed.add(componentName);
+      continue;
+    }
+
+    if (
+      !isRecord(rawComponent) ||
+      (rawComponent.amountUsd !== null &&
+        typeof rawComponent.amountUsd !== "string") ||
+      !isCoverage(rawComponent.coverage)
+    ) {
+      components[componentName] = {
+        amountUsd: null,
+        coverage: "unavailable",
+      };
+      gaps.push({ component: componentName, reason: "malformed_component" });
+      malformed.add(componentName);
+      continue;
+    }
+
+    components[componentName] = {
+      amountUsd: rawComponent.amountUsd,
+      coverage: rawComponent.coverage,
+    };
+  }
+
+  return { components, gaps, malformed };
+}
+
+function isCostMagnitude(
+  componentName: PaperProfitabilityComponentName,
+): boolean {
+  return (
+    componentName === "builderFees" ||
+    componentName === "venueFees" ||
+    componentName === "adverseFixedHorizonMarkout" ||
+    componentName === "gas"
+  );
 }
 
 /**
  * Decomposes complete Paper evidence into an all-in, no-reward trading net.
  *
  * Captured spread and maker credit are added. Builder fees, venue fees,
- * adverse fixed-horizon markout, carry/funding, hedge/unwind and gas are cost
- * magnitudes and are subtracted. The maximum source scale is used for the
- * result, so the computation neither rounds through binary floats nor drops
- * declared decimal precision.
+ * adverse fixed-horizon markout and gas are non-negative cost magnitudes and
+ * are subtracted. Carry/funding net and hedge/unwind net follow the existing
+ * signed-income convention: positive is income, negative is cost, and both
+ * are added. The maximum source scale is used for the result, so the
+ * computation neither rounds through binary floats nor drops declared decimal
+ * precision.
  */
 export function decomposePaperProfitability(
   input: PaperProfitabilityInput,
 ): PaperProfitabilityResult {
-  const components = copyComponents(input.components);
-  const gaps: PaperProfitabilityGap[] = [];
+  const snapshot = snapshotComponents(input.components);
+  const components = snapshot.components;
+  const gaps: PaperProfitabilityGap[] = [...snapshot.gaps];
   const parsed = new Map<PaperProfitabilityComponentName, ParsedDecimal>();
 
   const sampleSizeIsValid =
@@ -203,6 +279,8 @@ export function decomposePaperProfitability(
   }
 
   for (const componentName of PAPER_PROFITABILITY_COMPONENTS) {
+    if (snapshot.malformed.has(componentName)) continue;
+
     const component = components[componentName];
     if (component.amountUsd === null) {
       gaps.push({ component: componentName, reason: "missing_amount" });
@@ -212,6 +290,12 @@ export function decomposePaperProfitability(
         gaps.push({
           component: componentName,
           reason: "invalid_decimal",
+          amountUsd: component.amountUsd,
+        });
+      } else if (isCostMagnitude(componentName) && decimal.units < 0n) {
+        gaps.push({
+          component: componentName,
+          reason: "negative_cost_magnitude",
           amountUsd: component.amountUsd,
         });
       } else {
@@ -258,9 +342,9 @@ export function decomposePaperProfitability(
     amount("builderFees") -
     amount("venueFees") -
     amount("adverseFixedHorizonMarkout") -
-    amount("carryAndFunding") -
-    amount("hedgeAndUnwind") -
-    amount("gas");
+    amount("gas") +
+    amount("carryAndFundingNet") +
+    amount("hedgeAndUnwindNet");
 
   return {
     status: tradingNet > 0n ? "positive" : "non_positive",
