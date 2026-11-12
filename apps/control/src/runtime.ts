@@ -2828,8 +2828,49 @@ export class MakerRuntime {
       const storedConfig = inputs.configOverride ?? this.store.getConfig();
       if (!storedConfig) return;
       config = makerConfigSchema.parse(storedConfig);
-      await this.refreshSuiUsd();
+      selected = config.markets[this.marketIndex % config.markets.length]!;
       this.syncMarketRows(config);
+      if (
+        config.mode === "paper" &&
+        inputs.executeLive &&
+        paperTrialId === "runtime"
+      ) {
+        const atomicHold = this.store.getPaperAtomicReservationHold({
+          trialId: paperTrialId,
+        });
+        if (atomicHold) {
+          const updatedAt = new Date().toISOString();
+          this.recordPaperSimulationBlocker({
+            blocker: {
+              code: "atomic-reservation",
+              message:
+                atomicHold.reason === "corrupt"
+                  ? "Paper is held: persisted Atomic basket evidence cannot be replayed. Persist reconciliation or cancellation evidence before resuming."
+                  : `Paper is held: Atomic basket ${atomicHold.basketId} remains unresolved. Persist reconciliation or cancellation evidence before resuming.`,
+            },
+            selected,
+            updatedAt,
+            trialId: paperTrialId,
+          });
+          this.store.recordInventoryQuoteDecision({
+            decisionKey: `paper:${paperTrialId}:${selected.marketId}:atomic-reservation:${atomicHold.basketId}:${Date.parse(updatedAt)}`,
+            runId: paperTrialId,
+            marketId: selected.marketId,
+            observedAtMs: Date.parse(updatedAt),
+            action: "pause",
+            reason: "atomic_reservation",
+            policy: "fixed",
+            coverage: "unavailable",
+            detail: {
+              basketId: atomicHold.basketId,
+              reason: atomicHold.reason,
+            },
+          });
+          this.snapshotValue.lastSuccessfulCycleAt = updatedAt;
+          return;
+        }
+      }
+      await this.refreshSuiUsd();
       usesDwellScheduler =
         inputs.executeLive &&
         this.snapshotValue.running &&
