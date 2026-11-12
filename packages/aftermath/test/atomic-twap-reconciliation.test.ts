@@ -148,7 +148,7 @@ describe("Atomic TWAP provider snapshot reconciliation", () => {
       ...expected,
       legs: expected.legs.map((leg) => ({
         ...leg,
-        details: { ...leg.details, size: "9007199254740992n" },
+        details: { ...leg.details, size: "9007199254740993n" },
       })),
     };
     expect(
@@ -160,8 +160,8 @@ describe("Atomic TWAP provider snapshot reconciliation", () => {
     ).toMatchObject({
       kind: "trusted",
       legs: [
-        { processedAmount: "9007199254740992n", scheduledAmount: "0n" },
-        { processedAmount: "9007199254740992n", scheduledAmount: "0n" },
+        { processedAmount: "9007199254740993n", scheduledAmount: "0n" },
+        { processedAmount: "9007199254740993n", scheduledAmount: "0n" },
       ],
     });
     expect(
@@ -175,6 +175,36 @@ describe("Atomic TWAP provider snapshot reconciliation", () => {
               index === 0
                 ? { processedAmount: Number.MAX_SAFE_INTEGER + 1 }
                 : {},
+            ),
+          ),
+        ),
+      }).kind,
+    ).toBe("unavailable");
+    expect(
+      normalizeAtomicTwapSnapshot({
+        ...options,
+        expected: largeExpected,
+        snapshot: snapshot(
+          largeExpected.legs.map((leg, index) =>
+            record(
+              leg,
+              index === 0
+                ? { details: { ...leg.details, size: "9007199254740992n" } }
+                : {},
+            ),
+          ),
+        ),
+      }).kind,
+    ).toBe("unavailable");
+    expect(
+      normalizeAtomicTwapSnapshot({
+        ...options,
+        expected: largeExpected,
+        snapshot: snapshot(
+          largeExpected.legs.map((leg, index) =>
+            record(
+              leg,
+              index === 0 ? { processedAmount: "9007199254740992n" } : {},
             ),
           ),
         ),
