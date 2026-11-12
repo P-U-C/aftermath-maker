@@ -46,9 +46,12 @@ const expected: AtomicTwapExpectedBasket = {
 
 function snapshot(
   records: unknown[],
-  capturedAtMs = 1_000,
+  capturedAtMs: number | string = 1_000,
 ): { capturedAtMs: string; twapOrderDatas: unknown[] } {
-  return { capturedAtMs: `${capturedAtMs}n`, twapOrderDatas: records };
+  return {
+    capturedAtMs: providerUnsigned(capturedAtMs),
+    twapOrderDatas: records,
+  };
 }
 
 function providerUnsigned(value: number | string): string {
@@ -272,6 +275,76 @@ describe("Atomic TWAP provider snapshot reconciliation", () => {
           record(expected.legs[1]!, { orderState, processedAmount: 0 }),
         ]).kind,
       ).toBe("unavailable");
+    }
+  });
+
+  it("fails closed for an unexpected record in the expected basket", () => {
+    const result = normalizeAtomicTwapSnapshot({
+      ...options,
+      snapshot: snapshot([
+        record(expected.legs[0]!),
+        record(expected.legs[1]!),
+        record(expected.legs[0]!, { twapOrderObjectId: "order-unexpected" }),
+      ]),
+    });
+
+    expect(result).toEqual({
+      kind: "unavailable",
+      reason: "provider basket includes an unexpected leg",
+    });
+  });
+
+  it("fails closed when a completed leg executed before its creation", () => {
+    const result = normalizeAtomicTwapSnapshot({
+      ...options,
+      snapshot: snapshot([
+        record(expected.legs[0]!, {
+          lastExecutionTimestampMs: providerUnsigned(99),
+        }),
+        record(expected.legs[1]!),
+      ]),
+    });
+
+    expect(result).toEqual({
+      kind: "unavailable",
+      reason: "provider amounts or timestamps are invalid",
+    });
+  });
+
+  it("accepts lossless provider BigInt strings for 128-bit amounts and timestamps", () => {
+    const hugeSize = "340282366920938463463374607431768211455n";
+    const largeExpected: AtomicTwapExpectedBasket = {
+      ...expected,
+      legs: expected.legs.map((leg, index) =>
+        index === 0
+          ? { ...leg, details: { ...leg.details, size: hugeSize } }
+          : leg,
+      ),
+    };
+    const capturedAtMs = "340282366920938463463374607431768211454n";
+    const nowMs = "340282366920938463463374607431768211455n";
+    const result = normalizeAtomicTwapSnapshot({
+      ...options,
+      expected: largeExpected,
+      nowMs,
+      maxSnapshotAgeMs: "2n",
+      snapshot: snapshot(
+        largeExpected.legs.map((leg) =>
+          record(leg, {
+            lastExecutionTimestampMs: capturedAtMs,
+            orderCreationTimestampMs: `${BigInt(capturedAtMs.slice(0, -1)) - 1n}n`,
+          }),
+        ),
+        capturedAtMs,
+      ),
+    });
+
+    expect(result).toMatchObject({
+      kind: "trusted",
+      orderState: "completed",
+    });
+    if (result.kind === "trusted") {
+      expect(result.legs[0]!.processedAmount).toBe(hugeSize);
     }
   });
 });
