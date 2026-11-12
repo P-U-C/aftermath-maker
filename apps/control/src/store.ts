@@ -4018,29 +4018,23 @@ export class TenantStore {
 
   /**
    * Gas a bundle spent while it ran this strategy (one attachment). Paper
-   * rows are simulated quote transactions: what Live would have paid.
+   * rows are simulated quote transactions: what Live would have paid. The
+   * persisted run ID is authoritative: a dispatched transaction can confirm
+   * after this attachment has detached, and must remain with its dispatch run.
    */
   listStrategyGas(
     attachment: StrategyAttachment,
     mode: "paper" | "live",
   ): Array<{ gasUsedMist: number | null; suiUsd: number | null }> {
     if (!attachment.runId) return [];
-    const interval = [
-      this.ownerAddress,
-      attachment.bundleId,
-      attachment.runId,
-      attachment.attachedAt,
-      attachment.detachedAt,
-      attachment.detachedAt,
-    ];
+    const scope = [this.ownerAddress, attachment.bundleId, attachment.runId];
     const rows = this.db
       .prepare(
         `SELECT gas_used_mist, sui_usd FROM tenant_executions
          WHERE owner_address = ? AND bundle_id = ? AND run_id = ?
-           AND occurred_at >= ? AND (? IS NULL OR occurred_at < ?)
            AND mode = ?`,
       )
-      .all(...interval, mode) as Array<{
+      .all(...scope, mode) as Array<{
       gas_used_mist: number | null;
       sui_usd: number | null;
     }>;
@@ -4049,10 +4043,9 @@ export class TenantStore {
         ...(this.db
           .prepare(
             `SELECT gas_used_mist, sui_usd FROM tenant_hedge_executions
-             WHERE owner_address = ? AND bundle_id = ? AND run_id = ?
-               AND occurred_at >= ? AND (? IS NULL OR occurred_at < ?)`,
+             WHERE owner_address = ? AND bundle_id = ? AND run_id = ?`,
           )
-          .all(...interval) as Array<{
+          .all(...scope) as Array<{
           gas_used_mist: number | null;
           sui_usd: number | null;
         }>),
