@@ -1,0 +1,87 @@
+{
+  "capturedAtMs": "1000n",
+  "markets": [
+    {
+      "objectId": "market-btc",
+      "marketParams": {
+        "makerFee": 0.0002,
+        "takerFee": 0.0005,
+        "priorityTakerFee": 0.0001,
+        "marginRatioInitial": 0.1,
+        "marginRatioMaintenance": 0.05,
+        "minOrderUsdValue": 10,
+        "lotSize": "5n",
+        "tickSize": "1n",
+        "maxPendingOrders": "32n",
+        "maxOpenInterest": 1000000,
+        "maxOpenInterestThreshold": 100,
+        "maxOpenInterestPositionPercent": 0.1
+      },
+      "marketState": {
+        "openInterest": 1000
+      }
+    },
+    {
+      "objectId": "market-eth",
+      "marketParams": {
+        "makerFee": 0.0002,
+        "takerFee": 0.0005,
+        "priorityTakerFee": null,
+        "marginRatioInitial": 0.1,
+        "marginRatioMaintenance": 0.05,
+        "minOrderUsdValue": 10,
+        "lotSize": "10n",
+        "tickSize": "1n",
+        "maxPendingOrders": "32n",
+        "maxOpenInterest": 1000000,
+        "maxOpenInterestThreshold": 100,
+        "maxOpenInterestPositionPercent": 0.1
+      },
+      "marketState": {
+        "openInterest": 2000
+      }
+    }
+  ],
+  "atomicPreview": {
+    "request": {
+      "reduceOnly": false,
+      "orders": [
+        { "marketId": "market-btc", "side": 0, "size": "10n" },
+        { "marketId": "market-eth", "side": 1, "size": "20n" }
+      ]
+    },
+    "response": {
+      "collateralChange": 30,
+      "orders": [
+        {
+          "marketId": "market-btc",
+          "updatedPosition": { "marketId": "market-btc" },
+          "priceSlippage": 0.01,
+          "percentSlippage": 0.001,
+          "filledSize": 10,
+          "filledSizeUsd": 100,
+          "postedSize": 0,
+          "postedSizeUsd": 0,
+          "collateralChange": 20,
+          "executionPrice": 10,
+          "hasPosition": false,
+          "cancelSlTp": false
+        },
+        {
+          "marketId": "market-eth",
+          "updatedPosition": { "marketId": "market-eth" },
+          "priceSlippage": 0.01,
+          "percentSlippage": 0.001,
+          "filledSize": 20,
+          "filledSizeUsd": 200,
+          "postedSize": 0,
+          "postedSizeUsd": 0,
+          "collateralChange": 10,
+          "executionPrice": 10,
+          "hasPosition": false,
+          "cancelSlTp": false
+        }
+      ]
+    }
+  }
+}
