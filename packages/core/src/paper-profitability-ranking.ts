@@ -16,10 +16,12 @@ export type PaperProfitabilityRankingInput = Readonly<{
   marketId: string;
   measurementWindowMs: number;
   collateralUsd: DecimalString;
-  result: PaperProfitabilityEvidenceResult;
+  result: PaperProfitabilityEvidenceResult | null;
 }>;
 
 export type PaperProfitabilityRankingReason =
+  | "malformed_candidate"
+  | "malformed_result"
   | "invalid_candidate_id"
   | "invalid_market_id"
   | "invalid_measurement_window_ms"
@@ -33,13 +35,17 @@ export type PaperProfitabilityRankingReason =
   | "profitability_gaps_present"
   | "incomplete_sample";
 
-export type RankedPaperProfitabilityCandidate = PaperProfitabilityRankingInput &
-  Readonly<{
-    status: "eligible" | "ineligible";
-    reasons: readonly PaperProfitabilityRankingReason[];
-    netUsdPerDay: ExactDecimalRatio | null;
-    netReturnBpsPerDay: ExactDecimalRatio | null;
-  }>;
+/** An allowlisted reporting snapshot. Source evidence is never echoed. */
+export type RankedPaperProfitabilityCandidate = Readonly<{
+  candidateId: string | null;
+  marketId: string | null;
+  measurementWindowMs: number | null;
+  collateralUsd: DecimalString | null;
+  status: "eligible" | "ineligible";
+  reasons: readonly PaperProfitabilityRankingReason[];
+  netUsdPerDay: ExactDecimalRatio | null;
+  netReturnBpsPerDay: ExactDecimalRatio | null;
+}>;
 
 type ExactRational = Readonly<{
   numerator: bigint;
@@ -49,14 +55,35 @@ type ExactRational = Readonly<{
 type ParsedCandidate = Readonly<{
   candidate: RankedPaperProfitabilityCandidate;
   inputIndex: number;
+  candidateSortKey: string;
+  marketSortKey: string;
   netUsdPerDay: ExactRational | null;
   netReturnBpsPerDay: ExactRational | null;
+}>;
+
+type CandidateSnapshot = Readonly<{
+  malformed: boolean;
+  candidateId: string | null;
+  marketId: string | null;
+  measurementWindowMs: number | null;
+  collateralUsd: string | null;
+  result: Readonly<Record<string, unknown>> | null;
 }>;
 
 const DECIMAL_PATTERN = /^(-?)(0|[1-9]\d*)(?:\.(\d+))?$/;
 const MAX_DECIMAL_DIGITS = 128;
 const MILLISECONDS_PER_DAY = 86_400_000n;
 const BASIS_POINTS_PER_UNIT = 10_000n;
+const PROFITABILITY_COMPONENTS = [
+  "capturedMakerSpread",
+  "makerCredit",
+  "builderFees",
+  "venueFees",
+  "adverseFixedHorizonMarkout",
+  "carryAndFundingNet",
+  "hedgeAndUnwindNet",
+  "gas",
+] as const;
 
 function greatestCommonDivisor(left: bigint, right: bigint): bigint {
   let a = left < 0n ? -left : left;
@@ -117,53 +144,142 @@ function compareText(left: string, right: string): number {
   return 0;
 }
 
-function hasCompleteSample(result: PaperProfitabilityEvidenceResult): boolean {
+function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isNullableString(value: unknown): value is string | null {
+  return value === null || typeof value === "string";
+}
+
+function hasValidComponentShape(value: unknown): boolean {
   return (
+    isRecord(value) &&
+    isNullableString(value.amountUsd) &&
+    (value.coverage === "complete" ||
+      value.coverage === "partial" ||
+      value.coverage === "stale" ||
+      value.coverage === "unavailable")
+  );
+}
+
+function hasValidResultShape(
+  result: Readonly<Record<string, unknown>> | null,
+): boolean {
+  if (result === null) return false;
+  const components = result.components;
+  const excluded = result.excluded;
+  return (
+    (result.status === "positive" ||
+      result.status === "non_positive" ||
+      result.status === "unavailable") &&
+    typeof result.sampleSize === "number" &&
+    typeof result.minimumSampleSize === "number" &&
+    isNullableString(result.tradingNetUsd) &&
+    Array.isArray(result.gaps) &&
+    Array.isArray(result.evidenceGaps) &&
+    Array.isArray(result.fixedHorizonEvidence) &&
+    isRecord(components) &&
+    PROFITABILITY_COMPONENTS.every((name) =>
+      hasValidComponentShape(components[name]),
+    ) &&
+    isRecord(excluded) &&
+    isNullableString(excluded.rewardsUsd) &&
+    isNullableString(excluded.transfersUsd)
+  );
+}
+
+function snapshotCandidate(input: unknown): CandidateSnapshot {
+  if (!isRecord(input)) {
+    return {
+      malformed: true,
+      candidateId: null,
+      marketId: null,
+      measurementWindowMs: null,
+      collateralUsd: null,
+      result: null,
+    };
+  }
+
+  const candidateId =
+    typeof input.candidateId === "string" ? input.candidateId : null;
+  const marketId = typeof input.marketId === "string" ? input.marketId : null;
+  const measurementWindowMs =
+    typeof input.measurementWindowMs === "number" &&
+    Number.isFinite(input.measurementWindowMs)
+      ? input.measurementWindowMs
+      : null;
+  const collateralUsd =
+    typeof input.collateralUsd === "string" ? input.collateralUsd : null;
+  const result = isRecord(input.result) ? input.result : null;
+
+  return {
+    malformed:
+      candidateId === null ||
+      marketId === null ||
+      typeof input.measurementWindowMs !== "number" ||
+      collateralUsd === null,
+    candidateId,
+    marketId,
+    measurementWindowMs,
+    collateralUsd,
+    result,
+  };
+}
+
+function hasCompleteSample(
+  result: Readonly<Record<string, unknown>> | null,
+): boolean {
+  if (result === null) return false;
+  return (
+    typeof result.sampleSize === "number" &&
     Number.isSafeInteger(result.sampleSize) &&
     result.sampleSize > 0 &&
+    typeof result.minimumSampleSize === "number" &&
     Number.isSafeInteger(result.minimumSampleSize) &&
     result.minimumSampleSize > 0 &&
     result.sampleSize >= result.minimumSampleSize
   );
 }
 
-function parseCandidate(
-  input: PaperProfitabilityRankingInput,
-  inputIndex: number,
-): ParsedCandidate {
+function parseCandidate(input: unknown, inputIndex: number): ParsedCandidate {
   const reasons: PaperProfitabilityRankingReason[] = [];
+  const snapshot = snapshotCandidate(input);
+  const result = snapshot.result;
 
-  if (
-    typeof input.candidateId !== "string" ||
-    input.candidateId.trim() === ""
-  ) {
+  if (snapshot.malformed) reasons.push("malformed_candidate");
+  if (!hasValidResultShape(result)) reasons.push("malformed_result");
+
+  if (snapshot.candidateId === null || snapshot.candidateId.trim() === "") {
     reasons.push("invalid_candidate_id");
   }
-  if (typeof input.marketId !== "string" || input.marketId.trim() === "") {
+  if (snapshot.marketId === null || snapshot.marketId.trim() === "") {
     reasons.push("invalid_market_id");
   }
 
   const windowIsValid =
-    Number.isSafeInteger(input.measurementWindowMs) &&
-    input.measurementWindowMs > 0;
+    snapshot.measurementWindowMs !== null &&
+    Number.isSafeInteger(snapshot.measurementWindowMs) &&
+    snapshot.measurementWindowMs > 0;
   if (!windowIsValid) reasons.push("invalid_measurement_window_ms");
 
-  if (input.result.status !== "positive") {
+  if (result?.status !== "positive") {
     reasons.push("result_not_positive");
   }
   if (
-    !Array.isArray(input.result.evidenceGaps) ||
-    input.result.evidenceGaps.length !== 0
+    !Array.isArray(result?.evidenceGaps) ||
+    result.evidenceGaps.length !== 0
   ) {
     reasons.push("evidence_gaps_present");
   }
-  if (!Array.isArray(input.result.gaps) || input.result.gaps.length !== 0) {
+  if (!Array.isArray(result?.gaps) || result.gaps.length !== 0) {
     reasons.push("profitability_gaps_present");
   }
-  if (!hasCompleteSample(input.result)) reasons.push("incomplete_sample");
+  if (!hasCompleteSample(result)) reasons.push("incomplete_sample");
 
-  const tradingNet = parseDecimal(input.result.tradingNetUsd);
-  if (input.result.tradingNetUsd === null) {
+  const tradingNetValue = result?.tradingNetUsd;
+  const tradingNet = parseDecimal(tradingNetValue);
+  if (tradingNetValue === null || tradingNetValue === undefined) {
     reasons.push("missing_trading_net_usd");
   } else if (tradingNet === null) {
     reasons.push("invalid_trading_net_usd");
@@ -171,7 +287,7 @@ function parseCandidate(
     reasons.push("non_positive_trading_net_usd");
   }
 
-  const collateral = parseDecimal(input.collateralUsd);
+  const collateral = parseDecimal(snapshot.collateralUsd);
   if (collateral === null) {
     reasons.push("invalid_collateral_usd");
   } else if (collateral.numerator <= 0n) {
@@ -183,12 +299,13 @@ function parseCandidate(
   if (
     reasons.length === 0 &&
     windowIsValid &&
+    snapshot.measurementWindowMs !== null &&
     tradingNet !== null &&
     collateral !== null
   ) {
     netUsdPerDay = reduceRatio(
       tradingNet.numerator * MILLISECONDS_PER_DAY,
-      tradingNet.denominator * BigInt(input.measurementWindowMs),
+      tradingNet.denominator * BigInt(snapshot.measurementWindowMs),
     );
     netReturnBpsPerDay = reduceRatio(
       netUsdPerDay.numerator * collateral.denominator * BASIS_POINTS_PER_UNIT,
@@ -198,7 +315,10 @@ function parseCandidate(
 
   return {
     candidate: {
-      ...input,
+      candidateId: snapshot.candidateId,
+      marketId: snapshot.marketId,
+      measurementWindowMs: snapshot.measurementWindowMs,
+      collateralUsd: snapshot.collateralUsd,
       status: reasons.length === 0 ? "eligible" : "ineligible",
       reasons,
       netUsdPerDay: netUsdPerDay === null ? null : snapshotRatio(netUsdPerDay),
@@ -206,6 +326,8 @@ function parseCandidate(
         netReturnBpsPerDay === null ? null : snapshotRatio(netReturnBpsPerDay),
     },
     inputIndex,
+    candidateSortKey: snapshot.candidateId ?? "",
+    marketSortKey: snapshot.marketId ?? "",
     netUsdPerDay,
     netReturnBpsPerDay,
   };
@@ -237,14 +359,11 @@ function compareCandidates(
   }
 
   const candidateComparison = compareText(
-    left.candidate.candidateId,
-    right.candidate.candidateId,
+    left.candidateSortKey,
+    right.candidateSortKey,
   );
   if (candidateComparison !== 0) return candidateComparison;
-  const marketComparison = compareText(
-    left.candidate.marketId,
-    right.candidate.marketId,
-  );
+  const marketComparison = compareText(left.marketSortKey, right.marketSortKey);
   if (marketComparison !== 0) return marketComparison;
   return left.inputIndex - right.inputIndex;
 }
@@ -259,7 +378,7 @@ function compareCandidates(
  * window before its exact conversion to bigint.
  */
 export function rankPaperProfitabilityCandidates(
-  inputs: readonly PaperProfitabilityRankingInput[],
+  inputs: readonly (PaperProfitabilityRankingInput | null)[],
 ): readonly RankedPaperProfitabilityCandidate[] {
   return inputs
     .map((input, inputIndex) => parseCandidate(input, inputIndex))

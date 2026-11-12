@@ -305,4 +305,96 @@ describe("Paper profitability measured-candidate ranking", () => {
     expect(excluded.netReturnBpsPerDay).toEqual(baseline.netReturnBpsPerDay);
     expect(excluded.status).toBe("eligible");
   });
+
+  it("fails closed without throwing for null candidates and malformed results", () => {
+    const malformedShape = {
+      ...candidate(),
+      result: { ...measuredResult(), components: {} },
+    } as unknown as PaperProfitabilityRankingInput;
+
+    expect(() =>
+      rankPaperProfitabilityCandidates([
+        null,
+        candidate({ result: null }),
+        malformedShape,
+      ]),
+    ).not.toThrow();
+
+    const ranked = rankPaperProfitabilityCandidates([
+      null,
+      candidate({ result: null }),
+      malformedShape,
+    ]);
+    expect(ranked).toHaveLength(3);
+    expect(ranked[0]).toMatchObject({
+      candidateId: null,
+      marketId: null,
+      status: "ineligible",
+      netUsdPerDay: null,
+      netReturnBpsPerDay: null,
+    });
+    expect(ranked[0]!.reasons).toEqual(
+      expect.arrayContaining(["malformed_candidate", "malformed_result"]),
+    );
+    for (const entry of ranked.slice(1)) {
+      expect(entry.reasons).toContain("malformed_result");
+      expect(entry.status).toBe("ineligible");
+    }
+  });
+
+  it("sanitizes non-string IDs before deterministic ineligible sorting", () => {
+    const first = {
+      ...candidate({ measurementWindowMs: 0 }),
+      candidateId: Symbol("candidate-first"),
+      marketId: Symbol("market-first"),
+    } as unknown as PaperProfitabilityRankingInput;
+    const second = {
+      ...candidate({ measurementWindowMs: -1 }),
+      candidateId: Symbol("candidate-second"),
+      marketId: Symbol("market-second"),
+    } as unknown as PaperProfitabilityRankingInput;
+
+    const ranked = rankPaperProfitabilityCandidates([first, second]);
+    expect(ranked.map((entry) => entry.measurementWindowMs)).toEqual([0, -1]);
+    expect(
+      ranked.every(
+        (entry) =>
+          entry.candidateId === null &&
+          entry.marketId === null &&
+          entry.reasons.includes("malformed_candidate") &&
+          entry.reasons.includes("invalid_candidate_id") &&
+          entry.reasons.includes("invalid_market_id"),
+      ),
+    ).toBe(true);
+  });
+
+  it("returns only allowlisted reporting fields and drops authority-shaped extras", () => {
+    const authorityShapedInput = {
+      ...candidate(),
+      executionAuthorized: true,
+      routeToLive: "mainnet",
+      result: {
+        ...measuredResult(),
+        executionAuthorized: true,
+      },
+    } as unknown as PaperProfitabilityRankingInput;
+
+    const ranked = rankPaperProfitabilityCandidates([authorityShapedInput])[0]!;
+    expect(Object.keys(ranked).sort()).toEqual(
+      [
+        "candidateId",
+        "marketId",
+        "measurementWindowMs",
+        "collateralUsd",
+        "status",
+        "reasons",
+        "netUsdPerDay",
+        "netReturnBpsPerDay",
+      ].sort(),
+    );
+    expect(ranked).not.toHaveProperty("executionAuthorized");
+    expect(ranked).not.toHaveProperty("routeToLive");
+    expect(ranked).not.toHaveProperty("result");
+    expect(ranked.status).toBe("eligible");
+  });
 });
