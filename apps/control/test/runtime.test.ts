@@ -2,6 +2,7 @@ import { randomBytes } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import Database from "better-sqlite3";
 import {
   createEncryptedAgent,
   QuoteBelowMinimumError,
@@ -360,6 +361,143 @@ afterEach(() => {
 });
 
 describe("runtime execution boundaries", () => {
+  it("keeps a delayed Live quote receipt in its detached dispatch run", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2030-01-01T00:00:00.000Z"));
+    const harness = createHarness();
+    const core = harness.tenant
+      .listBundles()
+      .find((bundle) => bundle.name === "Core")!;
+    const firstAttachment = harness.tenant.listStrategyAttachments(
+      core.strategyId!,
+    )[0]!;
+    let dispatchStarted!: () => void;
+    const dispatched = new Promise<void>((resolve) => {
+      dispatchStarted = resolve;
+    });
+    let releaseReceipt!: () => void;
+    const receiptDeferred = new Promise<void>((resolve) => {
+      releaseReceipt = resolve;
+    });
+    const executeQuote = harness.gateway.executeQuote.bind(harness.gateway);
+    harness.gateway.executeQuote = async (inputs) => {
+      dispatchStarted();
+      await receiptDeferred;
+      return executeQuote(inputs);
+    };
+
+    harness.runtime.start();
+    await dispatched;
+    const cycle = (
+      harness.runtime as unknown as { cyclePromise: Promise<void> }
+    ).cyclePromise;
+    const config = harness.tenant.getConfig()!;
+    vi.setSystemTime(new Date("2030-01-01T00:00:10.000Z"));
+    harness.tenant.setConfig({
+      ...config,
+      quoteSizeUsd: config.quoteSizeUsd + 1,
+    });
+    const detachedFirstAttachment = harness.tenant
+      .listStrategyAttachments(core.strategyId!)
+      .find((attachment) => attachment.runId === firstAttachment.runId)!;
+    const secondAttachment = harness.tenant
+      .listStrategyAttachments(core.strategyId!)
+      .at(-1)!;
+    expect(secondAttachment.runId).not.toBe(firstAttachment.runId);
+    expect(detachedFirstAttachment.detachedAt).toBe("2030-01-01T00:00:10.000Z");
+
+    vi.setSystemTime(new Date("2030-01-01T00:00:20.000Z"));
+    releaseReceipt();
+    await cycle;
+
+    const database = (harness.store as unknown as { db: Database.Database }).db;
+    const row = database
+      .prepare(
+        `SELECT run_id, occurred_at FROM tenant_executions
+         WHERE owner_address = ? AND digest = 'digest-1'`,
+      )
+      .get(harness.tenant.ownerAddress) as {
+      run_id: string | null;
+      occurred_at: string;
+    };
+    expect(row.run_id).toBe(firstAttachment.runId);
+    expect(Date.parse(row.occurred_at)).toBeGreaterThan(
+      Date.parse(detachedFirstAttachment.detachedAt!),
+    );
+    expect(
+      harness.tenant.listStrategyGas(detachedFirstAttachment, "live"),
+    ).toContainEqual({ gasUsedMist: 20, suiUsd: null });
+    expect(harness.tenant.listStrategyGas(secondAttachment, "live")).toEqual(
+      [],
+    );
+    await harness.runtime.stop();
+    harness.store.close();
+  });
+
+  it("writes runtime gas under distinct attachment runs after reattachment", async () => {
+    const harness = createHarness();
+    const core = harness.tenant
+      .listBundles()
+      .find((bundle) => bundle.name === "Core")!;
+    const firstAttachment = harness.tenant.listStrategyAttachments(
+      core.strategyId!,
+    )[0]!;
+    const firstRuntime = new MakerRuntime(
+      harness.store.forBundle(harness.tenant.ownerAddress, core.id),
+      harness.gateway as never,
+      harness.runtimeOptions,
+    );
+    firstRuntime.start();
+    await firstRuntime.cycle({ executeLive: true });
+    await firstRuntime.stop();
+
+    const config = harness.tenant.getConfig()!;
+    harness.tenant.setConfig({
+      ...config,
+      quoteSizeUsd: config.quoteSizeUsd + 1,
+    });
+    const attachments = harness.tenant.listStrategyAttachments(
+      core.strategyId!,
+    );
+    const secondAttachment = attachments.at(-1)!;
+    expect(secondAttachment.runId).not.toBe(firstAttachment.runId);
+
+    const secondRuntime = new MakerRuntime(
+      harness.store.forBundle(harness.tenant.ownerAddress, core.id),
+      harness.gateway as never,
+      harness.runtimeOptions,
+    );
+    secondRuntime.start();
+    await secondRuntime.cycle({ executeLive: true });
+    await secondRuntime.stop();
+
+    const database = (harness.store as unknown as { db: Database.Database }).db;
+    const rows = database
+      .prepare(
+        `SELECT run_id FROM tenant_executions
+         WHERE owner_address = ? AND bundle_id = ? AND mode = 'live'
+         ORDER BY id ASC`,
+      )
+      .all(harness.tenant.ownerAddress, core.id) as Array<{
+      run_id: string | null;
+    }>;
+    expect([...new Set(rows.map((row) => row.run_id))]).toEqual([
+      firstAttachment.runId,
+      secondAttachment.runId,
+    ]);
+    const firstGas = harness.tenant.listStrategyGas(firstAttachment, "live");
+    const secondGas = harness.tenant.listStrategyGas(secondAttachment, "live");
+    expect(firstGas).toHaveLength(
+      rows.filter((row) => row.run_id === firstAttachment.runId).length,
+    );
+    expect(secondGas).toHaveLength(
+      rows.filter((row) => row.run_id === secondAttachment.runId).length,
+    );
+    expect(firstGas.length).toBeGreaterThan(0);
+    expect(secondGas.length).toBeGreaterThan(0);
+    harness.store.close();
+  });
+
   it("treats a cycle before strategy setup as an idle no-op", async () => {
     const harness = createHarness({ configured: false });
 

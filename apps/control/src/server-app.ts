@@ -972,6 +972,13 @@ export async function buildServer({
           `History before ${day(paperPruned)} was pruned, so earlier Paper activity isn't counted.`,
         );
 
+      if (!attachment.runId) {
+        const gap =
+          "Live evidence is unavailable for this attachment because its authoritative run binding was not recorded.";
+        liveEvidenceGaps.push(gap);
+        liveGaps.push(gap);
+        continue;
+      }
       liveGas.push(...scoped.listStrategyGas(attachment, "live"));
       const livePruned =
         prunedSince("tenant_executions", attachment.attachedAt) ??
@@ -992,12 +999,10 @@ export async function buildServer({
       if (bundle?.makerAccountId) {
         const attachmentFills = persistedLiveFills.filter(
           (fill) =>
+            fill.runId === attachment.runId &&
             fill.accountId === bundle.makerAccountId &&
             fill.configVersion === attachment.strategyVersion &&
             inAttachment(fill.timestampMs),
-        );
-        const attachmentRunIds = new Set(
-          attachmentFills.map((fill) => fill.runId),
         );
         for (const fill of attachmentFills) {
           const priceUsd = Number(fill.priceUsd);
@@ -1057,10 +1062,9 @@ export async function buildServer({
         const fundingEffects = persistedLedgerEffects.filter(
           (effect) =>
             effect.kind === "funding" &&
+            effect.runId === attachment.runId &&
             effect.accountId === bundle.makerAccountId &&
             effect.configVersion === attachment.strategyVersion &&
-            effect.runId !== null &&
-            attachmentRunIds.has(effect.runId) &&
             inAttachment(effect.timestampMs),
         );
         for (const effect of fundingEffects) {

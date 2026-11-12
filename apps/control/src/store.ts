@@ -77,6 +77,17 @@ const normalizeAddress = (address: string) => address.toLowerCase();
 const coreBundleId = (ownerAddress: string) =>
   `core-${normalizeAddress(ownerAddress).replace(/^0x/, "")}`;
 
+/**
+ * Live evidence needs a durable owner before source rows are attributed.
+ * This is local reporting metadata only: it neither starts nor affects a run.
+ */
+const strategyAttachmentRunId = (
+  bundleId: string,
+  strategyId: string,
+  strategyVersion: number,
+  attachedAt: string,
+) => `attachment:${bundleId}:${strategyId}:v${strategyVersion}:${attachedAt}`;
+
 type StoredMakerConfig = Partial<MakerConfig> & {
   marketId?: string;
   symbol?: string;
@@ -462,6 +473,8 @@ export type StrategyAttachment = {
   bundleId: string;
   strategyId: string;
   strategyVersion: number;
+  /** Null only for an attachment created before run binding was introduced. */
+  runId: string | null;
   attachedAt: string;
   detachedAt: string | null;
 };
@@ -630,6 +643,7 @@ export class Store {
       CREATE TABLE IF NOT EXISTS tenant_executions (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         owner_address TEXT NOT NULL,
+        run_id TEXT,
         occurred_at TEXT NOT NULL,
         mode TEXT NOT NULL,
         market_id TEXT NOT NULL,
@@ -694,6 +708,7 @@ export class Store {
       CREATE TABLE IF NOT EXISTS tenant_hedge_executions (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         owner_address TEXT NOT NULL,
+        run_id TEXT,
         occurred_at TEXT NOT NULL,
         maker_account_id TEXT NOT NULL,
         hedge_account_id TEXT NOT NULL,
@@ -982,6 +997,9 @@ export class Store {
     if (!executionColumns.some((column) => column.name === "sui_usd")) {
       this.db.exec("ALTER TABLE tenant_executions ADD COLUMN sui_usd REAL");
     }
+    if (!executionColumns.some((column) => column.name === "run_id")) {
+      this.db.exec("ALTER TABLE tenant_executions ADD COLUMN run_id TEXT");
+    }
     const hedgeExecutionColumns = this.db
       .prepare("PRAGMA table_info(tenant_hedge_executions)")
       .all() as Array<{ name: string }>;
@@ -990,6 +1008,17 @@ export class Store {
         "ALTER TABLE tenant_hedge_executions ADD COLUMN sui_usd REAL",
       );
     }
+    if (!hedgeExecutionColumns.some((column) => column.name === "run_id")) {
+      this.db.exec(
+        "ALTER TABLE tenant_hedge_executions ADD COLUMN run_id TEXT",
+      );
+    }
+    this.db.exec(`
+      CREATE INDEX IF NOT EXISTS tenant_executions_owner_run_time
+        ON tenant_executions(owner_address, run_id, occurred_at DESC);
+      CREATE INDEX IF NOT EXISTS tenant_hedge_executions_owner_run_time
+        ON tenant_hedge_executions(owner_address, run_id, occurred_at DESC);
+    `);
 
     // Paper fee terms are part of the simulation evidence. Older fills did
     // not retain a schedule, so leave their new columns NULL rather than
@@ -1255,6 +1284,7 @@ export class Store {
           bundle_id TEXT NOT NULL REFERENCES bundles(id) ON DELETE CASCADE,
           strategy_id TEXT NOT NULL REFERENCES strategies(id),
           strategy_version INTEGER NOT NULL CHECK (strategy_version >= 1),
+          run_id TEXT,
           attached_at TEXT NOT NULL,
           detached_at TEXT
         );
@@ -1377,6 +1407,13 @@ export class Store {
         "tenant_hedged_fills",
         "bundle_id",
         "bundle_id TEXT REFERENCES bundles(id)",
+      );
+      // Do not infer a binding for existing attachment history: overlapping
+      // same-account runs are indistinguishable without a recorded run ID.
+      ensureColumn("strategy_attachments", "run_id", "run_id TEXT");
+      this.db.exec(
+        `CREATE INDEX IF NOT EXISTS strategy_attachments_owner_run
+         ON strategy_attachments(owner_address, run_id)`,
       );
       ensureColumn(
         "bundle_markets",
@@ -3054,6 +3091,26 @@ export class TenantStore {
     }));
   }
 
+  /** Bundle-scoped writers must name the attachment run they are writing for. */
+  private boundEvidenceRunId(
+    runId: string | null,
+    evidenceKind: "fill" | "ledger effect",
+  ): string | null {
+    if (!this.bundleId) return runId;
+    const activeRunId = this.activeStrategyAttachmentRunId();
+    if (!activeRunId) {
+      throw new Error(
+        `Cannot record a bundle-scoped ${evidenceKind} without an authoritative attachment run binding`,
+      );
+    }
+    if (runId !== activeRunId) {
+      throw new Error(
+        `Bundle-scoped ${evidenceKind} run does not match the active attachment`,
+      );
+    }
+    return activeRunId;
+  }
+
   recordAttributedFills(fills: readonly AttributedFill[]): void {
     const insert = this.db.prepare(
       `INSERT INTO tenant_attributed_fills
@@ -3074,10 +3131,11 @@ export class TenantStore {
         if (normalizeAddress(fill.ownerWallet) !== this.ownerAddress) {
           throw new Error("Attributed fill owner does not match this tenant");
         }
+        const runId = this.boundEvidenceRunId(fill.runId, "fill");
         insert.run(
           this.ownerAddress,
           fill.sourceEventKey,
-          fill.runId,
+          runId,
           fill.configVersion,
           fill.accountId,
           fill.marketId,
@@ -3184,10 +3242,11 @@ export class TenantStore {
     );
     this.db.transaction(() => {
       for (const effect of effects) {
+        const runId = this.boundEvidenceRunId(effect.runId, "ledger effect");
         insert.run(
           this.ownerAddress,
           effect.sourceEventKey,
-          effect.runId,
+          runId,
           effect.configVersion,
           effect.accountId,
           effect.marketId,
@@ -3474,6 +3533,25 @@ export class TenantStore {
     return bundle?.id ?? null;
   }
 
+  /**
+   * The runtime writes through a bundle-scoped store. Resolve that bundle's
+   * current attachment at write time so a reattachment begins a distinct
+   * evidence run before the next execution can be recorded.
+   */
+  activeStrategyAttachmentRunId(): string | null {
+    const bundleId = this.attributedBundleId();
+    if (!bundleId) return null;
+    const row = this.db
+      .prepare(
+        `SELECT run_id FROM strategy_attachments
+         WHERE owner_address = ? AND bundle_id = ? AND detached_at IS NULL
+         ORDER BY id DESC LIMIT 1`,
+      )
+      .get(this.ownerAddress, bundleId) as
+      { run_id: string | null } | undefined;
+    return row?.run_id ?? null;
+  }
+
   private getBundleRow(bundleId: string): BundleRow | null {
     const row = this.db
       .prepare(
@@ -3716,14 +3794,20 @@ export class TenantStore {
     this.db
       .prepare(
         `INSERT INTO strategy_attachments
-          (owner_address, bundle_id, strategy_id, strategy_version, attached_at, detached_at)
-         VALUES (?, ?, ?, ?, ?, NULL)`,
+          (owner_address, bundle_id, strategy_id, strategy_version, run_id, attached_at, detached_at)
+         VALUES (?, ?, ?, ?, ?, ?, NULL)`,
       )
       .run(
         this.ownerAddress,
         bundleId,
         strategyId,
         strategyVersion,
+        strategyAttachmentRunId(
+          bundleId,
+          strategyId,
+          strategyVersion,
+          attachedAt,
+        ),
         attachedAt,
       );
   }
@@ -3741,7 +3825,7 @@ export class TenantStore {
     return (
       this.db
         .prepare(
-          `SELECT bundle_id, strategy_id, strategy_version, attached_at, detached_at
+          `SELECT bundle_id, strategy_id, strategy_version, run_id, attached_at, detached_at
            FROM strategy_attachments
            WHERE owner_address = ? AND strategy_id = ?
            ORDER BY attached_at ASC, id ASC`,
@@ -3750,6 +3834,7 @@ export class TenantStore {
         bundle_id: string;
         strategy_id: string;
         strategy_version: number;
+        run_id: string | null;
         attached_at: string;
         detached_at: string | null;
       }>
@@ -3757,6 +3842,7 @@ export class TenantStore {
       bundleId: row.bundle_id,
       strategyId: row.strategy_id,
       strategyVersion: row.strategy_version,
+      runId: row.run_id,
       attachedAt: row.attached_at,
       detachedAt: row.detached_at,
     }));
@@ -3932,27 +4018,23 @@ export class TenantStore {
 
   /**
    * Gas a bundle spent while it ran this strategy (one attachment). Paper
-   * rows are simulated quote transactions: what Live would have paid.
+   * rows are simulated quote transactions: what Live would have paid. The
+   * persisted run ID is authoritative: a dispatched transaction can confirm
+   * after this attachment has detached, and must remain with its dispatch run.
    */
   listStrategyGas(
     attachment: StrategyAttachment,
     mode: "paper" | "live",
   ): Array<{ gasUsedMist: number | null; suiUsd: number | null }> {
-    const interval = [
-      this.ownerAddress,
-      attachment.bundleId,
-      attachment.attachedAt,
-      attachment.detachedAt,
-      attachment.detachedAt,
-    ];
+    if (!attachment.runId) return [];
+    const scope = [this.ownerAddress, attachment.bundleId, attachment.runId];
     const rows = this.db
       .prepare(
         `SELECT gas_used_mist, sui_usd FROM tenant_executions
-         WHERE owner_address = ? AND bundle_id = ?
-           AND occurred_at >= ? AND (? IS NULL OR occurred_at < ?)
+         WHERE owner_address = ? AND bundle_id = ? AND run_id = ?
            AND mode = ?`,
       )
-      .all(...interval, mode) as Array<{
+      .all(...scope, mode) as Array<{
       gas_used_mist: number | null;
       sui_usd: number | null;
     }>;
@@ -3961,10 +4043,9 @@ export class TenantStore {
         ...(this.db
           .prepare(
             `SELECT gas_used_mist, sui_usd FROM tenant_hedge_executions
-             WHERE owner_address = ? AND bundle_id = ?
-               AND occurred_at >= ? AND (? IS NULL OR occurred_at < ?)`,
+             WHERE owner_address = ? AND bundle_id = ? AND run_id = ?`,
           )
-          .all(...interval) as Array<{
+          .all(...scope) as Array<{
           gas_used_mist: number | null;
           sui_usd: number | null;
         }>),
@@ -6023,6 +6104,8 @@ export class TenantStore {
   }
 
   logExecution(inputs: {
+    /** Captured immediately before a Live dispatch; never re-resolve at receipt time. */
+    attachmentRunId?: string | null;
     mode: string;
     marketId: string;
     digest?: string;
@@ -6035,16 +6118,22 @@ export class TenantStore {
     gasUsedMist?: number;
     suiUsd?: number | null;
   }): void {
+    const bundleId = this.attributedBundleId();
+    const runId =
+      inputs.attachmentRunId === undefined
+        ? this.activeStrategyAttachmentRunId()
+        : inputs.attachmentRunId;
     this.db
       .prepare(
         `INSERT INTO tenant_executions
-          (owner_address, bundle_id, occurred_at, mode, market_id, digest, endpoint,
+          (owner_address, bundle_id, run_id, occurred_at, mode, market_id, digest, endpoint,
            bid_price, ask_price, size_usd, outcome, error, gas_used_mist, sui_usd)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         this.ownerAddress,
-        this.attributedBundleId(),
+        bundleId,
+        runId,
         new Date().toISOString(),
         inputs.mode,
         inputs.marketId,
@@ -6778,6 +6867,8 @@ export class TenantStore {
   }
 
   recordHedgeExecution(inputs: {
+    /** Captured immediately before the hedge dispatch. */
+    attachmentRunId?: string | null;
     makerAccountId: string;
     hedgeAccountId: string;
     marketId: string;
@@ -6789,18 +6880,24 @@ export class TenantStore {
     fillKeys: string[];
   }): void {
     const occurredAt = new Date().toISOString();
+    const bundleId = this.attributedBundleId();
+    const runId =
+      inputs.attachmentRunId === undefined
+        ? this.activeStrategyAttachmentRunId()
+        : inputs.attachmentRunId;
     this.db.transaction(() => {
       this.db
         .prepare(
           `INSERT OR IGNORE INTO tenant_hedge_executions
-            (owner_address, bundle_id, occurred_at, maker_account_id,
+            (owner_address, bundle_id, run_id, occurred_at, maker_account_id,
              hedge_account_id, market_id, digest, side, requested_notional_usd,
              gas_used_mist, sui_usd)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
         .run(
           this.ownerAddress,
-          this.attributedBundleId(),
+          bundleId,
+          runId,
           occurredAt,
           inputs.makerAccountId,
           inputs.hedgeAccountId,
