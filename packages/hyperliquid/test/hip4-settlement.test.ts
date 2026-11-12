@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import recordedSettlement from "../fixtures/hip4-settlement.json";
 import { selectRecordedHip4Settlement } from "../hip4-settlement.js";
@@ -140,6 +141,93 @@ describe("recorded HIP-4 settlement selector", () => {
       });
     }
 
+    const sourceWithRegeneratedUri = regeneratedSource(recordedSettlement, {
+      ...recordedSettlement.settlement.source,
+      uri: "https://attacker.example.invalid/settlement.json",
+    });
+    const sourceWithRegeneratedId = regeneratedSource(recordedSettlement, {
+      ...recordedSettlement.settlement.source,
+      id: "attacker-source",
+    });
+    const rulesWithRegeneratedVersion = regeneratedRules({
+      ...recordedSettlement.settlement.rules,
+      version: "attacker-rules-v2",
+    });
+    const rulesWithRegeneratedText = regeneratedRules({
+      ...recordedSettlement.settlement.rules,
+      text: "Attacker-controlled settlement text.",
+    });
+    const attackerMarket = {
+      ...recordedSettlement.market,
+      name: "xyz:ATTACKER-2025-01-31",
+    };
+    const attackerMarketEvidence = {
+      ...recordedSettlement,
+      market: attackerMarket,
+    };
+
+    const regeneratedAttackCases: Array<[unknown, unknown]> = [
+      [
+        {
+          ...recordedSettlement,
+          settlement: {
+            ...recordedSettlement.settlement,
+            source: sourceWithRegeneratedUri,
+          },
+        },
+        request,
+      ],
+      [
+        {
+          ...recordedSettlement,
+          settlement: {
+            ...recordedSettlement.settlement,
+            source: sourceWithRegeneratedId,
+          },
+        },
+        request,
+      ],
+      [
+        {
+          ...recordedSettlement,
+          settlement: {
+            ...recordedSettlement.settlement,
+            rules: rulesWithRegeneratedVersion,
+          },
+        },
+        request,
+      ],
+      [
+        {
+          ...recordedSettlement,
+          settlement: {
+            ...recordedSettlement.settlement,
+            rules: rulesWithRegeneratedText,
+          },
+        },
+        request,
+      ],
+      [
+        {
+          ...attackerMarketEvidence,
+          settlement: {
+            ...attackerMarketEvidence.settlement,
+            source: regeneratedSource(
+              attackerMarketEvidence,
+              attackerMarketEvidence.settlement.source,
+            ),
+          },
+        },
+        { ...request, market: attackerMarket },
+      ],
+    ];
+    for (const [input, attackRequest] of regeneratedAttackCases) {
+      expect(selectRecordedHip4Settlement(input, attackRequest)).toEqual({
+        status: "unavailable",
+        reason: "unpinned-settlement",
+      });
+    }
+
     const cases: Array<[unknown, string]> = [
       [
         {
@@ -221,3 +309,25 @@ describe("recorded HIP-4 settlement selector", () => {
     }
   });
 });
+
+function regeneratedSource(
+  evidence: typeof recordedSettlement,
+  source: typeof recordedSettlement.settlement.source,
+) {
+  const payload = JSON.stringify({
+    market: evidence.market,
+    observedAtMs: evidence.observedAtMs,
+    observationWindow: evidence.observationWindow,
+    source: { id: source.id, uri: source.uri },
+  });
+  return { ...source, payload, pinnedDigest: sha256(payload) };
+}
+
+function regeneratedRules(rules: typeof recordedSettlement.settlement.rules) {
+  const payload = JSON.stringify({ version: rules.version, text: rules.text });
+  return { ...rules, payload, pinnedDigest: sha256(payload) };
+}
+
+function sha256(payload: string): string {
+  return `sha256:${createHash("sha256").update(payload, "utf8").digest("hex")}`;
+}

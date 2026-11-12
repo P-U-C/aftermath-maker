@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 /**
  * Pure selector for recorded HIP-4 settlement evidence.
  *
@@ -59,6 +61,42 @@ type ParseProblem = Exclude<ParseResult<never>["kind"], "value">;
 
 const canonicalUnixMillisecondsMinimum = 1_000_000_000_000;
 
+type ApprovedSettlementPin = {
+  readonly market: Hip4MarketIdentity;
+  readonly source: {
+    readonly id: string;
+    readonly uri: string;
+    readonly pinnedDigest: string;
+  };
+  readonly rules: {
+    readonly version: string;
+    readonly pinnedDigest: string;
+  };
+};
+
+// This policy is module-local on purpose: callers cannot self-attest a pin.
+const approvedSettlementPins: readonly ApprovedSettlementPin[] = Object.freeze([
+  Object.freeze({
+    market: Object.freeze({
+      venue: "hyperliquid",
+      kind: "hip4",
+      name: "xyz:TEST-2025-01-31",
+      assetId: 1042,
+    }),
+    source: Object.freeze({
+      id: "recorded-index-snapshot",
+      uri: "https://evidence.example.invalid/hip4/xyz-test-2025-01-31.json",
+      pinnedDigest:
+        "sha256:7a51983006f34501f60839b46b1674e7e6e6941bca32390ce3fbcba8ffbd29e4",
+    }),
+    rules: Object.freeze({
+      version: "hip4-settlement-v1",
+      pinnedDigest:
+        "sha256:21459e1d357328f5e5207afda1e5d77394f0fefe6c9401f59fe39893eecc89ec",
+    }),
+  }),
+]);
+
 /**
  * Selects a recorded settlement only when it exactly matches the requested
  * HIP-4 market and remains valid at the caller-provided as-of boundary.
@@ -114,6 +152,9 @@ export function selectRecordedHip4Settlement(
   );
   if (parsedSettlement.kind !== "value") {
     return unavailable(parsedSettlement.kind);
+  }
+  if (!matchesApprovedPin(market.value, parsedSettlement.value)) {
+    return unavailable("unpinned");
   }
   if (parsedSettlement.value.expiryMs <= parsedRequest.value.asOfMs) {
     return unavailable("expired");
@@ -405,6 +446,24 @@ function sha256Digest(payload: string): string {
   return `sha256:${createHash("sha256").update(payload, "utf8").digest("hex")}`;
 }
 
+function matchesApprovedPin(
+  market: Hip4MarketIdentity,
+  settlement: {
+    source: PinnedSettlementSource;
+    rules: PinnedSettlementRules;
+  },
+): boolean {
+  return approvedSettlementPins.some(
+    (approved) =>
+      sameMarket(approved.market, market) &&
+      approved.source.id === settlement.source.id &&
+      approved.source.uri === settlement.source.uri &&
+      approved.source.pinnedDigest === settlement.source.pinnedDigest &&
+      approved.rules.version === settlement.rules.version &&
+      approved.rules.pinnedDigest === settlement.rules.pinnedDigest,
+  );
+}
+
 function firstProblem(
   values: ParseResult<unknown>[],
 ): ParseProblem | undefined {
@@ -430,4 +489,3 @@ function unavailable(
     return { status: "unavailable", reason: "unpinned-settlement" };
   return { status: "unavailable", reason: `${kind}-field` };
 }
-import { createHash } from "node:crypto";
