@@ -63,6 +63,122 @@ describe("persistent control store", () => {
     reopened.close();
   });
 
+  it("requires bundle-scoped Live evidence writers to use the active attachment run", () => {
+    const directory = join(
+      process.env.TMPDIR ?? "/tmp",
+      `aftermath-maker-${randomBytes(8).toString("hex")}`,
+    );
+    mkdirSync(directory, { recursive: true });
+    const databaseStore = new Store(join(directory, "maker.db"));
+    const owner = `0x${"b".repeat(64)}`;
+    const tenant = databaseStore.forTenant(owner);
+    tenant.setConfig(
+      makerConfigSchema.parse({
+        makerAccountId: "42",
+        markets: [{ marketId: "0x5678", symbol: "SUI" }],
+      }),
+    );
+    const core = tenant.listBundles().find((bundle) => bundle.name === "Core")!;
+    const attachment = tenant.listStrategyAttachments(core.strategyId!)[0]!;
+    const writer = databaseStore.forBundle(owner, core.id);
+
+    expect(writer.activeStrategyAttachmentRunId()).toBe(attachment.runId);
+    writer.recordAttributedFills([
+      {
+        sourceEventKey: "mainnet:bound-fill:0",
+        runId: attachment.runId!,
+        configVersion: attachment.strategyVersion,
+        accountId: "42",
+        ownerWallet: owner,
+        marketId: "0x5678",
+        orderId: "bound-fill",
+        txDigest: "bound-fill",
+        eventIndex: 0,
+        timestampMs: Date.parse(attachment.attachedAt),
+        side: "buy",
+        liquidity: "maker",
+        sizeBase: "1",
+        priceUsd: "10",
+        notionalUsd: "10",
+        venueFeeUsd: "0",
+        builderFeeUsd: "0",
+        realizedPnlUsd: "0",
+        counterpartyClass: "unresolved",
+        classificationEvidence: ["fixture"],
+        source: "fixture",
+        network: "mainnet",
+        coverage: "complete",
+        raw: {},
+      },
+    ]);
+    const boundLedgerEffect = {
+      sourceEventKey: "mainnet:bound-funding",
+      runId: attachment.runId,
+      configVersion: attachment.strategyVersion,
+      accountId: "42",
+      marketId: "0x5678",
+      timestampMs: Date.parse(attachment.attachedAt),
+      kind: "funding",
+      fundingUsd: "1",
+      gasUsedMist: null,
+      gasUsd: null,
+      externalTransferUsd: null,
+      source: "fixture",
+      network: "mainnet",
+      coverage: "complete",
+      raw: {},
+    } satisfies Parameters<
+      typeof writer.recordInventoryLedgerEffects
+    >[0][number];
+    writer.recordInventoryLedgerEffects([boundLedgerEffect]);
+    expect(tenant.listAttributedFills()).toEqual([
+      expect.objectContaining({ runId: attachment.runId }),
+    ]);
+    expect(tenant.listInventoryLedgerEffects()).toEqual([
+      expect.objectContaining({ runId: attachment.runId }),
+    ]);
+    expect(() =>
+      writer.recordAttributedFills([
+        {
+          sourceEventKey: "mainnet:foreign-fill:0",
+          runId: "foreign-run",
+          configVersion: attachment.strategyVersion,
+          accountId: "42",
+          ownerWallet: owner,
+          marketId: "0x5678",
+          orderId: "foreign-fill",
+          txDigest: "foreign-fill",
+          eventIndex: 0,
+          timestampMs: Date.parse(attachment.attachedAt),
+          side: "buy",
+          liquidity: "maker",
+          sizeBase: "1",
+          priceUsd: "10",
+          notionalUsd: "10",
+          venueFeeUsd: "0",
+          builderFeeUsd: "0",
+          realizedPnlUsd: "0",
+          counterpartyClass: "unresolved",
+          classificationEvidence: ["fixture"],
+          source: "fixture",
+          network: "mainnet",
+          coverage: "complete",
+          raw: {},
+        },
+      ]),
+    ).toThrow("does not match the active attachment");
+    expect(() =>
+      writer.recordInventoryLedgerEffects([
+        {
+          ...boundLedgerEffect,
+          sourceEventKey: "mainnet:foreign-funding",
+          runId: "foreign-run",
+        },
+      ]),
+    ).toThrow("does not match the active attachment");
+    databaseStore.close();
+  });
+
   it("persists config, setup, encrypted signer, and audit events", () => {
     const directory = join(
       process.env.TMPDIR ?? "/tmp",

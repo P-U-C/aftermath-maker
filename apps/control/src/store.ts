@@ -643,6 +643,7 @@ export class Store {
       CREATE TABLE IF NOT EXISTS tenant_executions (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         owner_address TEXT NOT NULL,
+        run_id TEXT,
         occurred_at TEXT NOT NULL,
         mode TEXT NOT NULL,
         market_id TEXT NOT NULL,
@@ -707,6 +708,7 @@ export class Store {
       CREATE TABLE IF NOT EXISTS tenant_hedge_executions (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         owner_address TEXT NOT NULL,
+        run_id TEXT,
         occurred_at TEXT NOT NULL,
         maker_account_id TEXT NOT NULL,
         hedge_account_id TEXT NOT NULL,
@@ -995,6 +997,9 @@ export class Store {
     if (!executionColumns.some((column) => column.name === "sui_usd")) {
       this.db.exec("ALTER TABLE tenant_executions ADD COLUMN sui_usd REAL");
     }
+    if (!executionColumns.some((column) => column.name === "run_id")) {
+      this.db.exec("ALTER TABLE tenant_executions ADD COLUMN run_id TEXT");
+    }
     const hedgeExecutionColumns = this.db
       .prepare("PRAGMA table_info(tenant_hedge_executions)")
       .all() as Array<{ name: string }>;
@@ -1003,6 +1008,17 @@ export class Store {
         "ALTER TABLE tenant_hedge_executions ADD COLUMN sui_usd REAL",
       );
     }
+    if (!hedgeExecutionColumns.some((column) => column.name === "run_id")) {
+      this.db.exec(
+        "ALTER TABLE tenant_hedge_executions ADD COLUMN run_id TEXT",
+      );
+    }
+    this.db.exec(`
+      CREATE INDEX IF NOT EXISTS tenant_executions_owner_run_time
+        ON tenant_executions(owner_address, run_id, occurred_at DESC);
+      CREATE INDEX IF NOT EXISTS tenant_hedge_executions_owner_run_time
+        ON tenant_hedge_executions(owner_address, run_id, occurred_at DESC);
+    `);
 
     // Paper fee terms are part of the simulation evidence. Older fills did
     // not retain a schedule, so leave their new columns NULL rather than
@@ -3075,6 +3091,26 @@ export class TenantStore {
     }));
   }
 
+  /** Bundle-scoped writers must name the attachment run they are writing for. */
+  private boundEvidenceRunId(
+    runId: string | null,
+    evidenceKind: "fill" | "ledger effect",
+  ): string | null {
+    if (!this.bundleId) return runId;
+    const activeRunId = this.activeStrategyAttachmentRunId();
+    if (!activeRunId) {
+      throw new Error(
+        `Cannot record a bundle-scoped ${evidenceKind} without an authoritative attachment run binding`,
+      );
+    }
+    if (runId !== activeRunId) {
+      throw new Error(
+        `Bundle-scoped ${evidenceKind} run does not match the active attachment`,
+      );
+    }
+    return activeRunId;
+  }
+
   recordAttributedFills(fills: readonly AttributedFill[]): void {
     const insert = this.db.prepare(
       `INSERT INTO tenant_attributed_fills
@@ -3095,10 +3131,11 @@ export class TenantStore {
         if (normalizeAddress(fill.ownerWallet) !== this.ownerAddress) {
           throw new Error("Attributed fill owner does not match this tenant");
         }
+        const runId = this.boundEvidenceRunId(fill.runId, "fill");
         insert.run(
           this.ownerAddress,
           fill.sourceEventKey,
-          fill.runId,
+          runId,
           fill.configVersion,
           fill.accountId,
           fill.marketId,
@@ -3205,10 +3242,11 @@ export class TenantStore {
     );
     this.db.transaction(() => {
       for (const effect of effects) {
+        const runId = this.boundEvidenceRunId(effect.runId, "ledger effect");
         insert.run(
           this.ownerAddress,
           effect.sourceEventKey,
-          effect.runId,
+          runId,
           effect.configVersion,
           effect.accountId,
           effect.marketId,
@@ -3493,6 +3531,25 @@ export class TenantStore {
       )
       .get(this.ownerAddress) as { id: string } | undefined;
     return bundle?.id ?? null;
+  }
+
+  /**
+   * The runtime writes through a bundle-scoped store. Resolve that bundle's
+   * current attachment at write time so a reattachment begins a distinct
+   * evidence run before the next execution can be recorded.
+   */
+  activeStrategyAttachmentRunId(): string | null {
+    const bundleId = this.attributedBundleId();
+    if (!bundleId) return null;
+    const row = this.db
+      .prepare(
+        `SELECT run_id FROM strategy_attachments
+         WHERE owner_address = ? AND bundle_id = ? AND detached_at IS NULL
+         ORDER BY id DESC LIMIT 1`,
+      )
+      .get(this.ownerAddress, bundleId) as
+      { run_id: string | null } | undefined;
+    return row?.run_id ?? null;
   }
 
   private getBundleRow(bundleId: string): BundleRow | null {
@@ -3967,9 +4024,11 @@ export class TenantStore {
     attachment: StrategyAttachment,
     mode: "paper" | "live",
   ): Array<{ gasUsedMist: number | null; suiUsd: number | null }> {
+    if (!attachment.runId) return [];
     const interval = [
       this.ownerAddress,
       attachment.bundleId,
+      attachment.runId,
       attachment.attachedAt,
       attachment.detachedAt,
       attachment.detachedAt,
@@ -3977,7 +4036,7 @@ export class TenantStore {
     const rows = this.db
       .prepare(
         `SELECT gas_used_mist, sui_usd FROM tenant_executions
-         WHERE owner_address = ? AND bundle_id = ?
+         WHERE owner_address = ? AND bundle_id = ? AND run_id = ?
            AND occurred_at >= ? AND (? IS NULL OR occurred_at < ?)
            AND mode = ?`,
       )
@@ -3990,7 +4049,7 @@ export class TenantStore {
         ...(this.db
           .prepare(
             `SELECT gas_used_mist, sui_usd FROM tenant_hedge_executions
-             WHERE owner_address = ? AND bundle_id = ?
+             WHERE owner_address = ? AND bundle_id = ? AND run_id = ?
                AND occurred_at >= ? AND (? IS NULL OR occurred_at < ?)`,
           )
           .all(...interval) as Array<{
@@ -6064,16 +6123,19 @@ export class TenantStore {
     gasUsedMist?: number;
     suiUsd?: number | null;
   }): void {
+    const bundleId = this.attributedBundleId();
+    const runId = this.activeStrategyAttachmentRunId();
     this.db
       .prepare(
         `INSERT INTO tenant_executions
-          (owner_address, bundle_id, occurred_at, mode, market_id, digest, endpoint,
+          (owner_address, bundle_id, run_id, occurred_at, mode, market_id, digest, endpoint,
            bid_price, ask_price, size_usd, outcome, error, gas_used_mist, sui_usd)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         this.ownerAddress,
-        this.attributedBundleId(),
+        bundleId,
+        runId,
         new Date().toISOString(),
         inputs.mode,
         inputs.marketId,
@@ -6818,18 +6880,21 @@ export class TenantStore {
     fillKeys: string[];
   }): void {
     const occurredAt = new Date().toISOString();
+    const bundleId = this.attributedBundleId();
+    const runId = this.activeStrategyAttachmentRunId();
     this.db.transaction(() => {
       this.db
         .prepare(
           `INSERT OR IGNORE INTO tenant_hedge_executions
-            (owner_address, bundle_id, occurred_at, maker_account_id,
+            (owner_address, bundle_id, run_id, occurred_at, maker_account_id,
              hedge_account_id, market_id, digest, side, requested_notional_usd,
              gas_used_mist, sui_usd)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
         .run(
           this.ownerAddress,
-          this.attributedBundleId(),
+          bundleId,
+          runId,
           occurredAt,
           inputs.makerAccountId,
           inputs.hedgeAccountId,

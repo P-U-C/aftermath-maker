@@ -161,6 +161,23 @@ describe("strategy results", () => {
         gasUsedMist: 2_000_000,
         suiUsd: 3,
       });
+      // A different run can spend gas for the same bundle inside the same
+      // attachment window. It is no more attributable than its fills/funding.
+      const database = (h.store as unknown as { db: Database.Database }).db;
+      database
+        .prepare(
+          `INSERT INTO tenant_executions
+            (owner_address, bundle_id, run_id, occurred_at, mode, market_id,
+             bid_price, ask_price, size_usd, outcome, gas_used_mist, sui_usd)
+           VALUES (?, ?, ?, ?, 'live', '0x1', 100, 101, 200, 'confirmed', ?, 3)`,
+        )
+        .run(
+          OWNER,
+          core.id,
+          "live-run-other",
+          new Date(fillAtMs + 2).toISOString(),
+          999_000_000,
+        );
       vi.setSystemTime(asOfMs);
       return { h, core };
     };

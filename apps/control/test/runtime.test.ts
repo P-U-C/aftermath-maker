@@ -2,6 +2,7 @@ import { randomBytes } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import Database from "better-sqlite3";
 import {
   createEncryptedAgent,
   QuoteBelowMinimumError,
@@ -360,6 +361,70 @@ afterEach(() => {
 });
 
 describe("runtime execution boundaries", () => {
+  it("writes runtime gas under distinct attachment runs after reattachment", async () => {
+    const harness = createHarness();
+    const core = harness.tenant
+      .listBundles()
+      .find((bundle) => bundle.name === "Core")!;
+    const firstAttachment = harness.tenant.listStrategyAttachments(
+      core.strategyId!,
+    )[0]!;
+    const firstRuntime = new MakerRuntime(
+      harness.store.forBundle(harness.tenant.ownerAddress, core.id),
+      harness.gateway as never,
+      harness.runtimeOptions,
+    );
+    firstRuntime.start();
+    await firstRuntime.cycle({ executeLive: true });
+    await firstRuntime.stop();
+
+    const config = harness.tenant.getConfig()!;
+    harness.tenant.setConfig({
+      ...config,
+      quoteSizeUsd: config.quoteSizeUsd + 1,
+    });
+    const attachments = harness.tenant.listStrategyAttachments(
+      core.strategyId!,
+    );
+    const secondAttachment = attachments.at(-1)!;
+    expect(secondAttachment.runId).not.toBe(firstAttachment.runId);
+
+    const secondRuntime = new MakerRuntime(
+      harness.store.forBundle(harness.tenant.ownerAddress, core.id),
+      harness.gateway as never,
+      harness.runtimeOptions,
+    );
+    secondRuntime.start();
+    await secondRuntime.cycle({ executeLive: true });
+    await secondRuntime.stop();
+
+    const database = (harness.store as unknown as { db: Database.Database }).db;
+    const rows = database
+      .prepare(
+        `SELECT run_id FROM tenant_executions
+         WHERE owner_address = ? AND bundle_id = ? AND mode = 'live'
+         ORDER BY id ASC`,
+      )
+      .all(harness.tenant.ownerAddress, core.id) as Array<{
+      run_id: string | null;
+    }>;
+    expect([...new Set(rows.map((row) => row.run_id))]).toEqual([
+      firstAttachment.runId,
+      secondAttachment.runId,
+    ]);
+    const firstGas = harness.tenant.listStrategyGas(firstAttachment, "live");
+    const secondGas = harness.tenant.listStrategyGas(secondAttachment, "live");
+    expect(firstGas).toHaveLength(
+      rows.filter((row) => row.run_id === firstAttachment.runId).length,
+    );
+    expect(secondGas).toHaveLength(
+      rows.filter((row) => row.run_id === secondAttachment.runId).length,
+    );
+    expect(firstGas.length).toBeGreaterThan(0);
+    expect(secondGas.length).toBeGreaterThan(0);
+    harness.store.close();
+  });
+
   it("treats a cycle before strategy setup as an idle no-op", async () => {
     const harness = createHarness({ configured: false });
 
