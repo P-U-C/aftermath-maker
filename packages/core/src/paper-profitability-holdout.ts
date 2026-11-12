@@ -319,9 +319,21 @@ function assessSegment(
   });
   return assessment.windows.map((window, index) => {
     const source = indexed[index]!;
+    const sourceRecord = isRecord(source.raw) ? source.raw : null;
+    const sourceResult = isRecord(sourceRecord?.result)
+      ? sourceRecord.result
+      : null;
+    const acceptsSignedNonPositiveTraining =
+      phase === "train" &&
+      sourceResult?.status === "non_positive" &&
+      window.reasons.includes("result_not_positive") &&
+      window.reasons.includes("non_positive_trading_net_usd") &&
+      window.netUsdPerDay !== null &&
+      window.netReturnBpsPerDay !== null;
     const reasons = window.reasons.filter(
       (reason) =>
-        phase === "validation" || !TRAIN_NON_POSITIVE_REASONS.has(reason),
+        !acceptsSignedNonPositiveTraining ||
+        !TRAIN_NON_POSITIVE_REASONS.has(reason),
     );
     if (!isValidCohort(source.cohort)) {
       pushReason(reasons, "invalid_cohort");

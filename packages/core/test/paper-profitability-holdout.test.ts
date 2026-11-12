@@ -168,6 +168,88 @@ describe("Paper profitability walk-forward holdout admission", () => {
     );
   });
 
+  it("does not count unavailable training status with a positive-looking net", () => {
+    const result = assessPaperProfitabilityHoldout(
+      candidate({
+        trainWindows: candidate().trainWindows.map((window, index) =>
+          index === 0
+            ? {
+                ...window!,
+                result: measuredResult({
+                  status: "unavailable",
+                  tradingNetUsd: "1000",
+                }),
+              }
+            : window,
+        ),
+      }),
+    );
+
+    expect(result.status).toBe("ineligible");
+    expect(result.reasons).toEqual(
+      expect.arrayContaining([
+        "result_not_positive",
+        "insufficient_train_windows",
+      ]),
+    );
+    expect(result.trainWindows[0]).toMatchObject({
+      status: "ineligible",
+      reasons: expect.arrayContaining(["result_not_positive"]),
+      netUsdPerDay: null,
+      netReturnBpsPerDay: null,
+    });
+
+    const incompleteSignedTraining = assessPaperProfitabilityHoldout(
+      candidate({
+        trainWindows: candidate().trainWindows.map((window, index) =>
+          index === 0
+            ? {
+                ...window!,
+                result: measuredResult({
+                  status: "non_positive",
+                  tradingNetUsd: "-1",
+                  evidenceGaps: [
+                    {
+                      component: "fills",
+                      reason: "empty_fill_sample",
+                      sourceEventKey: null,
+                      orderKey: null,
+                      horizonMs: null,
+                    },
+                  ],
+                }),
+              }
+            : window,
+        ),
+      }),
+    );
+    expect(incompleteSignedTraining.status).toBe("ineligible");
+    expect(incompleteSignedTraining.reasons).toEqual(
+      expect.arrayContaining([
+        "evidence_gaps_present",
+        "insufficient_train_windows",
+      ]),
+    );
+
+    const inconsistentSignedTraining = assessPaperProfitabilityHoldout(
+      candidate({
+        trainWindows: candidate().trainWindows.map((window, index) =>
+          index === 0
+            ? {
+                ...window!,
+                result: measuredResult({
+                  status: "non_positive",
+                  tradingNetUsd: "1000",
+                }),
+              }
+            : window,
+        ),
+      }),
+    );
+    expect(inconsistentSignedTraining.status).toBe("ineligible");
+    expect(inconsistentSignedTraining.reasons).toContain("result_not_positive");
+  });
+
   it("rejects gaps, overlaps and train windows after validation begins", () => {
     const gap = assessPaperProfitabilityHoldout(
       candidate({
