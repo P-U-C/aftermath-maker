@@ -1,0 +1,11 @@
+{
+  "market": "NVDA",
+  "observedAtMs": 1735689600000,
+  "quotes": [
+    {
+      "direction": "buy-metric-sell-hyperliquid",
+      "sizeUsd": 1000,
+      "result": "reverted"
+    }
+  ]
+}

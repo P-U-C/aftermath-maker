@@ -1,0 +1,150 @@
+{
+  "market": "NVDA",
+  "observedAtMs": 1735689600000,
+  "quotes": [
+    {
+      "direction": "buy-metric-sell-hyperliquid",
+      "sizeUsd": 1000,
+      "result": "success",
+      "inputUsd": 1000,
+      "outputUsd": 1016,
+      "sources": {
+        "metric": { "timestampMs": 1735689599800, "side": "buy" },
+        "hyperliquid": { "timestampMs": 1735689599700, "side": "sell" }
+      },
+      "costs": {
+        "metricFeeUsd": 1,
+        "metricGasUsd": 0.2,
+        "hyperliquidFeeUsd": 1.5,
+        "hyperliquidGasUsd": 0.3,
+        "fundingUsd": 0.4
+      }
+    },
+    {
+      "direction": "buy-metric-sell-hyperliquid",
+      "sizeUsd": 5000,
+      "result": "success",
+      "inputUsd": 5000,
+      "outputUsd": 5077,
+      "sources": {
+        "metric": { "timestampMs": 1735689599800, "side": "buy" },
+        "hyperliquid": { "timestampMs": 1735689599700, "side": "sell" }
+      },
+      "costs": {
+        "metricFeeUsd": 5,
+        "metricGasUsd": 0.2,
+        "hyperliquidFeeUsd": 7.5,
+        "hyperliquidGasUsd": 0.3,
+        "fundingUsd": 2
+      }
+    },
+    {
+      "direction": "buy-metric-sell-hyperliquid",
+      "sizeUsd": 25000,
+      "result": "success",
+      "inputUsd": 25000,
+      "outputUsd": 25395,
+      "sources": {
+        "metric": { "timestampMs": 1735689599800, "side": "buy" },
+        "hyperliquid": { "timestampMs": 1735689599700, "side": "sell" }
+      },
+      "costs": {
+        "metricFeeUsd": 25,
+        "metricGasUsd": 0.2,
+        "hyperliquidFeeUsd": 37.5,
+        "hyperliquidGasUsd": 0.3,
+        "fundingUsd": 10
+      }
+    },
+    {
+      "direction": "buy-metric-sell-hyperliquid",
+      "sizeUsd": 50000,
+      "result": "success",
+      "inputUsd": 50000,
+      "outputUsd": 50810,
+      "sources": {
+        "metric": { "timestampMs": 1735689599800, "side": "buy" },
+        "hyperliquid": { "timestampMs": 1735689599700, "side": "sell" }
+      },
+      "costs": {
+        "metricFeeUsd": 50,
+        "metricGasUsd": 0.2,
+        "hyperliquidFeeUsd": 75,
+        "hyperliquidGasUsd": 0.3,
+        "fundingUsd": 20
+      }
+    },
+    {
+      "direction": "buy-hyperliquid-sell-metric",
+      "sizeUsd": 1000,
+      "result": "success",
+      "inputUsd": 1000,
+      "outputUsd": 1018,
+      "sources": {
+        "metric": { "timestampMs": 1735689599750, "side": "sell" },
+        "hyperliquid": { "timestampMs": 1735689599650, "side": "buy" }
+      },
+      "costs": {
+        "metricFeeUsd": 1.1,
+        "metricGasUsd": 0.2,
+        "hyperliquidFeeUsd": 1.4,
+        "hyperliquidGasUsd": 0.3,
+        "fundingUsd": 0.4
+      }
+    },
+    {
+      "direction": "buy-hyperliquid-sell-metric",
+      "sizeUsd": 5000,
+      "result": "success",
+      "inputUsd": 5000,
+      "outputUsd": 5083,
+      "sources": {
+        "metric": { "timestampMs": 1735689599750, "side": "sell" },
+        "hyperliquid": { "timestampMs": 1735689599650, "side": "buy" }
+      },
+      "costs": {
+        "metricFeeUsd": 5.5,
+        "metricGasUsd": 0.2,
+        "hyperliquidFeeUsd": 7,
+        "hyperliquidGasUsd": 0.3,
+        "fundingUsd": 2
+      }
+    },
+    {
+      "direction": "buy-hyperliquid-sell-metric",
+      "sizeUsd": 25000,
+      "result": "success",
+      "inputUsd": 25000,
+      "outputUsd": 25425,
+      "sources": {
+        "metric": { "timestampMs": 1735689599750, "side": "sell" },
+        "hyperliquid": { "timestampMs": 1735689599650, "side": "buy" }
+      },
+      "costs": {
+        "metricFeeUsd": 27.5,
+        "metricGasUsd": 0.2,
+        "hyperliquidFeeUsd": 35,
+        "hyperliquidGasUsd": 0.3,
+        "fundingUsd": 10
+      }
+    },
+    {
+      "direction": "buy-hyperliquid-sell-metric",
+      "sizeUsd": 50000,
+      "result": "success",
+      "inputUsd": 50000,
+      "outputUsd": 50870,
+      "sources": {
+        "metric": { "timestampMs": 1735689599750, "side": "sell" },
+        "hyperliquid": { "timestampMs": 1735689599650, "side": "buy" }
+      },
+      "costs": {
+        "metricFeeUsd": 55,
+        "metricGasUsd": 0.2,
+        "hyperliquidFeeUsd": 70,
+        "hyperliquidGasUsd": 0.3,
+        "fundingUsd": 20
+      }
+    }
+  ]
+}
