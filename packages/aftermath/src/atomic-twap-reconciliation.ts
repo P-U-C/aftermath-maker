@@ -1,24 +1,27 @@
 /**
  * The immutable portion of an Atomic-TWAP leg returned by Aftermath's
- * `twap-order-datas` endpoint. Values are deliberately represented as
- * numbers: this module validates recorded JSON only and never constructs a
- * provider request or transaction.
+ * `twap-order-datas` endpoint. Unsigned integer fields accept exact decimal
+ * strings as returned by the provider, never lossy JavaScript numbers. This
+ * module validates recorded JSON only and never constructs a provider request
+ * or transaction.
  */
+export type AtomicTwapUnsignedInteger = number | string;
+
 export type AtomicTwapOrderDefinition = {
   marketId: string;
   side: 0 | 1;
-  size: number;
+  size: AtomicTwapUnsignedInteger;
   reduceOnly: boolean;
-  chunksAmount: number;
-  executionGapMs: number;
-  executionTimeUncertaintyMs: number;
-  firstRunExpireTimestamp?: number;
-  expireTimestamp?: number;
-  timeForRetryMs: number;
-  amountUncertaintyBps: number;
-  maxOneExecutionAmountBps: number;
-  smallTailMergeThresholdBps: number;
-  maxSlippageBps: number;
+  chunksAmount: AtomicTwapUnsignedInteger;
+  executionGapMs: AtomicTwapUnsignedInteger;
+  executionTimeUncertaintyMs: AtomicTwapUnsignedInteger;
+  firstRunExpireTimestamp?: AtomicTwapUnsignedInteger;
+  expireTimestamp?: AtomicTwapUnsignedInteger;
+  timeForRetryMs: AtomicTwapUnsignedInteger;
+  amountUncertaintyBps: AtomicTwapUnsignedInteger;
+  maxOneExecutionAmountBps: AtomicTwapUnsignedInteger;
+  smallTailMergeThresholdBps: AtomicTwapUnsignedInteger;
+  maxSlippageBps: AtomicTwapUnsignedInteger;
 };
 
 export type AtomicTwapExpectedBasket = {
@@ -44,8 +47,8 @@ export type AtomicTwapReconciliationResult =
       orderState: "cancelled" | "completed";
       legs: Array<{
         twapOrderObjectId: string;
-        processedAmount: number;
-        scheduledAmount: number;
+        processedAmount: string;
+        scheduledAmount: string;
       }>;
     }
   | { kind: "unavailable"; reason: string };
@@ -64,17 +67,33 @@ function nonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0;
 }
 
-function nonNegativeInteger(value: unknown): value is number {
-  return (
+function parseUnsignedInteger(value: unknown): bigint | undefined {
+  if (
     typeof value === "number" &&
     Number.isSafeInteger(value) &&
     Number.isFinite(value) &&
     value >= 0
-  );
+  ) {
+    return BigInt(value);
+  }
+
+  if (typeof value !== "string" || !/^(0|[1-9]\d*)n?$/.test(value)) {
+    return undefined;
+  }
+
+  const parsed = BigInt(value.endsWith("n") ? value.slice(0, -1) : value);
+  return parsed;
 }
 
-function positiveInteger(value: unknown): value is number {
-  return nonNegativeInteger(value) && value > 0;
+function nonNegativeInteger(
+  value: unknown,
+): value is AtomicTwapUnsignedInteger {
+  return parseUnsignedInteger(value) !== undefined;
+}
+
+function positiveInteger(value: unknown): value is AtomicTwapUnsignedInteger {
+  const parsed = parseUnsignedInteger(value);
+  return parsed !== undefined && parsed > 0n;
 }
 
 function isTerminalState(value: unknown): value is "cancelled" | "completed" {
@@ -83,10 +102,14 @@ function isTerminalState(value: unknown): value is "cancelled" | "completed" {
 
 function optionalTimestampMatches(
   actual: unknown,
-  expected: number | undefined,
+  expected: AtomicTwapUnsignedInteger | undefined,
 ): boolean {
   if (expected === undefined) return actual === undefined || actual === null;
-  return actual === expected;
+  const parsedExpected = parseUnsignedInteger(expected);
+  return (
+    parsedExpected !== undefined &&
+    parseUnsignedInteger(actual) === parsedExpected
+  );
 }
 
 function validDefinition(
@@ -121,34 +144,44 @@ function matchesDefinition(
   return (
     value.marketId === expected.marketId &&
     value.side === expected.side &&
-    value.size === expected.size &&
+    parseUnsignedInteger(value.size) === parseUnsignedInteger(expected.size) &&
     value.reduceOnly === expected.reduceOnly &&
-    value.chunksAmount === expected.chunksAmount &&
-    value.executionGapMs === expected.executionGapMs &&
-    value.executionTimeUncertaintyMs === expected.executionTimeUncertaintyMs &&
+    parseUnsignedInteger(value.chunksAmount) ===
+      parseUnsignedInteger(expected.chunksAmount) &&
+    parseUnsignedInteger(value.executionGapMs) ===
+      parseUnsignedInteger(expected.executionGapMs) &&
+    parseUnsignedInteger(value.executionTimeUncertaintyMs) ===
+      parseUnsignedInteger(expected.executionTimeUncertaintyMs) &&
     optionalTimestampMatches(
       value.firstRunExpireTimestamp,
       expected.firstRunExpireTimestamp,
     ) &&
     optionalTimestampMatches(value.expireTimestamp, expected.expireTimestamp) &&
-    value.timeForRetryMs === expected.timeForRetryMs &&
-    value.amountUncertaintyBps === expected.amountUncertaintyBps &&
-    value.maxOneExecutionAmountBps === expected.maxOneExecutionAmountBps &&
-    value.smallTailMergeThresholdBps === expected.smallTailMergeThresholdBps &&
-    value.maxSlippageBps === expected.maxSlippageBps
+    parseUnsignedInteger(value.timeForRetryMs) ===
+      parseUnsignedInteger(expected.timeForRetryMs) &&
+    parseUnsignedInteger(value.amountUncertaintyBps) ===
+      parseUnsignedInteger(expected.amountUncertaintyBps) &&
+    parseUnsignedInteger(value.maxOneExecutionAmountBps) ===
+      parseUnsignedInteger(expected.maxOneExecutionAmountBps) &&
+    parseUnsignedInteger(value.smallTailMergeThresholdBps) ===
+      parseUnsignedInteger(expected.smallTailMergeThresholdBps) &&
+    parseUnsignedInteger(value.maxSlippageBps) ===
+      parseUnsignedInteger(expected.maxSlippageBps)
   );
 }
 
 function readSnapshot(
   snapshot: unknown,
-): { capturedAtMs: number; twapOrderDatas: RecordValue[] } | undefined {
-  if (!isRecord(snapshot) || !nonNegativeInteger(snapshot.capturedAtMs)) {
+): { capturedAtMs: bigint; twapOrderDatas: RecordValue[] } | undefined {
+  if (!isRecord(snapshot)) {
     return undefined;
   }
+  const capturedAtMs = parseUnsignedInteger(snapshot.capturedAtMs);
+  if (capturedAtMs === undefined) return undefined;
   if (!Array.isArray(snapshot.twapOrderDatas)) return undefined;
   if (!snapshot.twapOrderDatas.every(isRecord)) return undefined;
   return {
-    capturedAtMs: snapshot.capturedAtMs,
+    capturedAtMs,
     twapOrderDatas: snapshot.twapOrderDatas,
   };
 }
@@ -183,16 +216,23 @@ export function normalizeAtomicTwapSnapshot(
 
   const parsed = readSnapshot(input.snapshot);
   if (!parsed) return unavailable("malformed provider snapshot");
-  if (parsed.capturedAtMs > input.nowMs) {
+  const nowMs = BigInt(input.nowMs);
+  const maxSnapshotAgeMs = BigInt(input.maxSnapshotAgeMs);
+  if (parsed.capturedAtMs > nowMs) {
     return unavailable("provider snapshot is from the future");
   }
-  if (input.nowMs - parsed.capturedAtMs > input.maxSnapshotAgeMs) {
+  if (nowMs - parsed.capturedAtMs > maxSnapshotAgeMs) {
     return unavailable("provider snapshot is stale");
   }
 
   const recordsByOrderId = new Map<string, RecordValue[]>();
   for (const record of parsed.twapOrderDatas) {
     const orderId = record.twapOrderObjectId;
+    if (record.basketId === input.expected.basketId) {
+      if (!nonEmptyString(orderId) || !expectedByOrderId.has(orderId)) {
+        return unavailable("provider basket includes an unexpected leg");
+      }
+    }
     if (!nonEmptyString(orderId) || !expectedByOrderId.has(orderId)) continue;
     recordsByOrderId.set(orderId, [
       ...(recordsByOrderId.get(orderId) ?? []),
@@ -202,8 +242,8 @@ export function normalizeAtomicTwapSnapshot(
 
   const trustedLegs: Array<{
     twapOrderObjectId: string;
-    processedAmount: number;
-    scheduledAmount: number;
+    processedAmount: string;
+    scheduledAmount: string;
   }> = [];
   let terminalState: "cancelled" | "completed" | undefined;
 
@@ -220,13 +260,22 @@ export function normalizeAtomicTwapSnapshot(
     if (!matchesDefinition(record.details, leg.details)) {
       return unavailable("provider order definition does not match");
     }
+    const processedAmount = parseUnsignedInteger(record.processedAmount);
+    const scheduledAmount = parseUnsignedInteger(record.scheduledAmount);
+    const lastExecutionTimestampMs = parseUnsignedInteger(
+      record.lastExecutionTimestampMs,
+    );
+    const orderCreationTimestampMs = parseUnsignedInteger(
+      record.orderCreationTimestampMs,
+    );
     if (
-      !nonNegativeInteger(record.processedAmount) ||
-      !nonNegativeInteger(record.scheduledAmount) ||
-      !nonNegativeInteger(record.lastExecutionTimestampMs) ||
-      !nonNegativeInteger(record.orderCreationTimestampMs) ||
-      record.lastExecutionTimestampMs > parsed.capturedAtMs ||
-      record.orderCreationTimestampMs > parsed.capturedAtMs
+      processedAmount === undefined ||
+      scheduledAmount === undefined ||
+      lastExecutionTimestampMs === undefined ||
+      orderCreationTimestampMs === undefined ||
+      lastExecutionTimestampMs < orderCreationTimestampMs ||
+      lastExecutionTimestampMs > parsed.capturedAtMs ||
+      orderCreationTimestampMs > parsed.capturedAtMs
     ) {
       return unavailable("provider amounts or timestamps are invalid");
     }
@@ -255,16 +304,16 @@ export function normalizeAtomicTwapSnapshot(
 
     const terminalAmountsAreConsistent =
       record.orderState === "completed"
-        ? record.processedAmount === leg.details.size &&
-          record.scheduledAmount === 0
-        : record.processedAmount === 0 && record.scheduledAmount === 0;
+        ? processedAmount === parseUnsignedInteger(leg.details.size) &&
+          scheduledAmount === 0n
+        : processedAmount === 0n && scheduledAmount === 0n;
     if (!terminalAmountsAreConsistent) {
       return unavailable("provider terminal amounts are inconsistent");
     }
     trustedLegs.push({
       twapOrderObjectId: leg.twapOrderObjectId,
-      processedAmount: record.processedAmount,
-      scheduledAmount: record.scheduledAmount,
+      processedAmount: `${processedAmount}n`,
+      scheduledAmount: `${scheduledAmount}n`,
     });
   }
 

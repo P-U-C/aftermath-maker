@@ -47,8 +47,39 @@ const expected: AtomicTwapExpectedBasket = {
 function snapshot(
   records: unknown[],
   capturedAtMs = 1_000,
-): { capturedAtMs: number; twapOrderDatas: unknown[] } {
-  return { capturedAtMs, twapOrderDatas: records };
+): { capturedAtMs: string; twapOrderDatas: unknown[] } {
+  return { capturedAtMs: `${capturedAtMs}n`, twapOrderDatas: records };
+}
+
+function providerUnsigned(value: number | string): string {
+  return typeof value === "number"
+    ? `${value}n`
+    : value.endsWith("n")
+      ? value
+      : `${value}n`;
+}
+
+function providerDetails(
+  details: AtomicTwapExpectedBasket["legs"][number]["details"],
+) {
+  return {
+    ...details,
+    size: providerUnsigned(details.size),
+    chunksAmount: providerUnsigned(details.chunksAmount),
+    executionGapMs: providerUnsigned(details.executionGapMs),
+    executionTimeUncertaintyMs: providerUnsigned(
+      details.executionTimeUncertaintyMs,
+    ),
+    timeForRetryMs: providerUnsigned(details.timeForRetryMs),
+    amountUncertaintyBps: providerUnsigned(details.amountUncertaintyBps),
+    maxOneExecutionAmountBps: providerUnsigned(
+      details.maxOneExecutionAmountBps,
+    ),
+    smallTailMergeThresholdBps: providerUnsigned(
+      details.smallTailMergeThresholdBps,
+    ),
+    maxSlippageBps: providerUnsigned(details.maxSlippageBps),
+  };
 }
 
 function record(
@@ -60,11 +91,11 @@ function record(
     basketId: expected.basketId,
     collateralType: "0x2::sui::SUI",
     orderState: "completed",
-    details: leg.details,
-    processedAmount: leg.details.size,
-    scheduledAmount: 0,
-    lastExecutionTimestampMs: 900,
-    orderCreationTimestampMs: 100,
+    details: providerDetails(leg.details),
+    processedAmount: providerUnsigned(leg.details.size),
+    scheduledAmount: providerUnsigned(0),
+    lastExecutionTimestampMs: providerUnsigned(900),
+    orderCreationTimestampMs: providerUnsigned(100),
     ...overrides,
   };
 }
@@ -87,13 +118,13 @@ describe("Atomic TWAP provider snapshot reconciliation", () => {
       legs: [
         {
           twapOrderObjectId: "order-btc",
-          processedAmount: 100,
-          scheduledAmount: 0,
+          processedAmount: "100n",
+          scheduledAmount: "0n",
         },
         {
           twapOrderObjectId: "order-eth",
-          processedAmount: 200,
-          scheduledAmount: 0,
+          processedAmount: "200n",
+          scheduledAmount: "0n",
         },
       ],
     });
@@ -110,6 +141,49 @@ describe("Atomic TWAP provider snapshot reconciliation", () => {
         record(expected.legs[0]!),
         record(expected.legs[0]!),
         record(expected.legs[1]!),
+      ]).kind,
+    ).toBe("unavailable");
+
+    const largeExpected: AtomicTwapExpectedBasket = {
+      ...expected,
+      legs: expected.legs.map((leg) => ({
+        ...leg,
+        details: { ...leg.details, size: "9007199254740992n" },
+      })),
+    };
+    expect(
+      normalizeAtomicTwapSnapshot({
+        ...options,
+        expected: largeExpected,
+        snapshot: snapshot(largeExpected.legs.map((leg) => record(leg))),
+      }),
+    ).toMatchObject({
+      kind: "trusted",
+      legs: [
+        { processedAmount: "9007199254740992n", scheduledAmount: "0n" },
+        { processedAmount: "9007199254740992n", scheduledAmount: "0n" },
+      ],
+    });
+    expect(
+      normalizeAtomicTwapSnapshot({
+        ...options,
+        expected: largeExpected,
+        snapshot: snapshot(
+          largeExpected.legs.map((leg, index) =>
+            record(
+              leg,
+              index === 0
+                ? { processedAmount: Number.MAX_SAFE_INTEGER + 1 }
+                : {},
+            ),
+          ),
+        ),
+      }).kind,
+    ).toBe("unavailable");
+    expect(
+      unavailable([
+        ...expected.legs.map((leg) => record(leg)),
+        record(expected.legs[0]!, { twapOrderObjectId: "order-extra" }),
       ]).kind,
     ).toBe("unavailable");
     expect(
@@ -146,6 +220,7 @@ describe("Atomic TWAP provider snapshot reconciliation", () => {
       { processedAmount: 100, scheduledAmount: 1 },
       { processedAmount: Number.NaN },
       { lastExecutionTimestampMs: Number.POSITIVE_INFINITY },
+      { lastExecutionTimestampMs: providerUnsigned(99) },
       { details: { ...expected.legs[0]!.details, size: 101 } },
     ]) {
       expect(
