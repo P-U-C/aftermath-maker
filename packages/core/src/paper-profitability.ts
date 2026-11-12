@@ -1,0 +1,270 @@
+/**
+ * Pure, Paper-only profitability accounting.
+ *
+ * The contract deliberately distinguishes a positive measured trading result
+ * from missing evidence. Rewards and transfers are retained for auditability,
+ * but never enter the trading net. A positive status is evidence only: it
+ * cannot authorize Live execution.
+ */
+
+export type PaperProfitabilityCoverage =
+  "complete" | "partial" | "stale" | "unavailable";
+
+export const PAPER_PROFITABILITY_COMPONENTS = [
+  "capturedMakerSpread",
+  "makerCredit",
+  "builderFees",
+  "venueFees",
+  "adverseFixedHorizonMarkout",
+  "carryAndFunding",
+  "hedgeAndUnwind",
+  "gas",
+] as const;
+
+export type PaperProfitabilityComponentName =
+  (typeof PAPER_PROFITABILITY_COMPONENTS)[number];
+
+export type PaperProfitabilityComponent = Readonly<{
+  /**
+   * Source decimal text. It is returned unchanged. Income components are
+   * added; cost components are subtracted. A negative cost is a credit or
+   * reversal.
+   */
+  amountUsd: string | null;
+  coverage: PaperProfitabilityCoverage;
+}>;
+
+export type PaperProfitabilityComponents = Readonly<
+  Record<PaperProfitabilityComponentName, PaperProfitabilityComponent>
+>;
+
+export type PaperProfitabilityInput = Readonly<{
+  sampleSize: number;
+  minimumSampleSize: number;
+  components: PaperProfitabilityComponents;
+  /** Audit-only wallet reward total; excluded from trading net. */
+  rewardsUsd?: string | null;
+  /** Audit-only external transfer total; excluded from trading net. */
+  transfersUsd?: string | null;
+}>;
+
+type IncompleteCoverage = Exclude<PaperProfitabilityCoverage, "complete">;
+
+export type PaperProfitabilityGap =
+  | Readonly<{
+      component: PaperProfitabilityComponentName;
+      reason: "missing_amount";
+    }>
+  | Readonly<{
+      component: PaperProfitabilityComponentName;
+      reason: "invalid_decimal";
+      amountUsd: string;
+    }>
+  | Readonly<{
+      component: PaperProfitabilityComponentName;
+      reason: "coverage_incomplete";
+      coverage: IncompleteCoverage;
+    }>
+  | Readonly<{
+      component: "sampleSize";
+      reason: "invalid_sample_size";
+      observed: number;
+    }>
+  | Readonly<{
+      component: "minimumSampleSize";
+      reason: "invalid_minimum_sample_size";
+      minimum: number;
+    }>
+  | Readonly<{
+      component: "sampleSize";
+      reason: "minimum_sample_not_met";
+      observed: number;
+      minimum: number;
+    }>;
+
+export type PaperProfitabilityResult = Readonly<{
+  status: "positive" | "non_positive" | "unavailable";
+  sampleSize: number;
+  minimumSampleSize: number;
+  /** Component decimal strings are retained byte-for-byte. */
+  components: PaperProfitabilityComponents;
+  /** Null until every required component and the sample are complete. */
+  tradingNetUsd: string | null;
+  /** These values are display/audit evidence only, never trading P&L. */
+  excluded: Readonly<{
+    rewardsUsd: string | null;
+    transfersUsd: string | null;
+  }>;
+  gaps: readonly PaperProfitabilityGap[];
+}>;
+
+type ParsedDecimal = Readonly<{
+  units: bigint;
+  scale: number;
+}>;
+
+const DECIMAL_PATTERN = /^(-?)(0|[1-9]\d*)(?:\.(\d+))?$/;
+
+function parseDecimal(value: string): ParsedDecimal | null {
+  const match = DECIMAL_PATTERN.exec(value);
+  if (!match) return null;
+
+  const fraction = match[3] ?? "";
+  const magnitude = BigInt(`${match[2]}${fraction}`);
+  return {
+    units: match[1] === "-" ? -magnitude : magnitude,
+    scale: fraction.length,
+  };
+}
+
+function powerOfTen(exponent: number): bigint {
+  return 10n ** BigInt(exponent);
+}
+
+function unitsAtScale(value: ParsedDecimal, scale: number): bigint {
+  return value.units * powerOfTen(scale - value.scale);
+}
+
+function formatUnits(units: bigint, scale: number): string {
+  const negative = units < 0n;
+  const magnitude = negative ? -units : units;
+  if (scale === 0) return `${negative ? "-" : ""}${magnitude}`;
+
+  const digits = magnitude.toString().padStart(scale + 1, "0");
+  const whole = digits.slice(0, -scale);
+  const fraction = digits.slice(-scale);
+  return `${negative ? "-" : ""}${whole}.${fraction}`;
+}
+
+function copyComponents(
+  components: PaperProfitabilityComponents,
+): PaperProfitabilityComponents {
+  return {
+    capturedMakerSpread: { ...components.capturedMakerSpread },
+    makerCredit: { ...components.makerCredit },
+    builderFees: { ...components.builderFees },
+    venueFees: { ...components.venueFees },
+    adverseFixedHorizonMarkout: {
+      ...components.adverseFixedHorizonMarkout,
+    },
+    carryAndFunding: { ...components.carryAndFunding },
+    hedgeAndUnwind: { ...components.hedgeAndUnwind },
+    gas: { ...components.gas },
+  };
+}
+
+/**
+ * Decomposes complete Paper evidence into an all-in, no-reward trading net.
+ *
+ * Captured spread and maker credit are added. Builder fees, venue fees,
+ * adverse fixed-horizon markout, carry/funding, hedge/unwind and gas are cost
+ * magnitudes and are subtracted. The maximum source scale is used for the
+ * result, so the computation neither rounds through binary floats nor drops
+ * declared decimal precision.
+ */
+export function decomposePaperProfitability(
+  input: PaperProfitabilityInput,
+): PaperProfitabilityResult {
+  const components = copyComponents(input.components);
+  const gaps: PaperProfitabilityGap[] = [];
+  const parsed = new Map<PaperProfitabilityComponentName, ParsedDecimal>();
+
+  const sampleSizeIsValid =
+    Number.isSafeInteger(input.sampleSize) && input.sampleSize >= 0;
+  const minimumSampleSizeIsValid =
+    Number.isSafeInteger(input.minimumSampleSize) &&
+    input.minimumSampleSize > 0;
+
+  if (!sampleSizeIsValid) {
+    gaps.push({
+      component: "sampleSize",
+      reason: "invalid_sample_size",
+      observed: input.sampleSize,
+    });
+  }
+  if (!minimumSampleSizeIsValid) {
+    gaps.push({
+      component: "minimumSampleSize",
+      reason: "invalid_minimum_sample_size",
+      minimum: input.minimumSampleSize,
+    });
+  }
+  if (
+    sampleSizeIsValid &&
+    minimumSampleSizeIsValid &&
+    input.sampleSize < input.minimumSampleSize
+  ) {
+    gaps.push({
+      component: "sampleSize",
+      reason: "minimum_sample_not_met",
+      observed: input.sampleSize,
+      minimum: input.minimumSampleSize,
+    });
+  }
+
+  for (const componentName of PAPER_PROFITABILITY_COMPONENTS) {
+    const component = components[componentName];
+    if (component.amountUsd === null) {
+      gaps.push({ component: componentName, reason: "missing_amount" });
+    } else {
+      const decimal = parseDecimal(component.amountUsd);
+      if (decimal === null) {
+        gaps.push({
+          component: componentName,
+          reason: "invalid_decimal",
+          amountUsd: component.amountUsd,
+        });
+      } else {
+        parsed.set(componentName, decimal);
+      }
+    }
+
+    if (component.coverage !== "complete") {
+      gaps.push({
+        component: componentName,
+        reason: "coverage_incomplete",
+        coverage: component.coverage,
+      });
+    }
+  }
+
+  const baseResult = {
+    sampleSize: input.sampleSize,
+    minimumSampleSize: input.minimumSampleSize,
+    components,
+    excluded: {
+      rewardsUsd: input.rewardsUsd ?? null,
+      transfersUsd: input.transfersUsd ?? null,
+    },
+    gaps,
+  };
+
+  if (gaps.length > 0) {
+    return {
+      status: "unavailable",
+      ...baseResult,
+      tradingNetUsd: null,
+    };
+  }
+
+  const scale = Math.max(
+    ...Array.from(parsed.values(), (value) => value.scale),
+  );
+  const amount = (name: PaperProfitabilityComponentName): bigint =>
+    unitsAtScale(parsed.get(name)!, scale);
+  const tradingNet =
+    amount("capturedMakerSpread") +
+    amount("makerCredit") -
+    amount("builderFees") -
+    amount("venueFees") -
+    amount("adverseFixedHorizonMarkout") -
+    amount("carryAndFunding") -
+    amount("hedgeAndUnwind") -
+    amount("gas");
+
+  return {
+    status: tradingNet > 0n ? "positive" : "non_positive",
+    ...baseResult,
+    tradingNetUsd: formatUnits(tradingNet, scale),
+  };
+}
