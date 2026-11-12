@@ -228,6 +228,35 @@ function normalizeMarket(value: unknown): AtomicMarketConstraint | undefined {
   };
 }
 
+function validUpdatedPosition(value: unknown, marketId: string): boolean {
+  if (
+    !isRecord(value) ||
+    value.marketId !== marketId ||
+    !Array.isArray(value.pendingOrders)
+  ) {
+    return false;
+  }
+
+  return [
+    value.collateral,
+    value.baseAssetAmount,
+    value.quoteAssetNotionalAmount,
+    value.cumFundingRateLong,
+    value.cumFundingRateShort,
+    value.asksQuantity,
+    value.bidsQuantity,
+    value.leverage,
+    value.collateralUsd,
+    value.marginRatio,
+    value.freeMarginUsd,
+    value.freeCollateral,
+    value.unrealizedFundingsUsd,
+    value.unrealizedPnlUsd,
+    value.entryPrice,
+    value.liquidationPrice,
+  ].every(finiteNumber);
+}
+
 function previewMatches(
   preview: unknown,
   intendedMarkets: AtomicMarketCapabilityInput["intendedMarkets"],
@@ -245,6 +274,7 @@ function previewMatches(
   if (
     !Array.isArray(request.orders) ||
     !Array.isArray(response.orders) ||
+    typeof request.reduceOnly !== "boolean" ||
     !finiteNumber(response.collateralChange) ||
     request.orders.length !== intendedMarkets.length ||
     response.orders.length !== intendedMarkets.length
@@ -280,7 +310,7 @@ function previewMatches(
       return "partial-or-posted-preview";
     }
     if (
-      !isRecord(responseOrder.updatedPosition) ||
+      !validUpdatedPosition(responseOrder.updatedPosition, intended.marketId) ||
       !nonNegativeFiniteNumber(responseOrder.priceSlippage) ||
       !nonNegativeFiniteNumber(responseOrder.percentSlippage) ||
       !positiveFiniteNumber(responseOrder.filledSizeUsd) ||

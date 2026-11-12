@@ -119,6 +119,35 @@ describe("Atomic market capability snapshots", () => {
     ).response.orders[1]!.marketId = "market-btc";
     expect(unavailable(crossMarket).reason).toBe("preview-order-mismatch");
 
+    const missingReduceOnly = structuredClone(fixture);
+    delete (
+      missingReduceOnly.atomicPreview as { request: Record<string, unknown> }
+    ).request.reduceOnly;
+    expect(unavailable(missingReduceOnly).reason).toBe("preview-unavailable");
+
+    const incompletePosition = structuredClone(fixture);
+    (
+      incompletePosition.atomicPreview as {
+        response: { orders: Array<Record<string, unknown>> };
+      }
+    ).response.orders[0]!.updatedPosition = {};
+    expect(unavailable(incompletePosition).reason).toBe("preview-unavailable");
+
+    const crossMarketPosition = structuredClone(fixture);
+    (
+      crossMarketPosition.atomicPreview as {
+        response: { orders: Array<Record<string, unknown>> };
+      }
+    ).response.orders[0]!.updatedPosition = {
+      ...(
+        crossMarketPosition.atomicPreview as {
+          response: { orders: Array<Record<string, unknown>> };
+        }
+      ).response.orders[0]!.updatedPosition,
+      marketId: "market-eth",
+    };
+    expect(unavailable(crossMarketPosition).reason).toBe("preview-unavailable");
+
     const partial = structuredClone(fixture);
     (
       partial.atomicPreview as {
