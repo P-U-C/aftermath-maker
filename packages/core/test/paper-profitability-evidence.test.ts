@@ -11,6 +11,7 @@ import {
 } from "../src/inventory-recycling.js";
 
 const FILL_AT_MS = 1_000_000;
+const SECOND_FILL_AT_MS = FILL_AT_MS + 5_000;
 const AS_OF_MS = FILL_AT_MS + PAPER_MARKOUT_HORIZONS_MS.at(-1)! + 10_000;
 const COHORT = {
   runId: "paper-run-1",
@@ -84,6 +85,31 @@ function markout(
     raw: {},
     ...overrides,
   };
+}
+
+function secondFill(): AttributedFill {
+  return fill({
+    sourceEventKey: "fill:event:2",
+    orderId: "maker-order-2",
+    txDigest: "paper:fill:2",
+    eventIndex: 1,
+    timestampMs: SECOND_FILL_AT_MS,
+  });
+}
+
+function secondFillMarkouts(): InventoryPaperMarkoutObservation[] {
+  return [
+    markout(60_000, "-0.10"),
+    markout(300_000, "0.05"),
+    markout(1_800_000, "-0.20"),
+    markout(3_600_000, "-0.15"),
+  ].map((observation) => ({
+    ...observation,
+    sourceEventKey: `markout:maker-order-2:${observation.horizonMs}`,
+    orderKey: "maker-order-2",
+    fillAtMs: SECOND_FILL_AT_MS,
+    observedAtMs: SECOND_FILL_AT_MS + observation.horizonMs,
+  }));
 }
 
 function effect(
@@ -557,6 +583,89 @@ describe("Paper profitability source-evidence adapter", () => {
         },
       }),
       "aggregate_receipt_window_mismatch",
+    );
+  });
+
+  it("uses the latest uniquely identified fill as the aggregate receipt boundary", () => {
+    const fixture = completeEvidence();
+    const fills = [fixture.fills[0]!, secondFill()];
+    const markouts = [...fixture.markouts, ...secondFillMarkouts()];
+    const hedgeAndUnwind = {
+      ...fixture.hedgeAndUnwind!,
+      throughAtMs: SECOND_FILL_AT_MS,
+    };
+
+    expectUnavailable(
+      completeEvidence({
+        minimumSampleSize: 2,
+        fills,
+        markouts,
+        makerCredit: {
+          ...fixture.makerCredit!,
+          throughAtMs: FILL_AT_MS,
+        },
+        hedgeAndUnwind,
+      }),
+      "aggregate_receipt_stale",
+    );
+
+    expect(
+      decomposePaperProfitabilityEvidence(
+        completeEvidence({
+          minimumSampleSize: 2,
+          fills,
+          markouts,
+          makerCredit: {
+            ...fixture.makerCredit!,
+            throughAtMs: SECOND_FILL_AT_MS,
+          },
+          hedgeAndUnwind,
+        }),
+      ),
+    ).toMatchObject({
+      status: "positive",
+      sampleSize: 2,
+      minimumSampleSize: 2,
+      evidenceGaps: [],
+    });
+  });
+
+  it("rejects blank source provenance at every profitability boundary", () => {
+    const fixture = completeEvidence();
+    expectUnavailable(
+      completeEvidence({ fills: [fill({ source: "   " })] }),
+      "evidence_attribution_mismatch",
+    );
+    expectUnavailable(
+      completeEvidence({
+        markouts: fixture.markouts.map((observation, index) =>
+          index === 0 ? { ...observation, source: "" } : observation,
+        ),
+      }),
+      "evidence_attribution_mismatch",
+    );
+    for (const kind of ["funding", "gas"] as const) {
+      expectUnavailable(
+        completeEvidence({
+          effects: [
+            effect("funding", kind === "funding" ? { source: "" } : {}),
+            effect("gas", kind === "gas" ? { source: "   " } : {}),
+          ],
+        }),
+        "evidence_attribution_mismatch",
+      );
+    }
+    expectUnavailable(
+      completeEvidence({
+        makerCredit: { ...fixture.makerCredit!, source: "" },
+      }),
+      "invalid_maker_credit_evidence",
+    );
+    expectUnavailable(
+      completeEvidence({
+        hedgeAndUnwind: { ...fixture.hedgeAndUnwind!, source: "   " },
+      }),
+      "invalid_hedge_and_unwind_evidence",
     );
   });
 
