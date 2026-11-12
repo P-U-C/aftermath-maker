@@ -9,10 +9,199 @@ import {
   encryptSecret,
   loadAgentKeypair,
 } from "@puc/aftermath";
-import { makerConfigSchema, setupSchema } from "@puc/core";
+import {
+  applyAtomicBasketEvents,
+  createAtomicBasketState,
+  makerConfigSchema,
+  setupSchema,
+} from "@puc/core";
 import { Store } from "../src/store.js";
 
 describe("persistent control store", () => {
+  it("persists a Paper Atomic basket checkpoint across restart and releases only its matching cancellation", () => {
+    const directory = join(
+      process.env.TMPDIR ?? "/tmp",
+      `aftermath-maker-${randomBytes(8).toString("hex")}`,
+    );
+    mkdirSync(directory, { recursive: true });
+    const path = join(directory, "maker.db");
+    const owner = `0x${"a".repeat(64)}`;
+    const databaseStore = new Store(path);
+    const tenant = databaseStore.forTenant(owner);
+    tenant.setConfig(
+      makerConfigSchema.parse({
+        makerAccountId: "42",
+        markets: [{ marketId: "0x154", symbol: "ATOMIC" }],
+      }),
+    );
+    const core = tenant.listBundles().find((bundle) => bundle.name === "Core")!;
+    const otherBundle = tenant.createBundle({
+      name: "Isolated Paper",
+      config: makerConfigSchema.parse({
+        makerAccountId: "43",
+        markets: [{ marketId: "0x155", symbol: "OTHER" }],
+        mode: "paper",
+      }),
+      confirmWalletLimits: true,
+    });
+    const basketStore = databaseStore.forBundle(owner, core.id);
+    const basket = createAtomicBasketState({
+      basketId: "basket-154",
+      reservationId: "reservation-154",
+      slices: [
+        { sliceId: "slice-one", legIds: ["leg-one"] },
+        { sliceId: "slice-two", legIds: ["leg-two"] },
+      ],
+    });
+    const partial = {
+      kind: "BASKET_RECONCILIATION" as const,
+      eventId: "partial-154",
+      sourceTime: 1,
+      basketId: basket.basketId,
+      slices: [
+        {
+          sliceId: "slice-one",
+          legs: [{ legId: "leg-one", status: "complete" as const }],
+        },
+      ],
+    };
+    const unresolved = applyAtomicBasketEvents(basket, [
+      partial,
+      partial,
+      {
+        kind: "RETRY_REQUESTED",
+        eventId: "retry-154",
+        sourceTime: 2,
+        basketId: basket.basketId,
+        riskIncreasing: true,
+      },
+    ]);
+
+    basketStore.savePaperAtomicBasket({
+      trialId: "trial-154",
+      state: unresolved,
+    });
+    expect(unresolved).toMatchObject({
+      reservation: "RESERVED",
+      status: "RECONCILIATION_REQUIRED",
+      riskIncreasingRetryAllowed: false,
+      checkpoint: { sourceTime: 2, eventId: "retry-154" },
+      appliedEventIds: ["partial-154", "retry-154"],
+    });
+    databaseStore.close();
+
+    const reopened = new Store(path);
+    const restoredStore = reopened.forBundle(owner, core.id);
+    const restored = restoredStore.getPaperAtomicBasket({
+      trialId: "trial-154",
+      basketId: basket.basketId,
+    });
+    expect(restored).toMatchObject({
+      reservation: "RESERVED",
+      status: "RECONCILIATION_REQUIRED",
+      riskIncreasingRetryAllowed: false,
+      checkpoint: { sourceTime: 2, eventId: "retry-154" },
+      appliedEventIds: ["partial-154", "retry-154"],
+    });
+    expect(
+      reopened.forTenant(`0x${"b".repeat(64)}`).getPaperAtomicBasket({
+        trialId: "trial-154",
+        basketId: basket.basketId,
+      }),
+    ).toBeNull();
+    expect(
+      reopened.forBundle(owner, otherBundle.id).getPaperAtomicBasket({
+        trialId: "trial-154",
+        basketId: basket.basketId,
+      }),
+    ).toBeNull();
+    expect(
+      restoredStore.getPaperAtomicBasket({
+        trialId: "other-trial",
+        basketId: basket.basketId,
+      }),
+    ).toBeNull();
+
+    const mismatched = applyAtomicBasketEvents(restored!, [
+      {
+        kind: "CANCEL_CONFIRMED",
+        eventId: "wrong-cancel-154",
+        sourceTime: 3,
+        basketId: basket.basketId,
+        reservationId: "other-reservation",
+      },
+    ]);
+    restoredStore.savePaperAtomicBasket({
+      trialId: "trial-154",
+      state: mismatched,
+    });
+    expect(mismatched).toMatchObject({
+      reservation: "RESERVED",
+      status: "RECONCILIATION_REQUIRED",
+    });
+    reopened.close();
+
+    const heldAfterMismatch = new Store(path);
+    const heldStore = heldAfterMismatch.forBundle(owner, core.id);
+    expect(
+      heldStore.getPaperAtomicBasket({
+        trialId: "trial-154",
+        basketId: basket.basketId,
+      }),
+    ).toMatchObject({
+      reservation: "RESERVED",
+      status: "RECONCILIATION_REQUIRED",
+    });
+    heldAfterMismatch.close();
+
+    const corrupt = new Database(path);
+    corrupt
+      .prepare(
+        `UPDATE tenant_paper_atomic_baskets
+         SET events = ? WHERE owner_address = ? AND bundle_id = ? AND trial_id = ? AND basket_id = ?`,
+      )
+      .run("not-json", owner, core.id, "trial-154", basket.basketId);
+    corrupt.close();
+    const corruptStore = new Store(path);
+    expect(
+      corruptStore.forBundle(owner, core.id).getPaperAtomicBasket({
+        trialId: "trial-154",
+        basketId: basket.basketId,
+      }),
+    ).toBeNull();
+    corruptStore.close();
+
+    const finalStore = new Store(path);
+    const finalBasketStore = finalStore.forBundle(owner, core.id);
+    finalBasketStore.savePaperAtomicBasket({
+      trialId: "trial-154",
+      state: mismatched,
+    });
+    const released = applyAtomicBasketEvents(mismatched, [
+      {
+        kind: "CANCEL_CONFIRMED",
+        eventId: "matching-cancel-154",
+        sourceTime: 4,
+        basketId: basket.basketId,
+        reservationId: basket.basket.reservationId,
+      },
+    ]);
+    finalBasketStore.savePaperAtomicBasket({
+      trialId: "trial-154",
+      state: released,
+    });
+    finalStore.close();
+
+    const finalReopen = new Store(path);
+    expect(
+      finalReopen.forBundle(owner, core.id).getPaperAtomicBasket({
+        trialId: "trial-154",
+        basketId: basket.basketId,
+      }),
+    ).toMatchObject({ reservation: "RELEASED", status: "CANCELLED" });
+    finalReopen.close();
+  });
+
   it("keeps pre-run-binding strategy attachments explicitly unbound after migration", () => {
     const directory = join(
       process.env.TMPDIR ?? "/tmp",
