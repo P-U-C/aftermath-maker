@@ -11,12 +11,17 @@ import type {
   OwnerAccountSummary,
 } from "@puc/aftermath";
 import {
+  applyAtomicBasketEvents,
+  createAtomicBasketState,
   decideInventoryPaperFill,
   inventoryPaperMarkout,
   makerConfigSchema,
   makerMarketSchema,
   PAPER_MARKOUT_HORIZONS_MS,
   type AttributedFill,
+  type AtomicBasketDefinition,
+  type AtomicBasketEvent,
+  type AtomicBasketState,
   type Coverage,
   type InventoryLedgerEffect,
   type MakerConfig,
@@ -409,6 +414,103 @@ export type PaperPosition = {
   inventoryUsd: number;
 };
 
+const atomicBasketLegSchema = z
+  .object({
+    legId: z.string().min(1),
+    status: z.enum(["complete", "pending", "failed"]),
+  })
+  .strict();
+
+const atomicBasketSliceSchema = z
+  .object({
+    sliceId: z.string().min(1),
+    legIds: z.array(z.string().min(1)).min(1),
+  })
+  .strict();
+
+const atomicBasketDefinitionSchema = z
+  .object({
+    basketId: z.string().min(1),
+    reservationId: z.string().min(1),
+    slices: z.array(atomicBasketSliceSchema).min(1),
+  })
+  .strict();
+
+const atomicBasketSliceEvidenceSchema = z
+  .object({
+    sliceId: z.string().min(1),
+    legs: z.array(atomicBasketLegSchema),
+  })
+  .strict();
+
+const atomicBasketEventBaseSchema = {
+  eventId: z.string().min(1),
+  sourceTime: z.number().finite(),
+  basketId: z.string().min(1),
+};
+
+const atomicBasketEventSchema = z.discriminatedUnion("kind", [
+  z
+    .object({
+      ...atomicBasketEventBaseSchema,
+      kind: z.literal("SLICE_EVIDENCE"),
+      sliceId: z.string().min(1),
+      legs: z.array(atomicBasketLegSchema),
+    })
+    .strict(),
+  z
+    .object({
+      ...atomicBasketEventBaseSchema,
+      kind: z.literal("BASKET_RECONCILIATION"),
+      slices: z.array(atomicBasketSliceEvidenceSchema),
+    })
+    .strict(),
+  z
+    .object({
+      ...atomicBasketEventBaseSchema,
+      kind: z.literal("RETRY_REQUESTED"),
+      riskIncreasing: z.boolean(),
+    })
+    .strict(),
+  z
+    .object({
+      ...atomicBasketEventBaseSchema,
+      kind: z.literal("CANCEL_CONFIRMED"),
+      reservationId: z.string().min(1),
+    })
+    .strict(),
+]);
+
+const persistedPaperAtomicBasketSchema = z
+  .object({
+    definition: atomicBasketDefinitionSchema,
+    events: z.array(atomicBasketEventSchema),
+    persistentRejectionReasons: z.array(z.string().min(1)),
+  })
+  .strict();
+
+const stableRejectionReasons = (reasons: readonly string[]): string[] => [
+  ...new Set(reasons),
+];
+
+const withPersistentAtomicBasketRejections = (
+  state: AtomicBasketState,
+  reasons: readonly string[],
+): AtomicBasketState => {
+  const persistentRejectionReasons = stableRejectionReasons(reasons);
+  if (!persistentRejectionReasons.length) return state;
+  return {
+    ...state,
+    reservation: "RESERVED",
+    status: "RECONCILIATION_REQUIRED",
+    persistentRejectionReasons,
+    rejectionReasons: stableRejectionReasons([
+      ...state.rejectionReasons,
+      ...persistentRejectionReasons,
+    ]),
+  };
+};
+
 export type BundleStatus = "stopped" | "running" | "paused" | "error";
 
 export type BundleWalletLimits = {
@@ -694,6 +796,21 @@ export class Store {
         builder_fee_usd REAL,
         occurred_at TEXT NOT NULL,
         UNIQUE (owner_address, bundle_id, trial_id, order_key)
+      );
+
+      -- Atomic Paper baskets are a separate logical reservation ledger. The
+      -- only persisted fields are replay inputs; status and checkpoints are
+      -- always rebuilt by @puc/core after a restart.
+      CREATE TABLE IF NOT EXISTS tenant_paper_atomic_baskets (
+        owner_address TEXT NOT NULL,
+        bundle_id TEXT NOT NULL DEFAULT '',
+        trial_id TEXT NOT NULL,
+        basket_id TEXT NOT NULL,
+        definition TEXT NOT NULL,
+        events TEXT NOT NULL,
+        persistent_rejection_reasons TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (owner_address, bundle_id, trial_id, basket_id)
       );
 
       CREATE TABLE IF NOT EXISTS tenant_maker_orders (
@@ -6152,6 +6269,110 @@ export class TenantStore {
 
   private paperBundleId(): string {
     return this.attributedBundleId() ?? "";
+  }
+
+  /**
+   * Store only the authoritative Paper Atomic inputs. Derived reservation
+   * status, applied IDs, and checkpoint are deliberately reconstructed with
+   * the core replay state machine when read back.
+   */
+  savePaperAtomicBasket(inputs: {
+    trialId: string;
+    state: AtomicBasketState;
+  }): void {
+    if (!inputs.trialId.trim()) {
+      throw new Error("Paper Atomic basket trial ID is required");
+    }
+    if (inputs.state.basketId !== inputs.state.basket.basketId) {
+      throw new Error("Paper Atomic basket ID does not match its definition");
+    }
+    const persisted = persistedPaperAtomicBasketSchema.parse({
+      definition: inputs.state.basket,
+      events: inputs.state.events,
+      persistentRejectionReasons: inputs.state.persistentRejectionReasons,
+    });
+    const replayed = applyAtomicBasketEvents(
+      createAtomicBasketState(persisted.definition as AtomicBasketDefinition),
+      persisted.events as AtomicBasketEvent[],
+    );
+    const persistentRejectionReasons = stableRejectionReasons([
+      ...persisted.persistentRejectionReasons,
+      ...replayed.persistentRejectionReasons,
+    ]);
+    const bundleId = this.paperBundleId();
+    this.db
+      .prepare(
+        `INSERT INTO tenant_paper_atomic_baskets
+          (owner_address, bundle_id, trial_id, basket_id, definition, events,
+           persistent_rejection_reasons, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(owner_address, bundle_id, trial_id, basket_id) DO UPDATE SET
+           definition = excluded.definition,
+           events = excluded.events,
+           persistent_rejection_reasons = excluded.persistent_rejection_reasons,
+           updated_at = excluded.updated_at`,
+      )
+      .run(
+        this.ownerAddress,
+        bundleId,
+        inputs.trialId,
+        persisted.definition.basketId,
+        JSON.stringify(persisted.definition),
+        JSON.stringify(replayed.events),
+        JSON.stringify(persistentRejectionReasons),
+        new Date().toISOString(),
+      );
+  }
+
+  /**
+   * Corrupt or structurally invalid persisted data has no safe replay. Return
+   * no basket rather than guessing a released reservation from partial data.
+   */
+  getPaperAtomicBasket(inputs: {
+    trialId: string;
+    basketId: string;
+  }): AtomicBasketState | null {
+    if (!inputs.trialId.trim() || !inputs.basketId.trim()) return null;
+    const row = this.db
+      .prepare(
+        `SELECT definition, events, persistent_rejection_reasons
+         FROM tenant_paper_atomic_baskets
+         WHERE owner_address = ? AND bundle_id = ? AND trial_id = ? AND basket_id = ?`,
+      )
+      .get(
+        this.ownerAddress,
+        this.paperBundleId(),
+        inputs.trialId,
+        inputs.basketId,
+      ) as
+      | {
+          definition: string;
+          events: string;
+          persistent_rejection_reasons: string;
+        }
+      | undefined;
+    if (!row) return null;
+
+    try {
+      const persisted = persistedPaperAtomicBasketSchema.parse({
+        definition: JSON.parse(row.definition),
+        events: JSON.parse(row.events),
+        persistentRejectionReasons: JSON.parse(
+          row.persistent_rejection_reasons,
+        ),
+      });
+      if (persisted.definition.basketId !== inputs.basketId) return null;
+      const replayed = applyAtomicBasketEvents(
+        createAtomicBasketState(persisted.definition as AtomicBasketDefinition),
+        persisted.events as AtomicBasketEvent[],
+      );
+      return withPersistentAtomicBasketRejections(
+        replayed,
+        persisted.persistentRejectionReasons,
+      );
+    } catch {
+      return null;
+    }
   }
 
   /** Replace only the simulated resting orders for this market and scope. */
