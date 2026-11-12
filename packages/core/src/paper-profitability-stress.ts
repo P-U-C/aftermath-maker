@@ -617,6 +617,10 @@ export function assessPaperProfitabilityStress(
   const collateral = parseDecimal(base.collateralUsd);
   const tradingNetByWindow = indexBaseTradingNet(snapshot.rawWindows);
   for (const scenario of scenarios) {
+    if (base.status !== "eligible") {
+      pushReason(scenario.reasons, "base_stability_ineligible");
+      for (const reason of base.reasons) pushReason(scenario.reasons, reason);
+    }
     scenario.windows = base.windows.map((baseWindow) =>
       makeStressWindow(
         scenario,

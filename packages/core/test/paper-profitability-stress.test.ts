@@ -434,6 +434,27 @@ describe("Paper profitability stress admission", () => {
     }
   });
 
+  it("keeps every scenario ineligible when the base stability evidence has no windows", () => {
+    const result = assessPaperProfitabilityStress(
+      candidate({
+        candidateId: "",
+        windows: [],
+        scenarios: [scenario()],
+      }),
+    );
+
+    expect(result.status).toBe("ineligible");
+    expect(result.baseStabilityStatus).toBe("ineligible");
+    expect(result.scenarios).toHaveLength(1);
+    expect(result.scenarios[0]?.status).toBe("ineligible");
+    expect(result.scenarios[0]?.reasons).toEqual(
+      expect.arrayContaining([
+        "base_stability_ineligible",
+        "invalid_candidate_id",
+      ]),
+    );
+  });
+
   it("returns an explicit reporting allowlist and drops execution, provider and authority extras", () => {
     const authorityInput = {
       ...candidate(),
