@@ -607,6 +607,41 @@ describe("runtime execution boundaries", () => {
     harness.store.close();
   });
 
+  it("uses ask-only Paper quotes for the Profit objective", async () => {
+    const harness = createHarness();
+    harness.tenant.setConfig(
+      makerConfigSchema.parse({
+        ...harness.tenant.getConfig()!,
+        mode: "paper",
+        strategyObjective: "profit",
+        markets: [{ marketId: "0x5678", symbol: "SUI" }],
+      }),
+    );
+
+    harness.runtime.start();
+    await harness.runtime.cycle();
+
+    expect(harness.runtime.snapshot.quote).toMatchObject({ sides: "ask" });
+    expect(harness.runtime.snapshot.paper).toMatchObject({ openOrders: 1 });
+
+    await harness.runtime.stop();
+    harness.store.close();
+
+    const liveHarness = createHarness();
+    liveHarness.tenant.setConfig(
+      makerConfigSchema.parse({
+        ...liveHarness.tenant.getConfig()!,
+        mode: "live",
+        strategyObjective: "profit",
+      }),
+    );
+    liveHarness.runtime.start();
+    await liveHarness.runtime.cycle();
+    expect(liveHarness.runtime.snapshot.quote).toMatchObject({ sides: "both" });
+    await liveHarness.runtime.stop();
+    liveHarness.store.close();
+  });
+
   it("holds Paper dry-run across Stop and restart while an Atomic reservation is unresolved", async () => {
     const harness = createHarness();
     harness.tenant.setConfig(
