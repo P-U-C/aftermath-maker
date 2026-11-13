@@ -330,6 +330,74 @@ describe("Paper profitability capacity admission", () => {
     expect(windowIneligible.reasons).toContain("stress_window_not_positive");
   });
 
+  it("requires every stress scenario to retain its declared label and shock", () => {
+    for (const overrides of [
+      { label: undefined },
+      { label: " " },
+      { shockUsd: undefined },
+      { shockUsd: "-1" },
+      { shockUsd: "1e2" },
+    ] as const) {
+      const result = assessPaperProfitabilityCapacity(
+        candidate({
+          stressResult: stressResult({
+            scenarios: [stressScenario(overrides as never)],
+          }),
+        }),
+      );
+      expect(result.status, JSON.stringify(overrides)).toBe("ineligible");
+      expect(result.reasons, JSON.stringify(overrides)).toContain(
+        "malformed_stress_scenario",
+      );
+      expect(result.reasons, JSON.stringify(overrides)).toContain(
+        "incomplete_stress_evidence",
+      );
+    }
+  });
+
+  it("keeps malformed reason arrays deterministic when evidence order changes", () => {
+    const scenarioFailure = stressScenario({
+      scenarioId: "failure",
+      status: "ineligible",
+      reasons: ["non_positive_stressed_net_usd"],
+    });
+    const scenarioMalformed = stressScenario({
+      scenarioId: "malformed",
+      label: " ",
+    });
+    const first = assessPaperProfitabilityCapacity(
+      candidate({
+        stressResult: stressResult({
+          scenarios: [scenarioFailure, scenarioMalformed],
+        }),
+        windows: [
+          capacityWindow({ windowId: "window-a", exposureUsd: "-1" }),
+          capacityWindow({ windowId: "window-b", exposureUsd: "+1" }),
+        ],
+      }),
+    );
+    const second = assessPaperProfitabilityCapacity(
+      candidate({
+        stressResult: stressResult({
+          scenarios: [scenarioMalformed, scenarioFailure],
+        }),
+        windows: [
+          capacityWindow({ windowId: "window-b", exposureUsd: "+1" }),
+          capacityWindow({ windowId: "window-a", exposureUsd: "-1" }),
+        ],
+      }),
+    );
+
+    expect(first.reasons).toEqual(second.reasons);
+    expect(first.windows.map((window) => window.reasons)).toEqual(
+      second.windows.map((window) => window.reasons),
+    );
+    expect(first.reasons).toEqual([...first.reasons].sort());
+    for (const window of first.windows) {
+      expect(window.reasons).toEqual([...window.reasons].sort());
+    }
+  });
+
   it("rejects missing, unmatched, duplicate and sparse exposure windows", () => {
     const missing = assessPaperProfitabilityCapacity(
       candidate({ windows: [capacityWindow()] }),

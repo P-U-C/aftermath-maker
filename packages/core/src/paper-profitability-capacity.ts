@@ -113,6 +113,12 @@ function pushReason(
   if (!reasons.includes(reason)) reasons.push(reason);
 }
 
+function sortedReasons(
+  reasons: readonly PaperProfitabilityCapacityReason[],
+): readonly PaperProfitabilityCapacityReason[] {
+  return [...reasons].sort();
+}
+
 function parseDecimal(value: unknown): ParsedDecimal | null {
   if (typeof value !== "string") return null;
   const match = DECIMAL_PATTERN.exec(value);
@@ -297,6 +303,18 @@ function inspectStressResult(value: unknown): StressSnapshot {
         pushReason(reasons, "malformed_stress_scenario");
       } else {
         scenarioIds.add(scenarioId);
+      }
+      const scenarioLabel = snapshotText(scenario.label);
+      const scenarioShock = parseDecimal(scenario.shockUsd);
+      if (
+        scenarioLabel === null ||
+        scenarioLabel.trim() === "" ||
+        scenarioShock === null ||
+        scenarioShock.negativeSyntax ||
+        scenarioShock.units < 0n
+      ) {
+        pushReason(reasons, "malformed_stress_scenario");
+        pushReason(reasons, "incomplete_stress_evidence");
       }
       if (
         scenario.status !== "eligible" ||
@@ -527,7 +545,7 @@ function snapshotCapacityWindow(
     maxAllocatedUsd: window.maxAllocatedUsd,
     remainingCapacityUsd: window.remainingCapacityUsd,
     status: window.reasons.length === 0 ? "within_budget" : "ineligible",
-    reasons: window.reasons,
+    reasons: sortedReasons(window.reasons),
   };
 }
 
@@ -617,7 +635,7 @@ export function assessPaperProfitabilityCapacity(
       windowResults.every((window) => window.status === "within_budget")
         ? "eligible"
         : "ineligible",
-    reasons,
+    reasons: sortedReasons(reasons),
     windows: windowResults,
   };
 }
