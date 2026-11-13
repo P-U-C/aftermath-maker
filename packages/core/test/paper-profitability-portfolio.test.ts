@@ -9,14 +9,14 @@ import {
 } from "../src/paper-profitability-portfolio.js";
 
 function capacityWindow(
-  maxAllocatedUsd = "25.5",
+  maxAllocatedUsd = "25",
   overrides: Partial<PaperProfitabilityCapacityWindowResult> = {},
 ): PaperProfitabilityCapacityWindowResult {
   return {
     windowId: "window-a",
     exposureUsd: "10",
     maxAllocatedUsd,
-    remainingCapacityUsd: "15.5",
+    remainingCapacityUsd: "15",
     status: "within_budget",
     reasons: [],
     ...overrides,
@@ -31,7 +31,7 @@ function capacityResult(
     marketId: "ETH-USDC",
     collateralUsd: "100",
     maxAllocationBps: 2500,
-    maxAllocatedUsd: "25.5",
+    maxAllocatedUsd: "25",
     baseStatus: "eligible",
     stressStatus: "eligible",
     status: "eligible",
@@ -65,14 +65,14 @@ describe("Paper profitability portfolio allocation", () => {
 
     expect(result.status).toBe("eligible");
     expect(result.reasons).toEqual([]);
-    expect(result.totalRequestedAllocationUsd).toBe("40");
-    expect(result.remainingCollateralUsd).toBe("0");
+    expect(result.totalRequestedAllocationUsd).toBe("39.5");
+    expect(result.remainingCollateralUsd).toBe("0.5");
     expect(result.candidates).toEqual([
       {
         candidateId: "candidate-a",
         marketId: "ETH-USDC",
-        requestedAllocationUsd: "25.5",
-        allocatedUsd: "25.5",
+        requestedAllocationUsd: "25",
+        allocatedUsd: "25",
         status: "allocated",
         reasons: [],
       },
@@ -90,12 +90,13 @@ describe("Paper profitability portfolio allocation", () => {
   it("sums fractional requests exactly and fails closed one decimal unit above budget", () => {
     const over = allocatePaperProfitabilityPortfolio(
       portfolio({
+        totalCollateralUsd: "39",
         candidates: [
           capacityResult({
-            maxAllocatedUsd: "25.500001",
+            maxAllocatedUsd: "25",
             windows: [
-              capacityWindow("25.500001", {
-                remainingCapacityUsd: "15.500001",
+              capacityWindow("25", {
+                remainingCapacityUsd: "15",
               }),
             ],
           }),
@@ -111,8 +112,8 @@ describe("Paper profitability portfolio allocation", () => {
 
     expect(over.status).toBe("ineligible");
     expect(over.reasons).toContain("portfolio_budget_exceeded");
-    expect(over.totalRequestedAllocationUsd).toBe("40.000001");
-    expect(over.remainingCollateralUsd).toBe("-0.000001");
+    expect(over.totalRequestedAllocationUsd).toBe("39.5");
+    expect(over.remainingCollateralUsd).toBe("-0.5");
     expect(
       over.candidates.every(
         (candidate) =>
@@ -241,7 +242,7 @@ describe("Paper profitability portfolio allocation", () => {
         candidates: [
           capacityResult({
             windows: [
-              capacityWindow("25.5", {
+              capacityWindow("25", {
                 status: "ineligible",
                 reasons: ["exposure_above_budget"],
               }),
@@ -263,13 +264,62 @@ describe("Paper profitability portfolio allocation", () => {
     );
     expect(inconsistent.reasons).toContain("inconsistent_capacity_allocation");
 
+    const negativeZero = allocatePaperProfitabilityPortfolio(
+      portfolio({
+        candidates: [
+          capacityResult({
+            windows: [
+              capacityWindow("25", {
+                exposureUsd: "-0",
+                remainingCapacityUsd: "15",
+              }),
+            ],
+          }),
+        ],
+      }),
+    );
+    expect(negativeZero.status).toBe("ineligible");
+    expect(negativeZero.reasons).toContain("capacity_window_not_complete");
+
+    const inconsistentRemaining = allocatePaperProfitabilityPortfolio(
+      portfolio({
+        candidates: [
+          capacityResult({
+            windows: [capacityWindow("25", { remainingCapacityUsd: "999" })],
+          }),
+        ],
+      }),
+    );
+    expect(inconsistentRemaining.reasons).toContain(
+      "inconsistent_capacity_remaining",
+    );
+
+    const inconsistentCandidate = allocatePaperProfitabilityPortfolio(
+      portfolio({
+        candidates: [
+          capacityResult({
+            collateralUsd: "1",
+            maxAllocationBps: 1,
+            maxAllocatedUsd: "25",
+            windows: [capacityWindow("25", { remainingCapacityUsd: "15" })],
+          }),
+        ],
+      }),
+    );
+    expect(inconsistentCandidate.reasons).toContain(
+      "inconsistent_candidate_allocation",
+    );
+
     const duplicate = allocatePaperProfitabilityPortfolio(
       portfolio({
         candidates: [
           capacityResult({
             windows: [
               capacityWindow(),
-              capacityWindow("25.5", { exposureUsd: "5" }),
+              capacityWindow("25", {
+                exposureUsd: "5",
+                remainingCapacityUsd: "20",
+              }),
             ],
           }),
         ],
@@ -287,6 +337,18 @@ describe("Paper profitability portfolio allocation", () => {
       }),
     );
     expect(sparse.reasons).toContain("sparse_capacity_windows");
+  });
+
+  it("does not collide distinct candidate identities containing separators", () => {
+    const result = allocatePaperProfitabilityPortfolio(
+      portfolio({
+        candidates: [
+          capacityResult({ candidateId: "a\u0000b", marketId: "c" }),
+          capacityResult({ candidateId: "a", marketId: "b\u0000c" }),
+        ],
+      }),
+    );
+    expect(result.reasons).not.toContain("duplicate_candidate");
   });
 
   it("rejects malformed identities, collateral and non-finite candidate limits without throwing", () => {
