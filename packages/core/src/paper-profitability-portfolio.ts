@@ -37,6 +37,8 @@ export type PaperProfitabilityPortfolioReason =
   | "duplicate_capacity_window_id"
   | "capacity_window_not_complete"
   | "inconsistent_capacity_allocation"
+  | "inconsistent_capacity_remaining"
+  | "inconsistent_candidate_allocation"
   | "portfolio_budget_exceeded";
 
 export type PaperProfitabilityPortfolioCandidateResult = Readonly<{
@@ -60,6 +62,7 @@ export type PaperProfitabilityPortfolioResult = Readonly<{
 type ParsedDecimal = Readonly<{
   units: bigint;
   scale: number;
+  negativeSyntax: boolean;
 }>;
 
 type MutableCandidate = {
@@ -75,6 +78,7 @@ const DECIMAL_PATTERN = /^(-?)(0|[1-9]\d*)(?:\.(\d+))?$/;
 const INTEGER_BUDGET_PATTERN = /^(0|[1-9]\d*)$/;
 const MAX_DECIMAL_DIGITS = 128;
 const MAX_SAFE_INTEGER_BIGINT = BigInt(Number.MAX_SAFE_INTEGER);
+const BASIS_POINTS_SCALE = 4;
 
 function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -98,6 +102,7 @@ function parseDecimal(value: unknown): ParsedDecimal | null {
   return {
     units: match[1] === "-" ? -magnitude : magnitude,
     scale: fraction.length,
+    negativeSyntax: match[1] === "-",
   };
 }
 
@@ -108,7 +113,7 @@ function normalizeDecimal(value: ParsedDecimal): ParsedDecimal {
     units /= 10n;
     scale -= 1;
   }
-  return { units, scale };
+  return { units, scale, negativeSyntax: units < 0n };
 }
 
 function powerOfTen(exponent: number): bigint {
@@ -124,6 +129,7 @@ function addDecimals(left: ParsedDecimal, right: ParsedDecimal): ParsedDecimal {
   return normalizeDecimal({
     units: unitsAtScale(left, scale) + unitsAtScale(right, scale),
     scale,
+    negativeSyntax: false,
   });
 }
 
@@ -135,6 +141,7 @@ function subtractDecimals(
   return normalizeDecimal({
     units: unitsAtScale(left, scale) - unitsAtScale(right, scale),
     scale,
+    negativeSyntax: false,
   });
 }
 
@@ -171,7 +178,7 @@ function snapshotText(value: unknown): string | null {
 
 function isNonNegativeDecimal(value: unknown): boolean {
   const parsed = parseDecimal(value);
-  return parsed !== null && parsed.units >= 0n;
+  return parsed !== null && !parsed.negativeSyntax && parsed.units >= 0n;
 }
 
 function isPositiveDecimal(value: unknown): boolean {
@@ -185,6 +192,8 @@ function capacityWindowIsComplete(
 ): boolean {
   if (!isRecord(value)) return false;
   const windowAllocation = parseDecimal(value.maxAllocatedUsd);
+  const exposure = parseDecimal(value.exposureUsd);
+  const remaining = parseDecimal(value.remainingCapacityUsd);
   return (
     typeof value.windowId === "string" &&
     value.windowId.trim() !== "" &&
@@ -196,7 +205,11 @@ function capacityWindowIsComplete(
     windowAllocation.units > 0n &&
     requestedAllocation !== null &&
     compareDecimals(windowAllocation, requestedAllocation) === 0 &&
-    isNonNegativeDecimal(value.remainingCapacityUsd)
+    isNonNegativeDecimal(value.remainingCapacityUsd) &&
+    exposure !== null &&
+    remaining !== null &&
+    compareDecimals(remaining, subtractDecimals(windowAllocation, exposure)) ===
+      0
   );
 }
 
@@ -251,6 +264,25 @@ function parseCandidate(value: unknown, inputIndex: number): MutableCandidate {
   } else if (requestedAllocation.units <= 0n) {
     pushReason(reasons, "non_positive_max_allocated_usd");
   }
+  if (
+    collateral !== null &&
+    collateral.units > 0n &&
+    typeof maxAllocationBps === "number" &&
+    Number.isSafeInteger(maxAllocationBps) &&
+    maxAllocationBps > 0 &&
+    maxAllocationBps <= 10_000 &&
+    requestedAllocation !== null &&
+    requestedAllocation.units > 0n
+  ) {
+    const expectedAllocation = normalizeDecimal({
+      units: collateral.units * BigInt(maxAllocationBps),
+      scale: collateral.scale + BASIS_POINTS_SCALE,
+      negativeSyntax: false,
+    });
+    if (compareDecimals(requestedAllocation, expectedAllocation) > 0) {
+      pushReason(reasons, "inconsistent_candidate_allocation");
+    }
+  }
 
   const windows = Array.isArray(source?.windows) ? source.windows : null;
   if (windows === null) {
@@ -288,7 +320,25 @@ function parseCandidate(value: unknown, inputIndex: number): MutableCandidate {
         ) {
           pushReason(reasons, "inconsistent_capacity_allocation");
         } else {
-          pushReason(reasons, "capacity_window_not_complete");
+          const windowAllocation = parseDecimal(window.maxAllocatedUsd);
+          const exposure = parseDecimal(window.exposureUsd);
+          const remaining = parseDecimal(window.remainingCapacityUsd);
+          if (
+            windowAllocation !== null &&
+            requestedAllocation !== null &&
+            exposure !== null &&
+            remaining !== null &&
+            isNonNegativeDecimal(window.exposureUsd) &&
+            isNonNegativeDecimal(window.remainingCapacityUsd) &&
+            compareDecimals(
+              remaining,
+              subtractDecimals(windowAllocation, exposure),
+            ) !== 0
+          ) {
+            pushReason(reasons, "inconsistent_capacity_remaining");
+          } else {
+            pushReason(reasons, "capacity_window_not_complete");
+          }
         }
       }
     }
@@ -318,7 +368,7 @@ function markDuplicateCandidates(candidates: MutableCandidate[]): void {
     ) {
       continue;
     }
-    const key = `${candidate.candidateId}\u0000${candidate.marketId}`;
+    const key = JSON.stringify([candidate.candidateId, candidate.marketId]);
     const matches = byIdentity.get(key) ?? [];
     matches.push(candidate);
     byIdentity.set(key, matches);
@@ -399,13 +449,17 @@ function inspectBudget(value: unknown): Readonly<{
       reason: "unsafe_total_collateral_usd",
     };
   }
-  return { source, parsed: { units, scale: 0 }, reason: null };
+  return {
+    source,
+    parsed: { units, scale: 0, negativeSyntax: false },
+    reason: null,
+  };
 }
 
 function sumRequestedAllocations(
   candidates: readonly MutableCandidate[],
 ): ParsedDecimal | null {
-  let total: ParsedDecimal = { units: 0n, scale: 0 };
+  let total: ParsedDecimal = { units: 0n, scale: 0, negativeSyntax: false };
   for (const candidate of candidates) {
     if (candidate.requestedAllocation === null) return null;
     total = addDecimals(total, candidate.requestedAllocation);
