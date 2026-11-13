@@ -21,3 +21,4 @@ export * from "./paper-profitability-portfolio.js";
 export * from "./paper-profitability-risk.js";
 export * from "./paper-profitability-margin.js";
 export * from "./paper-profitability-concentration.js";
+export * from "./paper-profitability-drawdown.js";
