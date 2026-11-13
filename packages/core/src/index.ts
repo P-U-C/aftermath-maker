@@ -17,3 +17,4 @@ export * from "./paper-profitability-stability.js";
 export * from "./paper-profitability-holdout.js";
 export * from "./paper-profitability-stress.js";
 export * from "./paper-profitability-capacity.js";
+export * from "./paper-profitability-portfolio.js";
