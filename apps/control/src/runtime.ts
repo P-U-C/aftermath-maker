@@ -3448,7 +3448,16 @@ export class MakerRuntime {
         inventoryUsd,
         unrealizedPnlUsd: combinedUnrealizedPnlUsd,
       });
-      let quote = twoSidedQuote;
+      // Paper Profit is an empirical, side-aware admission policy: the
+      // retained shadow sample shows the bid side carrying the adverse
+      // selection while the ask side remains positive before known costs.
+      // Keep the policy Paper-only; Live always retains the normal two-sided
+      // quote until a separately reviewed execution policy exists.
+      const paperProfitAskOnly =
+        config.mode === "paper" && config.strategyObjective === "profit";
+      let quote = paperProfitAskOnly
+        ? { ...twoSidedQuote, sides: "ask" as const }
+        : twoSidedQuote;
       let reducingOnly = false;
       let holdNewExposure = false;
       let holdNewExposureReason: "gross-exposure" | "adverse-selection" | null =
