@@ -112,6 +112,16 @@ describe("Paper profitability concentration admission", () => {
       input({ candidates: [candidate(), candidate()] }),
     );
     expect(duplicate.reasons).toContain("duplicate_candidate");
+
+    const separatorSafe = assessPaperProfitabilityConcentration(
+      input({
+        candidates: [
+          candidate({ candidateId: "a\u0000b", marketId: "c" }),
+          candidate({ candidateId: "a", marketId: "b\u0000c" }),
+        ],
+      }),
+    );
+    expect(separatorSafe.reasons).not.toContain("duplicate_candidate");
   });
 
   it("handles sparse, null, Symbol and non-finite threshold inputs without throwing", () => {
