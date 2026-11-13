@@ -219,6 +219,16 @@ describe("Paper profitability risk admission", () => {
       portfolio({ candidates: [...portfolio().candidates].reverse() }),
     );
     expect(two).toEqual(one);
+
+    const separatorSafe = assessPaperProfitabilityRisk(
+      portfolio({
+        candidates: [
+          candidate({ candidateId: "a\u0000b", marketId: "c" }),
+          candidate({ candidateId: "a", marketId: "b\u0000c" }),
+        ],
+      }),
+    );
+    expect(separatorSafe.reasons).not.toContain("duplicate_candidate");
   });
 
   it("strips authority and provider fields from the reporting result", () => {

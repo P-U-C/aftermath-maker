@@ -304,7 +304,7 @@ function markDuplicates(candidates: MutableCandidate[]): void {
       candidate.marketId.trim() === ""
     )
       continue;
-    const key = `${candidate.candidateId}\u0000${candidate.marketId}`;
+    const key = JSON.stringify([candidate.candidateId, candidate.marketId]);
     const group = groups.get(key) ?? [];
     group.push(candidate);
     groups.set(key, group);

@@ -110,6 +110,17 @@ describe("Paper profitability margin admission", () => {
     );
     expect(duplicate.reasons).toContain("duplicate_candidate");
 
+    const separatorSafe = assessPaperProfitabilityMargin(
+      input({
+        minimumMarginBps: 0,
+        candidates: [
+          candidate({ candidateId: "a\u0000b", marketId: "c" }),
+          candidate({ candidateId: "a", marketId: "b\u0000c" }),
+        ],
+      }),
+    );
+    expect(separatorSafe.reasons).not.toContain("duplicate_candidate");
+
     const malformed = assessPaperProfitabilityMargin({
       ...input(),
       candidates: [null, { ...candidate(), candidateId: Symbol("id") }],
